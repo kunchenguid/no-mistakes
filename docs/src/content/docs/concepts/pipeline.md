@@ -42,7 +42,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
 | 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
-| 7 | **Certify** | Independently inspect the finalized, clean candidate; findings gate delivery | `0` (non-fixing) |
+| 7 | **Certify** | Fleet-only independent inspection of the finalized, clean candidate; findings gate delivery | `0` (non-fixing) |
 | 8 | **Push** | Safely push the validated branch to the configured target | n/a |
 | 9 | **PR** | Create or update the pull request | n/a |
 | 10 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
@@ -57,7 +57,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   A later run's initial review also receives fix-round provenance for any uncertified pipeline-authored commits left on the branch when a previous run's re-review did not complete.
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
-- **Certify after lint** so formatting and intentional pending changes are finalized before the final read-only delivery check. Fleet reviewers run cold in an isolated shadow checkout with repository/user skills and plugin state removed; HOME, Codex SQLite state, and XDG state are sandbox-local, and raw model messages never enter persistent logs before bounded parsing and sanitization. In fleet mode, Push accepts only the exact certified commit and performs no source mutation; the complete effective fleet contract is fingerprinted at run start so recovery cannot downgrade models, reasoning, arguments, security paths, or the once-resolved absolute executable after a global-config edit. The legacy path retains Push formatting and review-approved descendant behavior.
+- **Certify after lint in fleet mode** so formatting and intentional pending changes are finalized before the final read-only delivery check. Fleet reviewers run cold in an isolated shadow checkout with repository/user skills and plugin state removed; HOME, Codex SQLite state, and XDG state are sandbox-local, and raw model messages never enter persistent logs before bounded parsing and sanitization. In fleet mode, Push accepts only the exact certified commit and performs no source mutation; the complete effective fleet contract is fingerprinted at run start so recovery cannot downgrade models, reasoning, arguments, security paths, or the once-resolved absolute executable after a global-config edit. The legacy path skips Certify and retains Push formatting and review-approved descendant behavior.
 - **Push → PR → CI** happens after all local checks pass.
   The push and CI auto-fix paths refuse to overwrite commits that reached the configured push target out of band.
   CI is the only step that talks to the outside world for validation.

@@ -44,6 +44,7 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	result, err := sctx.RunReviewProfile(sctx.Ctx, sctx.ReviewFleet.Certifier, agent.RunOpts{
 		Prompt:     certifyPrompt(sctx, headSHA, pathInstructions),
 		CWD:        sctx.WorkDir,
+		TargetSHA:  headSHA,
 		Env:        sctx.Env,
 		JSONSchema: reviewFindingsSchema,
 		// The certifier's raw response is untrusted. Only bounded, sanitized

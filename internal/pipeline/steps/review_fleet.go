@@ -155,6 +155,9 @@ func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completeP
 	if err != nil {
 		return Findings{}, fmt.Errorf("review fleet consolidator output: %w", err)
 	}
+	if err := assertCleanExactHead(sctx, targetSHA, "fleet review"); err != nil {
+		return Findings{}, err
+	}
 	return findings, nil
 }
 
