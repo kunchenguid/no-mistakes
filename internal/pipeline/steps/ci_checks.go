@@ -217,6 +217,38 @@ func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
 	}
 }
 
+// ciNoChecksConfiguredDescription tells the reader what was determined, that it
+// is not a verdict on the code, and how to settle it permanently.
+const ciNoChecksConfiguredDescription = "The provider reports that this repository has no CI: " +
+	"no workflow is registered and the commit under test defines none, so no check will ever register " +
+	"and nothing has tested this commit. This is not a passing verdict. Review and merge on your own " +
+	"judgement, or, if the repository is meant to have no CI, declare `no_ci: true` in .no-mistakes.yaml " +
+	"on the trusted default branch so future runs treat an empty check list as expected."
+
+// ciNoChecksConfiguredOutcome parks the run because the provider reports the
+// repository has no CI at all, so no check can ever report on this commit.
+//
+// It parks rather than completing quietly on purpose. Nothing tested the
+// commit, and a CI step that succeeds silently is indistinguishable from one
+// that observed a green suite - the same conflation this outcome exists to end.
+// The finding names the durable way to make an intentionally CI-less repository
+// stop asking, so answering it once is not a recurring cost.
+func ciNoChecksConfiguredOutcome() *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "no CI is configured for this repository, so no check can report on this commit",
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: ciNoChecksConfiguredDescription,
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 	findings := Findings{
 		Summary: "CI monitoring timed out before PR was merged or closed",

@@ -209,3 +209,39 @@ type CheckRerunner interface {
 	// check names no job the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }
+
+// CIConfiguration is a provider's answer to whether a repository has any CI at
+// all that can report a check for a commit.
+//
+// It answers a different question from GetChecks. An empty check list says
+// nothing has reported YET; this says whether anything ever will. Conflating
+// the two is what makes a caller wait forever on a repository that has no CI.
+type CIConfiguration string
+
+const (
+	// CIConfigurationUnknown means the provider could not determine the
+	// answer. Callers must treat it exactly as they treated an empty check
+	// list before this probe existed, which is to keep waiting.
+	CIConfigurationUnknown CIConfiguration = "unknown"
+	// CIConfigurationPresent means the repository defines at least one CI
+	// job that could still report a check for the commit.
+	CIConfigurationPresent CIConfiguration = "present"
+	// CIConfigurationAbsent means the provider reports no CI definition at
+	// all, so no check will ever register for the commit. It is evidence that
+	// waiting is pointless, never evidence that the commit is good.
+	CIConfigurationAbsent CIConfiguration = "absent"
+)
+
+// CIConfigurationProbe reports whether a repository has any CI configured to
+// report checks for a commit. Like CheckRerunner it is deliberately an
+// optional interface rather than a Host method: a backend whose provider
+// exposes no way to enumerate CI definitions simply does not implement it,
+// callers type-assert (host.(CIConfigurationProbe)) before use, and those
+// backends keep compiling and keep their existing wait-for-checks behavior.
+type CIConfigurationProbe interface {
+	// ProbeCIConfiguration answers for the commit headSHA names. An
+	// indecisive answer is CIConfigurationUnknown with a nil error; an
+	// unanswerable one is CIConfigurationUnknown with an error. Callers must
+	// not change behavior on either.
+	ProbeCIConfiguration(ctx context.Context, pr *PR, headSHA string) (CIConfiguration, error)
+}

@@ -2620,3 +2620,316 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }
+
+// TestCIStep_RepositoryWithoutCIParksInsteadOfWaitingForever closes the hang:
+// a repository with no workflows and no checks for the head commit will never
+// register one, so the monitor must reach a verdict on its first poll instead
+// of logging "waiting for checks to register" until its idle timeout.
+func TestCIStep_RepositoryWithoutCIParksInsteadOfWaitingForever(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHWithoutCI(t, "OPEN")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.NoCI = false
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			t.Fatalf("monitor waited for checks that can never register; logs=%v", logs)
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected the absence of CI to park for a decision, got %#v", outcome)
+	}
+
+	// The outcome names the determination, and names it as unresolved rather
+	// than as a verdict on the code.
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if !strings.Contains(parsed.Summary, "no CI is configured") {
+		t.Fatalf("findings summary must name the determination, got %q", parsed.Summary)
+	}
+	if len(parsed.Items) != 1 {
+		t.Fatalf("expected exactly one finding, got %#v", parsed.Items)
+	}
+	if got := parsed.Items[0].ActionOrDefault(); got != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", got, types.ActionAskUser)
+	}
+	if !strings.Contains(parsed.Items[0].Description, "no_ci: true") {
+		t.Fatalf("finding must name the durable declaration that settles this, got %q", parsed.Items[0].Description)
+	}
+
+	// A caller reading the step log can tell this from a pass.
+	found := false
+	for _, l := range logs {
+		if l == cimonitor.NoChecksConfiguredMsg {
+			found = true
+		}
+		if l == cimonitor.ChecksPassedMsg || l == cimonitor.NoChecksPassedMsg {
+			t.Fatalf("absence of CI must never be logged as a pass, got logs: %v", logs)
+		}
+		if strings.Contains(l, "waiting for checks to register") {
+			t.Fatalf("absence of CI must not be logged as a wait, got logs: %v", logs)
+		}
+	}
+	if !found {
+		t.Fatalf("expected the no-CI marker in the step log, got: %v", logs)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("cimonitor must report not-ready for a repository without CI, logs: %v", logs)
+	}
+
+	// And a caller reading run state cannot mistake it for readiness either.
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatalf("expected CI readiness unset without CI, got %v", *dbRun.CIReadyAt)
+	}
+}
+
+// TestCIStep_ConfiguredButUnregisteredChecksKeepWaiting is the other half of
+// the distinction: a repository that HAS workflows is simply slow to register
+// its checks, and the pre-existing waiting behavior must be untouched.
+func TestCIStep_ConfiguredButUnregisteredChecksKeepWaiting(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// fakeCIGH describes a repository with a registered workflow by default.
+	env := fakeCIGH(t, "OPEN", "[]")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		pollIntervalOverride: 30 * time.Second,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the monitor to keep waiting for a configured repository, got outcome=%#v err=%v", outcome, err)
+	}
+	waits := 0
+	for _, l := range logs {
+		if strings.Contains(l, "waiting for checks to register") {
+			waits++
+		}
+		if l == cimonitor.NoChecksConfiguredMsg {
+			t.Fatalf("a repository with workflows must never be reported as having no CI, logs: %v", logs)
+		}
+	}
+	if waits != 3 {
+		t.Fatalf("expected one wait log per poll, got %d (logs: %v)", waits, logs)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("unregistered checks must not be ready, logs: %v", logs)
+	}
+}
+
+// TestCIStep_ChecksRegisteringAfterAWaitStillCompleteNormally covers the
+// transition between the two states: the repository has CI, its checks arrive
+// late, and the run reaches the ordinary green outcome without ever parking.
+func TestCIStep_ChecksRegisteringAfterAWaitStillCompleteNormally(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[]`,
+		`[]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		pollIntervalOverride: 30 * time.Second,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			switch polls {
+			case 1, 2, 3:
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("poll %d must not be ready yet; logs=%v", polls, logs)
+				}
+				return nil
+			default:
+				cancel()
+				return ctx.Err()
+			}
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue after checks passed, got outcome=%#v err=%v", outcome, err)
+	}
+	for _, l := range logs {
+		if l == cimonitor.NoChecksConfiguredMsg {
+			t.Fatalf("late registration must never be reported as no CI, logs: %v", logs)
+		}
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatalf("expected the late green checks to become ready, logs: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness persisted once the late checks passed")
+	}
+}
+
+// TestCIStep_UndeterminableCIConfigurationKeepsWaiting is the fail-safe: when
+// the provider cannot answer, the step must behave exactly as it did before
+// the determination existed rather than guessing that CI is absent.
+func TestCIStep_UndeterminableCIConfigurationKeepsWaiting(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHUndeterminableCI(t, "OPEN", "gh: Bad credentials (HTTP 401)")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		pollIntervalOverride: 30 * time.Second,
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("an unreadable CI configuration must not end the run, got outcome=%#v err=%v", outcome, err)
+	}
+	warnings := 0
+	for _, l := range logs {
+		if strings.Contains(l, "could not determine whether CI is configured") {
+			warnings++
+		}
+		if l == cimonitor.NoChecksConfiguredMsg {
+			t.Fatalf("an unreadable configuration must never be reported as no CI, logs: %v", logs)
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("expected the probe failure to be reported once across %d polls, got %d (logs: %v)", polls, warnings, logs)
+	}
+}
+
+// TestCIStep_DeclaredNoCIWinsOverTheAbsenceDetermination keeps the two
+// no-CI paths distinct: a repository that positively declares it has no CI on
+// its trusted default branch is a maintainer's answer to this very question, so
+// it stays the existing ready outcome instead of parking to ask again.
+func TestCIStep_DeclaredNoCIWinsOverTheAbsenceDetermination(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHWithoutCI(t, "OPEN")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = true
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("declared no-CI must keep monitoring, got outcome=%#v err=%v", outcome, err)
+	}
+	for _, l := range logs {
+		if l == cimonitor.NoChecksConfiguredMsg {
+			t.Fatalf("a declared no-CI repository must not park to ask again, logs: %v", logs)
+		}
+	}
+	if !cimonitor.DeclaredNoCI(logs) {
+		t.Fatalf("expected the declared no_ci ready path, logs: %v", logs)
+	}
+}

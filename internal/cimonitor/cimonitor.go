@@ -31,6 +31,13 @@ const (
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
 	ChecksRunningMsg = "CI checks running, waiting for results..."
+	// NoChecksConfiguredMsg is logged when the provider itself reports that the
+	// repository defines no CI, so no check can ever register for the commit
+	// and waiting cannot end on its own. It is deliberately NOT a ready state:
+	// nothing tested the commit, which is a different fact from a pass and from
+	// the trusted no_ci declaration behind NoChecksPassedMsg. The step parks for
+	// a decision after emitting it.
+	NoChecksConfiguredMsg = "no CI is configured for this repository - no check can report on this commit, so this is not a pass"
 )
 
 // Activity summarizes what the CI step has been doing, derived from its logs.
@@ -86,6 +93,14 @@ func ParseActivity(logs []string) Activity {
 			a.AutoFixing = false
 			a.Ready = true
 			a.DeclaredNoCI = true
+			a.LastEvent = line
+		case line == NoChecksConfiguredMsg:
+			// Matched exactly, and before the generic waiting vocabulary below,
+			// so a determined absence of CI can never be read as either a pass
+			// or as the monitor still waiting for checks to show up.
+			a.AutoFixing = false
+			a.Ready = false
+			a.DeclaredNoCI = false
 			a.LastEvent = line
 		case strings.Contains(line, "issues detected"),
 			strings.Contains(line, "CI checks running"),

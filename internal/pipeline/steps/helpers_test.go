@@ -437,6 +437,39 @@ func fakeCIGH(t *testing.T, state, checksJSON string) []string {
 	})
 }
 
+// noRegisteredWorkflowsJSON is what GitHub answers for a repository that has
+// no workflow registered at all.
+const noRegisteredWorkflowsJSON = `{"total_count":0,"workflows":[]}`
+
+// fakeCIGHWithoutCI is fakeCIGH for a repository that has no CI at all: the
+// forge reports no checks, GitHub has no registered workflow, and the commit
+// under test defines none either.
+func fakeCIGHWithoutCI(t *testing.T, state string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":      "ci-gh",
+		"FAKE_CLI_STATE":     state,
+		"FAKE_CLI_CHECKS":    "[]",
+		"FAKE_CLI_WORKFLOWS": noRegisteredWorkflowsJSON,
+	})
+}
+
+// fakeCIGHUndeterminableCI is fakeCIGH for a repository whose CI configuration
+// cannot be read at all, so the monitor must fall back to waiting.
+func fakeCIGHUndeterminableCI(t *testing.T, state, apiErr string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":    "ci-gh",
+		"FAKE_CLI_STATE":   state,
+		"FAKE_CLI_CHECKS":  "[]",
+		"FAKE_CLI_API_ERR": apiErr,
+	})
+}
+
 func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
