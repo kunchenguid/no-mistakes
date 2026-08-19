@@ -42,6 +42,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | Agent | Binary | Protocol |
 | --- | --- | --- |
 | Claude | `claude` | Subprocess per invocation, JSONL streaming |
+| Gemini | `gemini` | Subprocess per invocation, JSONL streaming |
 | Codex | `codex` | Subprocess per invocation, JSONL events |
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
@@ -226,7 +227,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Gemini, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -257,6 +258,10 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
 For review-fixer reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
+
+## Gemini
+
+Spawns a `gemini` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--model gemini-3.1-pro-preview-customtools` and `-y --no-sandbox`, unless you set your own model or permission flags through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via injected schema instructions and fallback parsing.
 
 ## Codex
 
