@@ -37,8 +37,8 @@ review_fleet:
   enabled: false
   reviewers:
     test-adversary:
-      model: gpt-5.6-luna
-      reasoning_effort: max
+      model: gpt-5.6-terra
+      reasoning_effort: xhigh
     correctness:
       model: gpt-5.6-terra
       reasoning_effort: high
