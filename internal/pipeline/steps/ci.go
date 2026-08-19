@@ -24,9 +24,10 @@ const (
 // checks that are still running. The canonical strings live in cimonitor so all
 // producers and consumers agree on them.
 const (
-	ciChecksPassedMsg   = cimonitor.ChecksPassedMsg
-	ciNoChecksPassedMsg = cimonitor.NoChecksPassedMsg
-	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
+	ciChecksPassedMsg       = cimonitor.ChecksPassedMsg
+	ciNoChecksPassedMsg     = cimonitor.NoChecksPassedMsg
+	ciChecksRunningMsg      = cimonitor.ChecksRunningMsg
+	ciNoChecksConfiguredMsg = cimonitor.NoChecksConfiguredMsg
 )
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
@@ -49,6 +50,14 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// ciConfigurationPresent latches a positive CI-configuration determination
+	// so the provider is asked once rather than on every poll. CI a repository
+	// has cannot become CI it does not have, so the answer never needs
+	// revisiting; an absent answer ends the step and an unknown one is retried.
+	ciConfigurationPresent bool
+	// ciConfigurationWarned records that a failed determination was already
+	// reported, so a monitor that polls for hours reports it once.
+	ciConfigurationWarned bool
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -507,8 +516,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// Without that declaration, keep waiting - delayed registration
 					// is common and must never look green. Elapsed time is not
 					// evidence; there is no grace-period promotion path.
+					//
+					// Waiting is only correct while a check can still arrive. An
+					// empty list on a repository that HAS no CI is not a slow
+					// check, it is the final answer, and waiting for it never
+					// ends. Those two are told apart by asking the provider what
+					// CI the repository defines, never by how long the wait has
+					// run - see determineCIConfiguration.
 					if sctx.Config != nil && sctx.Config.NoCI {
 						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+					} else if s.determineCIConfiguration(sctx, host, pr) == scm.CIConfigurationAbsent {
+						// Terminal, and deliberately not a pass: nothing tested
+						// this commit. Readiness is cleared on the way out so no
+						// earlier green signal survives this conclusion.
+						clearCIMonitorReady(sctx)
+						lastMonitorLog = ""
+						sctx.Log(ciNoChecksConfiguredMsg)
+						return ciNoChecksConfiguredOutcome(), nil
 					} else {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
@@ -549,6 +573,41 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
+}
+
+// determineCIConfiguration reports whether this repository has any CI able to
+// report a check for the commit under test.
+//
+// An empty check rollup alone cannot tell "nothing has reported yet" from
+// "nothing ever will", and only the second justifies ending the wait, so the
+// provider is asked directly rather than inferring an answer from elapsed time.
+//
+// Everything indecisive answers scm.CIConfigurationUnknown - a provider with no
+// probe, a probe that failed, a verdict the provider would not give - and the
+// caller then keeps the waiting behavior it had before this determination
+// existed. Only a positive absent verdict may end a run.
+func (s *CIStep) determineCIConfiguration(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) scm.CIConfiguration {
+	if s.ciConfigurationPresent {
+		return scm.CIConfigurationPresent
+	}
+	probe, ok := host.(scm.CIConfigurationProbe)
+	if !ok {
+		return scm.CIConfigurationUnknown
+	}
+	configuration, err := probe.ProbeCIConfiguration(sctx.Ctx, pr, sctx.Run.HeadSHA)
+	if err != nil {
+		// Reported once rather than every poll: the monitor can poll for hours,
+		// and a repeating warning would bury the checks it is waiting for.
+		if !s.ciConfigurationWarned {
+			s.ciConfigurationWarned = true
+			sctx.Log(fmt.Sprintf("warning: could not determine whether CI is configured, continuing to wait for checks: %v", err))
+		}
+		return scm.CIConfigurationUnknown
+	}
+	if configuration == scm.CIConfigurationPresent {
+		s.ciConfigurationPresent = true
+	}
+	return configuration
 }
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {

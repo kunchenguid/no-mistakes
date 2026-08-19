@@ -281,6 +281,7 @@ func fakeCIGHReconcileHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	serveFakeCIGHAPI(args)
 	if strings.Contains(joined, "pr list") {
 		fmt.Println("[]")
 		os.Exit(0)
@@ -316,6 +317,44 @@ func fakeCIGHReconcileHandler(args []string) {
 	os.Exit(1)
 }
 
+// serveFakeCIGHAPI answers the `gh api` reads the CI monitor uses to determine
+// whether a repository has any CI configured. It exits the process for every
+// call it handles and returns for anything else.
+//
+// The defaults describe a repository that HAS CI, because that is what almost
+// every CI test is about; a test that models a repository without CI says so
+// explicitly. FAKE_CLI_API_ERR makes every `gh api` call fail with that
+// message, FAKE_CLI_WORKFLOWS overrides the actions/workflows body, and
+// FAKE_CLI_WORKFLOW_FILES overrides the .github/workflows directory listing,
+// which is otherwise absent and answered with gh's own 404 report.
+func serveFakeCIGHAPI(args []string) {
+	if len(args) == 0 || args[0] != "api" {
+		return
+	}
+	joined := strings.Join(args, " ")
+	if apiErr := os.Getenv("FAKE_CLI_API_ERR"); apiErr != "" {
+		fmt.Fprintln(os.Stderr, apiErr)
+		os.Exit(1)
+	}
+	switch {
+	case strings.Contains(joined, "/actions/workflows"):
+		workflows := os.Getenv("FAKE_CLI_WORKFLOWS")
+		if workflows == "" {
+			workflows = `{"total_count":1,"workflows":[{"id":1,"name":"CI","state":"active"}]}`
+		}
+		fmt.Println(workflows)
+		os.Exit(0)
+	case strings.Contains(joined, "/contents/.github/workflows"):
+		files := os.Getenv("FAKE_CLI_WORKFLOW_FILES")
+		if files == "" {
+			fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+			os.Exit(1)
+		}
+		fmt.Println(files)
+		os.Exit(0)
+	}
+}
+
 func fakeCIGHHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
@@ -328,6 +367,7 @@ func fakeCIGHHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	serveFakeCIGHAPI(args)
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)
@@ -386,6 +426,7 @@ func fakeCIGHSequenceHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	serveFakeCIGHAPI(args)
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)
@@ -559,6 +600,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	serveFakeCIGHAPI(args)
 	if strings.Contains(joined, "pr checks") {
 		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
 		os.Exit(1)

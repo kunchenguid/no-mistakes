@@ -198,3 +198,35 @@ func TestParseActivity_LastEvent(t *testing.T) {
 		t.Errorf("expected merged as last event, got %q", a.LastEvent)
 	}
 }
+
+// TestNoChecksConfigured_IsRecognizedAndNeverReady pins the third empty-checks
+// state apart from the two that already existed. A determined absence of CI is
+// neither a pass nor a declared no_ci pass, and it is not the monitor still
+// waiting either: it is a recognized terminal event with no readiness at all.
+func TestNoChecksConfigured_IsRecognizedAndNeverReady(t *testing.T) {
+	logs := []string{
+		"monitoring CI for PR #42 (timeout: 4h0m0s)...",
+		NoChecksConfiguredMsg,
+	}
+	if ChecksPassed(logs) {
+		t.Fatal("a repository without CI must never report checks passed")
+	}
+	if DeclaredNoCI(logs) {
+		t.Fatal("a determined absence of CI is not the trusted no_ci declaration")
+	}
+	if got := ParseActivity(logs).LastEvent; got != NoChecksConfiguredMsg {
+		t.Fatalf("LastEvent = %q, want the no-CI marker so consumers can render it", got)
+	}
+	if NoChecksConfiguredMsg == NoChecksPassedMsg {
+		t.Fatal("the two empty-checks outcomes must not share one message")
+	}
+}
+
+// A pass observed earlier in the run must not survive a later determination
+// that the repository has no CI, which is what a moved head can produce.
+func TestNoChecksConfigured_ClearsAnEarlierReadyState(t *testing.T) {
+	logs := []string{ChecksPassedMsg, NoChecksConfiguredMsg}
+	if ChecksPassed(logs) {
+		t.Fatalf("the no-CI marker must clear an earlier ready state, logs: %v", logs)
+	}
+}
