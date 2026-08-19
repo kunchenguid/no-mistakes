@@ -58,7 +58,7 @@ func cleanCertifyResult() []byte {
 	return result
 }
 
-func TestCertifyStep_FinalizesFormatterChangesBeforeColdReadOnlyCheck(t *testing.T) {
+func TestFleetGatesUseFinalizedHeadForDeterministicChecksAndCertification(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if opts.Purpose != "certify" {
@@ -69,15 +69,32 @@ func TestCertifyStep_FinalizesFormatterChangesBeforeColdReadOnlyCheck(t *testing
 		}
 		return &agent.Result{Output: cleanCertifyResult()}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "printf 'intentional final change\\n' > final.txt"})
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{
+		Format:   "printf 'intentional final change\\n' > final.txt",
+		Test:     "test -f final.txt && test -z \"$(git status --porcelain)\"",
+		Document: "test -f final.txt && test -z \"$(git status --porcelain)\"",
+		Lint:     "test -f final.txt && test -z \"$(git status --porcelain)\"",
+	})
 	withReviewFleetEnabled(t, sctx, true)
 
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatalf("test gate: %v", err)
+	}
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatalf("document gate: %v", err)
+	}
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatalf("lint gate: %v", err)
+	}
 	outcome, err := (&CertifyStep{}).Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if outcome.CertifiedHeadSHA == "" || outcome.CertifiedHeadSHA == headSHA {
 		t.Fatalf("certified head = %q, want finalized descendant of %s", outcome.CertifiedHeadSHA, headSHA)
+	}
+	if outcome.CertifiedHeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("certified head = %q, deterministic-gate head = %q", outcome.CertifiedHeadSHA, sctx.Run.HeadSHA)
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("worktree remained dirty after certification finalization: %q", got)

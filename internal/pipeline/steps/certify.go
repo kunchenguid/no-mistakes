@@ -35,7 +35,7 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		return nil, err
 	}
 
-	headSHA, err := finalizeWorktreeForCertification(sctx)
+	headSHA, err := certificationHead(sctx)
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +153,11 @@ func trustedCertificationPathInstructions(sctx *pipeline.StepContext, headSHA st
 	return reviewPathInstructionsSection(matches), nil
 }
 
-// finalizeWorktreeForCertification owns the only source mutations allowed
-// before a fleet certificate: format, commit intentional remaining changes,
+// finalizeWorktreeForFleetGates owns the only source mutations allowed before
+// fleet's deterministic gates: format, commit intentional remaining changes,
 // then prove the worktree is clean and capture the exact immutable HEAD.
-func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error) {
-	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
+func finalizeWorktreeForFleetGates(sctx *pipeline.StepContext) (string, error) {
+	if err := assertPipelineHeadContinuity(sctx, types.StepTest); err != nil {
 		return "", err
 	}
 	if err := rejectDirtyCertificationStart(sctx); err != nil {
@@ -174,7 +174,7 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 			return "", fmt.Errorf("formatter before certification exited with code %d: %s", exitCode, strings.TrimSpace(output))
 		}
 	}
-	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
+	if err := assertPipelineHeadContinuity(sctx, types.StepTest); err != nil {
 		return "", err
 	}
 	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "-z")
@@ -208,10 +208,10 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		if err := assertCleanExactHead(sctx, head, "certification finalization commit"); err != nil {
 			return "", err
 		}
-		if err := requireCommitParent(sctx, head, sctx.Run.HeadSHA, types.StepCertify); err != nil {
+		if err := requireCommitParent(sctx, head, sctx.Run.HeadSHA, types.StepTest); err != nil {
 			return "", err
 		}
-		if err := advanceFleetRunHead(sctx, types.StepCertify, sctx.Run.HeadSHA, head); err != nil {
+		if err := advanceFleetRunHead(sctx, types.StepTest, sctx.Run.HeadSHA, head); err != nil {
 			return "", err
 		}
 		sctx.Run.HeadSHA = head
@@ -221,6 +221,20 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		return "", fmt.Errorf("capture certification head: %w", err)
 	}
 	if err := assertCleanExactHead(sctx, head, "certification finalization"); err != nil {
+		return "", err
+	}
+	return head, nil
+}
+
+func certificationHead(sctx *pipeline.StepContext) (string, error) {
+	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
+		return "", err
+	}
+	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("capture certification head: %w", err)
+	}
+	if err := assertCleanExactHead(sctx, head, "certification"); err != nil {
 		return "", err
 	}
 	return head, nil
