@@ -34,6 +34,8 @@ no-mistakes eval miss ingest <run-id> \
 
 `--finding` is repeatable. The command captures the run if needed (recapture is a no-op, so existing labels survive), then writes false-negative gold onto the last completed non-blocking review pass. Duplicate finding IDs are no-ops. A parked or blocking review is refused: that class found something, so it is not a post-PR miss.
 
+`id` and `description` are required. `severity` defaults to `error` and must be one of `error`, `warning`, or `info` - it becomes gold and then a composition stratum, so an unrecognized value is refused rather than shown as an invented finding type. `action`, if given, must be one of `auto-fix`, `ask-user`, or `no-op`; gold carries no action, so a valid one is accepted and dropped rather than silently changing what is stored.
+
 The ingest payload is the source of truth. Eval does not scrape GitHub review comments and does not read an external markdown ledger. The curator (a human, or an automation that already vetted the miss) supplies the structured finding.
 
 Automatic collection and `eval capture` do the same freeze, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place. `eval miss ingest` can still attach confirmed post-PR-miss gold afterwards.

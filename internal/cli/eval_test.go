@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -136,8 +139,10 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 
 // Every read-or-converging eval subcommand must be idempotent at the CLI: the
 // second identical invocation prints the same output and leaves the same
-// state. (eval run is additive by design and is covered separately; eval miss
-// ingest's duplicate no-op is covered above.)
+// state. Both halves are asserted - stdout equality alone let a command that
+// created a new file under the app root pass as idempotent. (eval run is
+// additive by design and is covered separately; eval miss ingest's duplicate
+// no-op is covered above.)
 func TestEvalCaptureSetsReportAndRelabelAreIdempotentAtTheCLI(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -166,12 +171,16 @@ func TestEvalCaptureSetsReportAndRelabelAreIdempotentAtTheCLI(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v (first): %v\n%s", command, err, first)
 		}
+		treeBefore := nmHomeTree(t, root)
 		second, err := executeCmd(command...)
 		if err != nil {
 			t.Fatalf("%v (second): %v\n%s", command, err, second)
 		}
 		if first != second {
 			t.Fatalf("%v is not idempotent:\nfirst: %s\nsecond: %s", command, first, second)
+		}
+		if treeAfter := nmHomeTree(t, root); !slices.Equal(treeBefore, treeAfter) {
+			t.Fatalf("%v changed the app root's shape:\nbefore: %v\nafter:  %v", command, treeBefore, treeAfter)
 		}
 	}
 }
@@ -413,5 +422,137 @@ func TestEvalCompositionRepoColumnIsUniformAndFitsTheBox(t *testing.T) {
 	}
 	if got := compositionLines(nil); len(got) != 0 {
 		t.Fatalf("compositionLines(nil) = %q, want no lines", got)
+	}
+}
+
+// The composition table must fit the dashboard box on BOTH of its variable
+// axes. The repository column is only one of them: the strata are the other,
+// and a finding type carrying a non-canonical severity or action can push the
+// fixed strata past the room the box has, at which point clamping the
+// repository column to its minimum is not enough and the box renderer silently
+// cuts the finding type off the end of the row.
+func TestEvalCompositionFitsTheBoxWhenTheStrataAreOversized(t *testing.T) {
+	rows := []eval.CompositionRow{
+		{Repo: "kunchenguid/no-mistakes", Language: "javascript", Size: "medium", Severity: "warning", FindingType: "blocking-correctness-defect/requires-human-review", Cases: 3},
+		{Repo: "another-organization/service", Language: "typescript", Size: "large", Severity: "error", FindingType: "error/ask-user", Cases: 1},
+	}
+	lines := compositionLines(rows)
+	if len(lines) != len(rows) {
+		t.Fatalf("compositionLines returned %d line(s), want %d", len(lines), len(rows))
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width > evalBoxWidth-4 {
+			t.Fatalf("composition line %q is %d wide, want at most %d", line, width, evalBoxWidth-4)
+		}
+	}
+
+	// The rendered box is the surface the reader sees: nothing may be cut off
+	// there either, and every row must still start with its case count and
+	// repository identity.
+	box := renderTitledBox(" eval case sets ", evalBoxWidth, lines)
+	for _, line := range strings.Split(box, "\n") {
+		if width := lipgloss.Width(line); width != evalBoxWidth {
+			t.Fatalf("rendered box line %q is %d wide, want exactly %d", line, width, evalBoxWidth)
+		}
+	}
+	if !strings.Contains(lines[0], "no-mista") || !strings.Contains(lines[1], "service") {
+		t.Fatalf("lines = %q, want every row to keep a repository identity", lines)
+	}
+	if !strings.Contains(lines[0], "javascript") || !strings.Contains(lines[1], "typescript") {
+		t.Fatalf("lines = %q, want the leading strata preserved when the trailing ones are shortened", lines)
+	}
+}
+
+// nmHomeTree lists every path under root, relative and sorted, so a test can
+// assert that a command left the app root's shape untouched.
+func nmHomeTree(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel != "." {
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// The eval dashboards are display surfaces over the local corpus: they resolve
+// repository names from the pipeline database only if one already exists, and
+// must never bring that database into being. db.Open creates the file and runs
+// every migration, so a display-only lookup routed through it turned `eval
+// sets`, `eval report`, and `eval run` into commands that initialize pipeline
+// state on a machine that has none.
+func TestEvalDisplayCommandsDoNotCreateThePipelineDatabase(t *testing.T) {
+	tests := []struct {
+		command []string
+		// eval run legitimately refuses an empty case set; the filesystem
+		// effect under test is the same either way.
+		allowError bool
+	}{
+		{command: []string{"eval", "sets"}},
+		{command: []string{"eval", "report"}},
+		{command: []string{"eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "1"}, allowError: true},
+	}
+	for _, tt := range tests {
+		command := tt.command
+		t.Run(strings.Join(command, "-"), func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("NM_HOME", root)
+			chdir(t, t.TempDir())
+
+			out, err := executeCmd(command...)
+			if err != nil && !tt.allowError {
+				t.Fatalf("%v: %v\n%s", command, err, out)
+			}
+
+			p, err := paths.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				if _, statErr := os.Stat(p.DB() + suffix); !os.IsNotExist(statErr) {
+					t.Fatalf("%v created pipeline database file %q (stat err %v); a display-only repository-name lookup must not create or migrate pipeline state",
+						command, p.DB()+suffix, statErr)
+				}
+			}
+		})
+	}
+}
+
+// A pre-existing pipeline database still resolves repository names: opening it
+// read-only removes the side effect, not the feature.
+func TestEvalSetsStillNamesRepositoriesFromAnExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	chdir(t, t.TempDir())
+
+	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
+	selected := `["real-bug"]`
+	if err := fixture.db.SetStepRoundSelection(fixture.round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := executeCmd("eval", "capture", fixture.run.ID); err != nil {
+		t.Fatalf("eval capture: %v\n%s", err, out)
+	}
+
+	out, err := executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "org/repo") {
+		t.Fatalf("sets output = %q, want the repository name resolved from the existing pipeline database", out)
 	}
 }

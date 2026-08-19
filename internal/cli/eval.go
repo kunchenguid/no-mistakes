@@ -53,8 +53,15 @@ func openEvalStore() (*paths.Paths, *eval.Store, error) {
 // display-only: when the pipeline database cannot be read, the dashboards fall
 // back to the fingerprint rather than failing an eval command that otherwise
 // needs no database at all.
+//
+// The read goes through db.OpenReadOnly, never db.Open. db.Open creates the
+// database and runs every migration, so routing a display lookup through it
+// made `eval sets`, `eval report`, and `eval run` initialize pipeline state on
+// a machine that has none, and migrate the schema of a database a running
+// daemon owns. A missing database is the ordinary case here (os.IsNotExist),
+// not an error worth reporting: the dashboards simply show fingerprints.
 func evalRepoNames(p *paths.Paths) map[string]string {
-	database, err := db.Open(p.DB())
+	database, err := db.OpenReadOnly(p.DB())
 	if err != nil {
 		return nil
 	}
@@ -145,7 +152,7 @@ func newEvalMissIngestCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringArrayVar(&findings, "finding", nil, "confirmed miss as JSON finding object (repeatable)")
+	cmd.Flags().StringArrayVar(&findings, "finding", nil, "confirmed miss as JSON finding object with id and description, optional file, line, severity (error|warning|info, default error) and action (auto-fix|ask-user|no-op) (repeatable)")
 	return cmd
 }
 

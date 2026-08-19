@@ -29,6 +29,15 @@ type IngestResult struct {
 // required; they are the eval matcher keys. This is the typed source of truth
 // for a confirmed post-PR miss. no-mistakes does not read firstmate ledgers
 // or scrape GitHub review comments.
+//
+// Severity and action are checked against the finding vocabulary that
+// internal/types owns. A hand-written miss is the one place a finding's
+// severity reaches the corpus without passing through a pipeline agent, and
+// that severity becomes gold and then a composition stratum on the dashboards,
+// so free text here would surface as an invented finding type. Action is
+// validated and then deliberately dropped: gold carries no action, and
+// silently ignoring a value the caller believed was meaningful is worse than
+// refusing one that is not part of the vocabulary.
 func ParsePostPRMissFinding(raw string) (FindingGold, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -43,9 +52,17 @@ func ParsePostPRMissFinding(raw string) (FindingGold, error) {
 	if id == "" || description == "" {
 		return FindingGold{}, fmt.Errorf("finding requires id and description")
 	}
-	severity := strings.TrimSpace(finding.Severity)
+	severity := types.NormalizeFindingSeverity(finding.Severity)
 	if severity == "" {
-		severity = "error"
+		severity = types.FindingSeverityError
+	}
+	if !types.IsKnownFindingSeverity(severity) {
+		return FindingGold{}, fmt.Errorf("finding severity %q is not one of: %s",
+			strings.TrimSpace(finding.Severity), strings.Join(types.KnownFindingSeverities(), ", "))
+	}
+	if action := types.NormalizeFindingAction(finding.Action); action != "" && !types.IsKnownFindingAction(action) {
+		return FindingGold{}, fmt.Errorf("finding action %q is not one of: %s",
+			strings.TrimSpace(finding.Action), strings.Join(types.KnownFindingActions(), ", "))
 	}
 	return FindingGold{
 		ID:          id,

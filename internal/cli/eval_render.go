@@ -92,6 +92,14 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 // table, so every row shows the same kind of identity: full "owner/name" when
 // they all fit, otherwise the short repository name (the convention the stats
 // dashboard already uses) rather than a name cut mid-word.
+//
+// The table has two variable axes, and both have to fit. Sizing only the
+// repository column is not enough: a finding type carrying a non-canonical
+// severity or action can make the fixed strata wider than the room the box
+// has, at which point the repository column hits minCompositionRepoWidth and
+// has nothing left to give. The strata are then shortened to the space that
+// actually remains, so the composed line always fits the box content width and
+// the box renderer never silently cuts the finding type off the end of a row.
 func compositionLines(rows []eval.CompositionRow) []string {
 	widest := 0
 	for _, row := range rows {
@@ -110,10 +118,17 @@ func compositionLines(rows []eval.CompositionRow) []string {
 			column = width
 		}
 	}
+	// Measured against the column the names actually occupy, not the budget
+	// they were offered, so a table of short names keeps its strata intact.
+	strataWidth := evalCompositionWidth - column - lipgloss.Width(compositionSeparator)
+	if strataWidth < 1 {
+		strataWidth = 1
+	}
 	lines := make([]string, 0, len(rows))
 	for i, row := range rows {
 		padded := names[i] + strings.Repeat(" ", column-lipgloss.Width(names[i]))
-		lines = append(lines, fmt.Sprintf("  %4d  %s", row.Cases, padded+compositionSeparator+compositionStrata(row)))
+		strata := truncateStatsLine(compositionStrata(row), strataWidth)
+		lines = append(lines, fmt.Sprintf("  %4d  %s", row.Cases, padded+compositionSeparator+strata))
 	}
 	return lines
 }

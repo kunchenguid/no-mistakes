@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -12,6 +13,56 @@ const (
 	ActionAutoFix = "auto-fix"
 	ActionAskUser = "ask-user"
 )
+
+// Finding severity constants: the vocabulary the review prompt instructs
+// agents to use, ordered most to least severe.
+const (
+	FindingSeverityError   = "error"
+	FindingSeverityWarning = "warning"
+	FindingSeverityInfo    = "info"
+)
+
+// This package owns the finding severity and action vocabularies. Callers that
+// accept a severity or action from outside a pipeline agent - a hand-written
+// eval miss, an IPC payload - validate against these rather than keeping their
+// own copy of the list.
+var (
+	knownFindingSeverities = []string{FindingSeverityError, FindingSeverityWarning, FindingSeverityInfo}
+	knownFindingActions    = []string{ActionAutoFix, ActionAskUser, ActionNoOp}
+)
+
+// NormalizeFindingSeverity trims and lower-cases one severity so equivalent
+// spellings compare equal. It does not check membership; see
+// IsKnownFindingSeverity.
+func NormalizeFindingSeverity(severity string) string {
+	return strings.ToLower(strings.TrimSpace(severity))
+}
+
+// NormalizeFindingAction trims and lower-cases one action. It does not check
+// membership; see IsKnownFindingAction.
+func NormalizeFindingAction(action string) string {
+	return strings.ToLower(strings.TrimSpace(action))
+}
+
+// IsKnownFindingSeverity reports whether severity, once normalized, is part of
+// the review severity vocabulary.
+func IsKnownFindingSeverity(severity string) bool {
+	return slices.Contains(knownFindingSeverities, NormalizeFindingSeverity(severity))
+}
+
+// IsKnownFindingAction reports whether action, once normalized, is part of the
+// finding action vocabulary.
+func IsKnownFindingAction(action string) bool {
+	return slices.Contains(knownFindingActions, NormalizeFindingAction(action))
+}
+
+// KnownFindingSeverities returns the severity vocabulary, for error messages
+// that have to name what they accept.
+func KnownFindingSeverities() []string { return slices.Clone(knownFindingSeverities) }
+
+// KnownFindingActions returns the action vocabulary, for error messages that
+// have to name what they accept.
+func KnownFindingActions() []string { return slices.Clone(knownFindingActions) }
 
 // Finding source constants. An empty Source is treated as agent-produced.
 const (
