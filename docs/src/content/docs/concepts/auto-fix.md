@@ -90,9 +90,25 @@ When the pipeline pauses for approval, you can manually trigger a fix from the T
 The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI or AXI interface, and a sanitized history of previous rounds for that step.
 That history includes which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits.
 On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
+Leaving a finding unselected only stops the agent from restating it; on the review step the finding itself stays outstanding at the gate until you resolve it (see [Unresolved findings across rounds](#unresolved-findings-across-rounds)).
 
 After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
 Yolo and AXI `--yes` approve that fix review automatically after their one fix round, so a finding that remains after the fix does not trigger an unbounded fix loop.
+
+## Unresolved findings across rounds
+
+A review fix round rereviews the fix diff, so it cannot see the rest of the change and its silence about an earlier finding is not evidence that the finding is gone.
+The review step therefore carries unresolved findings forward: a finding stays outstanding, keeps blocking the gate, and is shown again at the next gate until it is explicitly resolved - by selecting it for a fix, approving the step, or skipping it. An automatic fix round that actually attempted the finding resolves it too.
+
+Every other step keeps the previous behavior, because each of its rounds is a complete, current assessment: a fresh round reporting less is real evidence, so its findings simply replace the earlier round's.
+A CI round re-polls the live checks, for example, so carrying there would re-park you on state the provider currently disproves.
+
+What to expect at a review gate:
+
+- Selecting a subset resolves only that subset. `no-mistakes axi respond --action fix --findings F1` answers `F1`; anything you leave unnamed stays outstanding, so the gate parks again on the remaining set. That is the design, not a stuck pipeline - answer the remaining findings, or approve or skip the step.
+- A carried finding keeps the ID you were shown, even when a later round restates it at a different line, so that ID stays the one to name.
+- A later round can make a carried finding stricter (for example `auto-fix` becoming `ask-user`) but never looser; relaxing one takes an explicit response.
+- The finding set at the gate, and the step summary in the generated PR, describe that outstanding union. The per-round history in the run log and PR body keeps reporting what each round itself found, so a fix round's own detail can read narrower than what is still open.
 
 ## Fix commits
 

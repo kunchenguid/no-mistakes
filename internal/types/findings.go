@@ -148,6 +148,21 @@ func FilterFindings(findings Findings, ids []string) Findings {
 }
 
 // ExcludeFindings keeps only findings whose IDs are NOT in the excluded set.
+// Like FilterFindings, it restates the summary from the surviving item count
+// whenever it drops something: the incoming summary counts a set that no
+// longer exists, and republishing it over a smaller set presents a stale
+// count as the current assessment. The survivors are precisely what was NOT
+// selected, so the restatement uses the outstanding wording rather than the
+// selection wording.
+//
+// KNOWN LIMITATION: RiskLevel is copied forward verbatim rather than
+// recomputed from the items that actually survive, so a level justified by a
+// finding the operator has since resolved keeps applying to the smaller set -
+// one carried informational note can hold a step at "high" for the rest of
+// the run, and that level reaches the PR body. This is accepted rather than
+// fixed: it overstates rather than understates risk, and deriving a level
+// from item severities would replace the agent's own assessment with a
+// mechanical map.
 func ExcludeFindings(findings Findings, ids []string) Findings {
 	if len(ids) == 0 {
 		return findings
@@ -161,6 +176,9 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
 		}
+	}
+	if len(result.Items) != len(findings.Items) {
+		result.Summary = SummarizeOutstandingFindings(len(result.Items))
 	}
 	return result
 }
@@ -255,6 +273,45 @@ func HasActionableFindings(findings Findings) bool {
 		}
 	}
 	return false
+}
+
+// SummarizeOutstandingFindings phrases a count for a set nobody selected -
+// the carry-forward set and the round union that heads an approval gate.
+// Reusing the selection wording there would label findings the operator
+// explicitly left alone as ones they picked.
+func SummarizeOutstandingFindings(count int) string {
+	switch count {
+	case 0:
+		return "0 outstanding findings"
+	case 1:
+		return "1 outstanding finding"
+	default:
+		return fmt.Sprintf("%d outstanding findings", count)
+	}
+}
+
+// RiskLevelAtLeast returns whichever of the two declared risk levels is
+// higher on the low < medium < high scale the review prompt defines. An
+// unknown or empty level ranks below "low" so it never wins over a real
+// assessment.
+func RiskLevelAtLeast(a, b string) string {
+	if riskLevelRank(b) > riskLevelRank(a) {
+		return b
+	}
+	return a
+}
+
+func riskLevelRank(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	default:
+		return 0
+	}
 }
 
 func summarizeSelectedFindings(count int) string {

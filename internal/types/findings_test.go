@@ -115,6 +115,50 @@ func TestExcludeFindings_KeepsUnselected(t *testing.T) {
 	if excluded.RiskLevel != "medium" {
 		t.Errorf("RiskLevel = %q, want %q", excluded.RiskLevel, "medium")
 	}
+	if excluded.Summary == "3 issues" {
+		t.Errorf("Summary = %q, but only %d of 3 findings remain", excluded.Summary, len(excluded.Items))
+	}
+	if excluded.Summary != SummarizeOutstandingFindings(len(excluded.Items)) {
+		t.Errorf("Summary = %q, want it restated from the %d surviving items", excluded.Summary, len(excluded.Items))
+	}
+	if strings.Contains(excluded.Summary, "selected") {
+		t.Errorf("Summary = %q describes findings that were NOT selected; it must not call them selected", excluded.Summary)
+	}
+}
+
+func TestRiskLevelAtLeast_NeverReturnsTheLowerAssessment(t *testing.T) {
+	cases := []struct {
+		a, b, want string
+	}{
+		{"low", "high", "high"},
+		{"high", "low", "high"},
+		{"medium", "high", "high"},
+		{"high", "medium", "high"},
+		{"low", "medium", "medium"},
+		{"medium", "medium", "medium"},
+		{"", "low", "low"},
+		{"medium", "", "medium"},
+		{"medium", "bogus", "medium"},
+	}
+	for _, tc := range cases {
+		if got := RiskLevelAtLeast(tc.a, tc.b); got != tc.want {
+			t.Errorf("RiskLevelAtLeast(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestExcludeFindings_KeepsSummaryWhenNothingIsDropped(t *testing.T) {
+	f := Findings{
+		Items:   []Finding{{ID: "f1", Severity: "error", Description: "bad"}},
+		Summary: "1 issue",
+	}
+	excluded := ExcludeFindings(f, []string{"other"})
+	if len(excluded.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(excluded.Items))
+	}
+	if excluded.Summary != "1 issue" {
+		t.Errorf("Summary = %q, want the original %q when nothing was excluded", excluded.Summary, "1 issue")
+	}
 }
 
 func TestExcludeFindings_AllExcluded(t *testing.T) {

@@ -122,6 +122,32 @@ type Step interface {
 	Execute(sctx *StepContext) (*StepOutcome, error)
 }
 
+// ScopeLimitedFindingsStep is implemented by a step whose findings in a later
+// round may legitimately cover a NARROWER slice of the work than an earlier
+// round did - the review step's fix-round rereview, for example, is scoped to
+// the fix diff, so it cannot see findings outside that diff and its silence
+// about them is not evidence they are gone. Declaring true makes the executor
+// carry unresolved findings across that step's rounds, so only an explicit
+// respond action or a real auto-fix attempt resolves one.
+//
+// A step that does not implement this (the default) is asserting the
+// opposite: every round's findings are a complete, current assessment, so a
+// fresh round reporting less IS positive evidence that the earlier findings
+// are gone. Carrying there would re-park a step on state the pipeline can
+// currently disprove - a CI gate showing "check failing" while the forge
+// reports it green. Only the review step declares true today; do not add
+// another without a demonstrated defect and a regression covering it.
+type ScopeLimitedFindingsStep interface {
+	FindingsMayBeScopeLimited() bool
+}
+
+// findingsMayBeScopeLimited reports whether a step's rounds need cross-round
+// finding carry-forward. Not implementing the interface means no.
+func findingsMayBeScopeLimited(step Step) bool {
+	scoped, ok := step.(ScopeLimitedFindingsStep)
+	return ok && scoped.FindingsMayBeScopeLimited()
+}
+
 // ApprovalGateReconciler is implemented by a step whose parked approval gate
 // can become obsolete when an external source of truth changes. The executor
 // invokes it with a bounded context while also waiting for an approval. A true

@@ -289,6 +289,15 @@ it to the user before you respond:
 - Ask how they want to proceed, then translate their decision into the matching
   `respond` call: `--action fix` (pass their guidance through
   `--instructions`), `--action approve`, or `--action skip`.
+- On `--action fix`, always name the findings the user chose to fix with
+  `--findings <ids>`. Only an id you name is dispatched to the fixer and
+  counted as answered. Omitting it is refused outright unless you also pass
+  `--add-finding`, and in that case the added finding is all that gets
+  fixed - every finding already on the gate stays outstanding, so the same gate
+  re-parks on the same set and will keep doing so until you select, approve, or
+  skip them. That is deliberate - a finding the user never answered must not
+  disappear - so read a repeat of the same gate as "nothing was selected yet",
+  not as the pipeline being stuck.
 
 The one exception is `--yes` (below): it is the user's standing consent to
 drive every gate unattended, so under `--yes` you resolve `ask-user`

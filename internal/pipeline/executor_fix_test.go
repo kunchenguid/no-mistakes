@@ -524,7 +524,11 @@ func TestExecutor_FixClearsStoredFindingsAfterSuccessfulReRun(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+	// Select the finding explicitly: a fix response that names nothing
+	// dispatches nothing, so it resolves nothing and the finding correctly
+	// stays outstanding (see
+	// TestExecutor_UnresolvedFindingsSurviveAFixResponseThatSelectsNoFindings).
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -744,7 +748,8 @@ func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -758,14 +763,37 @@ func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
 
+	// review-2 (ask-user) was never selected for auto-fix and the follow-up
+	// round reports nothing new, so it must still surface at an approval gate
+	// rather than silently completing the step - the exact carry-forward
+	// behavior TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound
+	// covers for the manual-fix path.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 	dbSteps, err := database.GetStepsByRun(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if dbSteps[0].FindingsJSON == nil || !strings.Contains(*dbSteps[0].FindingsJSON, "review-2") {
+		t.Fatalf("expected the leftover ask-user finding review-2 to still be pending at the gate, got %v", dbSteps[0].FindingsJSON)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
 	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
 	if err != nil {
 		t.Fatal(err)

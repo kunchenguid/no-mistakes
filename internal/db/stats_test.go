@@ -167,6 +167,59 @@ func TestStepFindingStatsAddsNewFindingsToTotal(t *testing.T) {
 	}
 }
 
+// TestStepFindingStatsCountsCarriedFindingsAsStillOutstanding pins the
+// carry-forward shape: round 1 reports two findings, the operator fixes one,
+// and round 2's scoped rereview finds nothing new in the fix diff, so its own
+// record holds a ZERO-ITEM payload - the shape the executor actually writes,
+// because a step marshals a Findings struct even when it found nothing -
+// while the step is parked on the carried survivor. Reading "currently
+// outstanding" off that last round says every finding was fixed - the exact
+// opposite of why the step is parked - and those numbers are what
+// `axi status`, the TUI step info, and step telemetry report to whoever is
+// driving the run.
+func TestStepFindingStatsCountsCarriedFindingsAsStillOutstanding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/repo/carried", "git@example.com:carried.git", "main")
+	run, _ := d.InsertRun(repo.ID, "carried", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	round1 := `{"findings":[{"id":"review-1","severity":"warning","description":"fixed nit","action":"ask-user"},{"id":"review-2","severity":"error","description":"unresolved blocker","action":"ask-user"}],"summary":"2 findings"}`
+	if _, err := d.InsertStepRound(step.ID, 1, "initial", &round1, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	round2, err := types.MarshalFindingsJSON(types.Findings{Summary: "0 findings", RiskLevel: "low", RiskRationale: "nothing new in the fix diff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(step.ID, 2, "auto_fix", &round2, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+	// What the gate parked on: the carried survivor of round 1.
+	carried := `{"findings":[{"id":"review-2","severity":"error","description":"unresolved blocker","action":"ask-user"}],"summary":"1 outstanding finding"}`
+	if err := d.SetStepFindings(step.ID, carried); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := d.StepFindingStats(steps[0])
+	if err != nil {
+		t.Fatalf("step finding stats: %v", err)
+	}
+	if stats.ReportedFindings != 2 || stats.FixedFindings != 1 {
+		t.Fatalf("stats = reported %d fixed %d, want reported 2 fixed 1: the carried finding is unresolved, not fixed",
+			stats.ReportedFindings, stats.FixedFindings)
+	}
+
+	runStats, err := d.GetStats()
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	assertStepStat(t, runStats.StepStats, types.StepReview, 2, 1)
+}
+
 func assertStepStat(t *testing.T, stats []StepStats, step types.StepName, reported int, fixes int) {
 	t.Helper()
 	for _, got := range stats {
