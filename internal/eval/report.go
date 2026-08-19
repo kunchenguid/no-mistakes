@@ -264,7 +264,14 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 		if name == "tune" && len(cases) == 0 && labeledCount > 0 {
 			summary.Warning = "tune is empty; do not fit matcher thresholds on diversified"
 		}
-		composition := map[CompositionRow]int{}
+		type compositionKey struct {
+			repoFingerprint string
+			language        string
+			size            string
+			severity        string
+			findingType     string
+		}
+		composition := map[compositionKey]int{}
 		for _, c := range cases {
 			if c.Labels.HasGold() {
 				summary.GoldCases++
@@ -283,26 +290,32 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 			}
 			summary.QueuedFindings += queuedByCase[c.ID]
 			language, size, severity := caseComposition(c)
-			composition[CompositionRow{
-				Repo:        store.repoDisplay(c.RepoFingerprint),
-				Language:    language,
-				Size:        size,
-				Severity:    severity,
-				FindingType: findingType(c),
+			composition[compositionKey{
+				repoFingerprint: c.RepoFingerprint,
+				language:        language,
+				size:            size,
+				severity:        severity,
+				findingType:     findingType(c),
 			}]++
 		}
-		summary.Composition = sortedCompositionRows(composition)
+		rows := make([]CompositionRow, 0, len(composition))
+		for key, n := range composition {
+			rows = append(rows, CompositionRow{
+				Repo:        store.repoDisplay(key.repoFingerprint),
+				Language:    key.language,
+				Size:        key.size,
+				Severity:    key.severity,
+				FindingType: key.findingType,
+				Cases:       n,
+			})
+		}
+		summary.Composition = sortedCompositionRows(rows)
 		result = append(result, summary)
 	}
 	return result, nil
 }
 
-func sortedCompositionRows(buckets map[CompositionRow]int) []CompositionRow {
-	rows := make([]CompositionRow, 0, len(buckets))
-	for row, n := range buckets {
-		row.Cases = n
-		rows = append(rows, row)
-	}
+func sortedCompositionRows(rows []CompositionRow) []CompositionRow {
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		if a.Repo != b.Repo {

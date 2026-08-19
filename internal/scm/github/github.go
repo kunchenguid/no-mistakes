@@ -56,10 +56,13 @@ func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo 
 }
 
 // RepoSlug extracts the "owner/name" identifier from a GitHub remote or PR
-// URL. The parsing itself is provider-agnostic git-remote path extraction, so
-// it delegates to scm.RepoSlug rather than keeping a second copy.
+// URL. Longer paths such as PR links are reduced to their leading two segments.
 func RepoSlug(remoteURL string) string {
-	return scm.RepoSlug(remoteURL)
+	parts := strings.Split(scm.RepoPath(remoteURL), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // HostPrefixedSlug returns "host/owner/name" for GitHub Enterprise Server

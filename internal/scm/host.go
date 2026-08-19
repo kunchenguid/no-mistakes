@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -210,40 +211,51 @@ type CheckRerunner interface {
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }
 
-// RepoSlug extracts the "owner/name" identifier from a git remote or web URL.
-// It supports https URLs, scp-style ssh URLs (git@host:owner/name.git),
-// ssh:// URLs, and longer paths such as PR links (the leading two path
-// segments are used). It returns "" when the input has no owner/name pair.
-// The parsing is provider-agnostic: it is plain git-remote path extraction,
-// which is why the GitHub backend and the local eval corpus share it.
-func RepoSlug(remoteURL string) string {
+// RepoPath extracts a repository path from a git remote or web URL. Nested
+// namespaces are preserved. Azure DevOps remotes use project/repository.
+func RepoPath(remoteURL string) string {
 	raw := strings.TrimSpace(remoteURL)
 	if raw == "" {
 		return ""
 	}
-	raw = strings.TrimSuffix(raw, ".git")
 
-	// Reduce raw to the path portion after the host.
+	host := ExtractHost(raw)
 	switch {
 	case strings.Contains(raw, "://"):
-		rest := raw[strings.Index(raw, "://")+len("://"):]
-		slash := strings.IndexByte(rest, '/')
-		if slash < 0 {
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
 			return ""
 		}
-		raw = rest[slash+1:]
+		raw = u.Path
 	case strings.Contains(raw, ":"):
-		// scp-style ssh: [user@]host:owner/name
-		raw = raw[strings.IndexByte(raw, ':')+1:]
+		colon := strings.IndexByte(raw, ':')
+		if colon <= 0 || strings.Contains(raw[:colon], "/") {
+			return ""
+		}
+		raw = raw[colon+1:]
 	}
 
 	parts := strings.Split(strings.Trim(raw, "/"), "/")
-	if len(parts) < 2 {
+	clean := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	parts = clean
+	if len(parts) == 0 {
 		return ""
 	}
-	owner, name := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-	if owner == "" || name == "" {
-		return ""
+
+	for i, part := range parts {
+		if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
+			return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+		}
 	}
-	return owner + "/" + name
+	if (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") && len(parts) >= 4 && strings.EqualFold(parts[0], "v3") {
+		return parts[len(parts)-2] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".git")
+	}
+	parts[len(parts)-1] = strings.TrimSuffix(parts[len(parts)-1], ".git")
+	return strings.Join(parts, "/")
 }

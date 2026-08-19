@@ -55,6 +55,9 @@ func TestRepoDisplayNameFallsBackFromSlugToPathToID(t *testing.T) {
 		want string
 	}{
 		{"slug", &db.Repo{ID: "id", WorkingPath: "/tmp/clone", UpstreamURL: "https://github.com/owner/name"}, "owner/name"},
+		{"nested GitLab path", &db.Repo{ID: "id", UpstreamURL: "https://gitlab.example.com/group/sub/project.git"}, "group/sub/project"},
+		{"Azure project and repository", &db.Repo{ID: "id", UpstreamURL: "https://dev.azure.com/org/project/_git/repo"}, "project/repo"},
+		{"Azure SSH project and repository", &db.Repo{ID: "id", UpstreamURL: "git@ssh.dev.azure.com:v3/org/project/repo"}, "project/repo"},
 		{"working path", &db.Repo{ID: "id", WorkingPath: filepath.Join("/tmp", "clone")}, "clone"},
 		{"id", &db.Repo{ID: "id"}, "id"},
 		{"nil", nil, ""},
@@ -65,6 +68,25 @@ func TestRepoDisplayNameFallsBackFromSlugToPathToID(t *testing.T) {
 				t.Fatalf("RepoDisplayName = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInspectSetsKeepsRepositoriesWithTheSameDisplayNameSeparate(t *testing.T) {
+	store := openEvalStore(t)
+	first := fingerprint("https://github.com/org/repo.git")
+	second := fingerprint("https://github.example.com/org/repo.git")
+	store.SetRepoNames(map[string]string{first: "org/repo", second: "org/repo"})
+	writeSyntheticCase(t, store, syntheticCaseSpec{id: "first", fingerprint: first, changedLines: 10})
+	writeSyntheticCase(t, store, syntheticCaseSpec{id: "second", fingerprint: second, changedLines: 10})
+
+	composition := mustSetSummary(t, store, "all").Composition
+	if len(composition) != 2 {
+		t.Fatalf("composition = %#v, want separate rows for two repository fingerprints", composition)
+	}
+	for _, row := range composition {
+		if row.Repo != "org/repo" || row.Cases != 1 {
+			t.Fatalf("composition row = %#v, want one case for the resolved repository name", row)
+		}
 	}
 }
 

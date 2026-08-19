@@ -44,8 +44,8 @@ func RepoDisplayName(repo *db.Repo) string {
 	if repo == nil {
 		return ""
 	}
-	if slug := scm.RepoSlug(repo.UpstreamURL); slug != "" {
-		return slug
+	if path := scm.RepoPath(repo.UpstreamURL); strings.Contains(path, "/") {
+		return path
 	}
 	if path := strings.TrimSpace(repo.WorkingPath); path != "" {
 		base := filepath.Base(path)
