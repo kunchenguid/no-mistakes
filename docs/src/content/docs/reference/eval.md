@@ -64,7 +64,7 @@ Capture writes gold from the **recorded gate decision** for a review round - wha
 - Skip and approve-with-findings **without a merge** stay **unlabeled / pending** until later adjudication, and so does any round whose gate decision was never recorded (an unknown or aborted resolution), merged or not. Absence of a decision is never read as a judgement.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -125,7 +125,7 @@ The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 
-The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, and the frozen corpus itself is never modified by a replay.
+The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 
 ## Report results
 
@@ -145,7 +145,7 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero.
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. It is a pure read: repeated reports over unchanged recorded evaluations produce identical text output.
 
 ## Current boundary
 
