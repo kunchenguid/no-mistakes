@@ -268,8 +268,8 @@ That resume command has a narrower flag surface than `codex exec`, so a resume t
 ## Grok Build
 
 Spawns a `grok` subprocess for each invocation using a permission-restricted prompt file and `--output-format streaming-messages-json`. Native structured output is requested with `--json-schema`; the terminal `structured_output`, session identity, model, and usage fields are read from the Messages-compatible result event. Review-loop reuse resumes the reported Grok session with `--resume`.
-No Mistakes deliberately emits no `-m` or `--model` flag, so Grok uses its current configured default model. Put an explicit model or reasoning override under global `agent_args_override.grok` only when you want to pin it.
-Grok's complete `--system-prompt-override` and compatible-vendor discovery switches are applied as defense in depth when trusted repo policy enables `disable_project_settings`. Native Grok project instructions and `.grok` project surfaces are still discovered by Grok 1.0.5, so No Mistakes deliberately does not claim verified suppression: a configuration that resolves Grok while `disable_project_settings: true` fails closed before launching it. System-prompt, alternate-agent, working-directory, worktree, and restore flags are reserved so global overrides cannot redirect the managed invocation.
+No Mistakes deliberately emits no `-m` or `--model` flag, so Grok uses its current configured default model. Put an explicit model pin or optional reasoning override under global `agent_args_override.grok` when needed.
+Grok is not available to a repository with `disable_project_settings: true`, because Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces; the gate fails closed before launch. See [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) for the security boundary. System-prompt, alternate-agent, working-directory, worktree, and restore flags are reserved so global overrides cannot redirect the managed invocation.
 
 ## Rovo Dev
 

@@ -101,6 +101,44 @@ func TestGrokEnvHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestGrokAgentHTTP402FailsClosedWithoutRetry(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("current test executable: %v", err)
+	}
+	a := &grokAgent{bin: exe, extraArgs: []string{"-test.run=^TestGrokHTTP402Helper$", "--"}}
+	attempts := 0
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt: "review",
+		CWD:    t.TempDir(),
+		Env:    []string{"NM_GROK_HTTP402_HELPER=run"},
+		OnAttempt: func(Attempt) {
+			attempts++
+		},
+	})
+	if err == nil {
+		t.Fatal("HTTP 402 must fail the invocation rather than report a successful result")
+	}
+	if result != nil {
+		t.Fatalf("HTTP 402 result = %+v, want nil", result)
+	}
+	if !strings.Contains(err.Error(), "HTTP 402") {
+		t.Fatalf("HTTP 402 failure = %v, want provider detail", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("HTTP 402 attempts = %d, want 1 because payment failures are not transient", attempts)
+	}
+}
+
+func TestGrokHTTP402Helper(t *testing.T) {
+	if os.Getenv("NM_GROK_HTTP402_HELPER") != "run" {
+		return
+	}
+	_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":"not accepted"}` + "\n")
+	_, _ = os.Stderr.WriteString("HTTP 402 payment required\n")
+	os.Exit(1)
+}
+
 func TestGrokAgentNeutralizationFailsClosedUntilEmpiricallyVerified(t *testing.T) {
 	if (&grokAgent{disableProjectSettings: true}).NeutralizesGateInstructions() {
 		t.Fatal("system prompt replacement is not enough to claim complete project-setting isolation")

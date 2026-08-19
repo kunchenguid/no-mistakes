@@ -62,6 +62,33 @@ func TestResolveAgentExplicitGrok(t *testing.T) {
 	}
 }
 
+func TestResolveAgentAutoFallsBackToGrok(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	var probes []string
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		probes = append(probes, bin)
+		if bin == "grok" {
+			return "/usr/local/bin/grok", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("ResolveAgent() error = %v", err)
+	}
+	if cfg.Agent != types.AgentGrok {
+		t.Fatalf("agent = %q, want grok", cfg.Agent)
+	}
+	want := []string{"claude", "codex", "grok"}
+	if len(probes) != len(want) {
+		t.Fatalf("probe order = %v, want %v", probes, want)
+	}
+	for i := range want {
+		if probes[i] != want[i] {
+			t.Fatalf("probe order = %v, want %v", probes, want)
+		}
+	}
+}
+
 func TestAgentPath_ACPAndAliasesUseAcpxPath(t *testing.T) {
 	tests := []struct {
 		name string
