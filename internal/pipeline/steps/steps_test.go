@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -308,12 +309,45 @@ func fakeCIGHReconcileHandler(args []string) {
 		fmt.Println("MERGEABLE")
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr checks") {
-		fmt.Println(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json statusCheckRollup") {
+		fmt.Println(`{"statusCheckRollup":[{"name":"build","state":"SUCCESS"}]}`)
 		os.Exit(0)
 	}
 	fmt.Fprintln(os.Stderr, "unsupported reconcile gh argv:", joined)
 	os.Exit(1)
+}
+
+func fakeGitHubStatusRollup(checksJSON string) string {
+	var checks []map[string]any
+	if err := json.Unmarshal([]byte(checksJSON), &checks); err == nil {
+		for _, check := range checks {
+			if _, ok := check["detailsUrl"]; !ok {
+				if link, ok := check["link"]; ok {
+					check["detailsUrl"] = link
+				}
+			}
+			if _, hasState := check["state"]; !hasState {
+				if bucket, ok := check["bucket"].(string); ok {
+					switch bucket {
+					case "pass":
+						check["conclusion"] = "SUCCESS"
+					case "fail":
+						check["conclusion"] = "FAILURE"
+					case "pending":
+						check["status"] = "IN_PROGRESS"
+					case "cancel":
+						check["conclusion"] = "CANCELLED"
+					case "skipping":
+						check["conclusion"] = "SKIPPED"
+					}
+				}
+			}
+		}
+		if encoded, err := json.Marshal(checks); err == nil {
+			checksJSON = string(encoded)
+		}
+	}
+	return fmt.Sprintf(`{"statusCheckRollup":%s}`, checksJSON)
 }
 
 func fakeCIGHHandler(args []string) {
@@ -347,12 +381,12 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr checks") {
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json statusCheckRollup") {
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
 			os.Exit(1)
 		}
-		fmt.Println(checksJSON)
+		fmt.Println(fakeGitHubStatusRollup(checksJSON))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -401,7 +435,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr checks") {
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json statusCheckRollup") {
 		data, err := os.ReadFile(checksPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -409,7 +443,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		}
 		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
 		if len(entries) == 0 || entries[0] == "" {
-			fmt.Println("[]")
+			fmt.Println(`{"statusCheckRollup":[]}`)
 			os.Exit(0)
 		}
 
@@ -426,7 +460,7 @@ func fakeCIGHSequenceHandler(args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Println(entries[index])
+		fmt.Println(fakeGitHubStatusRollup(entries[index]))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -559,9 +593,9 @@ func fakeCIGHNoChecksHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr checks") {
-		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
-		os.Exit(1)
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json statusCheckRollup") {
+		fmt.Println(`{"statusCheckRollup":[]}`)
+		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")

@@ -98,8 +98,8 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
-			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS"}]}` + "\n",
 		},
 	}), nil, "", "test/repo")
 
@@ -223,8 +223,8 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
-			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"build","conclusion":"FAILURE"},{"__typename":"CheckRun","name":"tests","status":"IN_PROGRESS"}]}` + "\n",
 		},
 	}), nil, "", "")
 
@@ -277,7 +277,7 @@ func failIfInvokedCmdFactory(t *testing.T) CmdFactory {
 // Masking condition: the daemon runs gh from the detached bare gate repo whose
 // HEAD is the default branch (main).
 // Symptom: appending an empty pr.Number produced an argument-less
-// `gh pr checks --repo <slug>`, so gh fell back to resolving the cwd branch
+// `gh pr view --repo <slug>`, so gh fell back to resolving the cwd branch
 // (main) and reported "no pull requests found for branch main" even though the
 // feature PR's exact-head checks are green — certification could never finish.
 //
@@ -287,7 +287,7 @@ func TestGetChecksTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
 	t.Parallel()
 
 	var recorded [][]string
-	host := New(recordingCmdFactory("[]\n", &recorded), nil, "", "test/repo")
+	host := New(recordingCmdFactory("{\"statusCheckRollup\":[]}\n", &recorded), nil, "", "test/repo")
 
 	prURL := "https://github.com/test/repo/pull/123"
 	if _, err := host.GetChecks(context.Background(), &scm.PR{URL: prURL}); err != nil {
@@ -297,8 +297,8 @@ func TestGetChecksTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
 		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
 	}
 	got := recorded[0]
-	// argv is: gh pr checks <selector> --repo ...
-	if len(got) < 4 || got[1] != "pr" || got[2] != "checks" {
+	// argv is: gh pr view <selector> --repo ...
+	if len(got) < 4 || got[1] != "pr" || got[2] != "view" {
 		t.Fatalf("unexpected argv: %v", got)
 	}
 	selector := got[3]
@@ -313,7 +313,7 @@ func TestGetChecksTargetsKnownPRByNumber(t *testing.T) {
 	t.Parallel()
 
 	var recorded [][]string
-	host := New(recordingCmdFactory("[]\n", &recorded), nil, "", "test/repo")
+	host := New(recordingCmdFactory("{\"statusCheckRollup\":[]}\n", &recorded), nil, "", "test/repo")
 
 	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", URL: "https://github.com/test/repo/pull/123"}); err != nil {
 		t.Fatalf("GetChecks() error = %v", err)
@@ -376,8 +376,8 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
-			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"build","conclusion":"FAILURE","completedAt":"2026-04-24T04:15:00Z"},{"__typename":"CheckRun","name":"tests","conclusion":"SUCCESS","completedAt":"not-a-time"}]}` + "\n",
 		},
 	}), nil, "", "")
 
@@ -403,8 +403,8 @@ func TestGetChecksParsesStateAndLink(t *testing.T) {
 
 	const link = "https://github.com/test/repo/actions/runs/900/job/901"
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
-			stdout: `[{"name":"build","state":"cancelled","bucket":"cancel","link":"` + link + `"}]` + "\n",
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"build","conclusion":"CANCELLED","detailsUrl":"` + link + `"}]}` + "\n",
 		},
 	}), nil, "", "")
 
@@ -423,6 +423,74 @@ func TestGetChecksParsesStateAndLink(t *testing.T) {
 	}
 	if checks[0].Link != link {
 		t.Fatalf("checks[0].Link = %q, want %q", checks[0].Link, link)
+	}
+}
+
+func TestGetChecksMapsStatusRollupBuckets(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 58 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[
+				{"__typename":"CheckRun","name":"pass","conclusion":"SUCCESS"},
+				{"__typename":"CheckRun","name":"fail","conclusion":"FAILURE"},
+				{"__typename":"CheckRun","name":"pending","status":"IN_PROGRESS"},
+				{"__typename":"CheckRun","name":"skip","conclusion":"SKIPPED"},
+				{"__typename":"StatusContext","context":"third-party","state":"SUCCESS","targetUrl":"https://example.test/check"}
+			]}` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "58"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	want := map[string]scm.CheckBucket{
+		"pass": scm.CheckBucketPass, "fail": scm.CheckBucketFail,
+		"pending": scm.CheckBucketPending, "skip": scm.CheckBucketSkip,
+		"third-party": scm.CheckBucketPass,
+	}
+	if len(checks) != len(want) {
+		t.Fatalf("len(checks) = %d, want %d: %+v", len(checks), len(want), checks)
+	}
+	for _, check := range checks {
+		if check.Bucket != want[check.Name] {
+			t.Errorf("check %q bucket = %q, want %q", check.Name, check.Bucket, want[check.Name])
+		}
+	}
+}
+
+func TestGetChecksZeroStatusRollupIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 58 --json statusCheckRollup": {stdout: `{"statusCheckRollup":[]}` + "\n"},
+	}), nil, "", "")
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "58"})
+	if err != nil || len(checks) != 0 {
+		t.Fatalf("GetChecks() = %+v, %v, want zero checks", checks, err)
+	}
+}
+
+func TestGetChecksBoundsAndRedactsFailureOutput(t *testing.T) {
+	t.Parallel()
+
+	const token = "secret-token"
+	output := "https://user:" + token + "@github.example.test/org/repo " + strings.Repeat("x", maxGitHubCommandOutput+500)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 58 --json statusCheckRollup": {stderr: output, code: 1},
+	}), nil, "", "")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "58"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want CLI error")
+	}
+	message := err.Error()
+	if strings.Contains(message, token) || strings.Contains(message, "https://user:") {
+		t.Fatalf("GetChecks() leaked credential: %q", message)
+	}
+	if !strings.Contains(message, "...[truncated]") {
+		t.Fatalf("GetChecks() failure was not bounded: %q", message)
 	}
 }
 
