@@ -26,12 +26,12 @@ import (
 )
 
 const (
-	reviewFleetReadOnlySandbox    = "read-only"
-	reviewFleetMaxArgBytes        = 4096
-	reviewFleetMaxAuthBytes       = 4 * 1024 * 1024
-	reviewFleetMaxRuntimeLogBytes = 2048
-	reviewFleetMaxExportFileBytes  = 8 * 1024 * 1024
-	reviewFleetMaxExportTotalBytes = 64 * 1024 * 1024
+	reviewFleetReadOnlySandbox      = "read-only"
+	reviewFleetMaxArgBytes          = 4096
+	reviewFleetMaxAuthBytes         = 4 * 1024 * 1024
+	reviewFleetMaxRuntimeLogBytes   = 2048
+	reviewFleetMaxExportFileBytes   = 8 * 1024 * 1024
+	reviewFleetMaxExportTotalBytes  = 64 * 1024 * 1024
 	reviewFleetMaxExportEntries     = 100000
 	reviewFleetMaxTreeMetadataBytes = 32 * 1024 * 1024
 	reviewFleetMaxReviewDataBytes   = 8 * 1024 * 1024
@@ -248,8 +248,8 @@ func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance 
 	if err != nil {
 		return "", fmt.Errorf("encode review fleet contract: %w", err)
 	}
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), nil
+	fingerprint := sha256.Sum256(encoded)
+	return hex.EncodeToString(fingerprint[:]), nil
 }
 
 func reviewFleetExecutableDigest(executable string) (string, error) {
@@ -662,7 +662,7 @@ func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) er
 			return pathErr
 		}
 		if reviewFleetExcludedExportPath(relative) {
-			continue
+			return nil
 		}
 		sizeText, err := git.RunWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "cat-file", "-s", string(fields[2]))
 		if err != nil {

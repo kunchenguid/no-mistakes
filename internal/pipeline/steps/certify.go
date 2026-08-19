@@ -277,7 +277,10 @@ func certificationChangeManifest(status string) []string {
 		path := entry[3:]
 		paths = append(paths, path)
 		if entry[0] == 'R' || entry[0] == 'C' || entry[1] == 'R' || entry[1] == 'C' {
-			index++ // porcelain -z rename/copy records the source path separately.
+			if index+1 < len(entries) && entries[index+1] != "" {
+				paths = append(paths, entries[index+1])
+			}
+			index++
 		}
 	}
 	return paths

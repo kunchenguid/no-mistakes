@@ -147,6 +147,20 @@ func TestTestStep_FormatterFailureStopsFleetGates(t *testing.T) {
 	}
 }
 
+func TestCertificationChangeManifestIncludesBothRenamePaths(t *testing.T) {
+	dir, _, _ := setupGitRepo(t)
+	gitCmd(t, dir, "mv", "feature.txt", "renamed-feature.txt")
+	status := gitCmd(t, dir, "status", "--porcelain", "-z")
+
+	manifest := certificationChangeManifest(status)
+	if len(manifest) != 2 {
+		t.Fatalf("rename manifest = %#v, want both paths", manifest)
+	}
+	if manifest[0] != "renamed-feature.txt" || manifest[1] != "feature.txt" {
+		t.Fatalf("rename manifest = %#v, want destination and source", manifest)
+	}
+}
+
 func TestCertifyStepDefersPipelineOwnedDeliveryFindings(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
