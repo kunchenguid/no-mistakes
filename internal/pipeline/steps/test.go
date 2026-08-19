@@ -123,7 +123,7 @@ Previous test findings to address:
 		}
 	}
 
-	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
+	useEvidenceAgent := !ciFleetRun(sctx) && (testCmd == "" || cleanedUserIntent(sctx) != "")
 	if useEvidenceAgent {
 		evidenceDir := testEvidenceDir(sctx)
 		if evidenceDir == "" {

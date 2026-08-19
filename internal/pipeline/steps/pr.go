@@ -66,16 +66,25 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
 	if branch == sctx.Repo.DefaultBranch {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires a pull request branch distinct from %s", sctx.Repo.DefaultBranch)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires pull request delivery: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires available pull request provider: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -119,6 +128,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet provider did not return a pull request URL")
+		}
 		return &pipeline.StepOutcome{}, nil
 	}
 	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {

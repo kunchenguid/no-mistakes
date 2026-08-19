@@ -168,7 +168,7 @@ func ciFleetRun(sctx *pipeline.StepContext) bool {
 	return err == nil && run != nil && (run.ReviewFleetEnabled || run.CertifiedHeadSHA != nil)
 }
 
-func assertFleetTerminalCertification(sctx *pipeline.StepContext) error {
+func assertFleetTerminalCertification(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) error {
 	if !ciFleetRun(sctx) {
 		return nil
 	}
@@ -181,6 +181,17 @@ func assertFleetTerminalCertification(sctx *pipeline.StepContext) error {
 	}
 	if run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
 		return fmt.Errorf("refusing terminal PR state: certified head was not exactly published")
+	}
+	headReader, ok := host.(scm.PRHeadReader)
+	if !ok {
+		return fmt.Errorf("refusing terminal PR state: provider cannot prove the PR source commit")
+	}
+	headSHA, err := headReader.GetPRHeadSHA(sctx.Ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read terminal PR source commit: %w", err)
+	}
+	if strings.TrimSpace(headSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
+		return fmt.Errorf("refusing terminal PR state: provider source commit %s does not equal certified head %s", shortObjectID(headSHA), shortObjectID(*run.CertifiedHeadSHA))
 	}
 	return nil
 }

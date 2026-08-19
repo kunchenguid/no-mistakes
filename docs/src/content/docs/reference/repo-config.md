@@ -27,6 +27,7 @@ commands:
   # Targeted local validation only - not a full-repo CI-parity suite.
   test: "go test ./internal/cli -run '^TestDoctor' -count=1"
   format: "gofmt -w ."
+  document: "./scripts/check-docs.sh"
 
 ignore_patterns:
   - "*.generated.go"
@@ -119,7 +120,7 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{test,lint,format,document}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
 | --- | --- |
@@ -208,6 +209,17 @@ Formatter command run before the push step commits agent fixes.
 | Default | Empty (no separate push-step formatter) |
 
 This does not prevent empty `commands.lint` from detecting and running formatters during the combined housekeeping pass, or during the lint step when that pass cannot provide a result.
+
+### commands.document
+
+Explicit deterministic documentation check. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | Empty (agent-managed documentation pass) |
+
+Review-fleet runs require this command and never invoke the document agent; an empty value fails the fleet run before certification.
 
 ### document.instructions
 
