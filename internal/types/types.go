@@ -141,6 +141,7 @@ const (
 	AgentOpenCode AgentName = "opencode"
 	AgentPi       AgentName = "pi"
 	AgentCopilot  AgentName = "copilot"
+	AgentGrok     AgentName = "grok"
 	AgentCursor   AgentName = "cursor"
 )
 

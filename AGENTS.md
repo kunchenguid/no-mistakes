@@ -48,6 +48,10 @@ Safest local verification sequence after non-trivial changes:
 - The shared default test-quality rule lives in `internal/testguidance`; render it only into the task-first skill and pipeline roles that can author, repair, or review tests. Its fake-agent prompt tests are the intentional generated-interface contract, not source-text checks.
 - Review auto-fix is disabled by default (`auto_fix.review: 0` in `config.go` `autoFixDefaults`), so blocking and ask-user review findings park for an agent decision; keep the skill, the live `axi` gate `note`, and docs qualified if you touch review auto-fix.
 
+**Grok Native Adapter (`internal/agent/grok.go`)**
+
+- One process per `Run` (`grok -p --always-approve --output-format json`). Isolation is `--cwd` = the invocation checkout, a unique `--leader-socket` under the process temp dir (never `~/.grok/leader.sock`), and stripping `GROK_AGENT` / `GROK_SESSION_ID` / `GROK_WORKSPACE_ROOT` from the child env so a live Grok TUI cannot steal the project. `grok --help` has no AGENTS.md/CLAUDE.md suppression flag, so grok must not implement `NeutralizesGateInstructions`; `disable_project_settings` refuses it. Regressions: `internal/agent/grok_test.go`, `TestResolveAgent_AutoPicksGrokWhenOnlyGrokIsOnPATH`, `TestDoctorListsGrokAgent`.
+
 **Context, Concurrency, and Processes**
 
 - Thread `context.Context` through long-running, subprocess, and networked work; prefer `exec.CommandContext`; use derived contexts and timeouts for cleanup and HTTP calls.

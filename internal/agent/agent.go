@@ -160,7 +160,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
 // unneutralized in the target checkout. Only codex, claude, and pi have a verified
-// neutralization knob today.
+// neutralization knob today. grok isolates via --cwd and a unique --leader-socket
+// but has no verified AGENTS.md suppression flag.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -811,8 +812,10 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCopilot:
 		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
+	case types.AgentGrok:
+		return &grokAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, grok, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 }
 

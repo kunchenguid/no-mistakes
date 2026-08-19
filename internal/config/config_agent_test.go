@@ -36,6 +36,7 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 		{types.AgentOpenCode, "opencode"},
 		{types.AgentPi, "pi"},
 		{types.AgentCopilot, "copilot"},
+		{types.AgentGrok, "grok"},
 	}
 	for _, tt := range tests {
 		cfg := &Config{Agent: tt.agent}
@@ -350,7 +351,7 @@ func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
 
 	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
 		switch bin {
-		case "claude", "codex", "opencode", "pi", "copilot", "cursor-agent", "acpx":
+		case "claude", "codex", "opencode", "pi", "copilot", "grok", "cursor-agent", "acpx":
 			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
 		case "acli":
 			return "/usr/bin/acli", nil
@@ -420,6 +421,22 @@ func TestResolveAgent_AutoReturnsOverrideProbeError(t *testing.T) {
 	}
 	if cfg.Agent != types.AgentAuto {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	}
+}
+
+func TestResolveAgent_AutoPicksGrokWhenOnlyGrokIsOnPATH(t *testing.T) {
+	cfg := &Config{Agent: types.AgentAuto}
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		if bin == "grok" {
+			return "/home/rick/.local/bin/grok", nil
+		}
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != types.AgentGrok {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentGrok)
 	}
 }
 

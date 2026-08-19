@@ -47,6 +47,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Grok | `grok` | Subprocess per invocation, headless `-p` JSON |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
@@ -288,6 +289,14 @@ Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
 
+## Grok
+
+Spawns a `grok` subprocess for each invocation with `-p <prompt> --output-format json --always-approve`.
+Each spawn also pins `--cwd` to the invocation checkout and a unique `--leader-socket` under the process temp directory, and unsets `GROK_AGENT`, `GROK_SESSION_ID`, and `GROK_WORKSPACE_ROOT` in the child environment so a live Grok TUI (for example firstmate) cannot steal the project.
+`grok --help` has no flag that disables `AGENTS.md`/`CLAUDE.md` discovery, so grok does not implement gate-instruction neutralization; `disable_project_settings` refuses it rather than pretending the checkout's project rules are suppressed.
+When structured output is requested, no-mistakes passes `--json-schema` and validates the headless JSON `text` field with the same `finalizeTextResult` fallback used by other text-output adapters.
+Any `agent_args_override.grok` flags are inserted before no-mistakes' managed flags, so user choices such as `--model` take effect.
+
 ## ACP aliases
 
 ACP aliases are first-class agent names that resolve to ACP targets.
@@ -325,6 +334,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – grok (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))
   ✓ gate validation claude is runnable
