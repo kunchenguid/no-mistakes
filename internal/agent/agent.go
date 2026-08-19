@@ -159,7 +159,7 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, and pi have a verified
+// unneutralized in the target checkout. Only codex, claude, pi, and antigravity have a verified
 // neutralization knob today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
@@ -251,7 +251,7 @@ type InvocationWorkload struct {
 type Options struct {
 	ACPRegistryOverrides map[string]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude, pi) to launch with the target repo's project-level agent
+	// claude, pi, antigravity) to launch with the target repo's project-level agent
 	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
 	// from config.Config; adapters without a verified suppression knob ignore it
 	// and are refused separately by EnsureGateNeutralized when the opt-out is on.

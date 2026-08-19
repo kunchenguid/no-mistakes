@@ -635,7 +635,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
 # for example: agent: [codex, claude]
-# Options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>
+# Options: auto, claude, codex, rovodev, opencode, pi, copilot, antigravity, cursor, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
@@ -669,7 +669,7 @@ daemon_connect_timeout: "3s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude and codex; other agents run cold. Set false to
+# its fixes. Supported for claude, codex, and antigravity; other agents run cold. Set false to
 # force every agent invocation cold.
 session_reuse: true
 
