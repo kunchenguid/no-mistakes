@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.0](https://github.com/kunchenguid/no-mistakes/compare/v1.53.0...v1.54.0) (2026-08-19)
+
+
+### Features
+
+* **eval:** add dashboards and idempotent eval workflows ([#779](https://github.com/kunchenguid/no-mistakes/issues/779)) ([8facba5](https://github.com/kunchenguid/no-mistakes/commit/8facba5972fcb2a97c135253d8158aed731b4246))
+
 ## [1.53.0](https://github.com/kunchenguid/no-mistakes/compare/v1.52.0...v1.53.0) (2026-08-16)
 
 
