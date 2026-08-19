@@ -61,6 +61,10 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	if err != nil {
 		return nil, fmt.Errorf("parse certify findings: %w", err)
 	}
+	if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(findings); n > 0 {
+		sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) (owned by later push/PR/CI steps)", n))
+		findings = stripped
+	}
 	findingsJSON, err := json.Marshal(findings)
 	if err != nil {
 		return nil, fmt.Errorf("encode certify findings: %w", err)
@@ -117,6 +121,9 @@ func trustedCertificationPathInstructions(sctx *pipeline.StepContext, headSHA st
 // before a fleet certificate: format, commit intentional remaining changes,
 // then prove the worktree is clean and capture the exact immutable HEAD.
 func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error) {
+	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
+		return "", err
+	}
 	if sctx.Config != nil && strings.TrimSpace(sctx.Config.Commands.Format) != "" {
 		formatCommand := strings.TrimSpace(sctx.Config.Commands.Format)
 		sctx.Log(fmt.Sprintf("running formatter before certification: %s", formatCommand))

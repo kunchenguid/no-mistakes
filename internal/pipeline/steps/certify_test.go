@@ -109,6 +109,38 @@ func TestCertifyStep_FormatterFailureCannotCertify(t *testing.T) {
 	}
 }
 
+func TestCertifyStepDefersPipelineOwnedDeliveryFindings(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: mustJSON(t, Findings{Items: []Finding{{Severity: "error", Action: "ask-user", ReviewScope: "pipeline-owned-delivery", Description: "PR does not exist yet"}}})}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
+	withReviewFleetEnabled(t, sctx, true)
+
+	outcome, err := (&CertifyStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("deferred delivery finding blocked certification")
+	}
+}
+
+func TestCertifyStepChecksContinuityBeforeFormatter(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	agentMock := &mockAgent{name: "cold-certifier"}
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "touch formatter-ran"})
+	withReviewFleetEnabled(t, sctx, true)
+	sctx.Run.HeadSHA = strings.Repeat("a", 40)
+
+	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "not a descendant") {
+		t.Fatalf("expected continuity failure, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "formatter-ran")); !os.IsNotExist(err) {
+		t.Fatalf("formatter ran before continuity failed: %v", err)
+	}
+}
+
 func TestCertifyStep_ExplicitFixFailsBeforeAgentAndNeverCertifies(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier"}

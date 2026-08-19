@@ -466,15 +466,15 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 		_ = r.removeSandboxLocked()
 		return "", nil, err
 	}
-	if _, err := git.Run(ctx, root, "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
+	if _, err := git.RunWithEnv(ctx, root, reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("clone review fleet shadow checkout: %w", err)
 	}
-	if _, err := git.Run(ctx, r.checkoutDir, "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
+	if _, err := git.RunWithEnv(ctx, r.checkoutDir, reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("exclude checkout prompt-control directories: %w", err)
 	}
-	if _, err := git.Run(ctx, r.checkoutDir, "checkout", "--detach", head); err != nil {
+	if _, err := git.RunWithEnv(ctx, r.checkoutDir, reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
 	}
@@ -488,6 +488,19 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 	}
 	r.sandboxHead = head
 	return r.checkoutDir, r.isolatedEnv(), nil
+}
+
+func reviewFleetGitEnv() []string {
+	return []string{
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TEMPLATE_DIR=",
+		"GIT_CONFIG_PARAMETERS=",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.hooksPath",
+		"GIT_CONFIG_VALUE_0=" + os.DevNull,
+	}
 }
 
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {

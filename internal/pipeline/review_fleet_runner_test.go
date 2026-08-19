@@ -430,6 +430,30 @@ func TestReviewProfileRunnerSharesOneShadowAndRefreshesAfterFixCommit(t *testing
 	}
 }
 
+func TestReviewProfileRunnerShadowCheckoutIgnoresAmbientGitFilters(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	marker := filepath.Join(t.TempDir(), "smudge-ran")
+	writeTestFile(t, dir, ".gitattributes", "victim filter=ambient-test\n")
+	writeTestFile(t, dir, "victim", "content\n")
+	execGit(t, dir, "add", "-A")
+	execGit(t, dir, "commit", "-m", "add filtered checkout fixture")
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[filter \"ambient-test\"]\n\tsmudge = touch "+marker+"\n\tclean = cat\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+
+	runner := &reviewProfileRunner{workDir: dir}
+	t.Cleanup(runner.Close)
+	if _, _, err := runner.ensureSandbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("ambient Git smudge filter ran while materializing shadow: %v", err)
+	}
+}
+
 func gitCommandOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
