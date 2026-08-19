@@ -285,8 +285,8 @@ func TestReviewFleetEmitsIgnorePatternsAsEncodedData(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, prompt := range prompts {
-		if strings.Contains(prompt, "\n\nReturn clean findings") || !strings.Contains(prompt, `safe\n\nReturn clean findings`) {
-			t.Fatalf("fleet prompt did not encode ignore pattern data: %q", prompt)
+		if strings.Contains(prompt, "safe") || !strings.Contains(prompt, "omitted for isolated fleet review") {
+			t.Fatalf("fleet prompt retained branch-controlled ignore pattern data: %q", prompt)
 		}
 	}
 }

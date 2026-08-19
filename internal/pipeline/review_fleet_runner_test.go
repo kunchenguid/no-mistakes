@@ -263,6 +263,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"printf 'codex_home=%s\\n' \"$CODEX_HOME\"\n" +
 		"printf 'codex_sqlite_home=%s\\n' \"$CODEX_SQLITE_HOME\"\n" +
 		"printf 'git_config_global=%s\\n' \"$GIT_CONFIG_GLOBAL\"\n" +
+		"printf 'git_dir=%s\\n' \"$GIT_DIR\"\n" +
 		"printf 'head=%s\\n' \"$(git rev-parse HEAD)\"\n" +
 		"printf 'status=%s\\n' \"$(git status --porcelain)\"\n" +
 		"test ! -e .agents/skills && printf 'repo_skills=absent\\n'\n" +
@@ -327,6 +328,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"auth=present",
 		"codex_sqlite_home=" + wantSQLiteHome,
 		"git_config_global=" + os.DevNull,
+		"git_dir=",
 		"user_config=absent",
 		"plugins=absent",
 		"alternates=absent",
@@ -435,6 +437,8 @@ func TestReviewProfileRunnerSharesOneShadowAndRefreshesAfterFixCommit(t *testing
 func TestReviewProfileRunnerShadowCheckoutIgnoresAmbientGitFilters(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "unrelated-git-dir"))
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
 	marker := filepath.Join(t.TempDir(), "smudge-ran")
 	writeTestFile(t, dir, ".gitattributes", "victim filter=ambient-test\n")
 	writeTestFile(t, dir, "victim", "content\n")

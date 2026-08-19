@@ -2182,6 +2182,9 @@ func validateReviewFleetGitPathGlob(pattern string) error {
 		if prefix == "" {
 			return errors.New("subtree pattern needs a directory before /**")
 		}
+		if _, err := path.Match(prefix, "a/b"); err != nil {
+			return err
+		}
 		return nil
 	}
 	if _, err := path.Match(pattern, "a/b"); err != nil {

@@ -27,7 +27,11 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
-		ignorePatterns = strconv.QuoteToASCII(strings.Join(sctx.Config.IgnorePatterns, ", "))
+		if reviewFleetEnabled(sctx) {
+			ignorePatterns = "omitted for isolated fleet review"
+		} else {
+			ignorePatterns = strconv.QuoteToASCII(strings.Join(sctx.Config.IgnorePatterns, ", "))
+		}
 	}
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)
