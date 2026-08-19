@@ -70,6 +70,13 @@ func RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...stri
 	return runInDirWithEnv(ctx, dir, extraEnv, args...)
 }
 
+func RunWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithBaseEnv(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithBaseEnv(ctx, dir, baseEnv, extraEnv, args...)
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	return runInDirWithEnv(ctx, dir, nil, args...)
 }
@@ -79,10 +86,19 @@ func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ..
 	return strings.TrimSpace(string(out)), err
 }
 
+func runInDirWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) (string, error) {
+	out, err := runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
 func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
+	return runInDirWithBaseEnvRaw(ctx, dir, nil, extraEnv, args...)
+}
+
+func runInDirWithBaseEnvRaw(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {

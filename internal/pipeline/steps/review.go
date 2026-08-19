@@ -247,7 +247,7 @@ Risk assessment (after listing all findings):
 	)
 
 	if reviewFleetEnabled(sctx) {
-		findings, err := executeReviewFleet(sctx, prompt, changed, workload)
+		findings, err := executeReviewFleet(sctx, prompt, changed, workload, reviewTargetSHA)
 		if err != nil {
 			return nil, err
 		}

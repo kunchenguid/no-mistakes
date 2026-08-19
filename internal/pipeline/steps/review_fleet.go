@@ -54,7 +54,7 @@ func requireAvailableReviewFleet(sctx *pipeline.StepContext) error {
 	return nil
 }
 
-func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completePaths []string, workload *agent.InvocationWorkload) (Findings, error) {
+func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completePaths []string, workload *agent.InvocationWorkload, targetSHA string) (Findings, error) {
 	if sctx == nil || sctx.ReviewFleet == nil {
 		return Findings{}, fmt.Errorf("review fleet is not configured")
 	}
@@ -97,6 +97,7 @@ func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completeP
 			result, err := sctx.RunReviewProfile(ctx, profile, agent.RunOpts{
 				Prompt:     prompt,
 				CWD:        sctx.WorkDir,
+				TargetSHA:  targetSHA,
 				Env:        append([]string(nil), sctx.Env...),
 				JSONSchema: reviewFindingsSchema,
 				// Candidate JSON is untrusted and must remain ephemeral. Do not
@@ -138,6 +139,7 @@ func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completeP
 	result, err := sctx.RunReviewProfile(sctx.Ctx, consolidator, agent.RunOpts{
 		Prompt:     consolidatorPrompt,
 		CWD:        sctx.WorkDir,
+		TargetSHA:  targetSHA,
 		Env:        append([]string(nil), sctx.Env...),
 		JSONSchema: reviewFindingsSchema,
 		// The consolidator's raw response is parsed and sanitized below; only

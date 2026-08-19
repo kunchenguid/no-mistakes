@@ -58,7 +58,7 @@ func withoutGitEnvironment(env []string) []string {
 	filtered := make([]string, 0, len(env))
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "GIT_") {
+		if strings.HasPrefix(strings.ToUpper(key), "GIT_") {
 			continue
 		}
 		filtered = append(filtered, entry)

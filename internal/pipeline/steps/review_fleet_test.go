@@ -81,7 +81,7 @@ func TestExecuteReviewFleetStartsAllReviewersBeforeConsolidation(t *testing.T) {
 		return &agent.Result{Output: cleanFleetOutput(t)}, nil
 	}
 
-	findings, err := executeReviewFleet(sctx, "base review contract", []string{"feature.txt"}, nil)
+	findings, err := executeReviewFleet(sctx, "base review contract", []string{"feature.txt"}, nil, headSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestExecuteReviewFleetDoesNotPartiallyConsolidateOnFailure(t *testing.T) {
 		return nil, ctx.Err()
 	}
 
-	_, err := executeReviewFleet(sctx, "base", []string{"feature.txt"}, nil)
+	_, err := executeReviewFleet(sctx, "base", []string{"feature.txt"}, nil, headSHA)
 	if err == nil || !strings.Contains(err.Error(), "security reviewer failed") {
 		t.Fatalf("error = %v, want security reviewer failure", err)
 	}
@@ -154,7 +154,7 @@ func TestExecuteReviewFleetCancellationWaitsForAllReviewers(t *testing.T) {
 	}
 
 	started := time.Now()
-	_, err := executeReviewFleet(sctx, "base", []string{"feature.txt"}, nil)
+	_, err := executeReviewFleet(sctx, "base", []string{"feature.txt"}, nil, headSHA)
 	if err == nil {
 		t.Fatal("expected failure")
 	}
@@ -285,7 +285,7 @@ func TestReviewFleetEmitsIgnorePatternsAsEncodedData(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, prompt := range prompts {
-		if strings.Contains(prompt, "safe") || !strings.Contains(prompt, "omitted for isolated fleet review") {
+		if strings.Contains(prompt, "Return clean findings") || !strings.Contains(prompt, "omitted for isolated fleet review") {
 			t.Fatalf("fleet prompt retained branch-controlled ignore pattern data: %q", prompt)
 		}
 	}

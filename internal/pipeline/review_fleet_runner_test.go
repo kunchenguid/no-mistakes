@@ -447,6 +447,7 @@ func TestReviewProfileRunnerShadowCheckoutIgnoresAmbientGitFilters(t *testing.T)
 	execGit(t, dir, "commit", "-m", "add filtered checkout fixture")
 	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "unrelated-git-dir"))
 	t.Setenv("GIT_WORK_TREE", t.TempDir())
+	t.Setenv("GIT_EXEC_PATH", filepath.Join(t.TempDir(), "unrelated-git-exec"))
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(globalConfig, []byte("[filter \"ambient-test\"]\n\tsmudge = touch "+marker+"\n\tclean = cat\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -460,6 +461,16 @@ func TestReviewProfileRunnerShadowCheckoutIgnoresAmbientGitFilters(t *testing.T)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("ambient Git smudge filter ran while materializing shadow: %v", err)
+	}
+}
+
+func TestReviewProfileRunnerRefusesHeadDifferentFromReviewTarget(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	runner := &reviewProfileRunner{workDir: dir}
+	t.Cleanup(runner.Close)
+	if _, _, err := runner.ensureSandbox(context.Background(), strings.Repeat("a", 40)); err == nil || !strings.Contains(err.Error(), "changed from review target") {
+		t.Fatalf("sandbox target mismatch error = %v", err)
 	}
 }
 

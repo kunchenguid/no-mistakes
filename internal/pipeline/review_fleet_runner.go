@@ -315,7 +315,7 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	if strings.TrimSpace(opts.CWD) != "" && opts.CWD != r.workDir {
 		return nil, fmt.Errorf("review fleet runner refuses a worktree outside the shared read-only checkout")
 	}
-	checkoutDir, isolatedEnv, err := r.ensureSandbox(ctx)
+	checkoutDir, isolatedEnv, err := r.ensureSandbox(ctx, opts.TargetSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +417,7 @@ func safeReviewFleetRuntimeText(value string, maxBytes int) string {
 // and .codex state; HOME, CODEX_HOME, CODEX_SQLITE_HOME, and XDG state are
 // isolated, with only a bounded auth.json copy. A fix round that advances HEAD
 // gets a fresh shadow automatically.
-func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []string, error) {
+func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads ...string) (string, []string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -426,6 +426,9 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 	head, err := reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve review fleet source head: %w", err)
+	}
+	if len(expectedHeads) > 0 && strings.TrimSpace(expectedHeads[0]) != "" && head != expectedHeads[0] {
+		return "", nil, fmt.Errorf("review fleet source head changed from review target %s to %s", expectedHeads[0], head)
 	}
 	status, err := reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
@@ -466,15 +469,15 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 		_ = r.removeSandboxLocked()
 		return "", nil, err
 	}
-	if _, err := git.RunWithEnv(ctx, root, reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, root, reviewFleetBaseEnv(), reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("clone review fleet shadow checkout: %w", err)
 	}
-	if _, err := git.RunWithEnv(ctx, r.checkoutDir, reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(), reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("exclude checkout prompt-control directories: %w", err)
 	}
-	if _, err := git.RunWithEnv(ctx, r.checkoutDir, reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(), reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
 	}
@@ -515,8 +518,10 @@ func reviewFleetGitEnv() []string {
 }
 
 func reviewFleetGitRun(ctx context.Context, dir string, args ...string) (string, error) {
-	return git.RunWithEnv(ctx, dir, reviewFleetGitEnv(), args...)
+	return git.RunWithBaseEnv(ctx, dir, reviewFleetBaseEnv(), reviewFleetGitEnv(), args...)
 }
+
+func reviewFleetBaseEnv() []string { return reviewFleetNonGitEnv(os.Environ()) }
 
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
 	head, err := reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")
@@ -584,7 +589,7 @@ func reviewFleetNonGitEnv(env []string) []string {
 	filtered := make([]string, 0, len(env))
 	for _, entry := range env {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "GIT_") {
+		if strings.HasPrefix(strings.ToUpper(key), "GIT_") {
 			continue
 		}
 		filtered = append(filtered, entry)
