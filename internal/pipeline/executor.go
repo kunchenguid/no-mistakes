@@ -190,7 +190,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if e.reviewFleetErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("resolve review fleet contract: %w", e.reviewFleetErr))
 		}
-		fingerprint, err := reviewFleetFingerprint(e.config, e.reviewFleet)
+		fingerprint, err := reviewFleetFingerprint(e.reviewFleet)
 		if err != nil {
 			return e.failRun(run, repo, err)
 		}
@@ -285,7 +285,7 @@ func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
 	if run.ReviewFleetFingerprint == nil || strings.TrimSpace(*run.ReviewFleetFingerprint) == "" {
 		return fmt.Errorf("recovered fleet run has no durable contract fingerprint")
 	}
-	current, err := reviewFleetFingerprint(e.config, e.reviewFleet)
+	current, err := reviewFleetFingerprint(e.reviewFleet)
 	if err != nil {
 		return fmt.Errorf("fingerprint recovered review fleet contract: %w", err)
 	}

@@ -44,6 +44,11 @@ func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, er
 	if !settings.Enabled {
 		return settings, nil
 	}
+	executable, err := resolveReviewFleetCodexExecutable(cfg.AgentPathFor(types.AgentCodex))
+	if err != nil {
+		return nil, err
+	}
+	settings.CodexExecutable = executable
 	roles := []string{
 		config.ReviewFleetRoleTestAdversary,
 		config.ReviewFleetRoleCorrectness,
@@ -64,6 +69,27 @@ func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, er
 		return cfg.ReviewFleetCodexArgs(profile.Role, profile.SecurityEscalated)
 	}
 	return settings, nil
+}
+
+func resolveReviewFleetCodexExecutable(configured string) (string, error) {
+	executable, err := exec.LookPath(strings.TrimSpace(configured))
+	if err != nil {
+		return "", fmt.Errorf("resolve review fleet Codex executable: %w", err)
+	}
+	if !filepath.IsAbs(executable) {
+		executable, err = filepath.Abs(executable)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute review fleet Codex executable: %w", err)
+		}
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve canonical review fleet Codex executable: %w", err)
+	}
+	if !filepath.IsAbs(executable) {
+		return "", fmt.Errorf("resolved review fleet Codex executable is not absolute")
+	}
+	return executable, nil
 }
 
 type reviewFleetContract struct {
@@ -88,24 +114,16 @@ type reviewFleetContractProfile struct {
 // resumed run is allowed to use. The digest covers every profile, high-risk
 // path, generated safe argument, and resolved Codex executable. Recovery
 // requires exact equality instead of accepting a merely enabled fleet.
-func reviewFleetFingerprint(cfg *config.Config, settings *ReviewFleetSettings) (string, error) {
-	if cfg == nil || settings == nil || !settings.Enabled {
+func reviewFleetFingerprint(settings *ReviewFleetSettings) (string, error) {
+	if settings == nil || !settings.Enabled {
 		return "", fmt.Errorf("cannot fingerprint a disabled review fleet")
 	}
-	executable, err := exec.LookPath(cfg.AgentPathFor(types.AgentCodex))
-	if err != nil {
-		return "", fmt.Errorf("resolve review fleet Codex executable: %w", err)
-	}
-	executable, err = filepath.Abs(executable)
-	if err != nil {
-		return "", fmt.Errorf("resolve absolute review fleet Codex executable: %w", err)
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
-		executable = resolved
+	if !filepath.IsAbs(settings.CodexExecutable) {
+		return "", fmt.Errorf("review fleet Codex executable is not resolved")
 	}
 	contract := reviewFleetContract{
 		Version:         reviewFleetContractVersion,
-		CodexExecutable: executable,
+		CodexExecutable: settings.CodexExecutable,
 		Reviewers:       make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
 	}
 	for _, profile := range settings.Reviewers {
@@ -115,14 +133,16 @@ func reviewFleetFingerprint(cfg *config.Config, settings *ReviewFleetSettings) (
 		}
 		contract.Reviewers = append(contract.Reviewers, fingerprinted)
 	}
-	contract.Consolidator, err = reviewFleetFingerprintProfile(settings, settings.Consolidator)
+	consolidator, err := reviewFleetFingerprintProfile(settings, settings.Consolidator)
 	if err != nil {
 		return "", err
 	}
-	contract.Certifier, err = reviewFleetFingerprintProfile(settings, settings.Certifier)
+	contract.Consolidator = consolidator
+	certifier, err := reviewFleetFingerprintProfile(settings, settings.Certifier)
 	if err != nil {
 		return "", err
 	}
+	contract.Certifier = certifier
 	encoded, err := json.Marshal(contract)
 	if err != nil {
 		return "", fmt.Errorf("encode review fleet contract: %w", err)
@@ -316,7 +336,10 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	if err != nil {
 		return nil, err
 	}
-	base, err := agent.NewWithOptions(types.AgentCodex, r.cfg.AgentPathFor(types.AgentCodex), args, agent.Options{
+	if !filepath.IsAbs(r.settings.CodexExecutable) {
+		return nil, fmt.Errorf("review fleet Codex executable is not resolved")
+	}
+	base, err := agent.NewWithOptions(types.AgentCodex, r.settings.CodexExecutable, args, agent.Options{
 		ACPRegistryOverrides:   r.cfg.ACPRegistryOverrides,
 		DisableProjectSettings: true,
 	})
@@ -391,8 +414,9 @@ func safeReviewFleetRuntimeText(value string, maxBytes int) string {
 
 // ensureSandbox returns a clean, detached shadow checkout for the exact source
 // HEAD being reviewed. The checkout deliberately excludes repository skills
-// and .codex state; HOME and CODEX_HOME are empty except for a bounded copy of
-// auth.json. A fix round that advances HEAD gets a fresh shadow automatically.
+// and .codex state; HOME, CODEX_HOME, CODEX_SQLITE_HOME, and XDG state are
+// isolated, with only a bounded auth.json copy. A fix round that advances HEAD
+// gets a fresh shadow automatically.
 func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -427,6 +451,7 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 	for _, dir := range []string{
 		r.homeDir,
 		r.codexHome,
+		filepath.Join(root, "codex-sqlite"),
 		filepath.Join(root, "xdg-config"),
 		filepath.Join(root, "xdg-data"),
 		filepath.Join(root, "xdg-state"),
@@ -517,6 +542,7 @@ func (r *reviewProfileRunner) isolatedEnv() []string {
 	return []string{
 		"HOME=" + r.homeDir,
 		"CODEX_HOME=" + r.codexHome,
+		"CODEX_SQLITE_HOME=" + filepath.Join(root, "codex-sqlite"),
 		"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
 		"XDG_DATA_HOME=" + filepath.Join(root, "xdg-data"),
 		"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),

@@ -40,10 +40,14 @@ func TestValidateReviewFleetIsolationRejectsMutatingOverrides(t *testing.T) {
 }
 
 func TestReviewFleetSettingsFromConfigUsesFixedRolesAndEscalatedArgs(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	profile := func(model, effort string) config.ReviewFleetProfile {
 		return config.ReviewFleetProfile{Model: model, ReasoningEffort: effort}
 	}
-	cfg := &config.Config{ReviewFleet: config.ReviewFleet{
+	cfg := &config.Config{AgentPathOverride: map[string]string{string(types.AgentCodex): bin}, ReviewFleet: config.ReviewFleet{
 		Enabled: true,
 		Reviewers: map[string]config.ReviewFleetProfile{
 			config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-luna", "max"),
@@ -73,6 +77,9 @@ func TestReviewFleetSettingsFromConfigUsesFixedRolesAndEscalatedArgs(t *testing.
 	if settings.Certifier.Role != config.ReviewFleetProfileCertifier || settings.Certifier.Model != "gpt-5.6-sol" {
 		t.Fatalf("certifier = %#v", settings.Certifier)
 	}
+	if !filepath.IsAbs(settings.CodexExecutable) {
+		t.Fatalf("Codex executable was not resolved absolutely: %q", settings.CodexExecutable)
+	}
 	security := settings.Reviewers[3]
 	security.SecurityEscalated = true
 	args, err := settings.CodexProfileArgs(security)
@@ -82,6 +89,32 @@ func TestReviewFleetSettingsFromConfigUsesFixedRolesAndEscalatedArgs(t *testing.
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "gpt-5.6-terra") || !strings.Contains(joined, `model_reasoning_effort="xhigh"`) {
 		t.Fatalf("escalated security args = %v", args)
+	}
+}
+
+func TestReviewFleetSettingsResolvesRelativeExecutableOnce(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := reviewFleetSettingsFromConfig(testReviewFleetConfig(relative))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.CodexExecutable != want {
+		t.Fatalf("resolved executable = %q, want %q", settings.CodexExecutable, want)
 	}
 }
 
@@ -121,7 +154,7 @@ func TestReviewFleetFingerprintBindsExactEffectiveContract(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := reviewFleetFingerprint(cfg, settings)
+		got, err := reviewFleetFingerprint(settings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,6 +215,15 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	}
 	writeTestFile(t, dir, filepath.Join(".agents", "skills", "evil", "SKILL.md"), "malicious repository skill\n")
 	writeTestFile(t, dir, filepath.Join(".codex", "config.toml"), "model = 'malicious'\n")
+	candidateMarker := filepath.Join(root, "candidate-codex-ran")
+	candidateBin := filepath.Join(dir, "tools", "codex")
+	if err := os.MkdirAll(filepath.Dir(candidateBin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, filepath.Join("tools", "codex"), "#!/bin/sh\ntouch "+shellQuote(candidateMarker)+"\nexit 1\n")
+	if err := os.Chmod(candidateBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	execGit(t, dir, "add", "-A")
 	execGit(t, dir, "commit", "-m", "add prompt-control fixtures")
 	wantHead := strings.TrimSpace(gitCommandOutput(t, dir, "rev-parse", "HEAD"))
@@ -208,6 +250,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	}
 	t.Setenv("HOME", userHome)
 	t.Setenv("CODEX_HOME", sourceCodexHome)
+	t.Setenv("CODEX_SQLITE_HOME", "/poisoned-ambient-codex-sqlite")
 
 	argsPath := filepath.Join(root, "args.txt")
 	probePath := filepath.Join(root, "probe.txt")
@@ -218,6 +261,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"printf 'cwd=%s\\n' \"$PWD\"\n" +
 		"printf 'home=%s\\n' \"$HOME\"\n" +
 		"printf 'codex_home=%s\\n' \"$CODEX_HOME\"\n" +
+		"printf 'codex_sqlite_home=%s\\n' \"$CODEX_SQLITE_HOME\"\n" +
 		"printf 'head=%s\\n' \"$(git rev-parse HEAD)\"\n" +
 		"printf 'status=%s\\n' \"$(git status --porcelain)\"\n" +
 		"test ! -e .agents/skills && printf 'repo_skills=absent\\n'\n" +
@@ -234,11 +278,13 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{AgentPathOverride: map[string]string{string(types.AgentCodex): bin}}
+	// The raw configured path deliberately points at candidate-controlled code.
+	// The runner must use the one trusted absolute path resolved into settings.
+	cfg := &config.Config{AgentPathOverride: map[string]string{string(types.AgentCodex): "./tools/codex"}}
 	runner := &reviewProfileRunner{
 		cfg:             cfg,
 		sourceCodexHome: sourceCodexHome,
-		settings: &ReviewFleetSettings{CodexProfileArgs: func(profile ReviewProfile) ([]string, error) {
+		settings: &ReviewFleetSettings{CodexExecutable: bin, CodexProfileArgs: func(profile ReviewProfile) ([]string, error) {
 			return []string{
 				"-m", profile.Model,
 				"-c", `model_reasoning_effort="` + profile.Reasoning + `"`,
@@ -255,7 +301,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	t.Cleanup(runner.Close)
 	result, err := runner.Run(context.Background(), ReviewProfile{Role: "security", Model: "gpt-test", Reasoning: "high"}, agent.RunOpts{
 		CWD:        dir,
-		Env:        []string{"HOME=/poisoned-home", "CODEX_HOME=/poisoned-codex-home"},
+		Env:        []string{"HOME=/poisoned-home", "CODEX_HOME=/poisoned-codex-home", "CODEX_SQLITE_HOME=/poisoned-option-codex-sqlite"},
 		Session:    &agent.SessionRef{ID: "must-not-resume"},
 		JSONSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`),
 	})
@@ -270,6 +316,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		t.Fatal(err)
 	}
 	probe := string(probeRaw)
+	wantSQLiteHome := filepath.Join(runner.sandboxRoot, "codex-sqlite")
 	for _, required := range []string{
 		"head=" + wantHead,
 		"status=",
@@ -277,6 +324,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"repo_codex=absent",
 		"user_skills=absent",
 		"auth=present",
+		"codex_sqlite_home=" + wantSQLiteHome,
 		"user_config=absent",
 		"plugins=absent",
 		"alternates=absent",
@@ -286,8 +334,14 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 			t.Fatalf("isolation probe missing %q:\n%s", required, probe)
 		}
 	}
-	if strings.Contains(probe, "cwd="+dir+"\n") || strings.Contains(probe, "home="+userHome+"\n") || strings.Contains(probe, "codex_home="+sourceCodexHome+"\n") {
+	if strings.Contains(probe, "cwd="+dir+"\n") || strings.Contains(probe, "home="+userHome+"\n") || strings.Contains(probe, "codex_home="+sourceCodexHome+"\n") || strings.Contains(probe, "poisoned-") {
 		t.Fatalf("reviewer retained source/user paths:\n%s", probe)
+	}
+	if _, err := os.Stat(wantSQLiteHome); err != nil {
+		t.Fatalf("isolated Codex SQLite directory missing: %v", err)
+	}
+	if _, err := os.Stat(candidateMarker); !os.IsNotExist(err) {
+		t.Fatalf("candidate-controlled relative Codex executable ran: %v", err)
 	}
 	if got := strings.TrimSpace(gitCommandOutput(t, dir, "status", "--porcelain")); got != "" {
 		t.Fatalf("source worktree changed during review: %q", got)

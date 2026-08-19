@@ -115,6 +115,9 @@ type ReviewFleetSettings struct {
 	Reviewers    []ReviewProfile
 	Consolidator ReviewProfile
 	Certifier    ReviewProfile
+	// CodexExecutable is resolved once to a canonical absolute path before a
+	// run starts, then used unchanged for fingerprinting and every invocation.
+	CodexExecutable string
 	// CodexProfileArgs must return safe, profile-specific Codex arguments. The
 	// executor adds the final read-only/project-settings protections as a second
 	// defensive layer before constructing the adapter.

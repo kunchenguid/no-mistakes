@@ -283,12 +283,14 @@ changed-path set before repository `ignore_patterns` filtering; an ignored-only
 diff still runs the fleet when it contains an operator-classified high-risk path.
 The enabled/disabled fleet mode is persisted when a run starts. Recovery uses
 that durable value plus a fingerprint of every profile, high-risk path,
-generated safe argument, and the resolved Codex executable. A changed contract
+generated safe argument, and the once-resolved absolute Codex executable used
+for every invocation. A changed contract
 fails recovery instead of weakening an already-started run. Push requires exact
 equality with the certified commit even if the fleet is later disabled.
 Raw reviewer, consolidator, and certifier messages are never streamed into
 persistent logs; only bounded, sanitized findings and bounded lifecycle status
-are retained.
+are retained. Each run also replaces ambient `HOME`, `CODEX_HOME`,
+`CODEX_SQLITE_HOME`, and XDG state directories with sandbox-local paths.
 
 ### ci_timeout
 

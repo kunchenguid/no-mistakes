@@ -45,7 +45,7 @@ func TestRecoveredFleetRequiresExactOriginalContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fingerprint, err := reviewFleetFingerprint(original, originalSettings)
+	fingerprint, err := reviewFleetFingerprint(originalSettings)
 	if err != nil {
 		t.Fatal(err)
 	}
