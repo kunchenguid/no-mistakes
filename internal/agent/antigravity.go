@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -81,18 +82,20 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	)
 
 	if err := parseAntigravityEvents(ctx, started.stdout, opts.OnChunk, &usage, &sessionID, &status, &resultResponse, &resultStructured, &resultError); err != nil {
-		err = started.waitAfterParseError(err)
-		stderrWG.Wait()
-		retErr := fmt.Errorf("antigravity parse events: %w", err)
-		emitAgentExited(opts, "antigravity", pid, retErr)
-		return nil, retErr
+		if !errors.Is(err, exec.ErrWaitDelay) || (resultResponse == "" && len(resultStructured) == 0 && status != "ERROR") {
+			err = started.waitAfterParseError(err)
+			stderrWG.Wait()
+			retErr := fmt.Errorf("antigravity parse events: %w", err)
+			emitAgentExited(opts, "antigravity", pid, retErr)
+			return nil, retErr
+		}
 	}
 
 	waitErr := started.wait()
 	stderrWG.Wait()
 
 	stderr := strings.TrimSpace(string(stderrBuf))
-	if waitErr != nil {
+	if waitErr != nil && !errors.Is(waitErr, exec.ErrWaitDelay) {
 		detail := antigravityErrorDetail(resultError, stderr)
 		if detail != "" {
 			retErr := fmt.Errorf("antigravity exited: %w: %s", waitErr, detail)
@@ -300,6 +303,7 @@ func parseAntigravityEvents(
 
 	var textDeltaAccum strings.Builder
 
+scanLoop:
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -403,6 +407,7 @@ func parseAntigravityEvents(
 					applyAgyUsage(usage, event.Result.Usage)
 				}
 			}
+			break scanLoop
 		}
 	}
 
