@@ -136,8 +136,11 @@ func executableFromBaseEnv(name string, baseEnv []string) (string, error) {
 			candidate += ".exe"
 		}
 		info, statErr := os.Stat(candidate)
-		if statErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return candidate, nil
+		if statErr == nil && info.Mode().IsRegular() {
+			executable := runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0
+			if executable {
+				return candidate, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("resolve git executable from supplied PATH")

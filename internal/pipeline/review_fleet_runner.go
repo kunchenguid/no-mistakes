@@ -605,6 +605,13 @@ func (r *reviewProfileRunner) isolatedEnv() []string {
 		"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
 		"PWD=" + r.checkoutDir,
 	}
+	for _, entry := range reviewFleetBaseEnv(r.workDir) {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(key, "PATH") {
+			env = append(env, entry)
+			break
+		}
+	}
 	return append(env, reviewFleetGitEnv()...)
 }
 

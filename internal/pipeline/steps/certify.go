@@ -31,7 +31,7 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	if sctx.RunReviewProfile == nil || sctx.ReviewFleet == nil || sctx.ReviewFleet.Certifier.Role == "" {
 		return nil, fmt.Errorf("certify step has no cold fleet certifier")
 	}
-	if err := requireExactFleetReviewApproval(sctx); err != nil {
+	if err := requireFleetReviewApproval(sctx); err != nil {
 		return nil, err
 	}
 
@@ -107,7 +107,7 @@ Rules:
 		pathInstructions)
 }
 
-func requireExactFleetReviewApproval(sctx *pipeline.StepContext) error {
+func requireFleetReviewApproval(sctx *pipeline.StepContext) error {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		return fmt.Errorf("load fleet review approval before certification: %w", err)
@@ -120,8 +120,11 @@ func requireExactFleetReviewApproval(sctx *pipeline.StepContext) error {
 	if err != nil {
 		return fmt.Errorf("resolve fleet review head before certification: %w", err)
 	}
-	if head != approved {
-		return fmt.Errorf("refusing certification: worktree HEAD changed since fleet review approval")
+	if head != sctx.Run.HeadSHA {
+		return fmt.Errorf("refusing certification: worktree HEAD changed outside the pipeline")
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approved, head); err != nil {
+		return fmt.Errorf("refusing certification: worktree HEAD is not descended from fleet review approval")
 	}
 	return nil
 }

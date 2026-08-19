@@ -19,13 +19,15 @@ flowchart TD
   admission --> daemon["Daemon"]
   hook --> daemon
   daemon --> worktree["Disposable worktree"]
-  worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> certify -> push -> pr -> ci"]
+  worktree --> pipeline["fleet mode: intent -> rebase -> review -> test -> document -> lint -> certify -> push -> pr -> ci"]
   pipeline --> target["Push target"]
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
   ipc --> tui["TUI clients"]
   ipc --> axi["AXI clients"]
 ```
+
+In the default fleet-disabled path, Certify is skipped.
 
 ## What `no-mistakes init` does
 

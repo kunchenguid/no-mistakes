@@ -40,6 +40,11 @@ func withReviewFleetEnabled(t *testing.T, sctx *pipeline.StepContext, enabled bo
 		sctx.Config.ReviewFleet.Enabled = enabled
 	}
 	if enabled {
+		if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
+			t.Fatal(err)
+		}
+		approved := sctx.Run.HeadSHA
+		sctx.Run.ReviewApprovedHeadSHA = &approved
 		sctx.RunReviewProfile = func(ctx context.Context, _ pipeline.ReviewProfile, opts agent.RunOpts) (*agent.Result, error) {
 			return sctx.Agent.Run(ctx, opts)
 		}
