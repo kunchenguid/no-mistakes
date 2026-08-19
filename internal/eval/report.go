@@ -217,6 +217,8 @@ type SetSummary struct {
 // CompositionRow is one stratum bucket of a case set: the same axes the
 // diversified holdout stratifies on.
 type CompositionRow struct {
+	// Repo is the repository's display identity: its resolved name when the
+	// store was given one (see Store.SetRepoNames), else the short fingerprint.
 	Repo        string
 	Language    string
 	Size        string
@@ -282,7 +284,7 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 			summary.QueuedFindings += queuedByCase[c.ID]
 			language, size, severity := caseComposition(c)
 			composition[CompositionRow{
-				Repo:        shortFingerprint(c.RepoFingerprint),
+				Repo:        store.repoDisplay(c.RepoFingerprint),
 				Language:    language,
 				Size:        size,
 				Severity:    severity,

@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/eval"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -63,7 +66,7 @@ func TestEvalCaptureAndSetsSpeakInFindingGoldTerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "true-positive 1 · false-negative 0 · false-positive 0") || !strings.Contains(out, "0 unlabeled / pending") {
+	if !strings.Contains(out, "TP      1") || !strings.Contains(out, "FP      0") || !strings.Contains(out, "0 unlabeled / pending") {
 		t.Fatalf("sets output = %q, want finding-level gold, not park/pass", out)
 	}
 	if !strings.Contains(out, "Diversified holdout") || !strings.Contains(out, "Self-score") || !strings.Contains(out, "1/1 true issues") {
@@ -106,7 +109,7 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "true-positive 0 · false-negative 1 · false-positive 0") {
+	if !strings.Contains(out, "FN      1") || !strings.Contains(out, "TP      0") {
 		t.Fatalf("sets output = %q, want ingested false-negative gold", out)
 	}
 
@@ -118,7 +121,7 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets after recapture: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "true-positive 0 · false-negative 1 · false-positive 0") {
+	if !strings.Contains(out, "FN      1") || !strings.Contains(out, "TP      0") {
 		t.Fatalf("sets after recapture = %q, want ingested false-negative gold to persist", out)
 	}
 
@@ -333,4 +336,79 @@ func mustCLIGit(t *testing.T, ctx context.Context, dir string, args ...string) s
 		t.Fatalf("git %v: %v", args, err)
 	}
 	return out
+}
+
+// The eval-sets dashboard identifies a case's repository by name and lays the
+// finding-level gold out as a confusion matrix. The repository name is
+// resolved from the locally registered repositories, since a case stores only
+// the fingerprint of its upstream URL.
+func TestEvalSetsNamesTheRepositoryAndTablesTheConfusionMatrix(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	chdir(t, t.TempDir())
+
+	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
+	selected := `["real-bug"]`
+	if err := fixture.db.SetStepRoundSelection(fixture.round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := executeCmd("eval", "capture", fixture.run.ID); err != nil {
+		t.Fatalf("eval capture: %v\n%s", err, out)
+	}
+
+	out, err := executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "org/repo") {
+		t.Fatalf("sets output = %q, want the repository name from its registered upstream URL", out)
+	}
+	for _, want := range []string{"Confusion matrix", "real issue", "not an issue", "review raised", "review missed", "TP", "FP", "FN", "TN"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("sets output = %q, want confusion-matrix table cell %q", out, want)
+		}
+	}
+	if strings.Contains(out, "TN      0") {
+		t.Fatalf("sets output = %q, want an uncounted true-negative cell, not a fabricated zero", out)
+	}
+	if !strings.Contains(out, "Diversified holdout") || !strings.Contains(out, "1/1 true issues") {
+		t.Fatalf("sets output = %q, want the diversified headline and self-score preserved", out)
+	}
+}
+
+// The composition table shows one kind of repository identity for every row
+// and never runs past the dashboard box, however long the names are.
+func TestEvalCompositionRepoColumnIsUniformAndFitsTheBox(t *testing.T) {
+	rows := []eval.CompositionRow{
+		{Repo: "a-very-long-organization-name/no-mistakes", Language: "go", Size: "large", Severity: "warning", FindingType: "warning/auto-fix", Cases: 2},
+		{Repo: "short", Language: "go", Size: "large", Severity: "error", FindingType: "error/ask-user", Cases: 1},
+	}
+	lines := compositionLines(rows)
+	if len(lines) != len(rows) {
+		t.Fatalf("compositionLines returned %d line(s), want %d", len(lines), len(rows))
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width > evalBoxWidth-4 {
+			t.Fatalf("composition line %q is %d wide, want at most %d", line, width, evalBoxWidth-4)
+		}
+	}
+	if strings.Contains(lines[0], "a-very-long-organization-name/no-mistakes") {
+		t.Fatalf("line = %q, want the long identity shortened when it does not fit its column", lines[0])
+	}
+	if !strings.Contains(lines[0], "no-mistakes") || !strings.Contains(lines[1], "short") {
+		t.Fatalf("lines = %q, want every repository still named", lines)
+	}
+	if !strings.Contains(lines[0], "warning/auto-fix") || !strings.Contains(lines[1], "error/ask-user") {
+		t.Fatalf("lines = %q, want the strata kept on every row", lines)
+	}
+
+	narrow := compositionLines([]eval.CompositionRow{{Repo: "owner/name", Language: "go", Size: "tiny", Severity: "none", FindingType: "none", Cases: 1}})
+	if !strings.Contains(narrow[0], "owner/name") {
+		t.Fatalf("line = %q, want the full owner/name identity when it fits", narrow[0])
+	}
+	if got := compositionLines(nil); len(got) != 0 {
+		t.Fatalf("compositionLines(nil) = %q, want no lines", got)
+	}
 }

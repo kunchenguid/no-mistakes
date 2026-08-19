@@ -84,7 +84,7 @@ Finding-level gold uses `labels.json` schema version 2. There is no migration fr
 no-mistakes eval sets
 ```
 
-The command renders a dashboard headlined by the **diversified holdout** - the official gold-only set - showing its size, pin and cap state, finding-level gold composition, and stratum composition (repository fingerprint, dominant language, change-size bucket, source severity, finding type). The other sets appear as a compact footnote with their counts, gold coverage, unlabeled / pending cases, and queued candidate findings.
+The command renders a dashboard headlined by the **diversified holdout** - the official gold-only set - showing its size, pin and cap state, finding-level gold as a confusion-matrix table (raised / missed against real issue / not an issue; true negatives are never counted, because a correctly silent review leaves no gold), and stratum composition (repository, dominant language, change-size bucket, source severity, finding type). A case stores only the fingerprint of its upstream URL, so the repository column is resolved from the repositories registered locally and falls back to that fingerprint when a repository is no longer registered. The other sets appear as a compact footnote with their counts, gold coverage, unlabeled / pending cases, and queued candidate findings.
 
 The headline includes an instant **self-score**: the recorded source reviews of the diversified set scored against their own gold with the same matcher a replayed candidate faces. It is computed from the already-captured case files - no replay, agent invocation, or network - and is the baseline a candidate has to beat. Recall, precision bounds, and F1 follow the report's semantics, including withholding F1 when no false-positive gold exists.
 

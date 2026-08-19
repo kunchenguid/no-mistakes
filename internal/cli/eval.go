@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/eval"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/spf13/cobra"
@@ -43,7 +44,26 @@ func openEvalStore() (*paths.Paths, *eval.Store, error) {
 		return nil, nil, err
 	}
 	store.SetDiversifiedSize(cfg.Eval.DiversifiedSize)
+	store.SetRepoNames(evalRepoNames(p))
 	return p, store, nil
+}
+
+// evalRepoNames resolves the repository fingerprints a case carries back to
+// human names from the locally registered repositories. It is best effort and
+// display-only: when the pipeline database cannot be read, the dashboards fall
+// back to the fingerprint rather than failing an eval command that otherwise
+// needs no database at all.
+func evalRepoNames(p *paths.Paths) map[string]string {
+	database, err := db.Open(p.DB())
+	if err != nil {
+		return nil
+	}
+	defer database.Close()
+	repos, err := database.GetRepos()
+	if err != nil {
+		return nil
+	}
+	return eval.RepoDisplayNames(repos)
 }
 
 func newEvalCaptureCmd() *cobra.Command {

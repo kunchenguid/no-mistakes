@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/kunchenguid/no-mistakes/internal/eval"
 )
 
@@ -15,6 +17,11 @@ import (
 const (
 	evalBoxWidth = 79
 	evalBarWidth = 20
+	// evalCompositionWidth is the room one stratum line has for its repository
+	// and strata columns: the box content minus the "  NNNN  " count prefix.
+	evalCompositionWidth    = evalBoxWidth - 4 - 8
+	minCompositionRepoWidth = 8
+	compositionSeparator    = " · "
 )
 
 // renderEvalSetsDashboard renders `eval sets` with the diversified holdout as
@@ -40,8 +47,8 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 	goldFindings := diversified.TruePositive + diversified.FalseNegative + diversified.FalsePositive
 	lines = append(lines, metricStatsLine("Gold findings", strconv.Itoa(goldFindings), fmt.Sprintf("across %d gold case(s)", diversified.GoldCases)))
 	if goldFindings > 0 {
-		lines = append(lines, fmt.Sprintf("    true-positive %d · false-negative %d · false-positive %d",
-			diversified.TruePositive, diversified.FalseNegative, diversified.FalsePositive))
+		lines = append(lines, "")
+		lines = append(lines, evalConfusionMatrixLines(diversified.TruePositive, diversified.FalseNegative, diversified.FalsePositive)...)
 	}
 	lines = append(lines, "")
 	lines = append(lines, "  Self-score: the recorded reviews scored against their own gold")
@@ -53,9 +60,7 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 	if len(diversified.Composition) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, "  Composition")
-		for _, row := range diversified.Composition {
-			lines = append(lines, fmt.Sprintf("  %4d  %s", row.Cases, compositionLabel(row)))
-		}
+		lines = append(lines, compositionLines(diversified.Composition)...)
 	}
 
 	lines = append(lines, "")
@@ -82,12 +87,86 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 	return renderTitledBox(" eval case sets ", evalBoxWidth, lines)
 }
 
-func compositionLabel(row eval.CompositionRow) string {
-	repo := row.Repo
-	if len(repo) > 8 {
-		repo = repo[:8]
+// compositionLines renders the stratum table. The repository column is sized
+// from whatever room the fixed strata leave and is resolved once for the whole
+// table, so every row shows the same kind of identity: full "owner/name" when
+// they all fit, otherwise the short repository name (the convention the stats
+// dashboard already uses) rather than a name cut mid-word.
+func compositionLines(rows []eval.CompositionRow) []string {
+	widest := 0
+	for _, row := range rows {
+		if width := lipgloss.Width(compositionStrata(row)); width > widest {
+			widest = width
+		}
 	}
-	return strings.Join([]string{"repo " + repo, row.Language, row.Size, row.Severity, row.FindingType}, " · ")
+	repoWidth := evalCompositionWidth - widest - lipgloss.Width(compositionSeparator)
+	if repoWidth < minCompositionRepoWidth {
+		repoWidth = minCompositionRepoWidth
+	}
+	names := fitRepoNames(rows, repoWidth)
+	column := 0
+	for _, name := range names {
+		if width := lipgloss.Width(name); width > column {
+			column = width
+		}
+	}
+	lines := make([]string, 0, len(rows))
+	for i, row := range rows {
+		padded := names[i] + strings.Repeat(" ", column-lipgloss.Width(names[i]))
+		lines = append(lines, fmt.Sprintf("  %4d  %s", row.Cases, padded+compositionSeparator+compositionStrata(row)))
+	}
+	return lines
+}
+
+func compositionStrata(row eval.CompositionRow) string {
+	return strings.Join([]string{row.Language, row.Size, row.Severity, row.FindingType}, compositionSeparator)
+}
+
+// fitRepoNames renders every repository identity the same way: "owner/name"
+// while all of them fit the column, else the bare repository name, and only a
+// still-oversized name is cut.
+func fitRepoNames(rows []eval.CompositionRow, width int) []string {
+	names := make([]string, 0, len(rows))
+	shorten := false
+	for _, row := range rows {
+		if lipgloss.Width(row.Repo) > width {
+			shorten = true
+		}
+	}
+	for _, row := range rows {
+		name := row.Repo
+		if shorten {
+			if _, short, ok := strings.Cut(name, "/"); ok && short != "" {
+				name = short
+			}
+		}
+		names = append(names, truncateStatsLine(name, width))
+	}
+	return names
+}
+
+// evalConfusionMatrixLines renders the finding-level gold as the confusion
+// matrix it actually is: what the recorded review did on the rows, what the
+// human decision proved on the columns. True negatives have no cell value
+// because silent agreement is never written as gold - a review that correctly
+// raises nothing leaves nothing to record - so the cell reads "-" rather than
+// inventing a count. A matrix of zeros still renders with its headers.
+func evalConfusionMatrixLines(truePositive, falseNegative, falsePositive int) []string {
+	const labelWidth = 18
+	const cellWidth = 14
+	const notAnIssue = "not an issue"
+	cell := func(kind string, value string) string {
+		return fmt.Sprintf("%-2s %6s", kind, value)
+	}
+	rule := strings.Repeat("─", labelWidth+cellWidth+len(notAnIssue))
+	return []string{
+		"  Confusion matrix (finding-level gold)",
+		fmt.Sprintf("    %-*s%-*s%-*s", labelWidth, "", cellWidth, "real issue", cellWidth, notAnIssue),
+		"    " + sDim.Render(rule),
+		fmt.Sprintf("    %-*s%-*s%-*s", labelWidth, "review raised", cellWidth, cell("TP", strconv.Itoa(truePositive)), cellWidth, cell("FP", strconv.Itoa(falsePositive))),
+		fmt.Sprintf("    %-*s%-*s%-*s", labelWidth, "review missed", cellWidth, cell("FN", strconv.Itoa(falseNegative)), cellWidth, cell("TN", "-")),
+		sDim.Render("    TN is never counted: a correctly silent review leaves no gold"),
+	}
 }
 
 // evalScoreLines renders one finding-level score summary with the eval

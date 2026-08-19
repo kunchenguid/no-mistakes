@@ -24,6 +24,7 @@ type Store struct {
 	cases           string
 	db              *sql.DB
 	diversifiedSize int
+	repoNames       map[string]string
 }
 
 // Open creates the local eval registry. The eval CLI, AutoCapture, and
@@ -167,6 +168,27 @@ func (s *Store) SetDiversifiedSize(n int) {
 		n = config.DefaultEvalDiversifiedSize
 	}
 	s.diversifiedSize = n
+}
+
+// SetRepoNames teaches the store how to display the repository fingerprints
+// its cases carry (see RepoDisplayNames). It is display-only: an unresolved
+// fingerprint still renders, just as its short opaque form.
+func (s *Store) SetRepoNames(names map[string]string) {
+	if s == nil {
+		return
+	}
+	s.repoNames = names
+}
+
+// repoDisplay renders one case's repository identity for a dashboard: the
+// resolved name when known, else the short fingerprint, never blank.
+func (s *Store) repoDisplay(fingerprint string) string {
+	if s != nil {
+		if name := strings.TrimSpace(s.repoNames[fingerprint]); name != "" {
+			return name
+		}
+	}
+	return shortFingerprint(fingerprint)
 }
 
 func (s *Store) caseDir(id string) string { return filepath.Join(s.cases, id) }
