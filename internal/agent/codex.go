@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,11 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+)
+
+const (
+	codexMaxEventBytes  = 16 * 1024 * 1024
+	codexMaxStderrBytes = 1024 * 1024
 )
 
 // codexAgent spawns the codex CLI for each invocation.
@@ -109,7 +115,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	stderrWG.Add(1)
 	go func() {
 		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(started.stderr)
+		stderrBuf = readBoundedAgentStream(started.stderr, codexMaxStderrBytes)
 	}()
 
 	var usage TokenUsage
@@ -323,7 +329,7 @@ type codexUsage struct {
 // is its real subprocess wall time.
 func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), codexMaxEventBytes)
 
 	for scanner.Scan() {
 		select {
@@ -379,6 +385,26 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 	}
 
 	return scanner.Err()
+}
+
+func readBoundedAgentStream(reader io.Reader, maxBytes int) []byte {
+	if maxBytes <= 0 {
+		_, _ = io.Copy(io.Discard, reader)
+		return nil
+	}
+	var buffer bytes.Buffer
+	read, _ := io.CopyN(&buffer, reader, int64(maxBytes)+1)
+	_, _ = io.Copy(io.Discard, reader)
+	if read <= int64(maxBytes) {
+		return buffer.Bytes()
+	}
+	const marker = "\n...[truncated]"
+	result := make([]byte, maxBytes)
+	copy(result, buffer.Bytes()[:maxBytes])
+	if maxBytes >= len(marker) {
+		copy(result[maxBytes-len(marker):], marker)
+	}
+	return result
 }
 
 func codexOutputSchema(schema json.RawMessage) ([]byte, error) {

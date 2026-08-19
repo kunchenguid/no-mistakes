@@ -301,7 +301,8 @@ func TestPushStep_UsesDurableFleetModeAfterGlobalDisable(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Format: "touch formatter-must-not-run"})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, true); err != nil {
+	fingerprint := strings.Repeat("a", 64)
+	if err := sctx.DB.UpdateRunReviewFleetMode(sctx.Run.ID, true, &fingerprint); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate recovery after the operator disabled the global fleet. Push must

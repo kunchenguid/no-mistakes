@@ -32,7 +32,10 @@ type Run struct {
 	CertifiedHeadSHA *string
 	// ReviewFleetEnabled is the immutable delivery mode captured when execution
 	// starts. Recovery uses it instead of the current global configuration.
-	ReviewFleetEnabled     bool
+	ReviewFleetEnabled bool
+	// ReviewFleetFingerprint binds an enabled run to the exact effective fleet
+	// contract. It is nil for non-fleet and pre-fingerprint runs.
+	ReviewFleetFingerprint *string
 	Status                 types.RunStatus
 	PRURL                  *string
 	PRState                *string
@@ -73,13 +76,13 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, certified_head_sha, COALESCE(review_fleet_enabled, 0), status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, certified_head_sha, COALESCE(review_fleet_enabled, 0), review_fleet_fingerprint, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.CertifiedHeadSHA, &r.ReviewFleetEnabled, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.CertifiedHeadSHA, &r.ReviewFleetEnabled, &r.ReviewFleetFingerprint, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
@@ -458,11 +461,21 @@ func (d *DB) UpdateRunReviewApprovedHeadSHA(id, headSHA string) error {
 	return nil
 }
 
-// UpdateRunReviewFleetEnabled captures the delivery mode selected when a run
-// starts. Resume deliberately never calls this method: recovery must preserve
-// the original mode even if the operator edits global configuration later.
-func (d *DB) UpdateRunReviewFleetEnabled(id string, enabled bool) error {
-	result, err := d.sql.Exec(`UPDATE runs SET review_fleet_enabled = ?, updated_at = ? WHERE id = ?`, enabled, now(), id)
+// UpdateRunReviewFleetMode captures the delivery mode and exact effective
+// contract selected when a run starts. Resume deliberately never calls this
+// method: recovery must preserve both values across global configuration edits.
+func (d *DB) UpdateRunReviewFleetMode(id string, enabled bool, fingerprint *string) error {
+	if enabled {
+		if fingerprint == nil || !isSHA256Hex(strings.TrimSpace(*fingerprint)) {
+			return fmt.Errorf("update run review fleet mode: enabled mode requires a SHA-256 fingerprint")
+		}
+		normalized := strings.TrimSpace(*fingerprint)
+		fingerprint = &normalized
+	}
+	if !enabled {
+		fingerprint = nil
+	}
+	result, err := d.sql.Exec(`UPDATE runs SET review_fleet_enabled = ?, review_fleet_fingerprint = ?, updated_at = ? WHERE id = ?`, enabled, fingerprint, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run review fleet mode: %w", err)
 	}
@@ -474,6 +487,18 @@ func (d *DB) UpdateRunReviewFleetEnabled(id string, enabled bool) error {
 		return fmt.Errorf("update run review fleet mode: run %s not found", id)
 	}
 	return nil
+}
+
+func isSHA256Hex(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateRunHeadSHA updates the run head SHA and timestamp.

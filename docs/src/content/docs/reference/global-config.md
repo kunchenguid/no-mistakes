@@ -282,8 +282,13 @@ without a slash, and `/**` for a directory subtree. Matching uses the complete
 changed-path set before repository `ignore_patterns` filtering; an ignored-only
 diff still runs the fleet when it contains an operator-classified high-risk path.
 The enabled/disabled fleet mode is persisted when a run starts. Recovery uses
-that durable value rather than current global configuration, and Push requires
-exact equality with the certified commit even if the fleet is later disabled.
+that durable value plus a fingerprint of every profile, high-risk path,
+generated safe argument, and the resolved Codex executable. A changed contract
+fails recovery instead of weakening an already-started run. Push requires exact
+equality with the certified commit even if the fleet is later disabled.
+Raw reviewer, consolidator, and certifier messages are never streamed into
+persistent logs; only bounded, sanitized findings and bounded lifecycle status
+are retained.
 
 ### ci_timeout
 

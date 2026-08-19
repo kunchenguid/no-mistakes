@@ -22,7 +22,12 @@ func withReviewFleetEnabled(t *testing.T, sctx *pipeline.StepContext, enabled bo
 			t.Fatal(err)
 		}
 		if persisted != nil {
-			if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, enabled); err != nil {
+			var fingerprint *string
+			if enabled {
+				value := strings.Repeat("a", 64)
+				fingerprint = &value
+			}
+			if err := sctx.DB.UpdateRunReviewFleetMode(sctx.Run.ID, enabled, fingerprint); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -54,6 +59,9 @@ func TestCertifyStep_FinalizesPendingChangesBeforeColdReadOnlyCheck(t *testing.T
 	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if opts.Purpose != "certify" {
 			t.Fatalf("purpose = %q, want certify", opts.Purpose)
+		}
+		if opts.OnChunk != nil {
+			t.Fatal("certifier exposed raw output callback")
 		}
 		return &agent.Result{Output: cleanCertifyResult()}, nil
 	}}
@@ -173,7 +181,8 @@ func TestCertifyStep_PersistedFleetModeFailsClosedWhenConfigIsDisabled(t *testin
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Run.ReviewFleetEnabled = true
-	if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, true); err != nil {
+	fingerprint := strings.Repeat("a", 64)
+	if err := sctx.DB.UpdateRunReviewFleetMode(sctx.Run.ID, true, &fingerprint); err != nil {
 		t.Fatal(err)
 	}
 	sctx.ReviewFleet = &pipeline.ReviewFleetSettings{Enabled: false}

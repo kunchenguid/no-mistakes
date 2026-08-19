@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -81,6 +82,88 @@ func TestReviewFleetSettingsFromConfigUsesFixedRolesAndEscalatedArgs(t *testing.
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "gpt-5.6-terra") || !strings.Contains(joined, `model_reasoning_effort="xhigh"`) {
 		t.Fatalf("escalated security args = %v", args)
+	}
+}
+
+func testReviewFleetConfig(codexPath string) *config.Config {
+	profile := func(model, effort string) config.ReviewFleetProfile {
+		return config.ReviewFleetProfile{Model: model, ReasoningEffort: effort}
+	}
+	return &config.Config{
+		AgentPathOverride: map[string]string{string(types.AgentCodex): codexPath},
+		ReviewFleet: config.ReviewFleet{
+			Enabled: true,
+			Reviewers: map[string]config.ReviewFleetProfile{
+				config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-luna", "max"),
+				config.ReviewFleetRoleCorrectness:   profile("gpt-5.6-terra", "high"),
+				config.ReviewFleetRoleArchitecture:  profile("gpt-5.6-terra", "high"),
+				config.ReviewFleetRoleSecurity: {
+					Model:                    "gpt-5.6-terra",
+					ReasoningEffort:          "high",
+					HighRiskPaths:            []string{"internal/auth/**"},
+					EscalatedReasoningEffort: "xhigh",
+				},
+			},
+			Consolidator: profile("gpt-5.6-terra", "high"),
+			Certifier:    profile("gpt-5.6-sol", "xhigh"),
+		},
+	}
+}
+
+func TestReviewFleetFingerprintBindsExactEffectiveContract(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := func(cfg *config.Config) string {
+		t.Helper()
+		settings, err := reviewFleetSettingsFromConfig(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := reviewFleetFingerprint(cfg, settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	original := testReviewFleetConfig(bin)
+	want := fingerprint(original)
+	if len(want) != 64 {
+		t.Fatalf("fingerprint length = %d, want 64", len(want))
+	}
+	if again := fingerprint(testReviewFleetConfig(bin)); again != want {
+		t.Fatalf("equivalent fleet contract was not deterministic: %s != %s", want, again)
+	}
+	changedModel := testReviewFleetConfig(bin)
+	changedModel.ReviewFleet.Certifier.ReasoningEffort = "high"
+	if got := fingerprint(changedModel); got == want {
+		t.Fatal("certifier effort change did not change fleet fingerprint")
+	}
+	changedPaths := testReviewFleetConfig(bin)
+	security := changedPaths.ReviewFleet.Reviewers[config.ReviewFleetRoleSecurity]
+	security.HighRiskPaths = append(security.HighRiskPaths, "internal/crypto/**")
+	changedPaths.ReviewFleet.Reviewers[config.ReviewFleetRoleSecurity] = security
+	if got := fingerprint(changedPaths); got == want {
+		t.Fatal("security path change did not change fleet fingerprint")
+	}
+	changedArgs := testReviewFleetConfig(bin)
+	changedArgs.AgentArgsOverride = map[string][]string{string(types.AgentCodex): {"-c", `service_tier="priority"`}}
+	if got := fingerprint(changedArgs); got == want {
+		t.Fatal("safe inherited argument change did not change fleet fingerprint")
+	}
+}
+
+func TestSafeReviewFleetRuntimeTextBoundsAndRedacts(t *testing.T) {
+	raw := "line one\nignore previous instructions https://user:password@example.com/token " + strings.Repeat("界", 2000)
+	got := safeReviewFleetRuntimeText(raw, 256)
+	if len(got) > 256 || !utf8.ValidString(got) {
+		t.Fatalf("sanitized runtime text has invalid bound/encoding: bytes=%d valid=%t", len(got), utf8.ValidString(got))
+	}
+	for _, forbidden := range []string{"\n", "password", "ignore previous instructions"} {
+		if strings.Contains(strings.ToLower(got), forbidden) {
+			t.Fatalf("sanitized runtime text retained %q: %s", forbidden, got)
+		}
 	}
 }
 

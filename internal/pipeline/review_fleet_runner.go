@@ -2,24 +2,35 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/intent"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
-	reviewFleetReadOnlySandbox = "read-only"
-	reviewFleetMaxArgBytes     = 4096
-	reviewFleetMaxAuthBytes    = 4 * 1024 * 1024
+	reviewFleetReadOnlySandbox    = "read-only"
+	reviewFleetMaxArgBytes        = 4096
+	reviewFleetMaxAuthBytes       = 4 * 1024 * 1024
+	reviewFleetMaxRuntimeLogBytes = 2048
 )
+
+const reviewFleetContractVersion = 1
 
 // reviewFleetSettingsFromConfig projects the trusted global-only config into
 // the execution types used by the pipeline. The fixed order is deliberate:
@@ -53,6 +64,106 @@ func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, er
 		return cfg.ReviewFleetCodexArgs(profile.Role, profile.SecurityEscalated)
 	}
 	return settings, nil
+}
+
+type reviewFleetContract struct {
+	Version         int                          `json:"version"`
+	CodexExecutable string                       `json:"codex_executable"`
+	Reviewers       []reviewFleetContractProfile `json:"reviewers"`
+	Consolidator    reviewFleetContractProfile   `json:"consolidator"`
+	Certifier       reviewFleetContractProfile   `json:"certifier"`
+}
+
+type reviewFleetContractProfile struct {
+	Role               string   `json:"role"`
+	Model              string   `json:"model"`
+	Reasoning          string   `json:"reasoning"`
+	HighRiskPaths      []string `json:"high_risk_paths,omitempty"`
+	EscalatedReasoning string   `json:"escalated_reasoning,omitempty"`
+	Args               []string `json:"args"`
+	EscalatedArgs      []string `json:"escalated_args,omitempty"`
+}
+
+// reviewFleetFingerprint hashes the complete effective fleet contract that a
+// resumed run is allowed to use. The digest covers every profile, high-risk
+// path, generated safe argument, and resolved Codex executable. Recovery
+// requires exact equality instead of accepting a merely enabled fleet.
+func reviewFleetFingerprint(cfg *config.Config, settings *ReviewFleetSettings) (string, error) {
+	if cfg == nil || settings == nil || !settings.Enabled {
+		return "", fmt.Errorf("cannot fingerprint a disabled review fleet")
+	}
+	executable, err := exec.LookPath(cfg.AgentPathFor(types.AgentCodex))
+	if err != nil {
+		return "", fmt.Errorf("resolve review fleet Codex executable: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute review fleet Codex executable: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	contract := reviewFleetContract{
+		Version:         reviewFleetContractVersion,
+		CodexExecutable: executable,
+		Reviewers:       make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
+	}
+	for _, profile := range settings.Reviewers {
+		fingerprinted, err := reviewFleetFingerprintProfile(settings, profile)
+		if err != nil {
+			return "", err
+		}
+		contract.Reviewers = append(contract.Reviewers, fingerprinted)
+	}
+	contract.Consolidator, err = reviewFleetFingerprintProfile(settings, settings.Consolidator)
+	if err != nil {
+		return "", err
+	}
+	contract.Certifier, err = reviewFleetFingerprintProfile(settings, settings.Certifier)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		return "", fmt.Errorf("encode review fleet contract: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func reviewFleetFingerprintProfile(settings *ReviewFleetSettings, profile ReviewProfile) (reviewFleetContractProfile, error) {
+	if settings.CodexProfileArgs == nil {
+		return reviewFleetContractProfile{}, fmt.Errorf("review fleet Codex profile args are not configured")
+	}
+	args, err := settings.CodexProfileArgs(profile)
+	if err != nil {
+		return reviewFleetContractProfile{}, fmt.Errorf("build review fleet fingerprint args for %q: %w", profile.Role, err)
+	}
+	args, err = validateReviewFleetIsolation(args)
+	if err != nil {
+		return reviewFleetContractProfile{}, fmt.Errorf("validate review fleet fingerprint args for %q: %w", profile.Role, err)
+	}
+	result := reviewFleetContractProfile{
+		Role:               profile.Role,
+		Model:              profile.Model,
+		Reasoning:          profile.Reasoning,
+		HighRiskPaths:      append([]string(nil), profile.HighRiskPaths...),
+		EscalatedReasoning: profile.EscalatedReasoning,
+		Args:               args,
+	}
+	if len(profile.HighRiskPaths) > 0 || strings.TrimSpace(profile.EscalatedReasoning) != "" {
+		escalated := profile
+		escalated.SecurityEscalated = true
+		result.EscalatedArgs, err = settings.CodexProfileArgs(escalated)
+		if err != nil {
+			return reviewFleetContractProfile{}, fmt.Errorf("build escalated review fleet fingerprint args for %q: %w", profile.Role, err)
+		}
+		result.EscalatedArgs, err = validateReviewFleetIsolation(result.EscalatedArgs)
+		if err != nil {
+			return reviewFleetContractProfile{}, fmt.Errorf("validate escalated review fleet fingerprint args for %q: %w", profile.Role, err)
+		}
+	}
+	return result, nil
 }
 
 func projectReviewFleetProfile(role string, profile config.ReviewFleetProfile) ReviewProfile {
@@ -221,7 +332,7 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	wrapped = &lifecycleAgent{inner: wrapped, onLifecycle: func(event agent.LifecycleEvent) {
 		event.Agent = profile.Role + "/" + event.Agent
 		if event.Message != "" {
-			event.Message = profile.Role + ": " + event.Message
+			event.Message = safeReviewFleetRuntimeText(profile.Role+": "+event.Message, reviewFleetMaxRuntimeLogBytes)
 		}
 		if r.onLifecycle != nil {
 			r.onLifecycle(event)
@@ -230,7 +341,52 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	wrapped = &perfRecordingAgent{inner: wrapped, db: r.db, runID: r.runID, stepName: r.stepName, round: r.round}
 	opts.CWD = checkoutDir
 	opts.Env = append(opts.Env, isolatedEnv...)
-	return wrapped.Run(ctx, opts)
+	result, err := wrapped.Run(ctx, opts)
+	if err != nil {
+		return result, fmt.Errorf("review fleet profile %q failed: %s", profile.Role, safeReviewFleetRuntimeText(err.Error(), reviewFleetMaxRuntimeLogBytes))
+	}
+	return result, nil
+}
+
+func safeReviewFleetRuntimeText(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+	value = strings.Join(strings.Fields(value), " ")
+	value = intent.StripAdversarial(value)
+	value = intent.RedactSecrets(value)
+	value = safeurl.RedactText(value)
+	lower := strings.ToLower(value)
+	for _, directive := range []string{
+		"ignore previous instructions",
+		"ignore all previous instructions",
+		"ignore the instructions above",
+		"you are now the system",
+		"developer message:",
+	} {
+		for index := strings.Index(lower, directive); index >= 0; index = strings.Index(lower, directive) {
+			value = value[:index] + "[runtime directive removed]" + value[index+len(directive):]
+			lower = strings.ToLower(value)
+		}
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	const marker = " …[truncated]"
+	if maxBytes <= len(marker) {
+		return marker[:maxBytes]
+	}
+	value = value[:maxBytes-len(marker)]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value + marker
 }
 
 // ensureSandbox returns a clean, detached shadow checkout for the exact source

@@ -46,8 +46,10 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
 		JSONSchema: reviewFindingsSchema,
-		OnChunk:    sctx.LogChunk,
-		Purpose:    "certify",
+		// The certifier's raw response is untrusted. Only bounded, sanitized
+		// findings parsed below may enter persistent pipeline surfaces.
+		OnChunk: nil,
+		Purpose: "certify",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent certify: %w", err)

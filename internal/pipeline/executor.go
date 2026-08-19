@@ -185,10 +185,22 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	e.workDir = workDir
 	e.initializeRunScopes(run.ID)
 	fleetEnabled := e.config != nil && e.config.ReviewFleet.Enabled
-	if err := e.db.UpdateRunReviewFleetEnabled(run.ID, fleetEnabled); err != nil {
+	var fleetFingerprint *string
+	if fleetEnabled {
+		if e.reviewFleetErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("resolve review fleet contract: %w", e.reviewFleetErr))
+		}
+		fingerprint, err := reviewFleetFingerprint(e.config, e.reviewFleet)
+		if err != nil {
+			return e.failRun(run, repo, err)
+		}
+		fleetFingerprint = &fingerprint
+	}
+	if err := e.db.UpdateRunReviewFleetMode(run.ID, fleetEnabled, fleetFingerprint); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("capture review fleet mode: %w", err))
 	}
 	run.ReviewFleetEnabled = fleetEnabled
+	run.ReviewFleetFingerprint = fleetFingerprint
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -260,6 +272,29 @@ func (e *Executor) initializeRunScopes(runID string) {
 	e.reviewFleet, e.reviewFleetErr = reviewFleetSettingsFromConfig(e.config)
 }
 
+func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
+	if run == nil || !run.ReviewFleetEnabled {
+		return nil
+	}
+	if e.reviewFleetErr != nil {
+		return fmt.Errorf("recovered review fleet configuration: %w", e.reviewFleetErr)
+	}
+	if e.reviewFleet == nil || !e.reviewFleet.Enabled {
+		return fmt.Errorf("recovered run requires review fleet but current global configuration disables it")
+	}
+	if run.ReviewFleetFingerprint == nil || strings.TrimSpace(*run.ReviewFleetFingerprint) == "" {
+		return fmt.Errorf("recovered fleet run has no durable contract fingerprint")
+	}
+	current, err := reviewFleetFingerprint(e.config, e.reviewFleet)
+	if err != nil {
+		return fmt.Errorf("fingerprint recovered review fleet contract: %w", err)
+	}
+	if current != strings.TrimSpace(*run.ReviewFleetFingerprint) {
+		return fmt.Errorf("recovered review fleet contract changed since the run started")
+	}
+	return nil
+}
+
 type stepExecutionState struct {
 	fixing           bool
 	previousFindings string
@@ -309,6 +344,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 	e.initializeRunScopes(run.ID)
+	if err := e.validateRecoveredReviewFleet(run); err != nil {
+		return e.failRun(run, repo, err)
+	}
 
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
 	duration := recoveredStepDuration(gate.stepResult)

@@ -529,6 +529,20 @@ func TestCodexAgent_BuildArgs_UserProjectDocOverrideWins(t *testing.T) {
 	}
 }
 
+func TestReadBoundedAgentStreamDrainsAndTruncates(t *testing.T) {
+	input := strings.Repeat("0123456789", 20)
+	got := readBoundedAgentStream(strings.NewReader(input), 32)
+	if len(got) != 32 {
+		t.Fatalf("bounded stream length = %d, want 32", len(got))
+	}
+	if !strings.HasSuffix(string(got), "...[truncated]") {
+		t.Fatalf("bounded stream did not carry truncation marker: %q", got)
+	}
+	if got := readBoundedAgentStream(strings.NewReader("short"), 32); string(got) != "short" {
+		t.Fatalf("short stream = %q, want short", got)
+	}
+}
+
 func argsContain(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {

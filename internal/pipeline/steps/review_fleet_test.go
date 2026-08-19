@@ -48,6 +48,9 @@ func TestExecuteReviewFleetStartsAllReviewersBeforeConsolidation(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	sctx.RunReviewProfile = func(ctx context.Context, profile pipeline.ReviewProfile, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.OnChunk != nil {
+			return nil, errors.New("fleet invocation exposed raw output callback")
+		}
 		if profile.Role == "consolidator" {
 			mu.Lock()
 			got := len(started)

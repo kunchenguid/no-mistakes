@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +17,11 @@ const testCertifiedHead = "1111111111111111111111111111111111111111"
 
 func TestExecutorCapturesReviewFleetModeBeforeExecution(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	exec := NewExecutor(database, p, &config.Config{ReviewFleet: config.ReviewFleet{Enabled: true}}, nil, nil, nil)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(database, p, testReviewFleetConfig(bin), nil, nil, nil)
 	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
@@ -23,8 +29,44 @@ func TestExecutorCapturesReviewFleetModeBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.ReviewFleetEnabled || !run.ReviewFleetEnabled {
-		t.Fatalf("fleet mode was not captured: durable=%t in-memory=%t", got.ReviewFleetEnabled, run.ReviewFleetEnabled)
+	if !got.ReviewFleetEnabled || !run.ReviewFleetEnabled || got.ReviewFleetFingerprint == nil || run.ReviewFleetFingerprint == nil {
+		t.Fatalf("fleet contract was not captured: durable=%#v in-memory=%#v", got, run)
+	}
+}
+
+func TestRecoveredFleetRequiresExactOriginalContract(t *testing.T) {
+	database, p, run, _ := setupTest(t)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := testReviewFleetConfig(bin)
+	originalSettings, err := reviewFleetSettingsFromConfig(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := reviewFleetFingerprint(original, originalSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunReviewFleetMode(run.ID, true, &fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	run.ReviewFleetEnabled = true
+	run.ReviewFleetFingerprint = &fingerprint
+
+	same := NewExecutor(database, p, testReviewFleetConfig(bin), nil, nil, nil)
+	same.initializeRunScopes(run.ID)
+	if err := same.validateRecoveredReviewFleet(run); err != nil {
+		t.Fatalf("unchanged recovered contract rejected: %v", err)
+	}
+
+	changedConfig := testReviewFleetConfig(bin)
+	changedConfig.ReviewFleet.Certifier.ReasoningEffort = "high"
+	changed := NewExecutor(database, p, changedConfig, nil, nil, nil)
+	changed.initializeRunScopes(run.ID)
+	if err := changed.validateRecoveredReviewFleet(run); err == nil || !strings.Contains(err.Error(), "contract changed") {
+		t.Fatalf("changed recovered contract was accepted: %v", err)
 	}
 }
 
