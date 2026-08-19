@@ -379,16 +379,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			if gate.certifiedHeadSHA == "" {
 				return fmt.Errorf("recovered certify gate has no durable head candidate")
 			}
-			liveHead, headErr := git.HeadSHA(ctx, workDir)
-			if headErr != nil || liveHead != gate.certifiedHeadSHA {
-				return fmt.Errorf("recovered certify head changed before approval")
-			}
-			status, statusErr := git.Run(ctx, workDir, "status", "--porcelain")
-			if statusErr != nil {
-				return fmt.Errorf("check recovered certify worktree: %w", statusErr)
-			}
-			if strings.TrimSpace(status) != "" {
-				return fmt.Errorf("recovered certify worktree is dirty")
+			if err := assertCertifiedApprovalHead(ctx, workDir, gate.certifiedHeadSHA); err != nil {
+				return err
 			}
 			if err := e.db.CompleteCertifyStep(gate.stepResult.ID, run.ID, gate.certifiedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 				return err
@@ -876,6 +868,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
 	var certifiedHeadSHA string
+	certifyApprovalRequired := false
 
 	// Execute with possible fix loop
 	for {
@@ -906,6 +899,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		if stepName == types.StepCertify {
 			certifiedHeadSHA = outcome.CertifiedHeadSHA
+			certifyApprovalRequired = outcome.NeedsApproval || hasAskUserFindingsJSON(outcome.Findings)
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		finalExitCode = outcome.ExitCode
@@ -1154,6 +1148,11 @@ done:
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 	} else if stepName == types.StepCertify && status == types.StepStatusCompleted && certifiedHeadSHA != "" {
+		if certifyApprovalRequired {
+			if err := assertCertifiedApprovalHead(ctx, workDir, certifiedHeadSHA); err != nil {
+				return false, err
+			}
+		}
 		if err := e.db.CompleteCertifyStep(sr.ID, run.ID, certifiedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
 			return false, fmt.Errorf("complete step %s: %w", stepName, err)
 		}
@@ -1164,6 +1163,24 @@ done:
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+func assertCertifiedApprovalHead(ctx context.Context, workDir, expectedHead string) error {
+	liveHead, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("resolve certify head before approval: %w", err)
+	}
+	if liveHead != expectedHead {
+		return fmt.Errorf("certify head changed before approval")
+	}
+	status, err := git.Run(ctx, workDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("check certify worktree before approval: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("certify worktree is dirty before approval")
+	}
+	return nil
 }
 
 func completeReviewAuthority(database *db.DB, run *db.Run, stepID, approvedHeadSHA string, exitCode int, durationMS int64, logPath string) error {

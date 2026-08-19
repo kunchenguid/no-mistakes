@@ -119,7 +119,7 @@ func TestCertifyStep_RejectsPreExistingDirtyWorktree(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
 	withReviewFleetEnabled(t, sctx, true)
 
-	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "worktree was dirty before finalization") {
+	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "worktree is dirty after certification") {
 		t.Fatalf("expected dirty-start refusal, got %v", err)
 	}
 	if len(agentMock.calls) != 0 {
@@ -130,13 +130,13 @@ func TestCertifyStep_RejectsPreExistingDirtyWorktree(t *testing.T) {
 	}
 }
 
-func TestCertifyStep_FormatterFailureCannotCertify(t *testing.T) {
+func TestTestStep_FormatterFailureStopsFleetGates(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier"}
 	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "exit 17"})
 	withReviewFleetEnabled(t, sctx, true)
 
-	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "formatter before certification exited with code 17") {
+	if _, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "formatter before certification exited with code 17") {
 		t.Fatalf("expected formatter failure, got %v", err)
 	}
 	if len(agentMock.calls) != 0 {
@@ -164,18 +164,18 @@ func TestCertifyStepDefersPipelineOwnedDeliveryFindings(t *testing.T) {
 	}
 }
 
-func TestCertifyStepChecksContinuityBeforeFormatter(t *testing.T) {
+func TestCertifyStepChecksContinuityBeforeCertification(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier"}
-	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "touch formatter-ran"})
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
 	withReviewFleetEnabled(t, sctx, true)
 	sctx.Run.HeadSHA = strings.Repeat("a", 40)
 
 	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "changed outside the pipeline") {
 		t.Fatalf("expected continuity failure, got %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "formatter-ran")); !os.IsNotExist(err) {
-		t.Fatalf("formatter ran before continuity failed: %v", err)
+	if len(agentMock.calls) != 0 {
+		t.Fatal("certifier ran before continuity failed")
 	}
 }
 

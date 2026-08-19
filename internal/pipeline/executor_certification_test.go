@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -152,7 +153,7 @@ func TestExecutor_CertifyAuthorityOnlyCompletesOrIsExplicitlyApproved(t *testing
 
 func TestExecutor_ApprovedCertifyGateBindsExactCandidate(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	const candidate = "2222222222222222222222222222222222222222"
+	workDir, candidate := setupCertificationApprovalWorktree(t)
 	step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{
 		NeedsApproval:    true,
 		CertifiedHeadSHA: candidate,
@@ -160,7 +161,7 @@ func TestExecutor_ApprovedCertifyGateBindsExactCandidate(t *testing.T) {
 	}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
 	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepCertify, types.StepStatusAwaitingApproval)
 	if err := exec.Respond(types.StepCertify, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
@@ -169,6 +170,59 @@ func TestExecutor_ApprovedCertifyGateBindsExactCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCertifiedHead(t, database, run.ID, candidate)
+}
+
+func TestExecutor_ApprovedCertifyGateRejectsChangedCandidate(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir, candidate := setupCertificationApprovalWorktree(t)
+	step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{
+		NeedsApproval:    true,
+		CertifiedHeadSHA: candidate,
+		Findings:         `{"findings":[{"id":"cert-1","severity":"error","description":"operator decision","action":"ask-user"}]}`,
+	}}
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	waitForStepStatus(t, database, run.ID, types.StepCertify, types.StepStatusAwaitingApproval)
+	if err := os.WriteFile(workDir+"/changed.txt", []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Respond(types.StepCertify, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitExecutor(t, done); err == nil || !strings.Contains(err.Error(), "certify worktree is dirty before approval") {
+		t.Fatalf("changed candidate was accepted: %v", err)
+	}
+	assertNoCertifiedHead(t, database, run.ID)
+}
+
+func setupCertificationApprovalWorktree(t *testing.T) (string, string) {
+	t.Helper()
+	workDir := t.TempDir()
+	ctx := context.Background()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test User"},
+	} {
+		if _, err := git.Run(ctx, workDir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(workDir+"/tracked.txt", []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(ctx, workDir, "add", "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(ctx, workDir, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workDir, head
 }
 
 func assertCertifiedHead(t *testing.T, database interface {
