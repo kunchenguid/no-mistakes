@@ -234,6 +234,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 		sr := stepRecords[step.Name()]
 		if e.skips[step.Name()] {
+			if fleetRequiresCompletedStep(run, step.Name()) {
+				return e.failRun(run, repo, fmt.Errorf("fleet run cannot skip required step %s", step.Name()), ctx)
+			}
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
@@ -245,6 +248,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
+			for _, remaining := range e.steps[i+1:] {
+				if fleetRequiresCompletedStep(run, remaining.Name()) {
+					return e.failRun(run, repo, fmt.Errorf("fleet run cannot skip required step %s", remaining.Name()), ctx)
+				}
+			}
 			// Mark all subsequent steps as skipped
 			for _, remaining := range e.steps[i+1:] {
 				rsr := stepRecords[remaining.Name()]
@@ -298,11 +306,11 @@ func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
 type stepExecutionState struct {
 	fixing             bool
 	requireFixMutation bool
-	previousFindings  string
-	roundNum          int
-	autoFixAttempts   int
-	executionMS       int64
-	currentRoundID    string
+	previousFindings   string
+	roundNum           int
+	autoFixAttempts    int
+	executionMS        int64
+	currentRoundID     string
 }
 
 type recoveredGate struct {
@@ -484,6 +492,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	case types.ActionSkip:
+		if fleetRequiresCompletedStep(run, gate.step.Name()) {
+			return e.failRun(run, repo, fmt.Errorf("fleet run cannot skip required step %s", gate.step.Name()), ctx)
+		}
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
@@ -518,11 +529,11 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
 			fixing:             true,
 			requireFixMutation: true,
-			previousFindings: merged,
-			roundNum:         gate.round,
-			autoFixAttempts:  gate.autoFixes,
-			executionMS:      duration,
-			currentRoundID:   gate.lastRoundID,
+			previousFindings:   merged,
+			roundNum:           gate.round,
+			autoFixAttempts:    gate.autoFixes,
+			executionMS:        duration,
+			currentRoundID:     gate.lastRoundID,
 		})
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -825,27 +836,27 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.emitCIReadinessEvent(run, repo, ready, declaredNoCI)
 	}
 	sctx := &StepContext{
-		Ctx:              ctx,
-		Run:              run,
-		Repo:             repo,
-		WorkDir:          workDir,
-		Agent:            stepAgent,
-		Config:           e.config,
-		DB:               e.db,
-		StepResultID:     sr.ID,
-		UserIntent:       userIntent,
-		IntentSource:     userIntentSource,
-		Sessions:         e.sessions,
-		Shared:           e.shared,
-		ReviewFleet:      e.reviewFleet,
-		ReviewFleetError: e.reviewFleetErr,
-		RunReviewProfile: runReviewProfile,
-		EvidenceDir:      e.runEvidenceDir(run.ID),
-		Fixing:           state.fixing,
+		Ctx:                ctx,
+		Run:                run,
+		Repo:               repo,
+		WorkDir:            workDir,
+		Agent:              stepAgent,
+		Config:             e.config,
+		DB:                 e.db,
+		StepResultID:       sr.ID,
+		UserIntent:         userIntent,
+		IntentSource:       userIntentSource,
+		Sessions:           e.sessions,
+		Shared:             e.shared,
+		ReviewFleet:        e.reviewFleet,
+		ReviewFleetError:   e.reviewFleetErr,
+		RunReviewProfile:   runReviewProfile,
+		EvidenceDir:        e.runEvidenceDir(run.ID),
+		Fixing:             state.fixing,
 		RequireFixMutation: state.requireFixMutation,
-		PreviousFindings:    state.previousFindings,
-		Log:              writeLog,
-		LogChunk:         writeLogChunk,
+		PreviousFindings:   state.previousFindings,
+		Log:                writeLog,
+		LogChunk:           writeLogChunk,
 		LogFile: func(text string) {
 			stepLog.writeFileOnly(text)
 		},
@@ -985,6 +996,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// are acceptable and don't block the pipeline.
 			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
+			if stepSkipped && fleetRequiresCompletedStep(run, stepName) {
+				return false, fmt.Errorf("fleet run cannot skip required step %s", stepName)
+			}
 			break
 		}
 
@@ -1065,6 +1079,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			goto done
 
 		case types.ActionSkip:
+			if fleetRequiresCompletedStep(run, stepName) {
+				return false, fmt.Errorf("fleet run cannot skip required step %s", stepName)
+			}
 			// Skip - mark step skipped and return (not an error)
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
 				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
@@ -1421,6 +1438,17 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+	if run != nil && run.ReviewFleetEnabled {
+		results, err := e.db.GetStepsByRun(run.ID)
+		if err != nil {
+			return fmt.Errorf("load fleet step results before completion: %w", err)
+		}
+		for _, result := range results {
+			if fleetRequiresCompletedStep(run, result.StepName) && result.Status != types.StepStatusCompleted {
+				return fmt.Errorf("refusing fleet completion: required step %s is %s", result.StepName, result.Status)
+			}
+		}
+	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	if run != nil && run.ReviewFleetEnabled && !verified {
 		return fmt.Errorf("refusing fleet completion without an exact clean certified worktree")
@@ -1440,6 +1468,18 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	run.Status = types.RunCompleted
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return nil
+}
+
+func fleetRequiresCompletedStep(run *db.Run, step types.StepName) bool {
+	if run == nil || !run.ReviewFleetEnabled {
+		return false
+	}
+	switch step {
+	case types.StepTest, types.StepDocument, types.StepLint, types.StepCertify, types.StepPush, types.StepPR, types.StepCI:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {

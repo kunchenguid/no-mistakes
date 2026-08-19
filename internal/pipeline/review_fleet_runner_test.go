@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -115,6 +116,27 @@ func TestReviewFleetSettingsResolvesRelativeExecutableOnce(t *testing.T) {
 	}
 	if settings.CodexExecutable != want {
 		t.Fatalf("resolved executable = %q, want %q", settings.CodexExecutable, want)
+	}
+}
+
+func TestResolveReviewFleetExecutableRejectsExecutableInsideSymlinkedSourceRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating test symlinks requires elevated privileges on Windows")
+	}
+	realRoot := filepath.Join(t.TempDir(), "real-repo")
+	bin := filepath.Join(realRoot, "tools", "codex")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(filepath.Dir(realRoot), "linked-repo")
+	if err := os.Symlink(realRoot, linkedRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveReviewFleetExecutable(bin, linkedRoot); err == nil {
+		t.Fatal("accepted executable inside symlinked source root")
 	}
 }
 

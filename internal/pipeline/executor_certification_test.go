@@ -22,8 +22,8 @@ func TestExecutorCapturesReviewFleetModeBeforeExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := NewExecutor(database, p, testReviewFleetConfig(bin), nil, nil, nil)
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
-		t.Fatal(err)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("expected fleet run without mandatory gates to fail")
 	}
 	got, err := database.GetRun(run.ID)
 	if err != nil {

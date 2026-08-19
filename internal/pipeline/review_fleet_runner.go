@@ -124,8 +124,14 @@ func resolveReviewFleetExecutable(configured, sourceRoot string) (string, error)
 	if !filepath.IsAbs(executable) {
 		return "", fmt.Errorf("resolved review fleet Codex executable is not absolute")
 	}
-	if sourceRoot != "" && reviewFleetPathWithin(sourceRoot, executable) {
-		return "", fmt.Errorf("resolved review fleet executable is inside the source worktree")
+	if sourceRoot != "" {
+		canonicalRoot, rootErr := filepath.EvalSymlinks(sourceRoot)
+		if rootErr != nil {
+			return "", fmt.Errorf("canonicalize review fleet source root: %w", rootErr)
+		}
+		if reviewFleetPathWithin(canonicalRoot, executable) {
+			return "", fmt.Errorf("resolved review fleet executable is inside the source worktree")
+		}
 	}
 	return executable, nil
 }

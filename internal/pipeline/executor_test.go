@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -385,5 +387,20 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestExecutor_FleetRejectsConfiguredRequiredSkip(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(database, p, testReviewFleetConfig(bin), nil, []Step{newPassStep(types.StepTest)}, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepTest})
+
+	err = exec.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "cannot skip required step test") {
+		t.Fatalf("fleet configured skip error = %v", err)
 	}
 }
