@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -12,12 +13,12 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "", "")
+	args := ca.buildArgs("", "")
 
 	// Default (no opt-out): pristine args, no project-doc suppression - ordinary
 	// repos keep loading AGENTS.md (backward-compat).
 	expected := []string{
-		"exec", "fix the bug",
+		"exec", "-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -35,12 +36,12 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "", "")
+	args := ca.buildArgs("", "")
 
 	expected := []string{
 		"exec",
 		"-m", "gpt-5.4",
-		"fix it",
+		"-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -64,7 +65,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "", "")
+		args := ca.buildArgs("", "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -84,10 +85,10 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json", "")
+	args := ca.buildArgs("/tmp/schema.json", "")
 
 	want := []string{
-		"exec", "review",
+		"exec", "-",
 		"--json",
 		"--output-schema", "/tmp/schema.json",
 		"--dangerously-bypass-approvals-and-sandbox",
@@ -100,6 +101,58 @@ func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 		if args[i] != want[i] {
 			t.Fatalf("arg[%d]: expected %q, got %q in %v", i, want[i], args[i], args)
 		}
+	}
+}
+
+func TestCodexAgent_RunStreamsLargePromptThroughStdin(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+dir=$(dirname "$0")
+: > "$dir/args.txt"
+for arg do
+  printf '%s\n' "$arg" >> "$dir/args.txt"
+done
+cat > "$dir/stdin.txt"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, strings.Join([]string{
+		"@echo off",
+		"setlocal",
+		"set \"dir=%~dp0\"",
+		"if exist \"%dir%args.txt\" del \"%dir%args.txt\"",
+		":loop",
+		"if \"%~1\"==\"\" goto done",
+		">> \"%dir%args.txt\" echo(%~1",
+		"shift",
+		"goto loop",
+		":done",
+		"more > \"%dir%stdin.txt\"",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
+	}, "\r\n"))
+
+	prompt := strings.Repeat("large-prompt-", 20_000)
+	ca := &codexAgent{bin: bin}
+	if _, err := ca.Run(context.Background(), RunOpts{Prompt: prompt, CWD: t.TempDir()}); err != nil {
+		t.Fatalf("run large prompt: %v", err)
+	}
+
+	stdin, err := os.ReadFile(filepath.Join(dir, "stdin.txt"))
+	if err != nil {
+		t.Fatalf("read captured stdin: %v", err)
+	}
+	if string(stdin) != prompt {
+		t.Fatalf("stdin prompt length = %d, want exact %d-byte prompt", len(stdin), len(prompt))
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if bytes.Contains(args, []byte(prompt)) {
+		t.Fatal("large prompt leaked into argv")
+	}
+	if !strings.Contains(strings.ReplaceAll(string(args), "\r\n", "\n"), "\n-\n") {
+		t.Fatalf("argv does not contain stdin prompt marker: %q", args)
 	}
 }
 
@@ -485,7 +538,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 // suppression knobs are emitted under the opt-out.
 func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("review the diff", "", "")
+	args := ca.buildArgs("", "")
 	if !argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, want a `-c project_doc_max_bytes=0` pair", args)
 	}
@@ -499,7 +552,7 @@ func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 // exactly as before.
 func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review the diff", "", "")
+	args := ca.buildArgs("", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") || argsContain(args, "--ignore-rules") {
 		t.Errorf("buildArgs = %v, must add no suppression when the repo did not opt out", args)
 	}
@@ -510,7 +563,7 @@ func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 // but still accepts the global -c and --ignore-rules.
 func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("rereview", "", "thread-123")
+	args := ca.buildArgs("", "thread-123")
 	if args[0] != "exec" || args[1] != "resume" || args[2] != "thread-123" {
 		t.Fatalf("resume positional prefix disturbed: %v", args)
 	}
@@ -523,7 +576,7 @@ func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 // pinned their own project_doc_max_bytes is not double-set even under opt-out.
 func TestCodexAgent_BuildArgs_UserProjectDocOverrideWins(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true, extraArgs: []string{"-c", "project_doc_max_bytes=4096"}}
-	args := ca.buildArgs("p", "", "")
+	args := ca.buildArgs("", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, must not add project_doc_max_bytes=0 over a user pin", args)
 	}
