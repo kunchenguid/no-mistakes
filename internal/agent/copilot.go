@@ -14,7 +14,7 @@ import (
 )
 
 // copilotAgent spawns the GitHub Copilot CLI for each invocation. Copilot
-// runs non-interactively with `copilot -p <prompt> --output-format json`,
+// runs non-interactively with the prompt on stdin and `--output-format json`,
 // emitting JSONL events on stdout. The lifecycle is codex/pi-shaped: one
 // process per Run, no managed server.
 type copilotAgent struct {
@@ -36,10 +36,10 @@ func (a *copilotAgent) Close() error { return nil }
 
 func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	prompt := buildCopilotPrompt(opts.Prompt, opts.JSONSchema)
-	args := a.buildArgs(prompt)
+	args := a.buildArgs()
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -143,11 +143,10 @@ func copilotErrorDetail(copilotErr, stderr string) string {
 // supplied their own permission flag, the default --allow-all-tools is not
 // added; --no-ask-user is always added so the agent never blocks waiting for
 // interactive input.
-func (a *copilotAgent) buildArgs(prompt string) []string {
-	args := make([]string, 0, len(a.extraArgs)+8)
+func (a *copilotAgent) buildArgs() []string {
+	args := make([]string, 0, len(a.extraArgs)+6)
 	args = append(args, a.extraArgs...)
 	args = append(args,
-		"-p", prompt,
 		"--output-format", "json",
 		"--no-color",
 	)

@@ -56,12 +56,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	pid := started.pid()
 	emitAgentStarted(opts, a.Name(), pid)
 
-	stdinErrCh := make(chan error, 1)
-	go func() {
-		_, writeErr := io.WriteString(stdin, prompt)
-		closeErr := stdin.Close()
-		stdinErrCh <- errors.Join(writeErr, closeErr)
-	}()
+	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
