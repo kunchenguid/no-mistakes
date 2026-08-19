@@ -368,11 +368,12 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 		case "turn.completed":
 			if event.Usage != nil {
 				usage.Add(TokenUsage{
-					InputTokens:     event.Usage.InputTokens,
-					OutputTokens:    event.Usage.OutputTokens,
-					CacheReadTokens: event.Usage.CachedInputTokens,
-					ReasoningTokens: event.Usage.ReasoningOutputToks,
-					Reported:        true,
+					InputTokens:       event.Usage.InputTokens,
+					OutputTokens:      event.Usage.OutputTokens,
+					CacheReadTokens:   event.Usage.CachedInputTokens,
+					ReasoningTokens:   event.Usage.ReasoningOutputToks,
+					ReasoningReported: true,
+					Reported:          true,
 				})
 			}
 		}

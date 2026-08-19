@@ -18,6 +18,7 @@ func TestSupportsSessionResume_PerAdapter(t *testing.T) {
 	}{
 		{"claude", &claudeAgent{bin: "claude"}, true},
 		{"codex", &codexAgent{bin: "codex"}, true},
+		{"grok", &grokAgent{bin: "grok"}, true},
 		{"rovodev", &rovodevAgent{bin: "acli"}, false},
 		{"opencode", &opencodeAgent{bin: "opencode"}, false},
 		{"pi", &piAgent{bin: "pi"}, false},

@@ -30,7 +30,7 @@ type Action struct {
 	Match string `yaml:"match"`
 
 	// Structured is the JSON body returned in the structured-output slot
-	// (claude.result.structured_output, opencode.info.structured, or the
+	// (claude/grok result.structured_output, opencode.info.structured, or the
 	// agent_message.text payload for codex). Encoded back to JSON when
 	// emitted, so YAML authors can write it inline without escaping.
 	Structured map[string]any `yaml:"structured,omitempty"`

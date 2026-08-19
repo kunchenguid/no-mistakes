@@ -43,6 +43,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | --- | --- | --- |
 | Claude | `claude` | Subprocess per invocation, JSONL streaming |
 | Codex | `codex` | Subprocess per invocation, JSONL events |
+| Grok Build | `grok` | Subprocess per invocation, Messages-compatible JSONL streaming |
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
@@ -111,7 +112,7 @@ Repo config takes precedence over global config.
 
 ```yaml
 # ~/.no-mistakes/config.yaml or .no-mistakes.yaml
-agent: [codex, claude]
+agent: [codex, grok]
 ```
 
 ### Optional ACP target
@@ -201,7 +202,7 @@ Five global config fields tune resolution and invocation, and the [Global Config
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude and Codex keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
+With the default `session_reuse: true`, Claude, Codex, and Grok keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
 Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
@@ -226,7 +227,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -264,6 +265,12 @@ Spawns a `codex` subprocess for each invocation with `exec --json`. When structu
 Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
 For review-fixer reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
 That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh fixer session rather than skipping the fix turn.
+
+## Grok Build
+
+Spawns a `grok` subprocess for each invocation using a permission-restricted prompt file and `--output-format streaming-messages-json`. Native structured output is requested with `--json-schema`; the terminal `structured_output`, session identity, model, and usage fields are read from the Messages-compatible result event. Review-loop reuse resumes the reported Grok session with `--resume`.
+No Mistakes deliberately emits no `-m` or `--model` flag, so Grok uses its current configured default model. Put an explicit model or reasoning override under global `agent_args_override.grok` only when you want to pin it.
+Grok's complete `--system-prompt-override` and compatible-vendor discovery switches are applied as defense in depth when trusted repo policy enables `disable_project_settings`. Native Grok project instructions and `.grok` project surfaces are still discovered by Grok 1.0.5, so No Mistakes deliberately does not claim verified suppression: a configuration that resolves Grok while `disable_project_settings: true` fails closed before launching it. System-prompt, alternate-agent, working-directory, worktree, and restore flags are reserved so global overrides cannot redirect the managed invocation.
 
 ## Rovo Dev
 
@@ -321,6 +328,7 @@ $ no-mistakes doctor
   ✓ daemon running
   ✓ claude
   – codex (not found)
+  – grok (not found)
   – rovodev (not found)
   – opencode (not found)
   – pi (not found)

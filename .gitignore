@@ -1,6 +1,7 @@
 # Build output
 bin/
 tmp/
+.tmp/
 
 # Go
 *.exe
