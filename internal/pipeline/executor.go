@@ -1065,6 +1065,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		switch response.action {
 		case types.ActionApprove:
+			if validator, ok := step.(ApprovalGateValidator); ok {
+				if err := validator.ValidateApprovalGate(sctx); err != nil {
+					return false, fmt.Errorf("validate %s approval: %w", stepName, err)
+				}
+			}
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
 			phaseStart = time.Now()

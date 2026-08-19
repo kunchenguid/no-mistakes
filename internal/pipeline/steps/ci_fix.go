@@ -179,6 +179,9 @@ func assertFleetTerminalCertification(sctx *pipeline.StepContext, host scm.Host,
 	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
 		return fmt.Errorf("refusing terminal PR state: run has no durably recorded certified head")
 	}
+	if err := assertCleanExactHead(sctx, strings.TrimSpace(*run.CertifiedHeadSHA), "terminal PR state"); err != nil {
+		return err
+	}
 	if run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
 		return fmt.Errorf("refusing terminal PR state: certified head was not exactly published")
 	}

@@ -26,7 +26,7 @@ type StepContext struct {
 	LogFile               func(string) // file-only log callback (not shown to user)
 	Fixing                bool         // true when re-executing after a "fix" action
 	RequireFixMutation    bool
-	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
+	SkipFixExecution      bool // replay an already-completed fix round's review turn only
 	ReviewStartingHeadSHA string
 	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)
 	// StepResultID is the DB row ID of the current step's step_results record.
@@ -118,7 +118,7 @@ type ReviewFleetSettings struct {
 	Certifier    ReviewProfile
 	// CodexExecutable is resolved once to a canonical absolute path before a
 	// run starts, then used unchanged for fingerprinting and every invocation.
-	CodexExecutable string
+	CodexExecutable       string
 	CodexExecutableDigest string
 	// CodexProfileArgs must return safe, profile-specific Codex arguments. The
 	// executor adds the final read-only/project-settings protections as a second
@@ -191,4 +191,8 @@ type Step interface {
 // leaves the gate parked. Implementations must be read-only and fail closed.
 type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
+}
+
+type ApprovalGateValidator interface {
+	ValidateApprovalGate(sctx *StepContext) error
 }

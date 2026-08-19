@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,41 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type approvalValidatingStep struct {
+	*mockStep
+	err error
+}
+
+func (s *approvalValidatingStep) ValidateApprovalGate(*StepContext) error { return s.err }
+
+func TestExecutor_ApprovalValidatesGateImmediatelyBeforeCompletion(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &approvalValidatingStep{
+		mockStep: newApprovalStep(types.StepCI, `{"findings":[{"severity":"warning","action":"ask-user"}]}`),
+		err:      errors.New("published candidate changed"),
+	}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitExecutor(t, done); err == nil || !strings.Contains(err.Error(), "published candidate changed") {
+		t.Fatalf("approval bypassed validation: %v", err)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("step results = %d, want 1", len(results))
+	}
+	if results[0].Status == types.StepStatusCompleted {
+		t.Fatal("approval completed a gate whose validation failed")
+	}
+}
 
 func TestExecutor_ApprovalFix(t *testing.T) {
 	database, p, run, repo := setupTest(t)

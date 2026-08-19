@@ -60,6 +60,38 @@ func ciAutoFixLimit(sctx *pipeline.StepContext) int {
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
 
+func (s *CIStep) ValidateApprovalGate(sctx *pipeline.StepContext) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if err := assertCertifiedRemoteHead(sctx); err != nil {
+		return err
+	}
+	provider := scm.DetectProviderContext(sctx.Ctx, sctx.Repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
+		provider = scm.DetectProviderContext(sctx.Ctx, *sctx.Run.PRURL)
+	}
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		return fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		return fmt.Errorf("review fleet requires available CI provider: %w", err)
+	}
+	if sctx.Run.PRURL == nil || strings.TrimSpace(*sctx.Run.PRURL) == "" {
+		return fmt.Errorf("review fleet requires a pull request URL for CI approval")
+	}
+	prURL := strings.TrimSpace(*sctx.Run.PRURL)
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return fmt.Errorf("extract PR number: %w", err)
+	}
+	if err := assertFleetTerminalCertification(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
+		return fmt.Errorf("verify certified PR source commit before approval: %w", err)
+	}
+	return nil
+}
+
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
 // recorded; either terminal state supersedes the stale gate just as it does in
