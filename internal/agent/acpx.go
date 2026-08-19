@@ -90,6 +90,9 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		return nil, retErr
 	}
 	if stdinErr != nil {
+		if out := acpxProcessErrorOutput(stderrBuf, stdoutErr); out != "" {
+			stdinErr = fmt.Errorf("%w: %s", stdinErr, out)
+		}
 		emitAgentExited(opts, a.Name(), pid, stdinErr)
 		return nil, stdinErr
 	}

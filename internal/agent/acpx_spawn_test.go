@@ -141,6 +141,7 @@ func TestAcpxAgent_Run_SurfacesStdinWriteFailure(t *testing.T) {
 	stub := filepath.Join(dir, "acpx")
 	script := `#!/bin/sh
 printf '{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"early reply"}}}\n'
+printf 'acpx: unknown option --file\n' >&2
 `
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -152,5 +153,8 @@ printf '{"method":"session/update","params":{"update":{"sessionUpdate":"agent_me
 	_, err := a.Run(ctx, RunOpts{Prompt: strings.Repeat("x", 2*1024*1024), CWD: dir})
 	if err == nil || !strings.Contains(err.Error(), "acpx stdin") {
 		t.Fatalf("Run error = %v, want acpx stdin write failure", err)
+	}
+	if !strings.Contains(err.Error(), "unknown option --file") {
+		t.Fatalf("Run error = %v, want child stderr in stdin write failure", err)
 	}
 }
