@@ -221,7 +221,7 @@ If your upstream isn't GitHub, GitLab, Bitbucket Cloud, or Azure DevOps:
 - The **PR** step marks itself as `skipped`.
 - The **CI** step marks itself as `skipped`.
 
-Everything before push (rebase, review, test, document, lint, and the final certification check) still works regardless of host. If your host has a CLI that exposes CI status and PR state, open an issue - new providers are straightforward to add.
+Everything before push (rebase, review, test, document, lint, and the fleet-only final certification check) still works regardless of host. If your host has a CLI that exposes CI status and PR state, open an issue - new providers are straightforward to add.
 
 ## Checking what's wired up
 

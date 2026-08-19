@@ -18,7 +18,7 @@ import (
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
-	if sctx != nil && sctx.Run != nil && sctx.Run.ReviewFleetEnabled {
+	if ciFleetRun(sctx) {
 		return false, fmt.Errorf("CI auto-fix is unavailable for a certified review-fleet run")
 	}
 	ctx := sctx.Ctx
@@ -124,7 +124,7 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
-	if sctx != nil && sctx.Run != nil && sctx.Run.ReviewFleetEnabled {
+	if ciFleetRun(sctx) {
 		return false, fmt.Errorf("CI auto-push is unavailable for a certified review-fleet run")
 	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
@@ -152,6 +152,20 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	}
 
 	return s.pushUpdatedHeadSHA(sctx, headSHA)
+}
+
+func ciFleetRun(sctx *pipeline.StepContext) bool {
+	if sctx == nil || sctx.Run == nil {
+		return false
+	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		return true
+	}
+	if sctx.DB == nil {
+		return false
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	return err == nil && run != nil && (run.ReviewFleetEnabled || run.CertifiedHeadSHA != nil)
 }
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
