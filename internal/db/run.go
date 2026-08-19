@@ -511,9 +511,9 @@ func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
 }
 
 type RunHeadTransition struct {
-	FromSHA   string
-	ToSHA     string
-	Producer  string
+	FromSHA     string
+	ToSHA       string
+	Producer    string
 	Fingerprint string
 }
 

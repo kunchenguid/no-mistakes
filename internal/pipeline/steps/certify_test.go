@@ -164,7 +164,12 @@ func TestCertificationChangeManifestIncludesBothRenamePaths(t *testing.T) {
 func TestCertifyStepDefersPipelineOwnedDeliveryFindings(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: mustJSON(t, Findings{Items: []Finding{{Severity: "error", Action: "ask-user", ReviewScope: "pipeline-owned-delivery", Description: "PR does not exist yet"}}})}, nil
+		return &agent.Result{Output: mustJSON(t, Findings{
+			Items:         []Finding{{Severity: "error", Action: "ask-user", ReviewScope: "pipeline-owned-delivery", Description: "PR does not exist yet"}},
+			RiskLevel:     "high",
+			RiskRationale: "delivery evidence is not available before push",
+			RiskScope:     "pipeline-owned-delivery",
+		})}, nil
 	}}
 	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
 	withReviewFleetEnabled(t, sctx, true)

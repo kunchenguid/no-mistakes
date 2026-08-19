@@ -74,12 +74,14 @@ func TestRecoveredFleetRequiresExactOriginalContract(t *testing.T) {
 func TestExecutor_CertifyAuthorityOnlyCompletesOrIsExplicitlyApproved(t *testing.T) {
 	t.Run("completed", func(t *testing.T) {
 		database, p, run, repo := setupTest(t)
-		step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{CertifiedHeadSHA: testCertifiedHead}}
+		workDir, candidate := setupCertificationApprovalWorktree(t)
+		bindCertificationRunHead(t, database, run, candidate)
+		step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{CertifiedHeadSHA: candidate}}
 		exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
-		if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 			t.Fatal(err)
 		}
-		assertCertifiedHead(t, database, run.ID, testCertifiedHead)
+		assertCertifiedHead(t, database, run.ID, candidate)
 	})
 
 	t.Run("parked then skipped", func(t *testing.T) {
@@ -154,6 +156,7 @@ func TestExecutor_CertifyAuthorityOnlyCompletesOrIsExplicitlyApproved(t *testing
 func TestExecutor_ApprovedCertifyGateBindsExactCandidate(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir, candidate := setupCertificationApprovalWorktree(t)
+	bindCertificationRunHead(t, database, run, candidate)
 	step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{
 		NeedsApproval:    true,
 		CertifiedHeadSHA: candidate,
@@ -175,6 +178,7 @@ func TestExecutor_ApprovedCertifyGateBindsExactCandidate(t *testing.T) {
 func TestExecutor_ApprovedCertifyGateRejectsChangedCandidate(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir, candidate := setupCertificationApprovalWorktree(t)
+	bindCertificationRunHead(t, database, run, candidate)
 	step := &mockStep{name: types.StepCertify, outcome: &StepOutcome{
 		NeedsApproval:    true,
 		CertifiedHeadSHA: candidate,
@@ -223,6 +227,14 @@ func setupCertificationApprovalWorktree(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	return workDir, head
+}
+
+func bindCertificationRunHead(t *testing.T, database *db.DB, run *db.Run, head string) {
+	t.Helper()
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	run.HeadSHA = head
 }
 
 func assertCertifiedHead(t *testing.T, database interface {

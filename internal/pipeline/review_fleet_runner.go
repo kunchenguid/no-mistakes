@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -447,14 +448,20 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	if r == nil || r.cfg == nil || r.settings == nil {
 		return nil, fmt.Errorf("review fleet runner is not configured")
 	}
-	invocation := *r
-	invocation.mu = sync.Mutex{}
-	invocation.sandboxRoot = ""
-	invocation.checkoutDir = ""
-	invocation.homeDir = ""
-	invocation.codexHome = ""
-	invocation.sandboxHead = ""
-	invocation.closed = false
+	invocation := reviewProfileRunner{
+		cfg:             r.cfg,
+		settings:        r.settings,
+		db:              r.db,
+		runID:           r.runID,
+		stepName:        r.stepName,
+		round:           r.round,
+		workDir:         r.workDir,
+		evidenceRoot:    r.evidenceRoot,
+		onLifecycle:     r.onLifecycle,
+		sourceCodexHome: r.sourceCodexHome,
+		baseSHA:         r.baseSHA,
+		defaultBranch:   r.defaultBranch,
+	}
 	defer invocation.Close()
 	return invocation.run(ctx, profile, opts)
 }
@@ -891,17 +898,35 @@ func (r *reviewProfileRunner) Close() {
 
 func (r *reviewProfileRunner) removeSandboxLocked() error {
 	root := r.sandboxRoot
+	if root == "" {
+		return nil
+	}
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		mode := fs.FileMode(0o600)
+		if entry.IsDir() {
+			mode = 0o700
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("make review fleet sandbox removable: %w", err)
+		}
+		return nil
+	}); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return fmt.Errorf("remove review fleet isolation root: %w", err)
+	}
 	r.sandboxRoot = ""
 	r.checkoutDir = ""
 	r.homeDir = ""
 	r.codexHome = ""
 	r.sandboxHead = ""
-	if root == "" {
-		return nil
-	}
-	if err := os.RemoveAll(root); err != nil {
-		return fmt.Errorf("remove review fleet isolation root: %w", err)
-	}
 	return nil
 }
 

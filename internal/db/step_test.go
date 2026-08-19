@@ -315,12 +315,21 @@ func TestCompleteCertifyStepIsAtomic(t *testing.T) {
 		t.Fatalf("failed certify transaction mutated state: step=%#v run=%#v", gotStep, gotRun)
 	}
 
-	if err := d.CompleteCertifyStep(step.ID, run.ID, "certified", 0, 10, "certify.log"); err != nil {
+	if err := d.CompleteCertifyStep(step.ID, run.ID, "stale-head", 0, 10, "certify.log"); err == nil {
+		t.Fatal("expected stale certified head to roll back certify completion")
+	}
+	gotStep, _ = d.GetStepResult(step.ID)
+	gotRun, _ = d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusPending || gotRun.CertifiedHeadSHA != nil {
+		t.Fatalf("stale-head transaction mutated state: step=%#v run=%#v", gotStep, gotRun)
+	}
+
+	if err := d.CompleteCertifyStep(step.ID, run.ID, run.HeadSHA, 0, 10, "certify.log"); err != nil {
 		t.Fatalf("complete certify step: %v", err)
 	}
 	gotStep, _ = d.GetStepResult(step.ID)
 	gotRun, _ = d.GetRun(run.ID)
-	if gotStep.Status != types.StepStatusCompleted || gotRun.CertifiedHeadSHA == nil || *gotRun.CertifiedHeadSHA != "certified" {
+	if gotStep.Status != types.StepStatusCompleted || gotRun.CertifiedHeadSHA == nil || *gotRun.CertifiedHeadSHA != run.HeadSHA {
 		t.Fatalf("successful certify transaction = step=%#v run=%#v", gotStep, gotRun)
 	}
 }
