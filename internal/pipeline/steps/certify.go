@@ -211,6 +211,21 @@ func finalizeWorktreeForFleetGates(sctx *pipeline.StepContext) (string, error) {
 		if err := requireCommitParent(sctx, head, sctx.Run.HeadSHA, types.StepTest); err != nil {
 			return "", err
 		}
+		branchRef := normalizedBranchRef(sctx.Run.Branch)
+		expectedBranchHead := sctx.Run.HeadSHA
+		symbolicHeadRef, symbolicHeadErr := git.Run(sctx.Ctx, sctx.WorkDir, "symbolic-ref", "-q", "HEAD")
+		if symbolicHeadErr == nil {
+			if strings.TrimSpace(symbolicHeadRef) != branchRef {
+				return "", fmt.Errorf("refusing certification finalization: checked-out branch %s does not match recorded branch %s", strings.TrimSpace(symbolicHeadRef), branchRef)
+			}
+			expectedBranchHead = head
+		}
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "update-ref", branchRef, head, expectedBranchHead); err != nil {
+			return "", fmt.Errorf("advance recorded branch after certification finalization: %w", err)
+		}
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "HEAD", head, head); err != nil {
+			return "", fmt.Errorf("verify checked-out ref after certification finalization: %w", err)
+		}
 		if err := advanceFleetRunHead(sctx, types.StepTest, sctx.Run.HeadSHA, head); err != nil {
 			return "", err
 		}

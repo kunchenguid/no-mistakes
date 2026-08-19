@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -85,6 +86,57 @@ func RunRawWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []stri
 		return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
 	}
 	return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+}
+
+func ForEachNULRecordWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args []string, visit func([]byte) error) error {
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return err
+	}
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, gitPath, args...)
+	cmd.Dir = dir
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("create git stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	winproc.Harden(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start git %s: %w", safeurl.RedactText(strings.Join(args, " ")), err)
+	}
+	reader := bufio.NewReader(stdout)
+	for {
+		record, readErr := reader.ReadBytes(0)
+		if len(record) > 0 {
+			if record[len(record)-1] != 0 {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return fmt.Errorf("git %s emitted an unterminated NUL record", safeurl.RedactText(strings.Join(args, " ")))
+			}
+			if err := visit(record[:len(record)-1]); err != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("read git %s output: %w", safeurl.RedactText(strings.Join(args, " ")), readErr)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
+	}
+	return nil
 }
 
 func CopyBlobWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, object string, dst io.Writer) error {

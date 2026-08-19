@@ -810,7 +810,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var runReviewProfile ReviewProfileRunner
 	var profileRunner *reviewProfileRunner
 	if (stepName == types.StepReview || stepName == types.StepCertify) && e.reviewFleet != nil && e.reviewFleet.Enabled {
-		profileRunner = e.newReviewProfileRunner(run, stepName, func() int { return roundNum + 1 }, onAgentLifecycle)
+		profileRunner = e.newReviewProfileRunner(run, repo, stepName, func() int { return roundNum + 1 }, onAgentLifecycle)
 		if profileRunner != nil {
 			defer profileRunner.Close()
 			runReviewProfile = profileRunner.Run

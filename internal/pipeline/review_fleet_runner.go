@@ -31,7 +31,9 @@ const (
 	reviewFleetMaxRuntimeLogBytes = 2048
 	reviewFleetMaxExportFileBytes  = 8 * 1024 * 1024
 	reviewFleetMaxExportTotalBytes = 64 * 1024 * 1024
-	reviewFleetMaxReviewDataBytes = 8 * 1024 * 1024
+	reviewFleetMaxExportEntries     = 100000
+	reviewFleetMaxTreeMetadataBytes = 32 * 1024 * 1024
+	reviewFleetMaxReviewDataBytes   = 8 * 1024 * 1024
 )
 
 const reviewFleetContractVersion = 1
@@ -375,6 +377,7 @@ type reviewProfileRunner struct {
 	onLifecycle     func(agent.LifecycleEvent)
 	sourceCodexHome string
 	baseSHA         string
+	defaultBranch   string
 
 	mu          sync.Mutex
 	sandboxRoot string
@@ -385,8 +388,8 @@ type reviewProfileRunner struct {
 	closed      bool
 }
 
-func (e *Executor) newReviewProfileRunner(run *db.Run, stepName types.StepName, round func() int, onLifecycle func(agent.LifecycleEvent)) *reviewProfileRunner {
-	if e == nil || e.reviewFleet == nil || !e.reviewFleet.Enabled || e.config == nil || run == nil {
+func (e *Executor) newReviewProfileRunner(run *db.Run, repo *db.Repo, stepName types.StepName, round func() int, onLifecycle func(agent.LifecycleEvent)) *reviewProfileRunner {
+	if e == nil || e.reviewFleet == nil || !e.reviewFleet.Enabled || e.config == nil || run == nil || repo == nil {
 		return nil
 	}
 	runner := &reviewProfileRunner{
@@ -401,6 +404,7 @@ func (e *Executor) newReviewProfileRunner(run *db.Run, stepName types.StepName, 
 		onLifecycle:     onLifecycle,
 		sourceCodexHome: reviewFleetSourceCodexHome(),
 		baseSHA:         run.BaseSHA,
+		defaultBranch:   repo.DefaultBranch,
 	}
 	return runner
 }
@@ -592,17 +596,17 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 }
 
 func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) error {
-	tree, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "ls-tree", "-r", "-z", "--full-tree", head)
-	if err != nil {
-		return fmt.Errorf("list review fleet source tree: %w", err)
-	}
 	if err := os.MkdirAll(r.checkoutDir, 0o700); err != nil {
 		return fmt.Errorf("create review fleet source export: %w", err)
 	}
 	var total int64
-	for _, entry := range bytes.Split(tree, []byte{0}) {
-		if len(entry) == 0 {
-			continue
+	entries := 0
+	metadataBytes := 0
+	err := git.ForEachNULRecordWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), []string{"ls-tree", "-r", "-z", "--full-tree", head}, func(entry []byte) error {
+		entries++
+		metadataBytes += len(entry)
+		if entries > reviewFleetMaxExportEntries || metadataBytes > reviewFleetMaxTreeMetadataBytes {
+			return fmt.Errorf("review fleet source export exceeds bounded entry policy")
 		}
 		metadata, path, ok := bytes.Cut(entry, []byte{'\t'})
 		if !ok {
@@ -647,6 +651,10 @@ func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) er
 			return fmt.Errorf("close review fleet export file: %w", closeErr)
 		}
 		total += size
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("list review fleet source tree: %w", err)
 	}
 	if err := r.writeReviewArtifacts(ctx, head); err != nil {
 		return err
@@ -655,14 +663,7 @@ func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) er
 }
 
 func (r *reviewProfileRunner) writeReviewArtifacts(ctx context.Context, head string) error {
-	base := strings.TrimSpace(r.baseSHA)
-	if base == "" {
-		var err error
-		base, err = r.reviewFleetGitRun(ctx, r.workDir, "rev-parse", head+"^")
-		if err != nil {
-			return fmt.Errorf("resolve review fleet diff base: %w", err)
-		}
-	}
+	base := r.resolveArtifactBase(ctx, head)
 	args := []string{"diff", "--no-ext-diff", "--binary", base + ".." + head, "--", ".", ":(exclude).agents/skills/**", ":(exclude).codex/**"}
 	diff, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), args...)
 	if err != nil {
@@ -689,6 +690,23 @@ func (r *reviewProfileRunner) writeReviewArtifacts(ctx context.Context, head str
 		return fmt.Errorf("write review fleet history artifact: %w", err)
 	}
 	return nil
+}
+
+func (r *reviewProfileRunner) resolveArtifactBase(ctx context.Context, head string) string {
+	for _, ref := range []string{"origin/" + strings.TrimSpace(r.defaultBranch), strings.TrimSpace(r.defaultBranch)} {
+		if strings.TrimSpace(ref) == "" || ref == "origin/" {
+			continue
+		}
+		base, err := r.reviewFleetGitRun(ctx, r.workDir, "merge-base", head, ref)
+		if err == nil && strings.TrimSpace(base) != "" {
+			return strings.TrimSpace(base)
+		}
+	}
+	base := strings.TrimSpace(r.baseSHA)
+	if base != "" && !git.IsZeroSHA(base) {
+		return base
+	}
+	return git.EmptyTreeSHA
 }
 
 func sealReviewFleetExport(root string) error {
