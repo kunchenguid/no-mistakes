@@ -1,9 +1,11 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +85,24 @@ func RunRawWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []stri
 		return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
 	}
 	return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+}
+
+func CopyBlobWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, object string, dst io.Writer) error {
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, "cat-file", "blob", object)
+	cmd.Dir = dir
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
+	cmd.Stdout = dst
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	winproc.Harden(cmd)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git cat-file blob: %w: %s", err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
+	}
+	return nil
 }
 
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {

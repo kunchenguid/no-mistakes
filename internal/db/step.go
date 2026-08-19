@@ -277,12 +277,12 @@ func (d *DB) CompleteCertifyStep(id, runID, certifiedHeadSHA string, exitCode in
 	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 		return fmt.Errorf("complete certify step: step row not found")
 	}
-	result, err = tx.Exec(`UPDATE runs SET certified_head_sha = ?, updated_at = ? WHERE id = ?`, certifiedHeadSHA, ts, runID)
+	result, err = tx.Exec(`UPDATE runs SET certified_head_sha = ?, updated_at = ? WHERE id = ? AND head_sha = ?`, certifiedHeadSHA, ts, runID, certifiedHeadSHA)
 	if err != nil {
 		return fmt.Errorf("record certified head: %w", err)
 	}
 	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
-		return fmt.Errorf("record certified head: run row not found")
+		return fmt.Errorf("record certified head: run head changed before certification completion")
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit certified step: %w", err)

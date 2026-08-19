@@ -29,6 +29,9 @@ const (
 	reviewFleetMaxArgBytes        = 4096
 	reviewFleetMaxAuthBytes       = 4 * 1024 * 1024
 	reviewFleetMaxRuntimeLogBytes = 2048
+	reviewFleetMaxExportFileBytes  = 8 * 1024 * 1024
+	reviewFleetMaxExportTotalBytes = 64 * 1024 * 1024
+	reviewFleetMaxReviewDataBytes = 8 * 1024 * 1024
 )
 
 const reviewFleetContractVersion = 1
@@ -371,6 +374,7 @@ type reviewProfileRunner struct {
 	evidenceRoot    string
 	onLifecycle     func(agent.LifecycleEvent)
 	sourceCodexHome string
+	baseSHA         string
 
 	mu          sync.Mutex
 	sandboxRoot string
@@ -396,6 +400,7 @@ func (e *Executor) newReviewProfileRunner(run *db.Run, stepName types.StepName, 
 		evidenceRoot:    e.runEvidenceDir(run.ID),
 		onLifecycle:     onLifecycle,
 		sourceCodexHome: reviewFleetSourceCodexHome(),
+		baseSHA:         run.BaseSHA,
 	}
 	return runner
 }
@@ -594,6 +599,7 @@ func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) er
 	if err := os.MkdirAll(r.checkoutDir, 0o700); err != nil {
 		return fmt.Errorf("create review fleet source export: %w", err)
 	}
+	var total int64
 	for _, entry := range bytes.Split(tree, []byte{0}) {
 		if len(entry) == 0 {
 			continue
@@ -613,19 +619,76 @@ func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) er
 		if reviewFleetExcludedExportPath(relative) {
 			continue
 		}
+		sizeText, err := git.RunWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "cat-file", "-s", string(fields[2]))
+		if err != nil {
+			return fmt.Errorf("size review fleet source blob %q: %w", relative, err)
+		}
+		var size int64
+		if _, err := fmt.Sscan(strings.TrimSpace(sizeText), &size); err != nil || size < 0 {
+			return fmt.Errorf("read review fleet source blob size %q", relative)
+		}
+		if size > reviewFleetMaxExportFileBytes || total+size > reviewFleetMaxExportTotalBytes {
+			return fmt.Errorf("review fleet source export exceeds bounded size policy at %q", relative)
+		}
 		target := filepath.Join(r.checkoutDir, relative)
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return fmt.Errorf("create review fleet export parent: %w", err)
 		}
-		contents, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "cat-file", "blob", string(fields[2]))
+		file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
-			return fmt.Errorf("read review fleet source blob %q: %w", relative, err)
+			return fmt.Errorf("create review fleet export file: %w", err)
 		}
-		if err := os.WriteFile(target, contents, 0o600); err != nil {
-			return fmt.Errorf("write review fleet export file: %w", err)
+		copyErr := git.CopyBlobWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), string(fields[2]), file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return fmt.Errorf("read review fleet source blob %q: %w", relative, copyErr)
 		}
+		if closeErr != nil {
+			return fmt.Errorf("close review fleet export file: %w", closeErr)
+		}
+		total += size
+	}
+	if err := r.writeReviewArtifacts(ctx, head); err != nil {
+		return err
 	}
 	return sealReviewFleetExport(r.checkoutDir)
+}
+
+func (r *reviewProfileRunner) writeReviewArtifacts(ctx context.Context, head string) error {
+	base := strings.TrimSpace(r.baseSHA)
+	if base == "" {
+		var err error
+		base, err = r.reviewFleetGitRun(ctx, r.workDir, "rev-parse", head+"^")
+		if err != nil {
+			return fmt.Errorf("resolve review fleet diff base: %w", err)
+		}
+	}
+	args := []string{"diff", "--no-ext-diff", "--binary", base + ".." + head, "--", ".", ":(exclude).agents/skills/**", ":(exclude).codex/**"}
+	diff, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), args...)
+	if err != nil {
+		return fmt.Errorf("create review fleet diff artifact: %w", err)
+	}
+	if len(diff) > reviewFleetMaxReviewDataBytes {
+		return fmt.Errorf("review fleet diff artifact exceeds %d bytes", reviewFleetMaxReviewDataBytes)
+	}
+	history, err := r.reviewFleetGitRun(ctx, r.workDir, "log", "--format=%H%x09%P%x09%s", "-n", "32", base+".."+head)
+	if err != nil {
+		return fmt.Errorf("create review fleet history artifact: %w", err)
+	}
+	if len(history) > reviewFleetMaxReviewDataBytes {
+		return fmt.Errorf("review fleet history artifact exceeds %d bytes", reviewFleetMaxReviewDataBytes)
+	}
+	artifactDir := filepath.Join(r.checkoutDir, ".review-fleet")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		return fmt.Errorf("create review fleet artifact directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "base-to-target.diff"), diff, 0o600); err != nil {
+		return fmt.Errorf("write review fleet diff artifact: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "history.txt"), []byte(history+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write review fleet history artifact: %w", err)
+	}
+	return nil
 }
 
 func sealReviewFleetExport(root string) error {

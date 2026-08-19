@@ -174,7 +174,7 @@ Previous lint findings to address:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
-			AutoFixable:   true,
+			AutoFixable:   !ciFleetRun(sctx),
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 			FixSummary:    fixSummary,

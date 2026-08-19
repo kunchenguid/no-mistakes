@@ -868,7 +868,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
 	var certifiedHeadSHA string
-	certifyApprovalRequired := false
 
 	// Execute with possible fix loop
 	for {
@@ -899,7 +898,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		if stepName == types.StepCertify {
 			certifiedHeadSHA = outcome.CertifiedHeadSHA
-			certifyApprovalRequired = outcome.NeedsApproval || hasAskUserFindingsJSON(outcome.Findings)
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		finalExitCode = outcome.ExitCode
@@ -1148,10 +1146,8 @@ done:
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 	} else if stepName == types.StepCertify && status == types.StepStatusCompleted && certifiedHeadSHA != "" {
-		if certifyApprovalRequired {
-			if err := assertCertifiedApprovalHead(ctx, workDir, certifiedHeadSHA); err != nil {
-				return false, err
-			}
+		if err := assertCertifiedApprovalHead(ctx, workDir, certifiedHeadSHA); err != nil {
+			return false, err
 		}
 		if err := e.db.CompleteCertifyStep(sr.ID, run.ID, certifiedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
 			return false, fmt.Errorf("complete step %s: %w", stepName, err)
