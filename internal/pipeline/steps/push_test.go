@@ -170,6 +170,10 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 
 func recordCertification(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
 	t.Helper()
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.ReviewApprovedHeadSHA = &headSHA
 	step, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCertify)
 	if err != nil {
 		t.Fatal(err)

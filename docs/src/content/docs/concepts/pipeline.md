@@ -1,9 +1,9 @@
 ---
 title: Pipeline
-description: The ten steps that run on every gated push.
+description: The fleet-mode steps that run on a gated push.
 ---
 
-The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
+Fleet mode runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*. Without fleet mode, Certify is skipped.
 
 ```
 intent → rebase → review → test → document → lint → certify → push → pr → ci

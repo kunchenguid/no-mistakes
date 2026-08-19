@@ -31,6 +31,9 @@ func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome
 	if sctx.RunReviewProfile == nil || sctx.ReviewFleet == nil || sctx.ReviewFleet.Certifier.Role == "" {
 		return nil, fmt.Errorf("certify step has no cold fleet certifier")
 	}
+	if err := requireExactFleetReviewApproval(sctx); err != nil {
+		return nil, err
+	}
 
 	headSHA, err := finalizeWorktreeForCertification(sctx)
 	if err != nil {
@@ -100,8 +103,27 @@ Rules:
 		sctx.Run.BaseSHA,
 		headSHA,
 		executionContextPromptSection(),
-		"",
+		fleetIntentPromptSection(sctx),
 		pathInstructions)
+}
+
+func requireExactFleetReviewApproval(sctx *pipeline.StepContext) error {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load fleet review approval before certification: %w", err)
+	}
+	if run == nil || run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+		return fmt.Errorf("refusing certification: run has no durably recorded fleet review approval")
+	}
+	approved := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve fleet review head before certification: %w", err)
+	}
+	if head != approved {
+		return fmt.Errorf("refusing certification: worktree HEAD changed since fleet review approval")
+	}
+	return nil
 }
 
 func trustedCertificationPathInstructions(sctx *pipeline.StepContext, headSHA string) (string, error) {

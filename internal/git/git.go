@@ -136,7 +136,7 @@ func executableFromBaseEnv(name string, baseEnv []string) (string, error) {
 			candidate += ".exe"
 		}
 		info, statErr := os.Stat(candidate)
-		if statErr == nil && !info.IsDir() {
+		if statErr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 			return candidate, nil
 		}
 	}

@@ -423,14 +423,14 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 	if r.closed {
 		return "", nil, fmt.Errorf("review fleet runner is closed")
 	}
-	head, err := reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
+	head, err := r.reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve review fleet source head: %w", err)
 	}
 	if len(expectedHeads) > 0 && strings.TrimSpace(expectedHeads[0]) != "" && head != expectedHeads[0] {
 		return "", nil, fmt.Errorf("review fleet source head changed from review target %s to %s", expectedHeads[0], head)
 	}
-	status, err := reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	status, err := r.reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return "", nil, fmt.Errorf("check review fleet source worktree: %w", err)
 	}
@@ -481,7 +481,7 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
 	}
-	if _, err := reviewFleetGitRun(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
+	if _, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("detach review fleet shadow from source: %w", err)
 	}
@@ -517,8 +517,8 @@ func reviewFleetGitEnv() []string {
 	}
 }
 
-func reviewFleetGitRun(ctx context.Context, dir string, args ...string) (string, error) {
-	return git.RunWithBaseEnv(ctx, dir, reviewFleetBaseEnv(dir), reviewFleetGitEnv(), args...)
+func (r *reviewProfileRunner) reviewFleetGitRun(ctx context.Context, dir string, args ...string) (string, error) {
+	return git.RunWithBaseEnv(ctx, dir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), args...)
 }
 
 func reviewFleetBaseEnv(workDir string) []string {
@@ -547,14 +547,14 @@ func reviewFleetBaseEnv(workDir string) []string {
 }
 
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
-	head, err := reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")
+	head, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("verify review fleet shadow head: %w", err)
 	}
 	if head != expectedHead {
 		return fmt.Errorf("verify review fleet shadow head: got %q, want %q", head, expectedHead)
 	}
-	status, err := reviewFleetGitRun(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
+	status, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("verify review fleet shadow cleanliness: %w", err)
 	}
@@ -566,7 +566,7 @@ func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead st
 			return fmt.Errorf("review fleet shadow exposes excluded prompt-control path %s", relative)
 		}
 	}
-	origin, err := reviewFleetGitRun(ctx, r.checkoutDir, "remote")
+	origin, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "remote")
 	if err != nil {
 		return fmt.Errorf("inspect review fleet shadow remotes: %w", err)
 	}
@@ -576,14 +576,14 @@ func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead st
 	if _, err := os.Lstat(filepath.Join(r.checkoutDir, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
 		return fmt.Errorf("review fleet shadow retained an object-store alternate")
 	}
-	sourceHead, err := reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
+	sourceHead, err := r.reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("verify review fleet source head after preparing shadow: %w", err)
 	}
 	if sourceHead != expectedHead {
 		return fmt.Errorf("review fleet source head changed while preparing shadow: got %q, want %q", sourceHead, expectedHead)
 	}
-	sourceStatus, err := reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	sourceStatus, err := r.reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("verify review fleet source cleanliness after preparing shadow: %w", err)
 	}
