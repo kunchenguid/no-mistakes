@@ -67,7 +67,7 @@ remote host; its independent activation plan owns its repo policy change.
 | M2 | Native Grok adapter and configuration support implemented | complete |
 | M3 | Documentation and fake-agent/e2e coverage updated | complete |
 | M4 | Repository verification suite passes; provider-backed smoke is truthfully dispositioned | complete |
-| M5 | Branch published; Agent Platform activation is either proven safe or explicitly held fail-closed | pending |
+| M5 | Branch published; Agent Platform activation is either proven safe or explicitly held fail-closed | complete |
 
 ## Progress
 
@@ -109,10 +109,24 @@ remote host; its independent activation plan owns its repo policy change.
   full `make e2e` rerun, and `go build -o ./bin/no-mistakes
   ./cmd/no-mistakes`. The only non-passing proof is the explicitly blocked
   provider-backed smoke (HTTP 402); no success is claimed for it.
-- **Next:** commit and publish the verified No Mistakes branch through its AXI
-  pipeline. Keep Agent Platform on `[codex, claude]` while its trusted config sets
-  `disable_project_settings: true`; do not activate Grok there until a future
-  CLI provides and passes complete project-setting isolation proof.
+- **2026-08-19:** Initialized the repository gate with
+  `kunchenguid/no-mistakes` as upstream and
+  `p3ngu1nx/no-mistakes` as the fork. AXI run
+  `01M0CVF0Y466C7CRWCC3HV0ATD` reached `checks-passed` and opened
+  `https://github.com/kunchenguid/no-mistakes/pull/776`. The pipeline fixed the
+  missed invocation-environment propagation in commit `c60ea0d5`, added its
+  process-level regression, clarified Grok's pipeline-only skill role in
+  `dff83ad6`, and then passed targeted Test, documentation, lint, push, PR, and
+  hosted CI. Guarded AXI sync integrated `dff83ad6` into this worktree.
+- **2026-08-19:** Verified Agent Platform remains fail-closed on both machines:
+  the local activation worktree uses `[codex, claude]` and the remote clone uses
+  `[claude, codex]`, both with `disable_project_settings: true` and no Grok
+  fallback. The separate Agent Platform activation plan owns reconciling the
+  remote preference order and publishing that repository's workflow changes.
+- **Next:** a maintainer reviews and merges PR #776. After a release contains
+  this adapter, rerun the adversarial project-discovery probe against the then
+  current Grok CLI before considering Agent Platform activation; absent new
+  positive isolation proof, keep the trusted opt-out and safe fallback.
 
 ## Findings
 
@@ -144,7 +158,8 @@ remote host; its independent activation plan owns its repo policy change.
 | Focused verification | `go test ./cmd/fakeagent ./internal/agent ./internal/config ./internal/daemon ./internal/types`; targeted doctor and Grok e2e journey | exit 0 | passed |
 | Full verification | `make lint`; `go test -race ./...`; `make e2e`; `go build -o ./bin/no-mistakes ./cmd/no-mistakes` | all exit 0 | passed |
 | Live smoke | installed branch binary invokes Grok without a model override | successful structured response reports Grok backend | blocked: provider returned HTTP 402 usage balance exhausted; no success claimed |
-| Consumer proof | Agent Platform trusted config remains valid locally and remotely | unsafe `[codex, grok]` is rejected while `disable_project_settings: true`; existing safe fallback remains configured | pending after publication; activation intentionally held |
+| Consumer proof | Agent Platform trusted config remains valid locally and remotely | unsafe `[codex, grok]` is rejected while `disable_project_settings: true`; existing safe fallback remains configured | passed: Grok absent and opt-out enabled on both; activation intentionally held |
+| Publication proof | AXI run `01M0CVF0Y466C7CRWCC3HV0ATD`; PR #776 | fork push, upstream PR, and hosted checks pass without direct upstream-main write | passed; `checks-passed`, PR open and mergeable |
 
 ## Surprises & Discoveries
 
@@ -165,6 +180,10 @@ remote host; its independent activation plan owns its repo policy change.
   wrapper's historical five-minute package timeout before an existing OpenCode
   wait received its own full deadline. The suite budget must grow with the
   intentionally serial environment-owning matrix.
+- Independent review found that Grok's subprocess environment omitted
+  `RunOpts.Env`. Routing it through the existing `gitSafeEnv(opts.CWD,
+  opts.Env)` primitive fixed the defect and a subprocess regression now proves
+  the invocation value reaches Grok.
 
 ## Decision Log
 
@@ -176,24 +195,35 @@ remote host; its independent activation plan owns its repo policy change.
 | 2026-08-19 | Keep the live isolation proof explicitly partial rather than weakening `disable_project_settings` or claiming fixture evidence as live proof. | The provider balance blocker is external; the trusted security boundary remains fail-closed. |
 | 2026-08-19 | Report Grok as unverified and reject it whenever `disable_project_settings: true`. | The standalone inspect probe discovered native project instructions; claiming neutralization would violate the trusted repo-config boundary. |
 | 2026-08-19 | Do not activate Grok in Agent Platform yet. | Agent Platform intentionally enables the trusted opt-out, so `[codex, grok]` must fail until Grok exposes complete and empirically verified isolation. |
+| 2026-08-19 | Accept the AXI environment fix and documentation clarification. | Both changes reuse existing owners: invocation environment belongs to `gitSafeEnv`, and public guidance must distinguish pipeline-backend support from user-level skill installation. Fresh rereview, targeted Test, and hosted CI passed. |
 
 ## Durable Next Action / Recovery
 
-Resume in `/Users/boriza/Documents/dev/tmp/no-mistakes` on
-`feat/native-grok-agent`. Read this plan and `AGENTS.md`, verify the accepted
-checkpoint remains an ancestor, then continue at the first pending milestone.
-Do not change Agent Platform to `grok` while its trusted config keeps
+The implementation is published at PR #776 with checks passed. A maintainer can
+review and merge it without further local delivery work. Do not change Agent
+Platform to `grok` while its trusted config keeps
 `disable_project_settings: true`: the current adapter must be rejected there.
 The provider-backed structured-response smoke remains blocked until Grok usage
 is replenished; do not represent it as passed. The isolation decision is not
 blocked on billing because a standalone probe already supplied negative proof.
+If PR monitoring later reports a conflict, let the active AXI CI monitor own
+the rebase; do not hand-rebase the branch.
 
 ## Outcomes & Retrospective
 
-Pending. Completion requires verified native Grok support and published branch
-availability with no model pin. Agent Platform activation is now an explicit
-held outcome, not a false completion requirement: current Grok cannot satisfy
-that repository's trusted project-setting opt-out.
+Native Grok support is implemented, independently reviewed, locally verified,
+published from a fork, and green in hosted CI. The adapter leaves Grok's model
+unmanaged by default, supports native structured output and fixer-session
+resume, preserves invocation environment, and fails closed under the trusted
+project-settings opt-out. AXI corrected one environment-propagation miss and
+clarified documentation before publication.
+
+Agent Platform activation is deliberately held, not silently incomplete:
+current Grok 1.0.5 demonstrably discovers native project instructions, while
+both Agent Platform machines retain `disable_project_settings: true` and a
+verified non-Grok fallback. HTTP 402 still blocks a successful live response
+smoke, but it does not weaken the negative isolation evidence or the shipped
+fail-closed behavior. Remaining human action is review/merge of PR #776.
 
 Revision note (2026-08-19): recorded the implemented adapter/config/docs/e2e
 scope, focused proof, doctor omission and correction, and the external HTTP 402
@@ -203,3 +233,7 @@ Revision note (2026-08-19): rebound the plan to the post-rebase checkpoint,
 recorded the standalone negative isolation proof and fail-closed design,
 replaced unsafe Agent Platform activation with an explicit held outcome, and
 recorded the complete post-rebase local verification ladder.
+
+Revision note (2026-08-19): recorded AXI fixes, fork/PR/CI publication,
+guarded local synchronization, local/remote held-consumer proof, and final
+outcomes before moving the plan to completed.
