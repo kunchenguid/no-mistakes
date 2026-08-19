@@ -1148,10 +1148,14 @@ var agentArgsOverrideAgents = map[string]bool{
 // bare form (e.g. "--color") as well as the "--color=value" form.
 var reservedAgentArgs = map[string]map[string]bool{
 	string(types.AgentAntigravity): {
-		"--dangerously-skip-permissions": true,
+		"-p":                             true,
 		"--print":                        true,
-		"--json-schema":                  true,
+		"--prompt":                       true,
 		"--output-format":                true,
+		"--conversation":                 true,
+		"--dangerously-skip-permissions": true,
+		"--json-schema":                  true,
+		"--disable-slash-commands":       true,
 	},
 	string(types.AgentClaude): {
 		"-p":              true,

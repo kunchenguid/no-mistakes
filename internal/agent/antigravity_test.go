@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestAntigravityAgent_BuildArgs(t *testing.T) {
@@ -87,6 +89,14 @@ func TestAntigravityAgent_SupportsCapabilities(t *testing.T) {
 	agDisabled := &antigravityAgent{bin: "agy", disableProjectSettings: false}
 	if agDisabled.NeutralizesGateInstructions() {
 		t.Error("expected NeutralizesGateInstructions() = false when disableProjectSettings is false")
+	}
+
+	created, err := NewWithOptions(types.AgentAntigravity, "agy", nil, Options{DisableProjectSettings: true})
+	if err != nil {
+		t.Fatalf("NewWithOptions failed: %v", err)
+	}
+	if !NeutralizesGateInstructions(created) {
+		t.Error("expected NewWithOptions with DisableProjectSettings: true to neutralize gate instructions")
 	}
 }
 

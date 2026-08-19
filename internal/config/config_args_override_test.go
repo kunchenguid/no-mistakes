@@ -118,10 +118,14 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"opencode", "--hostname"},
 		{"opencode", "--port"},
 		{"opencode", "--print-logs"},
-		{"antigravity", "--dangerously-skip-permissions"},
+		{"antigravity", "-p"},
 		{"antigravity", "--print"},
-		{"antigravity", "--json-schema"},
+		{"antigravity", "--prompt"},
 		{"antigravity", "--output-format"},
+		{"antigravity", "--conversation"},
+		{"antigravity", "--dangerously-skip-permissions"},
+		{"antigravity", "--json-schema"},
+		{"antigravity", "--disable-slash-commands"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent+"_"+tt.arg, func(t *testing.T) {

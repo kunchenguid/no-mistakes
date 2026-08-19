@@ -24,7 +24,7 @@ func optOutAgent(t *testing.T, name types.AgentName, extraArgs []string) Agent {
 // project agent settings/instructions; every other harness reports false and is
 // refused rather than launched with project instructions loaded.
 func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentAntigravity} {
 		if !NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
 			t.Errorf("%s must neutralize under the opt-out with its default knob", name)
 		}
@@ -50,11 +50,11 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 	}
 }
 
-// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex, claude, and pi
+// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex, claude, pi, and antigravity
 // do NOT claim neutralization when the repo did not opt out - the gate only consults
 // this under the opt-out, but the value must be honest.
 func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentAntigravity} {
 		a, err := NewWithOptions(name, string(name), nil, Options{}) // no opt-out
 		if err != nil {
 			t.Fatalf("NewWithOptions(%s): %v", name, err)
@@ -66,7 +66,7 @@ func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
 }
 
 // TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut proves the gate fails
-// closed for an unsupported harness and admits codex, claude, and pi.
+// closed for an unsupported harness and admits codex, claude, pi, and antigravity.
 func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentCodex, nil)); err != nil {
 		t.Errorf("codex must pass the gate under opt-out: %v", err)
@@ -76,6 +76,9 @@ func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	}
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentPi, nil)); err != nil {
 		t.Errorf("pi must pass the gate under opt-out: %v", err)
+	}
+	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentAntigravity, nil)); err != nil {
+		t.Errorf("antigravity must pass the gate under opt-out: %v", err)
 	}
 	err := EnsureGateNeutralized(optOutAgent(t, types.AgentOpenCode, nil))
 	if err == nil {
