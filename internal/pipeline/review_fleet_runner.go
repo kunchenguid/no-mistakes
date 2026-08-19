@@ -423,11 +423,11 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 	if r.closed {
 		return "", nil, fmt.Errorf("review fleet runner is closed")
 	}
-	head, err := git.HeadSHA(ctx, r.workDir)
+	head, err := reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve review fleet source head: %w", err)
 	}
-	status, err := git.Run(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	status, err := reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return "", nil, fmt.Errorf("check review fleet source worktree: %w", err)
 	}
@@ -478,7 +478,7 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
 	}
-	if _, err := git.Run(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
+	if _, err := reviewFleetGitRun(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("detach review fleet shadow from source: %w", err)
 	}
@@ -503,15 +503,19 @@ func reviewFleetGitEnv() []string {
 	}
 }
 
+func reviewFleetGitRun(ctx context.Context, dir string, args ...string) (string, error) {
+	return git.RunWithEnv(ctx, dir, reviewFleetGitEnv(), args...)
+}
+
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
-	head, err := git.HeadSHA(ctx, r.checkoutDir)
+	head, err := reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("verify review fleet shadow head: %w", err)
 	}
 	if head != expectedHead {
 		return fmt.Errorf("verify review fleet shadow head: got %q, want %q", head, expectedHead)
 	}
-	status, err := git.Run(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
+	status, err := reviewFleetGitRun(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("verify review fleet shadow cleanliness: %w", err)
 	}
@@ -523,7 +527,7 @@ func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead st
 			return fmt.Errorf("review fleet shadow exposes excluded prompt-control path %s", relative)
 		}
 	}
-	origin, err := git.Run(ctx, r.checkoutDir, "remote")
+	origin, err := reviewFleetGitRun(ctx, r.checkoutDir, "remote")
 	if err != nil {
 		return fmt.Errorf("inspect review fleet shadow remotes: %w", err)
 	}
@@ -533,14 +537,14 @@ func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead st
 	if _, err := os.Lstat(filepath.Join(r.checkoutDir, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
 		return fmt.Errorf("review fleet shadow retained an object-store alternate")
 	}
-	sourceHead, err := git.HeadSHA(ctx, r.workDir)
+	sourceHead, err := reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("verify review fleet source head after preparing shadow: %w", err)
 	}
 	if sourceHead != expectedHead {
 		return fmt.Errorf("review fleet source head changed while preparing shadow: got %q, want %q", sourceHead, expectedHead)
 	}
-	sourceStatus, err := git.Run(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	sourceStatus, err := reviewFleetGitRun(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("verify review fleet source cleanliness after preparing shadow: %w", err)
 	}
@@ -552,7 +556,7 @@ func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead st
 
 func (r *reviewProfileRunner) isolatedEnv() []string {
 	root := r.sandboxRoot
-	return []string{
+	env := []string{
 		"HOME=" + r.homeDir,
 		"CODEX_HOME=" + r.codexHome,
 		"CODEX_SQLITE_HOME=" + filepath.Join(root, "codex-sqlite"),
@@ -562,6 +566,7 @@ func (r *reviewProfileRunner) isolatedEnv() []string {
 		"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
 		"PWD=" + r.checkoutDir,
 	}
+	return append(env, reviewFleetGitEnv()...)
 }
 
 func (r *reviewProfileRunner) Close() {

@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -26,7 +27,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
-		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
+		ignorePatterns = strconv.QuoteToASCII(strings.Join(sctx.Config.IgnorePatterns, ", "))
 	}
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)

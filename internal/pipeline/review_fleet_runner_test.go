@@ -262,6 +262,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"printf 'home=%s\\n' \"$HOME\"\n" +
 		"printf 'codex_home=%s\\n' \"$CODEX_HOME\"\n" +
 		"printf 'codex_sqlite_home=%s\\n' \"$CODEX_SQLITE_HOME\"\n" +
+		"printf 'git_config_global=%s\\n' \"$GIT_CONFIG_GLOBAL\"\n" +
 		"printf 'head=%s\\n' \"$(git rev-parse HEAD)\"\n" +
 		"printf 'status=%s\\n' \"$(git status --porcelain)\"\n" +
 		"test ! -e .agents/skills && printf 'repo_skills=absent\\n'\n" +
@@ -325,6 +326,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"user_skills=absent",
 		"auth=present",
 		"codex_sqlite_home=" + wantSQLiteHome,
+		"git_config_global=" + os.DevNull,
 		"user_config=absent",
 		"plugins=absent",
 		"alternates=absent",
