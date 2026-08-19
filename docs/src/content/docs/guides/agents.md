@@ -47,6 +47,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Antigravity | `agy` | Subprocess per invocation, JSONL streaming |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
@@ -73,7 +74,7 @@ This refusal also applies when deterministic test or lint commands are configure
 Running the gate from Antigravity or another Gemini-based coding environment does not make that calling model available to the daemon automatically.
 Choose one of these supported setups:
 
-1. Install any supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
+1. Install `agy` (Antigravity CLI) or another supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
 2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`.
 3. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
 
@@ -226,7 +227,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -288,6 +289,13 @@ Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
 
+## Antigravity (`agy`)
+
+Spawns an `agy` subprocess for each invocation with `-p <prompt> --output-format stream-json --dangerously-skip-permissions`.
+Reads JSONL streaming events (`stream-json`) from stdout, streaming incremental `text_delta` chunks to the TUI and extracting granular token metrics (`input_tokens`, `output_tokens`, `thinking_tokens` for reasoning, and `cache_read_tokens`).
+Supports session resumption across review and fixer turns via `--conversation <id>`.
+Any `agent_args_override.antigravity` flags (e.g. `--model` or `--effort`) are injected before managed flags.
+
 ## ACP aliases
 
 ACP aliases are first-class agent names that resolve to ACP targets.
@@ -325,6 +333,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – antigravity (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))
   ✓ gate validation claude is runnable
