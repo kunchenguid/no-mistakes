@@ -24,6 +24,7 @@ type Host struct {
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
 	forkOwner    string // fork owner for cross-repository PR heads
+	draftPR      bool
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -52,6 +53,13 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	return h
+}
+
+// WithDraftPR configures this host to create new pull requests as drafts.
+// Existing PR updates deliberately leave readiness unchanged.
+func (h *Host) WithDraftPR(enabled bool) *Host {
+	h.draftPR = enabled
 	return h
 }
 
@@ -221,6 +229,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--head", h.headRef(branch),
 		"--base", base,
 	}, h.repoArgs()...)
+	if h.draftPR {
+		args = append(args, "--draft")
+	}
 	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)

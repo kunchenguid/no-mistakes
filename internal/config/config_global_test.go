@@ -54,6 +54,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"step_quiet_warning:",
 		"daemon_connect_timeout:",
 		"log_level: info",
+		"draft_pr: false",
 		"# agent_path_override:",
 		"# commit:",
 		`#   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"`,

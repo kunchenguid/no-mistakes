@@ -42,6 +42,8 @@ log_level: info
 
 session_reuse: true
 
+draft_pr: false
+
 auto_fix:
   rebase: 3
   review: 0
@@ -217,6 +219,19 @@ agent_args_override:
 ```
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+### draft_pr
+
+Create newly opened GitHub pull requests as drafts.
+
+| | |
+| --- | --- |
+| Type | `bool` |
+| Default | `false` |
+
+Set `draft_pr: true` to add `--draft` to `gh pr create`. It applies only when no-mistakes creates a new GitHub pull request. Existing pull requests are updated without changing their draft or ready-for-review state.
+
+A repository-level [`draft_pr`](/no-mistakes/reference/repo-config/#draft_pr) setting overrides this global value when present. GitLab and Azure DevOps creation remain unchanged because no-mistakes does not map this GitHub-specific setting onto provider-specific draft semantics.
 
 ### ci_timeout
 
