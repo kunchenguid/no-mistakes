@@ -463,6 +463,22 @@ func TestEvalCompositionFitsTheBoxWhenTheStrataAreOversized(t *testing.T) {
 	}
 }
 
+func TestEvalCompositionFitsTheBoxWhenCaseCountsExpand(t *testing.T) {
+	rows := []eval.CompositionRow{
+		{Repo: "owner/abcdefghijklmnopqrstuvwxyz", Language: "go", Size: "large", Severity: "warning", FindingType: "warning/auto-fix", Cases: 9999},
+		{Repo: "owner/zyxwvutsrqponmlkjihgfedcba", Language: "go", Size: "large", Severity: "warning", FindingType: "warning/auto-fix", Cases: 10000},
+	}
+	box := renderTitledBox(" eval case sets ", evalBoxWidth, compositionLines(rows))
+	for _, line := range strings.Split(box, "\n") {
+		if width := lipgloss.Width(line); width != evalBoxWidth {
+			t.Fatalf("rendered box line %q is %d wide, want exactly %d", line, width, evalBoxWidth)
+		}
+	}
+	if got := strings.Count(box, "warning/auto-fix"); got != len(rows) {
+		t.Fatalf("rendered box contains %d complete finding types, want %d:\n%s", got, len(rows), box)
+	}
+}
+
 // nmHomeTree lists every path under root, relative and sorted, so a test can
 // assert that a command left the app root's shape untouched.
 func nmHomeTree(t *testing.T, root string) []string {

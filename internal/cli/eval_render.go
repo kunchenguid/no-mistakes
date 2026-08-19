@@ -15,13 +15,11 @@ import (
 // lines, progress bars) but are wider: composition strata and warnings carry
 // more text than the stats counters do.
 const (
-	evalBoxWidth = 79
-	evalBarWidth = 20
-	// evalCompositionWidth is the room one stratum line has for its repository
-	// and strata columns: the box content minus the "  NNNN  " count prefix.
-	evalCompositionWidth    = evalBoxWidth - 4 - 8
-	minCompositionRepoWidth = 8
-	compositionSeparator    = " · "
+	evalBoxWidth                = 79
+	evalBarWidth                = 20
+	evalCompositionContentWidth = evalBoxWidth - 4
+	minCompositionRepoWidth     = 8
+	compositionSeparator        = " · "
 )
 
 // renderEvalSetsDashboard renders `eval sets` with the diversified holdout as
@@ -93,21 +91,26 @@ func renderEvalSetsDashboard(summaries []eval.SetSummary) string {
 // they all fit, otherwise the short repository name (the convention the stats
 // dashboard already uses) rather than a name cut mid-word.
 //
-// The table has two variable axes, and both have to fit. Sizing only the
+// The table has three variable axes, and all have to fit. Sizing only the
 // repository column is not enough: a finding type carrying a non-canonical
 // severity or action can make the fixed strata wider than the room the box
-// has, at which point the repository column hits minCompositionRepoWidth and
-// has nothing left to give. The strata are then shortened to the space that
-// actually remains, so the composed line always fits the box content width and
-// the box renderer never silently cuts the finding type off the end of a row.
+// has, and large case counts can expand their prefix. The strata are shortened
+// to the space that actually remains, so the composed line always fits the box
+// content width and the box renderer never silently cuts the finding type off
+// the end of a row.
 func compositionLines(rows []eval.CompositionRow) []string {
 	widest := 0
+	countPrefixWidth := 0
 	for _, row := range rows {
 		if width := lipgloss.Width(compositionStrata(row)); width > widest {
 			widest = width
 		}
+		if width := lipgloss.Width(fmt.Sprintf("  %4d  ", row.Cases)); width > countPrefixWidth {
+			countPrefixWidth = width
+		}
 	}
-	repoWidth := evalCompositionWidth - widest - lipgloss.Width(compositionSeparator)
+	compositionWidth := evalCompositionContentWidth - countPrefixWidth
+	repoWidth := compositionWidth - widest - lipgloss.Width(compositionSeparator)
 	if repoWidth < minCompositionRepoWidth {
 		repoWidth = minCompositionRepoWidth
 	}
@@ -120,7 +123,7 @@ func compositionLines(rows []eval.CompositionRow) []string {
 	}
 	// Measured against the column the names actually occupy, not the budget
 	// they were offered, so a table of short names keeps its strata intact.
-	strataWidth := evalCompositionWidth - column - lipgloss.Width(compositionSeparator)
+	strataWidth := compositionWidth - column - lipgloss.Width(compositionSeparator)
 	if strataWidth < 1 {
 		strataWidth = 1
 	}
