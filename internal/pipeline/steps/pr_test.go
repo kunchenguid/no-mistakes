@@ -32,6 +32,33 @@ func TestRequireFleetPRHeadProofRejectsProviderWithoutSourceProof(t *testing.T) 
 	}
 }
 
+func TestAssertFleetPRHeadBindsCertifiedCommit(t *testing.T) {
+	t.Parallel()
+
+	certified := "certified-sha"
+	sctx := &pipeline.StepContext{Ctx: context.Background(), Run: &db.Run{
+		ReviewFleetEnabled: true,
+		CertifiedHeadSHA:   &certified,
+	}}
+	host := prHeadReaderStub{head: "other-sha"}
+	if err := assertFleetPRHead(sctx, host, &scm.PR{URL: "https://example.test/pr/1"}); err == nil {
+		t.Fatal("fleet PR accepted a source commit different from the certified commit")
+	}
+	host.head = certified
+	if err := assertFleetPRHead(sctx, host, &scm.PR{URL: "https://example.test/pr/1"}); err != nil {
+		t.Fatalf("fleet PR rejected its certified source commit: %v", err)
+	}
+}
+
+type prHeadReaderStub struct {
+	scm.Host
+	head string
+}
+
+func (h prHeadReaderStub) GetPRHeadSHA(context.Context, *scm.PR) (string, error) {
+	return h.head, nil
+}
+
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	t.Parallel()
 	// Verify the step skips gracefully when the required provider CLI is missing.

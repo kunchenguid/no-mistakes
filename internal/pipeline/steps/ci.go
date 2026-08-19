@@ -72,7 +72,7 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		if ciFleetRun(sctx) {
-			return nil, fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
+			return false, fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
 		}
 		return false, fmt.Errorf("cannot check PR state: %s", skipReason)
 	}

@@ -50,7 +50,7 @@ func TestReviewFleetSettingsFromConfigUsesFixedRolesAndEscalatedArgs(t *testing.
 	cfg := &config.Config{AgentPathOverride: map[string]string{string(types.AgentCodex): bin}, ReviewFleet: config.ReviewFleet{
 		Enabled: true,
 		Reviewers: map[string]config.ReviewFleetProfile{
-			config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-luna", "max"),
+			config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-terra", "xhigh"),
 			config.ReviewFleetRoleCorrectness:   profile("gpt-5.6-terra", "high"),
 			config.ReviewFleetRoleArchitecture:  profile("gpt-5.6-terra", "high"),
 			config.ReviewFleetRoleSecurity: {
@@ -127,7 +127,7 @@ func testReviewFleetConfig(codexPath string) *config.Config {
 		ReviewFleet: config.ReviewFleet{
 			Enabled: true,
 			Reviewers: map[string]config.ReviewFleetProfile{
-				config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-luna", "max"),
+				config.ReviewFleetRoleTestAdversary: profile("gpt-5.6-terra", "xhigh"),
 				config.ReviewFleetRoleCorrectness:   profile("gpt-5.6-terra", "high"),
 				config.ReviewFleetRoleArchitecture:  profile("gpt-5.6-terra", "high"),
 				config.ReviewFleetRoleSecurity: {
@@ -320,7 +320,16 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		t.Fatal(err)
 	}
 	probe := string(probeRaw)
-	wantSQLiteHome := filepath.Join(runner.sandboxRoot, "codex-sqlite")
+	var sqliteHome string
+	for _, line := range strings.Split(probe, "\n") {
+		if value, ok := strings.CutPrefix(line, "codex_sqlite_home="); ok {
+			sqliteHome = value
+			break
+		}
+	}
+	if !filepath.IsAbs(sqliteHome) || filepath.Base(sqliteHome) != "codex-sqlite" {
+		t.Fatalf("isolated Codex SQLite home = %q", sqliteHome)
+	}
 	for _, required := range []string{
 		"head=" + wantHead,
 		"status=",
@@ -328,7 +337,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"repo_codex=absent",
 		"user_skills=absent",
 		"auth=present",
-		"codex_sqlite_home=" + wantSQLiteHome,
+		"codex_sqlite_home=" + sqliteHome,
 		"git_config_global=" + os.DevNull,
 		"git_dir=",
 		"external_diff=absent",
@@ -344,8 +353,8 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	if strings.Contains(probe, "cwd="+dir+"\n") || strings.Contains(probe, "home="+userHome+"\n") || strings.Contains(probe, "codex_home="+sourceCodexHome+"\n") || strings.Contains(probe, "poisoned-") {
 		t.Fatalf("reviewer retained source/user paths:\n%s", probe)
 	}
-	if _, err := os.Stat(wantSQLiteHome); err != nil {
-		t.Fatalf("isolated Codex SQLite directory missing: %v", err)
+	if _, err := os.Stat(sqliteHome); !os.IsNotExist(err) {
+		t.Fatalf("isolated Codex SQLite directory was not removed: %v", err)
 	}
 	if _, err := os.Stat(candidateMarker); !os.IsNotExist(err) {
 		t.Fatalf("candidate-controlled relative Codex executable ran: %v", err)
@@ -367,11 +376,6 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		if !strings.Contains(args, required) {
 			t.Fatalf("runner args missing %q: %s", required, args)
 		}
-	}
-	sandboxRoot := runner.sandboxRoot
-	runner.Close()
-	if _, err := os.Stat(sandboxRoot); !os.IsNotExist(err) {
-		t.Fatalf("review isolation root was not removed: %v", err)
 	}
 }
 

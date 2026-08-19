@@ -105,6 +105,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
+		if err := assertFleetPRHead(sctx, host, existing); err != nil {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
@@ -114,6 +117,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if updated != nil && updated.URL != "" {
 			if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
 				if err := assertCertifiedRemoteHead(sctx); err != nil {
+					return nil, err
+				}
+				if err := assertFleetPRHead(sctx, host, updated); err != nil {
 					return nil, err
 				}
 			}
@@ -136,8 +142,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
+	if err := assertFleetPRHead(sctx, host, created); err != nil {
+		return nil, err
+	}
 	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
 		if err := assertCertifiedRemoteHead(sctx); err != nil {
+			return nil, err
+		}
+		if err := assertFleetPRHead(sctx, host, created); err != nil {
 			return nil, err
 		}
 	}
@@ -154,6 +166,34 @@ func requireFleetPRHeadProof(sctx *pipeline.StepContext, host scm.Host) error {
 	}
 	if _, ok := host.(scm.PRHeadReader); !ok {
 		return fmt.Errorf("review fleet requires a provider that can prove the pull request source commit")
+	}
+	return nil
+}
+
+func assertFleetPRHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if pr == nil {
+		return fmt.Errorf("review fleet provider did not return a pull request")
+	}
+	headReader, ok := host.(scm.PRHeadReader)
+	if !ok {
+		return fmt.Errorf("review fleet requires a provider that can prove the pull request source commit")
+	}
+	certified := ""
+	if sctx.Run != nil && sctx.Run.CertifiedHeadSHA != nil {
+		certified = strings.TrimSpace(*sctx.Run.CertifiedHeadSHA)
+	}
+	if certified == "" {
+		return fmt.Errorf("review fleet requires an exact certified head before pull request delivery")
+	}
+	head, err := headReader.GetPRHeadSHA(sctx.Ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read pull request source commit: %w", err)
+	}
+	if strings.TrimSpace(head) != certified {
+		return fmt.Errorf("refusing pull request whose source commit %s does not equal certified head %s", shortObjectID(head), shortObjectID(certified))
 	}
 	return nil
 }
