@@ -18,6 +18,9 @@ import (
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
+	if ciFleetRun(sctx) {
+		return false, fmt.Errorf("CI auto-fix is unavailable for a certified review-fleet run")
+	}
 	ctx := sctx.Ctx
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return false, err
@@ -121,6 +124,9 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
+	if ciFleetRun(sctx) {
+		return false, fmt.Errorf("CI auto-push is unavailable for a certified review-fleet run")
+	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
@@ -146,6 +152,51 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	}
 
 	return s.pushUpdatedHeadSHA(sctx, headSHA)
+}
+
+func ciFleetRun(sctx *pipeline.StepContext) bool {
+	if sctx == nil || sctx.Run == nil {
+		return false
+	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		return true
+	}
+	if sctx.DB == nil {
+		return false
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	return err == nil && run != nil && (run.ReviewFleetEnabled || run.CertifiedHeadSHA != nil)
+}
+
+func assertFleetTerminalCertification(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable certification before terminal PR state: %w", err)
+	}
+	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
+		return fmt.Errorf("refusing terminal PR state: run has no durably recorded certified head")
+	}
+	if err := assertCleanExactHead(sctx, strings.TrimSpace(*run.CertifiedHeadSHA), "terminal PR state"); err != nil {
+		return err
+	}
+	if run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
+		return fmt.Errorf("refusing terminal PR state: certified head was not exactly published")
+	}
+	headReader, ok := host.(scm.PRHeadReader)
+	if !ok {
+		return fmt.Errorf("refusing terminal PR state: provider cannot prove the PR source commit")
+	}
+	headSHA, err := headReader.GetPRHeadSHA(sctx.Ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read terminal PR source commit: %w", err)
+	}
+	if strings.TrimSpace(headSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
+		return fmt.Errorf("refusing terminal PR state: provider source commit %s does not equal certified head %s", shortObjectID(headSHA), shortObjectID(*run.CertifiedHeadSHA))
+	}
+	return nil
 }
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {

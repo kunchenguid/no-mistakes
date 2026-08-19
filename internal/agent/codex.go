@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,11 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+)
+
+const (
+	codexMaxEventBytes  = 16 * 1024 * 1024
+	codexMaxStderrBytes = 1024 * 1024
 )
 
 // codexAgent spawns the codex CLI for each invocation.
@@ -89,10 +95,14 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
+	args := a.buildArgs(schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Codex accepts `-` as the prompt positional for both `exec` and
+	// `exec resume`, reading the exact prompt from stdin. Keeping prompts out of
+	// argv avoids the platform per-argument limit for large review histories and
+	// prevents the prompt from being exposed in process listings.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -109,7 +119,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	stderrWG.Add(1)
 	go func() {
 		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(started.stderr)
+		stderrBuf = readBoundedAgentStream(started.stderr, codexMaxStderrBytes)
 	}()
 
 	var usage TokenUsage
@@ -159,14 +169,14 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 func (a *codexAgent) Close() error { return nil }
 
 // buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
-// inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
-// take effect. If the user declared their own execution-mode flag, the
+// inserted between "exec" and the stdin prompt marker so user flags (e.g. -m,
+// --sandbox) take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// A non-empty resumeID routes through `codex exec resume <id> -`,
 // which exposes a narrower flag surface than `codex exec` (no --color, no
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
-func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
+func (a *codexAgent) buildArgs(schemaPath, resumeID string) []string {
 	args := make([]string, 0, len(a.extraArgs)+11)
 	args = append(args, "exec")
 	if resumeID != "" {
@@ -176,7 +186,7 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
-	args = append(args, prompt, "--json")
+	args = append(args, "-", "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -323,7 +333,7 @@ type codexUsage struct {
 // is its real subprocess wall time.
 func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), codexMaxEventBytes)
 
 	for scanner.Scan() {
 		select {
@@ -379,6 +389,26 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 	}
 
 	return scanner.Err()
+}
+
+func readBoundedAgentStream(reader io.Reader, maxBytes int) []byte {
+	if maxBytes <= 0 {
+		_, _ = io.Copy(io.Discard, reader)
+		return nil
+	}
+	var buffer bytes.Buffer
+	read, _ := io.CopyN(&buffer, reader, int64(maxBytes)+1)
+	_, _ = io.Copy(io.Discard, reader)
+	if read <= int64(maxBytes) {
+		return buffer.Bytes()
+	}
+	const marker = "\n...[truncated]"
+	result := make([]byte, maxBytes)
+	copy(result, buffer.Bytes()[:maxBytes])
+	if maxBytes >= len(marker) {
+		copy(result[maxBytes-len(marker):], marker)
+	}
+	return result
 }
 
 func codexOutputSchema(schema json.RawMessage) ([]byte, error) {

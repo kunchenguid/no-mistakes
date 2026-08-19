@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +195,15 @@ func TestExtractCodexPromptSkipsOutputSchemaValue(t *testing.T) {
 
 	if got := extractCodexPrompt(args); got != "review this diff" {
 		t.Fatalf("prompt = %q, want %q", got, "review this diff")
+	}
+}
+
+func TestReadCodexPromptReadsStdinMarker(t *testing.T) {
+	got, err := readCodexPrompt([]string{"exec", "-", "--json"}, strings.NewReader("review the stdin diff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "review the stdin diff" {
+		t.Fatalf("prompt = %q, want stdin prompt", got)
 	}
 }

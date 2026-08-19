@@ -70,10 +70,10 @@ func runRecursiveIncident(t *testing.T, agentName, executable, expectedPhase str
 	h.CommitChange("feature/recursive-incident", "incident.txt", "reproduce recursive run\n", "reproduce recursive run")
 	h.PushToGate("feature/recursive-incident")
 	outer := h.WaitForRun("feature/recursive-incident", 90*time.Second)
+	// The incident deliberately switches the gate worktree to an attacker-created
+	// branch. Recursive control must be refused, and the outer run must also fail
+	// closed when it observes that out-of-band branch mutation.
 	expectedStatus := types.RunFailed
-	if completes {
-		expectedStatus = types.RunCompleted
-	}
 	if outer.Status != expectedStatus {
 		t.Fatalf("outer run status = %s, want %s (error=%v)", outer.Status, expectedStatus, outer.Error)
 	}
@@ -208,7 +208,7 @@ func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName, executab
 		execAgent = fmt.Sprintf(`exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
 	}
 	switch agentName {
-	case "claude":
+	case "claude", "codex":
 		promptSource = `prompt=$(cat)`
 		execAgent = fmt.Sprintf(`printf '%%s' "$prompt" | exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
 	case "opencode":

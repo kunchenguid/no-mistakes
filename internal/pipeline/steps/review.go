@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -18,12 +19,19 @@ type ReviewStep struct{}
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := requireAvailableReviewFleet(sctx); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
-		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
+		if reviewFleetEnabled(sctx) {
+			ignorePatterns = "omitted for isolated fleet review"
+		} else {
+			ignorePatterns = strconv.QuoteToASCII(strings.Join(sctx.Config.IgnorePatterns, ", "))
+		}
 	}
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)
@@ -132,7 +140,7 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
+	if len(changed) == 0 || (!reviewFleetEnabled(sctx) && len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 && !reviewFleetHasHighRiskChange(sctx, changed)) {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -165,7 +173,10 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection() + fleetIntentPromptSection(sctx) + fixRoundProvenanceClause(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	if !reviewFleetEnabled(sctx) {
+		historySection = executionContextPromptSection() + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	}
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -237,6 +248,25 @@ Risk assessment (after listing all findings):
 		historySection,
 		pathInstructions,
 	)
+
+	if reviewFleetEnabled(sctx) {
+		findings, err := executeReviewFleet(sctx, prompt, changed, workload, reviewTargetSHA)
+		if err != nil {
+			return nil, err
+		}
+		if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(findings); n > 0 {
+			sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) (owned by later push/PR/CI steps)", n))
+			findings = stripped
+		}
+		needsApproval := hasBlockingFindings(findings.Items)
+		findingsJSON, _ := json.Marshal(findings)
+		return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
+			NeedsApproval: needsApproval,
+			AutoFixable:   len(findings.Items) > 0,
+			Findings:      string(findingsJSON),
+			FixSummary:    fixSummary,
+		})
+	}
 
 	// Every review turn - the initial review and every post-fix rereview -
 	// deliberately runs session-free. Round N's fixes implement round N-1's

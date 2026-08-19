@@ -300,6 +300,40 @@ func TestCompleteReviewStepIsAtomic(t *testing.T) {
 	}
 }
 
+func TestCompleteCertifyStepIsAtomic(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepCertify)
+
+	if err := d.CompleteCertifyStep(step.ID, "missing-run", "certified", 0, 10, "certify.log"); err == nil {
+		t.Fatal("expected missing run to roll back certify completion")
+	}
+	gotStep, _ := d.GetStepResult(step.ID)
+	gotRun, _ := d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusPending || gotRun.CertifiedHeadSHA != nil {
+		t.Fatalf("failed certify transaction mutated state: step=%#v run=%#v", gotStep, gotRun)
+	}
+
+	if err := d.CompleteCertifyStep(step.ID, run.ID, "stale-head", 0, 10, "certify.log"); err == nil {
+		t.Fatal("expected stale certified head to roll back certify completion")
+	}
+	gotStep, _ = d.GetStepResult(step.ID)
+	gotRun, _ = d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusPending || gotRun.CertifiedHeadSHA != nil {
+		t.Fatalf("stale-head transaction mutated state: step=%#v run=%#v", gotStep, gotRun)
+	}
+
+	if err := d.CompleteCertifyStep(step.ID, run.ID, run.HeadSHA, 0, 10, "certify.log"); err != nil {
+		t.Fatalf("complete certify step: %v", err)
+	}
+	gotStep, _ = d.GetStepResult(step.ID)
+	gotRun, _ = d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusCompleted || gotRun.CertifiedHeadSHA == nil || *gotRun.CertifiedHeadSHA != run.HeadSHA {
+		t.Fatalf("successful certify transaction = step=%#v run=%#v", gotStep, gotRun)
+	}
+}
+
 func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

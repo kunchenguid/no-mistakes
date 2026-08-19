@@ -15,6 +15,7 @@ type StepRound struct {
 	Trigger          string  // "initial", "auto_fix"; legacy "user_fix" is treated as "auto_fix"
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
+	CertifiedHeadSHA *string // non-authoritative exact head candidate captured by Certify
 	StartingHeadSHA  *string
 	TrustedConfigSHA *string
 	GlobalConfigYAML []byte
@@ -122,7 +123,18 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 // InsertStepRound creates a new round record for a step result. fixSummary may
 // be nil for non-fix rounds or when the agent produced no summary.
 func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
-	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, nil, nil, nil, nil, durationMS)
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, nil, nil, nil, nil, nil, durationMS)
+}
+
+// InsertCertifyStepRound persists the exact clean head a Certify invocation
+// examined as a non-authoritative recovery candidate. Only CompleteCertifyStep
+// promotes it to runs.certified_head_sha.
+func (d *DB) InsertCertifyStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, certifiedHeadSHA string, durationMS int64) (*StepRound, error) {
+	var certified *string
+	if certifiedHeadSHA != "" {
+		certified = &certifiedHeadSHA
+	}
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, certified, nil, nil, nil, nil, durationMS)
 }
 
 // InsertReviewStepRound persists a review round's examined commit as a
@@ -143,10 +155,10 @@ func (d *DB) InsertReviewStepRoundWithProvenance(stepResultID string, round int,
 	if trustedConfigSHA != "" {
 		trusted = &trustedConfigSHA
 	}
-	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, reviewed, starting, trusted, globalConfigYAML, repoConfigYAML, durationMS)
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, reviewed, nil, starting, trusted, globalConfigYAML, repoConfigYAML, durationMS)
 }
 
-func (d *DB) insertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary, reviewedHeadSHA, startingHeadSHA, trustedConfigSHA *string, globalConfigYAML, repoConfigYAML []byte, durationMS int64) (*StepRound, error) {
+func (d *DB) insertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary, reviewedHeadSHA, certifiedHeadSHA, startingHeadSHA, trustedConfigSHA *string, globalConfigYAML, repoConfigYAML []byte, durationMS int64) (*StepRound, error) {
 	r := &StepRound{
 		ID:               newID(),
 		StepResultID:     stepResultID,
@@ -154,6 +166,7 @@ func (d *DB) insertStepRound(stepResultID string, round int, trigger string, fin
 		Trigger:          trigger,
 		FindingsJSON:     findingsJSON,
 		ReviewedHeadSHA:  reviewedHeadSHA,
+		CertifiedHeadSHA: certifiedHeadSHA,
 		StartingHeadSHA:  startingHeadSHA,
 		TrustedConfigSHA: trustedConfigSHA,
 		GlobalConfigYAML: append([]byte(nil), globalConfigYAML...),
@@ -163,8 +176,8 @@ func (d *DB) insertStepRound(stepResultID string, round int, trigger string, fin
 		CreatedAt:        now(),
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.ReviewedHeadSHA, r.StartingHeadSHA, r.TrustedConfigSHA, r.GlobalConfigYAML, r.RepoConfigYAML, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, certified_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.ReviewedHeadSHA, r.CertifiedHeadSHA, r.StartingHeadSHA, r.TrustedConfigSHA, r.GlobalConfigYAML, r.RepoConfigYAML, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert step round: %w", err)
@@ -226,7 +239,7 @@ func (d *DB) SetStepRoundUserFindings(id string, userFindingsJSON *string) error
 // GetRoundsByStep returns all rounds for a step result, ordered by round number.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
+		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, certified_head_sha, starting_head_sha, trusted_config_sha, global_config_yaml, repo_config_yaml, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
 		stepResultID,
 	)
 	if err != nil {
@@ -236,7 +249,7 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	var rounds []*StepRound
 	for rows.Next() {
 		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.CertifiedHeadSHA, &r.StartingHeadSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.RepoConfigYAML, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
 		rounds = append(rounds, r)

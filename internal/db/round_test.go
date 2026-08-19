@@ -28,6 +28,28 @@ func TestInsertReviewStepRoundPersistsNonAuthoritativeCandidate(t *testing.T) {
 	}
 }
 
+func TestInsertCertifyStepRoundPersistsNonAuthoritativeCandidate(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/certify-round", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "initial", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepCertify)
+	const candidate = "2222222222222222222222222222222222222222"
+	if _, err := d.InsertCertifyStepRound(step.ID, 1, "initial", nil, nil, candidate, 10); err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 1 || rounds[0].CertifiedHeadSHA == nil || *rounds[0].CertifiedHeadSHA != candidate {
+		t.Fatalf("certified candidate round = %#v", rounds)
+	}
+	gotRun, _ := d.GetRun(run.ID)
+	if gotRun.CertifiedHeadSHA != nil {
+		t.Fatalf("round candidate granted certification authority: %#v", gotRun.CertifiedHeadSHA)
+	}
+}
+
 func TestReviewRoundPersistsExactReplayProvenance(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/review-provenance", "https://example.com/repo.git", "main")

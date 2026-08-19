@@ -6,7 +6,7 @@ description: Reference for each step in the validation pipeline.
 This is the per-step reference. For the overview and rationale, see [Pipeline](/no-mistakes/concepts/pipeline/). For the fix loop, see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/).
 
 ```
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → test → document → lint → certify → push → pr → ci
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
@@ -98,7 +98,7 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 ### Post-review HEAD continuity
 
-At entry to every remaining step in the fixed pipeline order - Test, Document, Lint, Push, PR, and CI - no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
+At entry to every remaining step in the fixed pipeline order - Test, Document, Lint, Certify, Push, PR, and CI - no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
 
 ## Test
 
@@ -158,17 +158,31 @@ When `commands.lint` is empty, unresolved findings from the combined pass pause 
 
 **Default auto-fix limit:** `3`.
 
+## Certify
+
+Performs the final independent, read-only delivery check in review fleet mode.
+
+**Behavior:**
+- Finalizes the worktree before the check: runs the configured formatter, fails on formatter errors, commits intentional remaining changes, and requires a clean worktree
+- Captures the exact finalized `HEAD` and invokes a cold certifier with trusted user intent and trusted review/path guidance; the certifier may inspect but must not edit, stage, commit, reset, or rebase
+- Findings with `error` or `warning` severity gate delivery. Informational findings do not.
+- Records a candidate on the round for recovery, but grants no delivery authority until the Certify step completes or an operator explicitly approves its parked findings
+- Rejects an explicit Fix re-execution in v1; Certify never invokes a fixer and a failed re-execution never certifies a commit
+- In the legacy fleet-disabled path, this step is skipped and Push retains its existing formatter/commit behavior and review-approved descendant binding
+
+**Default auto-fix limit:** `0` (non-fixing).
+
 ## Push
 
 Pushes the validated branch to the configured push target.
 
 **Behavior:**
-- If `commands.format` is set, runs it first
-- Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
+- In the legacy fleet-disabled path, if `commands.format` is set, runs it first and commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
+- In fleet mode, performs no source mutation and requires the live `HEAD` and proposed push commit to equal the durable `certified_head_sha` exactly; missing, malformed, unreachable, stale, descendant, divergent, or dirty candidates fail closed
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
-- Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
-- Requires the commit proposed for push to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
+- Immediately before remote mutation, reloads the durable certification binding in fleet mode (or the durable review-approved commit in the legacy path) and refuses to push when that binding is missing, malformed, or unreachable
+- Fleet mode requires exact certification equality; the legacy path allows the proposed commit to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
 - Re-reads the push target via `git ls-remote` before pushing
 - For existing branches, refuses to force-push when the live remote carries commits the pipeline has not incorporated by patch-id
 - Fails closed when the remote safety check cannot verify whether the push would discard existing remote work
@@ -182,7 +196,7 @@ A remote branch can move without being rejected when all remote commits are alre
 Any other out-of-band commit stops the push instead of being overwritten.
 Pre-skipping or later skipping Review leaves no approval binding, so Push fails closed unless Push is also skipped.
 
-This step never requires approval - it runs automatically after review, test, document, and lint pass.
+This step never requires approval - it runs automatically after review, test, document, lint, and (when enabled) certification pass.
 
 ## PR
 
@@ -228,7 +242,7 @@ The `v1` payload is compact JSON with these required fields:
 - `head_sha`: the exact git commit SHA recorded for the run when no-mistakes writes the PR body
 - `steps`: the ordered pipeline step snapshot; every item has exactly the fields below
 
-- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`
+- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `certify`, `push`, `pr`, or `ci`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
 
 Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can detect when a later push has made the comment stale. It is not refreshed after the PR step unless no-mistakes writes the body again.

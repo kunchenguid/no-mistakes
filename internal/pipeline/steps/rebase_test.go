@@ -456,6 +456,8 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "checkout", "feature")
 
+	gitCmd(t, dir, "checkout", "--detach", toSHA)
+
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, toSHA, config.Commands{})
 	sctx.Run.Branch = "refs/heads/feature"
@@ -470,6 +472,9 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 	if newHead == toSHA {
 		t.Fatal("rebase did not rewrite the uncertified head")
+	}
+	if branchHead := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchHead != newHead {
+		t.Fatalf("detached rebase left branch at %s, want %s", branchHead, newHead)
 	}
 
 	got, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -655,6 +656,32 @@ func TestUpdateRunReviewApprovedHeadSHAReplacesAuthority(t *testing.T) {
 	}
 	if got.HeadSHA != "mutable" {
 		t.Fatalf("review authority update mutated run head to %s", got.HeadSHA)
+	}
+}
+
+func TestUpdateRunReviewFleetModePersistsExactContract(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	if run.ReviewFleetEnabled {
+		t.Fatal("new run unexpectedly started in fleet mode")
+	}
+	fingerprint := strings.Repeat("a", 64)
+	if err := d.UpdateRunReviewFleetMode(run.ID, true, &fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ReviewFleetEnabled || got.ReviewFleetFingerprint == nil || *got.ReviewFleetFingerprint != fingerprint {
+		t.Fatalf("fleet delivery contract was not persisted: %#v", got)
+	}
+	if err := d.UpdateRunReviewFleetMode(run.ID, true, nil); err == nil {
+		t.Fatal("enabled fleet mode without fingerprint unexpectedly succeeded")
+	}
+	if err := d.UpdateRunReviewFleetMode("missing", true, &fingerprint); err == nil {
+		t.Fatal("missing run update unexpectedly succeeded")
 	}
 }
 

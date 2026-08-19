@@ -933,6 +933,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		Branch:             r.Branch,
 		HeadSHA:            r.HeadSHA,
 		SubmittedHeadSHA:   r.SubmittedHeadSHA,
+		CertifiedHeadSHA:   r.CertifiedHeadSHA,
 		BaseSHA:            r.BaseSHA,
 		Status:             r.Status,
 		PRURL:              r.PRURL,

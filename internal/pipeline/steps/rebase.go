@@ -506,11 +506,28 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	}
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
 		oldHead := sctx.Run.HeadSHA
+		branchRef := normalizedBranchRef(sctx.Run.Branch)
+		branchHead, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", branchRef+"^{commit}")
+		if err != nil {
+			return nil, fmt.Errorf("resolve recorded branch after rebase: %w", err)
+		}
+		switch branchHead = strings.TrimSpace(branchHead); branchHead {
+		case headSHA:
+			// Attached rebases advance the branch ref themselves.
+		case oldHead:
+			// Gate worktrees are detached, so advance the owned branch ref with
+			// an exact compare-and-swap before recording the rewritten head.
+			if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", branchRef, headSHA, oldHead); err != nil {
+				return nil, fmt.Errorf("advance recorded branch after rebase: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("refusing to record rebase: branch %s changed from %s to %s", branchRef, oldHead, branchHead)
+		}
 		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
-		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err
 		}
+		sctx.Run.HeadSHA = headSHA
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 

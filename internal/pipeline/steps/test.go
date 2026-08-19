@@ -20,6 +20,11 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if ciFleetRun(sctx) {
+		if _, err := finalizeWorktreeForFleetGates(sctx); err != nil {
+			return nil, err
+		}
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
@@ -89,6 +94,9 @@ Previous test findings to address:
 	}
 
 	testCmd := sctx.Config.Commands.Test
+	if ciFleetRun(sctx) && testCmd == "" {
+		return nil, fmt.Errorf("review fleet requires a deterministic commands.test")
+	}
 	tested := []string{}
 	if testCmd != "" {
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
@@ -120,7 +128,7 @@ Previous test findings to address:
 		}
 	}
 
-	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
+	useEvidenceAgent := !ciFleetRun(sctx) && (testCmd == "" || cleanedUserIntent(sctx) != "")
 	if useEvidenceAgent {
 		evidenceDir := testEvidenceDir(sctx)
 		if evidenceDir == "" {

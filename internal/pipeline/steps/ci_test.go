@@ -14,9 +14,33 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestAssertFleetTerminalCertificationRejectsDirtyCertifiedWorktree(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "codex"}, dir, baseSHA, headSHA, config.Commands{})
+	certify, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCertify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteCertifyStep(certify.ID, sctx.Run.ID, headSHA, 0, 0, "certify.log"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "upstream", TargetFingerprint: "test", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.CertifiedHeadSHA = &headSHA
+	sctx.Run.LastPushedSHA = &headSHA
+	if err := os.WriteFile(filepath.Join(dir, "post-certify.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertFleetTerminalCertification(sctx, prHeadReaderStub{head: headSHA}, &scm.PR{}); err == nil || !strings.Contains(err.Error(), "worktree is dirty") {
+		t.Fatalf("terminal state accepted a dirty certified worktree: %v", err)
+	}
+}
 
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	t.Parallel()
@@ -77,6 +101,19 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 		if waits[i] != want[i] {
 			t.Fatalf("wait %d = %v, want %v (all waits: %v)", i, waits[i], want[i], waits)
 		}
+	}
+}
+
+func TestCIAutoFixLimitDisablesFleetFixes(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "agent"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AutoFix.CI = 3
+	if got := ciAutoFixLimit(sctx); got != 3 {
+		t.Fatalf("ordinary CI auto-fix limit = %d, want 3", got)
+	}
+	sctx.Run.ReviewFleetEnabled = true
+	if got := ciAutoFixLimit(sctx); got != 0 {
+		t.Fatalf("fleet CI auto-fix limit = %d, want 0", got)
 	}
 }
 

@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -13,7 +15,7 @@ import (
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader
 // happy-path orchestration (DB persistence, run/step status transitions,
-// timestamp + duration recording across all 8 real steps) is exercised by
+// timestamp + duration recording across all fixed real steps) is exercised by
 // the e2e journey suite (internal/e2e), so this test focuses solely on
 // the IPC event contract that the TUI subscribes to.
 func TestExecutor_StepLifecycleEvents(t *testing.T) {
@@ -385,5 +387,20 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestExecutor_FleetRejectsConfiguredRequiredSkip(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(database, p, testReviewFleetConfig(bin), nil, []Step{newPassStep(types.StepTest)}, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepTest})
+
+	err = exec.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "cannot skip required step test") {
+		t.Fatalf("fleet configured skip error = %v", err)
 	}
 }

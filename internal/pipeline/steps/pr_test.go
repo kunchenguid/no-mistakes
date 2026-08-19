@@ -18,8 +18,46 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRequireFleetPRHeadProofRejectsProviderWithoutSourceProof(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{Run: &db.Run{ReviewFleetEnabled: true}}
+	host := gitlab.New(nil, nil, "gitlab.example.com", "group/project")
+	if err := requireFleetPRHeadProof(sctx, host); err == nil {
+		t.Fatal("fleet PR delivery accepted a provider without source-commit proof")
+	}
+}
+
+func TestAssertFleetPRHeadBindsCertifiedCommit(t *testing.T) {
+	t.Parallel()
+
+	certified := "certified-sha"
+	sctx := &pipeline.StepContext{Ctx: context.Background(), Run: &db.Run{
+		ReviewFleetEnabled: true,
+		CertifiedHeadSHA:   &certified,
+	}}
+	host := prHeadReaderStub{head: "other-sha"}
+	if err := assertFleetPRHead(sctx, host, &scm.PR{URL: "https://example.test/pr/1"}); err == nil {
+		t.Fatal("fleet PR accepted a source commit different from the certified commit")
+	}
+	host.head = certified
+	if err := assertFleetPRHead(sctx, host, &scm.PR{URL: "https://example.test/pr/1"}); err != nil {
+		t.Fatalf("fleet PR rejected its certified source commit: %v", err)
+	}
+}
+
+type prHeadReaderStub struct {
+	scm.Host
+	head string
+}
+
+func (h prHeadReaderStub) GetPRHeadSHA(context.Context, *scm.PR) (string, error) {
+	return h.head, nil
+}
 
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	t.Parallel()

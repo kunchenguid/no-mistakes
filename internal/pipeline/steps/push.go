@@ -22,42 +22,58 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
+	durableRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load durable delivery mode before push: %w", err)
+	}
+	if durableRun == nil {
+		return nil, fmt.Errorf("load durable delivery mode before push: run not found")
+	}
+	// Certificate presence is a compatibility backstop for runs created during
+	// the brief schema transition. Current global configuration is deliberately
+	// irrelevant: a restart must not downgrade an already-selected fleet run.
+	fleetEnabled := durableRun.ReviewFleetEnabled || durableRun.CertifiedHeadSHA != nil
+	sctx.Run.ReviewFleetEnabled = fleetEnabled
 	newHeadSHA := ""
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return nil, err
 	}
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 
-	// Run format command if configured (before committing, so changes are formatted)
-	if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
-		sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
-		output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: format command failed: %v", err))
-		} else if exitCode != 0 {
-			sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
+	if !fleetEnabled {
+		// The legacy path retains Push ownership of formatting and pending-change
+		// finalization. Fleet mode performs both before the read-only Certify step.
+		// Run format command if configured (before committing, so changes are formatted)
+		if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
+			sctx.Log(fmt.Sprintf("running formatter: %s", fmtCmd))
+			output, exitCode, err := runStepShellCommand(sctx, fmtCmd)
+			if err != nil {
+				sctx.Log(fmt.Sprintf("warning: format command failed: %v", err))
+			} else if exitCode != 0 {
+				sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
+			}
 		}
-	}
 
-	// Commit any uncommitted changes from agent fixes. Test evidence is
-	// deliberately not among them: it is collected outside the worktree and
-	// published to the orphan evidence branch (internal/evidence), so no
-	// artifact ever enters the pushed branch or the default branch's history.
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if strings.TrimSpace(status) != "" {
-		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-			return nil, fmt.Errorf("stage agent changes: %w", err)
+		// Commit any uncommitted changes from agent fixes. Test evidence is
+		// deliberately not among them: it is collected outside the worktree and
+		// published to the orphan evidence branch (internal/evidence), so no
+		// artifact ever enters the pushed branch or the default branch's history.
+		status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+		if strings.TrimSpace(status) != "" {
+			sctx.Log("committing agent changes...")
+			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+				return nil, fmt.Errorf("stage agent changes: %w", err)
+			}
+			_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
+			if err != nil {
+				return nil, fmt.Errorf("commit agent changes: %w", err)
+			}
+			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve head after commit: %w", err)
+			}
+			newHeadSHA = headSHA
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
-		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
-		}
-		newHeadSHA = headSHA
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
@@ -77,7 +93,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
+	if fleetEnabled {
+		if err := assertCertifiedPushHead(sctx, headBeingPushed); err != nil {
+			return nil, err
+		}
+	} else if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
 		return nil, err
 	}
 
@@ -163,6 +183,74 @@ func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead strin
 		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approvedHead, proposedHead); err != nil {
 			return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
 		}
+	}
+	return nil
+}
+
+// assertCertifiedPushHead is the fleet-mode delivery binding. Certification
+// is an exact immutable commit authority: a missing, malformed, unreachable,
+// stale, descendant, divergent, or dirty candidate fails closed.
+func assertCertifiedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable certification before push: %w", err)
+	}
+	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
+		return fmt.Errorf("refusing to push: run has no durably recorded certified head")
+	}
+	if run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+		return fmt.Errorf("refusing to push: run has no durably recorded fleet review approval")
+	}
+	certifiedHead := strings.TrimSpace(*run.CertifiedHeadSHA)
+	if !isFullGitObjectID(certifiedHead) {
+		return fmt.Errorf("refusing to push: durable certified head is malformed")
+	}
+	resolved, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", certifiedHead+"^{commit}")
+	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), certifiedHead) {
+		return fmt.Errorf("refusing to push: durable certified head is unreachable")
+	}
+	actualHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("refusing to push: resolve live HEAD for certification binding: %w", err)
+	}
+	if actualHead != proposedHead {
+		return fmt.Errorf("refusing to push: live HEAD changed before certification binding")
+	}
+	if proposedHead != certifiedHead {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", certifiedHead, proposedHead); err == nil {
+			return fmt.Errorf("refusing to push: proposed head %s is a descendant of certified head %s; fleet delivery requires exact equality", shortObjectID(proposedHead), shortObjectID(certifiedHead))
+		}
+		return fmt.Errorf("refusing to push: proposed head %s is stale or divergent from certified head %s; fleet delivery requires exact equality", shortObjectID(proposedHead), shortObjectID(certifiedHead))
+	}
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("refusing to push: check worktree for certification binding: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("refusing to push: worktree is dirty after certification")
+	}
+	return nil
+}
+
+// assertCertifiedRemoteHead closes the interval after Push verified its
+// lease: publication and CI must never operate on a branch another writer has
+// advanced since the exact certified commit was delivered.
+func assertCertifiedRemoteHead(sctx *pipeline.StepContext) error {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable certification before remote binding: %w", err)
+	}
+	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
+		return fmt.Errorf("refusing remote publication: run has no durably recorded certified head")
+	}
+	certified := strings.TrimSpace(*run.CertifiedHeadSHA)
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	remote, err := git.LsRemote(sctx.Ctx, sctx.WorkDir, resolvePushURL(sctx), ref)
+	if err != nil {
+		return fmt.Errorf("verify certified remote branch: %w", err)
+	}
+	if remote != certified {
+		return fmt.Errorf("refusing remote publication: branch head %s does not equal certified head %s", shortObjectID(remote), shortObjectID(certified))
 	}
 	return nil
 }

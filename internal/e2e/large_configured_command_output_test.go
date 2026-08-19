@@ -27,7 +27,7 @@ func TestLargeConfiguredTestAndLintFailuresRemainUsableThroughAXIFix(t *testing.
 		{name: "lint", step: types.StepLint, branch: "large-lint-output", commandKey: "lint", findingID: "lint-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := NewHarness(t, SetupOpts{Agent: "claude"})
+			h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: largeCommandFixScenario(t, tc.name)})
 			if out, err := h.Run("init"); err != nil {
 				t.Fatalf("init: %v\n%s", err, out)
 			}
@@ -127,4 +127,34 @@ exit 1
 			}
 		})
 	}
+}
+
+func largeCommandFixScenario(t *testing.T, step string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "large-command-fix.yaml")
+	content := fmt.Sprintf(`actions:
+  - match: %q
+    text: "applied focused repair"
+    edits:
+      - path: %q
+        new: "fixed\n"
+    structured:
+      summary: "apply focused repair"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
+      tested: ["fakeagent: simulated test run"]
+      testing_summary: "simulated tests passed"
+      artifacts: []
+      title: "feat: fakeagent change"
+      body: "fakeagent canned PR body"
+`, "Previous "+step+" findings to address", "large-"+step+"-repair.txt")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write large command fix scenario: %v", err)
+	}
+	return path
 }

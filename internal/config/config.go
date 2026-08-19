@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -113,6 +114,11 @@ type GlobalConfig struct {
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
 	Eval Eval
+	// ReviewFleet is an operator-owned, Codex-only set of independent review
+	// profiles. It is intentionally absent from RepoConfig: a checked-in repo
+	// config must never be able to turn on or reshape a fleet that runs with the
+	// operator's credentials.
+	ReviewFleet ReviewFleet
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -134,6 +140,7 @@ type globalConfigRaw struct {
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
 	Eval                 EvalRaw             `yaml:"eval"`
+	ReviewFleet          ReviewFleet         `yaml:"review_fleet"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -355,9 +362,10 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 
 // Commands holds optional per-repo command overrides.
 type Commands struct {
-	Lint   string `yaml:"lint"`
-	Test   string `yaml:"test"`
-	Format string `yaml:"format"`
+	Lint     string `yaml:"lint"`
+	Test     string `yaml:"test"`
+	Format   string `yaml:"format"`
+	Document string `yaml:"document"`
 }
 
 // AutoFixRaw is the YAML representation of auto-fix config.
@@ -416,15 +424,24 @@ type Config struct {
 	LogLevel              string
 	SessionReuse          bool
 	Eval                  Eval
-	Commands              Commands
-	IgnorePatterns        []string
-	AutoFix               AutoFix
-	CI                    CI
-	Commit                Commit
-	Intent                Intent
-	Test                  Test
-	Document              Document
-	Review                Review
+	// ReviewFleet is global-only and disabled unless explicitly enabled in the
+	// operator's global config. It is never populated from RepoConfig.
+	ReviewFleet    ReviewFleet
+	Commands       Commands
+	IgnorePatterns []string
+	AutoFix        AutoFix
+	CI             CI
+	Commit         Commit
+	Intent         Intent
+	Test           Test
+	Document       Document
+	Review         Review
+	// AllowRepoCommands records the trusted default-branch decision that chose
+	// whether pushed commands and agent selection entered this effective
+	// configuration. The pipeline does not consult it after Merge, but fleet
+	// recovery fingerprints it so a restart cannot reinterpret the same pushed
+	// configuration under a different trust decision.
+	AllowRepoCommands bool
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -539,6 +556,58 @@ type Eval struct {
 	// DiversifiedSize caps the official gold-only eval set. 0 means one gold
 	// case per stratum (no Hamilton bound). Unlabeled cases never fill it.
 	DiversifiedSize int
+}
+
+// Review-fleet profile names are deliberately fixed in v1. A map is used for
+// reviewers so YAML cannot silently create a second spelling of a role; the
+// loader checks the complete key set when the fleet is enabled.
+const (
+	ReviewFleetRoleTestAdversary   = "test-adversary"
+	ReviewFleetRoleCorrectness     = "correctness"
+	ReviewFleetRoleArchitecture    = "architecture"
+	ReviewFleetRoleSecurity        = "security"
+	ReviewFleetProfileConsolidator = "consolidator"
+	ReviewFleetProfileCertifier    = "certifier"
+
+	// These bounds keep operator-authored profile data from turning every
+	// review invocation into an unbounded command or prompt surface.
+	MaxReviewFleetModelBytes         = 128
+	MaxReviewFleetHighRiskPathBytes  = 256
+	MaxReviewFleetHighRiskPaths      = 32
+	MaxReviewFleetHighRiskPathsBytes = 4096
+)
+
+// ReviewFleetReasoningEffort is the Codex reasoning-effort vocabulary
+// accepted by the review fleet. The strings intentionally mirror Codex's CLI
+// setting so no provider-specific translation is needed in the pipeline.
+type ReviewFleetReasoningEffort string
+
+const (
+	ReviewFleetReasoningLow    ReviewFleetReasoningEffort = "low"
+	ReviewFleetReasoningMedium ReviewFleetReasoningEffort = "medium"
+	ReviewFleetReasoningHigh   ReviewFleetReasoningEffort = "high"
+	ReviewFleetReasoningXHigh  ReviewFleetReasoningEffort = "xhigh"
+	ReviewFleetReasoningMax    ReviewFleetReasoningEffort = "max"
+)
+
+// ReviewFleetProfile is one cold Codex profile. HighRiskPaths and
+// EscalatedReasoningEffort are meaningful only for the security reviewer;
+// the validator rejects them on the other fixed roles.
+type ReviewFleetProfile struct {
+	Model                    string   `yaml:"model"`
+	ReasoningEffort          string   `yaml:"reasoning_effort"`
+	HighRiskPaths            []string `yaml:"high_risk_paths,omitempty"`
+	EscalatedReasoningEffort string   `yaml:"escalated_reasoning_effort,omitempty"`
+}
+
+// ReviewFleet is the resolved global-only Codex review fleet. Enabled is
+// false by default; when true it contains exactly four reviewer profiles plus
+// the consolidator and certifier profiles.
+type ReviewFleet struct {
+	Enabled      bool                          `yaml:"enabled"`
+	Reviewers    map[string]ReviewFleetProfile `yaml:"reviewers"`
+	Consolidator ReviewFleetProfile            `yaml:"consolidator"`
+	Certifier    ReviewFleetProfile            `yaml:"certifier"`
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -692,6 +761,35 @@ log_level: info
 #     - service_tier="priority"
 #     - -c
 #     - model_reasoning_effort="low"
+
+# Optional Codex-only review fleet (disabled unless enabled explicitly). This
+# is global-only: a repository's .no-mistakes.yaml cannot turn it on or change
+# any profile. When enabled, all four fixed reviewer roles plus consolidator
+# and certifier are required. Security may add high-risk path globs and a
+# stronger reasoning effort for those paths.
+# review_fleet:
+#   enabled: false
+#   reviewers:
+#     test-adversary:
+#       model: gpt-5.6-terra
+#       reasoning_effort: xhigh
+#     correctness:
+#       model: gpt-5.6-terra
+#       reasoning_effort: high
+#     architecture:
+#       model: gpt-5.6-terra
+#       reasoning_effort: high
+#     security:
+#       model: gpt-5.6-terra
+#       reasoning_effort: high
+#       high_risk_paths: [internal/auth/**, internal/crypto/**]
+#       escalated_reasoning_effort: xhigh
+#   consolidator:
+#     model: gpt-5.6-terra
+#     reasoning_effort: high
+#   certifier:
+#     model: gpt-5.6-sol
+#     reasoning_effort: xhigh
 #
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
@@ -847,6 +945,9 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 			}
 			c.Agent = name
 			c.Agents = []types.AgentName{name}
+			if err := c.ensureReviewFleetCodex(lookPath); err != nil {
+				return err
+			}
 			return nil
 		}
 		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
@@ -858,6 +959,9 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 		}
 		c.Agent = name
 		c.Agents = []types.AgentName{name}
+		if err := c.ensureReviewFleetCodex(lookPath); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -867,6 +971,26 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	}
 	c.Agent = resolved[0]
 	c.Agents = resolved
+	if err := c.ensureReviewFleetCodex(lookPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureReviewFleetCodex resolves the Codex binary independently of the
+// primary pipeline agent. A fleet can coexist with a Claude or ACP primary,
+// but it must never discover at run time that its dedicated runner is absent.
+func (c *Config) ensureReviewFleetCodex(lookPath func(string) (string, error)) error {
+	if c == nil || !c.ReviewFleet.Enabled {
+		return nil
+	}
+	bin := c.AgentPathFor(types.AgentCodex)
+	if _, err := lookPath(bin); err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("review_fleet requires a runnable codex binary %q", bin)
+		}
+		return fmt.Errorf("resolve review_fleet codex agent from %q: %w", bin, err)
+	}
 	return nil
 }
 
@@ -1130,6 +1254,170 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+// ReviewFleetCodexArgs returns the cold, isolated extra arguments for one
+// fleet profile. It starts with only safe values from the global codex
+// override, then appends the profile's model and reasoning setting plus the
+// mandatory read-only/ephemeral/project-settings controls. A profile
+// invocation is never a resumed session and never inherits a setting that
+// could widen its filesystem, approval, or user-config scope.
+func (c *Config) ReviewFleetCodexArgs(profile string, escalate bool) ([]string, error) {
+	if c == nil || !c.ReviewFleet.Enabled {
+		return nil, errors.New("review fleet is disabled")
+	}
+	if err := validateReviewFleet(c.ReviewFleet); err != nil {
+		return nil, err
+	}
+	selected, ok := c.ReviewFleet.profile(profile)
+	if !ok {
+		return nil, fmt.Errorf("unknown review fleet profile %q", profile)
+	}
+	if escalate {
+		if profile != ReviewFleetRoleSecurity {
+			return nil, fmt.Errorf("review fleet escalation is supported only for %q", ReviewFleetRoleSecurity)
+		}
+		if strings.TrimSpace(selected.EscalatedReasoningEffort) == "" {
+			return nil, fmt.Errorf("review_fleet.reviewers.%s has no escalated_reasoning_effort", ReviewFleetRoleSecurity)
+		}
+		selected.ReasoningEffort = selected.EscalatedReasoningEffort
+	}
+	base, err := reviewFleetSafeCodexArgs(c.AgentArgsFor(types.AgentCodex))
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, len(base)+10)
+	args = append(args, base...)
+	args = append(args,
+		"-m", selected.Model,
+		"-c", fmt.Sprintf(`model_reasoning_effort="%s"`, selected.ReasoningEffort),
+		"--sandbox", "read-only",
+		"--ephemeral",
+		"-c", "project_doc_max_bytes=0",
+		"-c", `shell_environment_policy.inherit="core"`,
+		"--ignore-rules",
+		"--ignore-user-config",
+		"--skip-git-repo-check",
+	)
+	return args, nil
+}
+
+func (fleet ReviewFleet) profile(name string) (ReviewFleetProfile, bool) {
+	if name == ReviewFleetProfileConsolidator {
+		return fleet.Consolidator, true
+	}
+	if name == ReviewFleetProfileCertifier {
+		return fleet.Certifier, true
+	}
+	profile, ok := fleet.Reviewers[name]
+	return profile, ok
+}
+
+// reviewFleetSafeCodexArgs rejects, rather than silently rewrites, inherited
+// codex flags that could defeat a fleet profile's isolation. Non-conflicting
+// flags such as service_tier remain in their original order.
+func reviewFleetSafeCodexArgs(base []string) ([]string, error) {
+	if err := validateReviewFleetCodexArgSlice(base); err != nil {
+		return nil, err
+	}
+	return append([]string(nil), base...), nil
+}
+
+func validateReviewFleetCodexArgs(override map[string][]string) error {
+	if len(override) == 0 {
+		return nil
+	}
+	return validateReviewFleetCodexArgSlice(override[string(types.AgentCodex)])
+}
+
+func validateReviewFleetCodexArgSlice(args []string) error {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			return fmt.Errorf("review_fleet codex override[%d] must not be empty", i)
+		}
+		if reason := reviewFleetForbiddenCodexArg(arg); reason != "" {
+			return fmt.Errorf("review_fleet cannot inherit codex %s flag %q; set it on the fleet profile instead", reason, arg)
+		}
+		if arg == "-c" || arg == "--config" {
+			if i+1 >= len(args) {
+				return fmt.Errorf("review_fleet cannot inherit an incomplete codex %s flag", arg)
+			}
+			next := strings.TrimSpace(args[i+1])
+			if err := validateReviewFleetCodexConfigValue(next); err != nil {
+				return err
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--config=") {
+			value := arg[strings.IndexByte(arg, '=')+1:]
+			if err := validateReviewFleetCodexConfigValue(value); err != nil {
+				return err
+			}
+			continue
+		}
+		return fmt.Errorf("review_fleet cannot inherit unknown codex flag %q; only service_tier is allowed", arg)
+	}
+	return nil
+}
+
+func validateReviewFleetCodexConfigValue(value string) error {
+	if reason := reviewFleetForbiddenCodexConfig(value); reason != "" {
+		return fmt.Errorf("review_fleet cannot inherit codex %s setting %q; set it on the fleet profile instead", reason, value)
+	}
+	// Codex -c is an open-ended configuration surface. Keep only the one
+	// operator setting with a reviewed fleet-safe meaning; unknown keys could
+	// change tools, approval, filesystem, or project loading behavior.
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "service_tier=") {
+		return fmt.Errorf("review_fleet cannot inherit unknown codex configuration %q; only service_tier is allowed", value)
+	}
+	return nil
+}
+
+func reviewFleetForbiddenCodexArg(arg string) string {
+	base := arg
+	if idx := strings.IndexByte(base, '='); idx >= 0 {
+		base = base[:idx]
+	}
+	switch base {
+	case "-m", "--model":
+		return "model"
+	case "--sandbox", "-s":
+		return "sandbox"
+	case "--dangerously-bypass-approvals-and-sandbox", "--ask-for-approval", "--full-auto", "--yolo":
+		return "approval/bypass"
+	case "exec", "resume", "--resume", "--session", "--session-id", "--thread", "--thread-id", "--last", "--continue", "--fork-session":
+		return "session"
+	case "--ignore-rules":
+		return "ignore-rules"
+	case "--ephemeral":
+		return "ephemeral"
+	case "--ignore-user-config":
+		return "user-config"
+	}
+	if strings.HasPrefix(base, "--model") || strings.Contains(strings.ToLower(arg), "project_doc") || strings.Contains(strings.ToLower(arg), "project-doc") {
+		return "model/project_doc"
+	}
+	if strings.HasPrefix(base, "--sandbox") || strings.HasPrefix(base, "--ask-for-approval") || strings.HasPrefix(base, "--dangerously-bypass") {
+		return "sandbox/approval"
+	}
+	if strings.Contains(strings.ToLower(arg), "reasoning_effort") {
+		return "reasoning"
+	}
+	return ""
+}
+
+func reviewFleetForbiddenCodexConfig(value string) string {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.Contains(lower, "model_reasoning_effort"):
+		return "reasoning"
+	case strings.Contains(lower, "project_doc"), strings.Contains(lower, "project-doc"):
+		return "project_doc"
+	}
+	return ""
+}
+
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
@@ -1282,6 +1570,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if err := validateEvalRaw(raw.Eval); err != nil {
 		return nil, fmt.Errorf("parse global config: %w", err)
 	}
+	if err := validateReviewFleet(raw.ReviewFleet); err != nil {
+		return nil, fmt.Errorf("parse global config: %w", err)
+	}
 
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
@@ -1301,6 +1592,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	cfg.ReviewFleet = resolveReviewFleet(raw.ReviewFleet)
+	if cfg.ReviewFleet.Enabled {
+		if err := validateReviewFleetCodexArgs(cfg.AgentArgsOverride); err != nil {
+			return nil, fmt.Errorf("parse global config: %w", err)
+		}
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -1521,6 +1818,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	// Persist only the trusted decision supplied by the daemon. Never retain
+	// the pushed branch's copy of this security-sensitive field.
+	effective.AllowRepoCommands = allowRepoCommands
 	if trusted != nil {
 		effective.Document = trusted.Document
 		// review.path_instructions steers the gate agent that reviews the pushed
@@ -1742,6 +2042,213 @@ func validateEvalRaw(raw EvalRaw) error {
 	return nil
 }
 
+var reviewFleetReviewerRoles = map[string]bool{
+	ReviewFleetRoleTestAdversary: true,
+	ReviewFleetRoleCorrectness:   true,
+	ReviewFleetRoleArchitecture:  true,
+	ReviewFleetRoleSecurity:      true,
+}
+
+var reviewFleetReasoningEfforts = map[string]bool{
+	string(ReviewFleetReasoningLow):    true,
+	string(ReviewFleetReasoningMedium): true,
+	string(ReviewFleetReasoningHigh):   true,
+	string(ReviewFleetReasoningXHigh):  true,
+	string(ReviewFleetReasoningMax):    true,
+}
+
+// validateReviewFleet validates the global-only review fleet before any run
+// can resolve an agent. Disabled fleets may carry a partial draft (useful when
+// editing the global file), but every supplied value is still validated; an
+// enabled fleet must be complete and exact.
+func validateReviewFleet(fleet ReviewFleet) error {
+	if len(fleet.Reviewers) > len(reviewFleetReviewerRoles) {
+		return fmt.Errorf("review_fleet.reviewers must contain exactly the fixed reviewer roles: %s", strings.Join(reviewFleetRoles(), ", "))
+	}
+	for role, profile := range fleet.Reviewers {
+		if !reviewFleetReviewerRoles[role] {
+			return fmt.Errorf("review_fleet.reviewers contains unsupported role %q (required roles: %s)", role, strings.Join(reviewFleetRoles(), ", "))
+		}
+		if err := validateReviewFleetProfile("review_fleet.reviewers."+role, profile, role == ReviewFleetRoleSecurity, fleet.Enabled); err != nil {
+			return err
+		}
+	}
+	if err := validateReviewFleetProfile("review_fleet.consolidator", fleet.Consolidator, false, fleet.Enabled); err != nil {
+		return err
+	}
+	if err := validateReviewFleetProfile("review_fleet.certifier", fleet.Certifier, false, fleet.Enabled); err != nil {
+		return err
+	}
+	if !fleet.Enabled {
+		return nil
+	}
+	if len(fleet.Reviewers) != len(reviewFleetReviewerRoles) {
+		return fmt.Errorf("review_fleet.reviewers must contain exactly the fixed reviewer roles: %s", strings.Join(reviewFleetRoles(), ", "))
+	}
+	for role := range reviewFleetReviewerRoles {
+		if _, ok := fleet.Reviewers[role]; !ok {
+			return fmt.Errorf("review_fleet.reviewers must contain exactly the fixed reviewer roles: missing %q", role)
+		}
+	}
+	return nil
+}
+
+func reviewFleetRoles() []string {
+	return []string{
+		ReviewFleetRoleTestAdversary,
+		ReviewFleetRoleCorrectness,
+		ReviewFleetRoleArchitecture,
+		ReviewFleetRoleSecurity,
+	}
+}
+
+func validateReviewFleetProfile(name string, profile ReviewFleetProfile, security, required bool) error {
+	model := strings.TrimSpace(profile.Model)
+	effort := strings.TrimSpace(profile.ReasoningEffort)
+	if model == "" && effort == "" && len(profile.HighRiskPaths) == 0 && strings.TrimSpace(profile.EscalatedReasoningEffort) == "" && !required {
+		return nil
+	}
+	if model == "" {
+		return fmt.Errorf("%s.model must be explicit and non-empty", name)
+	}
+	if len(model) > MaxReviewFleetModelBytes {
+		return fmt.Errorf("%s.model exceeds the %d-byte limit", name, MaxReviewFleetModelBytes)
+	}
+	if strings.IndexFunc(model, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%s.model must not contain control characters", name)
+	}
+	if effort == "" {
+		return fmt.Errorf("%s.reasoning_effort must be explicit", name)
+	}
+	if !reviewFleetReasoningEfforts[effort] {
+		return fmt.Errorf("%s.reasoning_effort %q is invalid (valid: low, medium, high, xhigh, max)", name, effort)
+	}
+	if !security && (len(profile.HighRiskPaths) > 0 || strings.TrimSpace(profile.EscalatedReasoningEffort) != "") {
+		return fmt.Errorf("%s supports neither high_risk_paths nor escalated_reasoning_effort; those fields are security-only", name)
+	}
+	if !security {
+		return nil
+	}
+	escalated := strings.TrimSpace(profile.EscalatedReasoningEffort)
+	if len(profile.HighRiskPaths) > 0 && escalated == "" {
+		return fmt.Errorf("%s.escalated_reasoning_effort must be set when high_risk_paths is configured", name)
+	}
+	if len(profile.HighRiskPaths) == 0 && escalated != "" {
+		return fmt.Errorf("%s.high_risk_paths must be set when escalated_reasoning_effort is configured", name)
+	}
+	if escalated != "" && !reviewFleetReasoningEfforts[escalated] {
+		return fmt.Errorf("%s.escalated_reasoning_effort %q is invalid (valid: low, medium, high, xhigh, max)", name, escalated)
+	}
+	if escalated != "" && reviewFleetReasoningRank(escalated) <= reviewFleetReasoningRank(effort) {
+		return fmt.Errorf("%s.escalated_reasoning_effort must be stronger than reasoning_effort", name)
+	}
+	if len(profile.HighRiskPaths) > MaxReviewFleetHighRiskPaths {
+		return fmt.Errorf("%s.high_risk_paths has %d entries, at most %d are allowed", name, len(profile.HighRiskPaths), MaxReviewFleetHighRiskPaths)
+	}
+	pathBytes := 0
+	for i, rawPath := range profile.HighRiskPaths {
+		pathValue := strings.TrimSpace(rawPath)
+		if pathValue == "" {
+			return fmt.Errorf("%s.high_risk_paths[%d] must not be empty", name, i)
+		}
+		if len(pathValue) > MaxReviewFleetHighRiskPathBytes {
+			return fmt.Errorf("%s.high_risk_paths[%d] exceeds the %d-byte limit", name, i, MaxReviewFleetHighRiskPathBytes)
+		}
+		if strings.IndexFunc(pathValue, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s.high_risk_paths[%d] must not contain control characters", name, i)
+		}
+		if err := validateReviewFleetGitPathGlob(pathValue); err != nil {
+			return fmt.Errorf("%s.high_risk_paths[%d] %q is not a valid git path glob: %w", name, i, pathValue, err)
+		}
+		pathBytes += len(pathValue)
+	}
+	if pathBytes > MaxReviewFleetHighRiskPathsBytes {
+		return fmt.Errorf("%s.high_risk_paths exceeds the %d-byte limit", name, MaxReviewFleetHighRiskPathsBytes)
+	}
+	return nil
+}
+
+func reviewFleetReasoningRank(effort string) int {
+	switch effort {
+	case string(ReviewFleetReasoningLow):
+		return 1
+	case string(ReviewFleetReasoningMedium):
+		return 2
+	case string(ReviewFleetReasoningHigh):
+		return 3
+	case string(ReviewFleetReasoningXHigh):
+		return 4
+	case string(ReviewFleetReasoningMax):
+		return 5
+	default:
+		return 0
+	}
+}
+
+// validateReviewFleetGitPathGlob mirrors matchIgnorePattern in
+// internal/pipeline/steps: git paths always use slash separators, patterns
+// without a slash match basenames, and a trailing /** names a subtree.
+func validateReviewFleetGitPathGlob(pattern string) error {
+	if prefix, ok := strings.CutSuffix(pattern, "/**"); ok {
+		if prefix == "" {
+			return errors.New("subtree pattern needs a directory before /**")
+		}
+		if strings.ContainsAny(prefix, "*?[\\") {
+			return errors.New("subtree pattern directory must not contain glob metacharacters")
+		}
+		for _, component := range strings.Split(prefix, "/") {
+			if component == "" || component == "." || component == ".." {
+				return errors.New("subtree pattern directory must be canonical")
+			}
+		}
+		if _, err := path.Match(prefix, "a/b"); err != nil {
+			return err
+		}
+		return nil
+	}
+	if _, err := path.Match(pattern, "a/b"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func resolveReviewFleet(fleet ReviewFleet) ReviewFleet {
+	if len(fleet.Reviewers) == 0 && reviewFleetProfileEmpty(fleet.Consolidator) && reviewFleetProfileEmpty(fleet.Certifier) {
+		return ReviewFleet{Enabled: fleet.Enabled}
+	}
+	resolved := ReviewFleet{
+		Enabled:      fleet.Enabled,
+		Reviewers:    make(map[string]ReviewFleetProfile, len(fleet.Reviewers)),
+		Consolidator: resolveReviewFleetProfile(fleet.Consolidator),
+		Certifier:    resolveReviewFleetProfile(fleet.Certifier),
+	}
+	for role, profile := range fleet.Reviewers {
+		resolved.Reviewers[role] = resolveReviewFleetProfile(profile)
+	}
+	return resolved
+}
+
+func reviewFleetProfileEmpty(profile ReviewFleetProfile) bool {
+	return strings.TrimSpace(profile.Model) == "" &&
+		strings.TrimSpace(profile.ReasoningEffort) == "" &&
+		strings.TrimSpace(profile.EscalatedReasoningEffort) == "" &&
+		len(profile.HighRiskPaths) == 0
+}
+
+func resolveReviewFleetProfile(profile ReviewFleetProfile) ReviewFleetProfile {
+	profile.Model = strings.TrimSpace(profile.Model)
+	profile.ReasoningEffort = strings.TrimSpace(profile.ReasoningEffort)
+	profile.EscalatedReasoningEffort = strings.TrimSpace(profile.EscalatedReasoningEffort)
+	if len(profile.HighRiskPaths) > 0 {
+		paths := make([]string, len(profile.HighRiskPaths))
+		for i, value := range profile.HighRiskPaths {
+			paths[i] = strings.TrimSpace(value)
+		}
+		profile.HighRiskPaths = paths
+	}
+	return profile
+}
+
 // validateTestRaw fails the config closed on a test.evidence.branch value Git
 // would reject as a branch name. Rejecting the config surfaces the typo where
 // the user can fix it, rather than letting a run reach the push and fail there.
@@ -1901,18 +2408,20 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
-		// Eval is global-only by design (see GlobalConfig.Eval), so it is
-		// copied straight through with no repository override step.
-		Eval:           global.Eval,
-		Commands:       repo.Commands,
-		IgnorePatterns: repo.IgnorePatterns,
-		AutoFix:        af,
-		CI:             ci,
-		Commit:         commit,
-		Intent:         intent,
-		Test:           test,
-		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		// Eval and ReviewFleet are global-only by design, so they are copied
+		// straight through with no repository override step.
+		Eval:              global.Eval,
+		ReviewFleet:       copyReviewFleet(global.ReviewFleet),
+		Commands:          repo.Commands,
+		IgnorePatterns:    repo.IgnorePatterns,
+		AutoFix:           af,
+		CI:                ci,
+		Commit:            commit,
+		Intent:            intent,
+		Test:              test,
+		Document:          Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Review:            Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		AllowRepoCommands: repo.AllowRepoCommands,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
@@ -1928,6 +2437,23 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	return cfg
+}
+
+func copyReviewFleet(fleet ReviewFleet) ReviewFleet {
+	out := fleet
+	if len(fleet.Reviewers) == 0 {
+		out.Reviewers = nil
+		return out
+	}
+	out.Reviewers = make(map[string]ReviewFleetProfile, len(fleet.Reviewers))
+	for role, profile := range fleet.Reviewers {
+		copyProfile := profile
+		if len(profile.HighRiskPaths) > 0 {
+			copyProfile.HighRiskPaths = append([]string(nil), profile.HighRiskPaths...)
+		}
+		out.Reviewers[role] = copyProfile
+	}
+	return out
 }
 
 // EnableEvalProvenance pins the exact configuration this run reviews under so

@@ -925,7 +925,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
 	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
 	riskLevel := ""
-	if sr.StepName == types.StepReview {
+	if isRiskStep(sr.StepName) {
 		src := finalFindings
 		if src == nil && !hasUnreadableFinalFindings {
 			src = latestRoundFindings
@@ -940,7 +940,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
 	}
 
-	if sr.StepName == types.StepReview && (riskLevel == "medium" || riskLevel == "high") && !hadAnyFindings {
+	if isRiskStep(sr.StepName) && (riskLevel == "medium" || riskLevel == "high") && !hadAnyFindings {
 		return buildDetail(fmt.Sprintf("%s **%s** - %s risk", riskEmoji(riskLevel), name, riskLevel))
 	}
 
@@ -973,10 +973,17 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, deta
 }
 
 func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
-	for _, sr := range steps {
-		if sr.StepName != types.StepReview {
-			continue
+	// Certification is the final independent delivery check, so its risk
+	// assessment takes precedence over the earlier review when both exist.
+	ordered := make([]*db.StepResult, 0, len(steps))
+	for _, preferred := range []types.StepName{types.StepCertify, types.StepReview} {
+		for _, sr := range steps {
+			if sr != nil && sr.StepName == preferred {
+				ordered = append(ordered, sr)
+			}
 		}
+	}
+	for _, sr := range ordered {
 
 		var finalFindings *types.Findings
 		hasUnreadableFinal := false
@@ -1002,6 +1009,12 @@ func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) 
 		}
 
 		if src == nil || src.RiskLevel == "" {
+			// Fleet-disabled runs record Certify as skipped. Preserve the
+			// legacy review risk in that mode; a completed Certify with no
+			// risk remains an explicit no-risk result.
+			if sr.StepName == types.StepCertify {
+				continue
+			}
 			return ""
 		}
 
@@ -1013,6 +1026,10 @@ func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) 
 		return fmt.Sprintf("%s %s", emoji, label)
 	}
 	return ""
+}
+
+func isRiskStep(step types.StepName) bool {
+	return step == types.StepReview || step == types.StepCertify
 }
 
 func capitalizeRisk(level string) string {
@@ -1310,6 +1327,8 @@ func stepDisplayName(name types.StepName) string {
 		return "Rebase"
 	case types.StepReview:
 		return "Review"
+	case types.StepCertify:
+		return "Certify"
 	case types.StepTest:
 		return "Test"
 	case types.StepDocument:

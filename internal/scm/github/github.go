@@ -292,6 +292,20 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
 
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view head SHA: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	selector, err := prSelector(pr)
 	if err != nil {

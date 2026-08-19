@@ -29,6 +29,13 @@ func axiScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "axi-scenario.yaml")
 	content := `actions:
+  - match: "Investigate previous review findings"
+    text: "applied the selected review fix"
+    edits:
+      - path: "axi-review-fix.txt"
+        new: "fixed\n"
+    structured:
+      summary: "apply selected review fix"
   - match: "Review the code changes and return structured findings"
     text: "review found a warning"
     structured:
@@ -48,9 +55,11 @@ func axiScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -108,20 +109,19 @@ func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 	return out
 }
 
-// TestReviewLoop_IndependentReviewTurnsOneFixerSession drives the real review
+// TestReviewLoop_IndependentReviewAndFixTurnsRunCold drives the real review
 // step through the executor's auto-fix loop for multiple rounds and proves:
-// every review turn (the initial review and every post-fix rereview) runs
-// session-free, N fix rounds share ONE durable fixer session, the review
-// turns never receive the fixer's identity, and every review round still asks
-// for a full review pass of the branch.
+// every review turn and mutation-required fix turn runs session-free, and
+// every review round still asks for a full review pass of the branch.
 //
 // Review turns are deliberately session-free: round N's fixes implement round
 // N-1's review findings, so resuming any prior review turn's session would
 // seat the prescriber of those fixes as their certifier. The cross-round
 // context a rereview legitimately needs travels in the explicit sanitized
 // round-history prompt section instead.
-func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
+func TestReviewLoop_IndependentReviewAndFixTurnsRunCold(t *testing.T) {
 	reviewRound := 0
+	fixRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {
@@ -135,6 +135,10 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
 		case "review-fix":
+			fixRound++
+			if err := os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("review-fix-%d.txt", fixRound)), []byte("fixed\n"), 0o644); err != nil {
+				t.Errorf("write review fix: %v", err)
+			}
 			return &agent.Result{Output: []byte(`{"summary":"fix the bug"}`)}
 		default:
 			t.Errorf("unexpected agent purpose %q", opts.Purpose)
@@ -164,18 +168,15 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 		}
 	}
 
-	// One durable fixer session: started on the first fix turn, resumed on
-	// the second.
-	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
-		t.Fatalf("first fix must start the fixer session, got %+v", fixes[0].Session)
-	}
-	fixerID := "sess-1"
-	if fixes[1].Session == nil || fixes[1].Session.ID != fixerID {
-		t.Fatalf("second fix must resume %s, got %+v", fixerID, fixes[1].Session)
+	// Mutation-required fix turns are cold so stale fixer context cannot turn
+	// a selected finding into an accepted no-op.
+	for i, call := range fixes {
+		if call.Session != nil {
+			t.Fatalf("fix round %d must run cold, got session %+v", i+1, call.Session)
+		}
 	}
 
-	// Every review round, including rereviews inside the resumed session,
-	// still demands a full adversarial pass over the branch.
+	// Every review round still demands a full adversarial pass over the branch.
 	for i, call := range reviews {
 		if !strings.Contains(call.Prompt, "Do a full review pass before returning") {
 			t.Fatalf("review round %d prompt lost the full-review demand:\n%s", i+1, call.Prompt)
@@ -185,17 +186,13 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 		}
 	}
 
-	// The persisted resume metadata is the minimum, and only the fixer role
-	// has any: review turns never mint a durable identity.
+	// Cold review/fix turns mint no durable session identity.
 	sessions, err := database.GetRunAgentSessions(run.ID)
 	if err != nil {
 		t.Fatalf("get sessions: %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("expected 1 persisted role session (fixer), got %d", len(sessions))
-	}
-	if sessions[0].Role != string(pipeline.SessionRoleFixer) || sessions[0].SessionID == "" || sessions[0].Agent != "session-mock" {
-		t.Fatalf("unexpected persisted session: %+v", sessions[0])
+	if len(sessions) != 0 {
+		t.Fatalf("expected no persisted review-loop sessions, got %+v", sessions)
 	}
 }
 
@@ -210,6 +207,7 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 // findings.
 func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *testing.T) {
 	reviewRound := 0
+	fixRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
 		switch opts.Purpose {
@@ -222,6 +220,10 @@ func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *test
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
 		case "review-fix":
+			fixRound++
+			if err := os.WriteFile(filepath.Join(opts.CWD, fmt.Sprintf("review-fix-%d.txt", fixRound)), []byte("fixed\n"), 0o644); err != nil {
+				t.Errorf("write review fix: %v", err)
+			}
 			return &agent.Result{Output: []byte(`{"summary":"implement the prescription"}`)}
 		default:
 			t.Errorf("unexpected agent purpose %q", opts.Purpose)
@@ -235,19 +237,22 @@ func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *test
 	}
 
 	reviews := reviewCalls(mock.snapshot())
+	fixes := fixCalls(mock.snapshot())
 	if len(reviews) != 2 {
 		t.Fatalf("expected initial review + rereview, got %d review calls", len(reviews))
+	}
+	if len(fixes) != 1 || fixes[0].Session != nil {
+		t.Fatalf("mutation-required fix must run cold, got %+v", fixes)
 	}
 	if reviews[1].Session != nil {
 		t.Fatalf("the rereview certifying the fix round must not carry any review-session identity, got %+v", reviews[1].Session)
 	}
 }
 
-// TestReviewLoop_ParkRespondFixKeepsRoleSessions parks the review step at an
-// ask-user gate, responds with a fix action, and proves the user-driven fix
-// turn uses the durable fixer session while the follow-up full rereview stays
-// session-free.
-func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
+// TestReviewLoop_ParkRespondFixUsesColdFixer parks the review step at an
+// ask-user gate, responds with a fix action, and proves the selected-finding
+// fix runs cold while the follow-up full rereview also stays session-free.
+func TestReviewLoop_ParkRespondFixUsesColdFixer(t *testing.T) {
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -261,6 +266,9 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
 		default:
+			if err := os.WriteFile(filepath.Join(opts.CWD, "user-approved-review-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+				t.Errorf("write review fix: %v", err)
+			}
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}
 	}
@@ -294,8 +302,8 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	if reviews[1].Session != nil {
 		t.Fatalf("post-park rereview must run session-free, got %+v", reviews[1].Session)
 	}
-	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
-		t.Fatalf("user-driven fix must start the fixer session, got %+v", fixes[0].Session)
+	if fixes[0].Session != nil {
+		t.Fatalf("user-driven selected-finding fix must run cold, got %+v", fixes[0].Session)
 	}
 	if !strings.Contains(reviews[1].Prompt, "Do a full review pass before returning") {
 		t.Fatalf("post-fix rereview lost the full-review demand:\n%s", reviews[1].Prompt)

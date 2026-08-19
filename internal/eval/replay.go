@@ -322,6 +322,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		LogFile:               func(string) {},
 		UserIntent:            c.Intent,
 		IntentSource:          c.IntentSource,
+		ForceSingleReview:     true,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
 	// agent-invocation metric rather than charging case restoration setup.

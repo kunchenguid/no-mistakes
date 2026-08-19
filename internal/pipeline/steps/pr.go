@@ -54,6 +54,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		if err := assertCertifiedRemoteHead(sctx); err != nil {
+			return nil, err
+		}
+	}
 	ctx := sctx.Ctx
 
 	branch := sctx.Run.Branch
@@ -61,18 +66,30 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
 	if branch == sctx.Repo.DefaultBranch {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires a pull request branch distinct from %s", sctx.Repo.DefaultBranch)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires pull request delivery: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires available pull request provider: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
+	if err := requireFleetPRHeadProof(sctx, host); err != nil {
+		return nil, err
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -88,6 +105,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
+		if err := assertFleetPRHead(sctx, host, existing); err != nil {
+			return nil, err
+		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
@@ -95,6 +115,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			updated = existing
 		}
 		if updated != nil && updated.URL != "" {
+			if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+				if err := assertCertifiedRemoteHead(sctx); err != nil {
+					return nil, err
+				}
+				if err := assertFleetPRHead(sctx, host, updated); err != nil {
+					return nil, err
+				}
+			}
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
 			}
@@ -109,13 +137,65 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet provider did not return a pull request URL")
+		}
 		return &pipeline.StepOutcome{}, nil
+	}
+	if err := assertFleetPRHead(sctx, host, created); err != nil {
+		return nil, err
+	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		if err := assertCertifiedRemoteHead(sctx); err != nil {
+			return nil, err
+		}
+		if err := assertFleetPRHead(sctx, host, created); err != nil {
+			return nil, err
+		}
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+func requireFleetPRHeadProof(sctx *pipeline.StepContext, host scm.Host) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if _, ok := host.(scm.PRHeadReader); !ok {
+		return fmt.Errorf("review fleet requires a provider that can prove the pull request source commit")
+	}
+	return nil
+}
+
+func assertFleetPRHead(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if pr == nil {
+		return fmt.Errorf("review fleet provider did not return a pull request")
+	}
+	headReader, ok := host.(scm.PRHeadReader)
+	if !ok {
+		return fmt.Errorf("review fleet requires a provider that can prove the pull request source commit")
+	}
+	certified := ""
+	if sctx.Run != nil && sctx.Run.CertifiedHeadSHA != nil {
+		certified = strings.TrimSpace(*sctx.Run.CertifiedHeadSHA)
+	}
+	if certified == "" {
+		return fmt.Errorf("review fleet requires an exact certified head before pull request delivery")
+	}
+	head, err := headReader.GetPRHeadSHA(sctx.Ctx, pr)
+	if err != nil {
+		return fmt.Errorf("read pull request source commit: %w", err)
+	}
+	if strings.TrimSpace(head) != certified {
+		return fmt.Errorf("refusing pull request whose source commit %s does not equal certified head %s", shortObjectID(head), shortObjectID(certified))
+	}
+	return nil
 }
 
 func describePR(pr *scm.PR) string {

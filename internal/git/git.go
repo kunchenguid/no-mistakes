@@ -1,12 +1,16 @@
 package git
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +74,89 @@ func RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...stri
 	return runInDirWithEnv(ctx, dir, extraEnv, args...)
 }
 
+func RunWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithBaseEnv(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithBaseEnv(ctx, dir, baseEnv, extraEnv, args...)
+}
+
+func RunRawWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) ([]byte, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+}
+
+func ForEachNULRecordWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args []string, visit func([]byte) error) error {
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return err
+	}
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, gitPath, args...)
+	cmd.Dir = dir
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("create git stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	winproc.Harden(cmd)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start git %s: %w", safeurl.RedactText(strings.Join(args, " ")), err)
+	}
+	reader := bufio.NewReader(stdout)
+	for {
+		record, readErr := reader.ReadBytes(0)
+		if len(record) > 0 {
+			if record[len(record)-1] != 0 {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return fmt.Errorf("git %s emitted an unterminated NUL record", safeurl.RedactText(strings.Join(args, " ")))
+			}
+			if err := visit(record[:len(record)-1]); err != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return fmt.Errorf("read git %s output: %w", safeurl.RedactText(strings.Join(args, " ")), readErr)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
+	}
+	return nil
+}
+
+func CopyBlobWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, object string, dst io.Writer) error {
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, "cat-file", "blob", object)
+	cmd.Dir = dir
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
+	cmd.Stdout = dst
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	winproc.Harden(cmd)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git cat-file blob: %w: %s", err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
+	}
+	return nil
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	return runInDirWithEnv(ctx, dir, nil, args...)
 }
@@ -79,10 +166,23 @@ func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ..
 	return strings.TrimSpace(string(out)), err
 }
 
+func runInDirWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) (string, error) {
+	out, err := runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
 func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	return runInDirWithBaseEnvRaw(ctx, dir, nil, extraEnv, args...)
+}
+
+func runInDirWithBaseEnvRaw(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) ([]byte, error) {
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, args...)
 	cmd.Dir = dir
-	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
+	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -93,6 +193,36 @@ func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args
 		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return out, nil
+}
+
+func executableFromBaseEnv(name string, baseEnv []string) (string, error) {
+	if baseEnv == nil {
+		baseEnv = os.Environ()
+	}
+	var searchPath string
+	for _, entry := range baseEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(key, "PATH") {
+			searchPath = value
+		}
+	}
+	for _, dir := range filepath.SplitList(searchPath) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if runtime.GOOS == "windows" {
+			candidate += ".exe"
+		}
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && info.Mode().IsRegular() {
+			executable := runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0
+			if executable {
+				return candidate, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("resolve git executable from supplied PATH")
 }
 
 // ValidateBareRepository verifies both the filesystem shape and Git's own bare

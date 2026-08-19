@@ -32,6 +32,31 @@ agent_args_override:
     - -c
     - model_reasoning_effort="low"
 
+# Optional Codex-only review fleet (disabled by default; global-only)
+review_fleet:
+  enabled: false
+  reviewers:
+    test-adversary:
+      model: gpt-5.6-terra
+      reasoning_effort: xhigh
+    correctness:
+      model: gpt-5.6-terra
+      reasoning_effort: high
+    architecture:
+      model: gpt-5.6-terra
+      reasoning_effort: high
+    security:
+      model: gpt-5.6-terra
+      reasoning_effort: high
+      high_risk_paths: [internal/auth/**, internal/crypto/**]
+      escalated_reasoning_effort: xhigh
+  consolidator:
+    model: gpt-5.6-terra
+    reasoning_effort: high
+  certifier:
+    model: gpt-5.6-sol
+    reasoning_effort: xhigh
+
 ci_timeout: "168h"
 
 step_quiet_warning: "10m"
@@ -218,6 +243,65 @@ agent_args_override:
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
+### review_fleet
+
+Optional, global-only Codex review fleet. It is disabled by default and a
+repository's `.no-mistakes.yaml` cannot enable, disable, or modify it. v1
+requires exactly these four reviewer roles: `test-adversary`, `correctness`,
+`architecture`, and `security`, plus one `consolidator` and one `certifier`
+profile. Every profile must name its own `model` and `reasoning_effort`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `review_fleet.enabled` | `bool` | Enable the fleet; default `false` |
+| `review_fleet.reviewers` | `map[string]object` | Exactly the four fixed reviewer roles when enabled |
+| `review_fleet.reviewers.<role>.model` | `string` | Explicit Codex model |
+| `review_fleet.reviewers.<role>.reasoning_effort` | `string` | `low`, `medium`, `high`, `xhigh`, or `max` |
+| `review_fleet.reviewers.security.high_risk_paths` | `string[]` | Bounded git-path globs that opt security review into escalation |
+| `review_fleet.reviewers.security.escalated_reasoning_effort` | `string` | Optional stronger effort for an escalated security review |
+| `review_fleet.consolidator` / `certifier` | `object` | Explicit Codex model and reasoning profile |
+
+Models are limited to 128 bytes. Security accepts at most 32 high-risk paths,
+each at most 256 bytes and 4,096 bytes in total. Invalid globs and any missing
+required profile field reject the global config before a run starts.
+`high_risk_paths` and `escalated_reasoning_effort` must be configured
+together so a matched path always has a complete escalation profile.
+
+Fleet invocations are always cold and add `--sandbox read-only`, `--ephemeral`,
+`--skip-git-repo-check`,
+`--ignore-user-config`, `-c project_doc_max_bytes=0`, `--ignore-rules`, and a
+core-only shell environment policy. Each Review or Certify execution uses a
+clean detached shadow checkout that excludes repository `.agents/skills` and
+`.codex` state. It also receives an isolated `HOME`, XDG directories, and
+`CODEX_HOME`; only a bounded regular-file copy of `auth.json` is admitted.
+This shadow prevents normal discovery of excluded repository/user instruction
+state; it is not a host-filesystem confidentiality boundary. Codex's
+`read-only` sandbox prevents writes but may read other host paths that the
+operating-system account can read. Run no-mistakes under a dedicated OS
+account or an outer container when reviews must process untrusted source under
+a strict read boundary.
+Inherited Codex model, reasoning, sandbox, approval-bypass, session,
+project-document, and ignore-rules flags are rejected because they could
+defeat fleet isolation. The `service_tier` config override is the only
+inherited Codex flag allowed. `high_risk_paths` uses the same git-path glob semantics as
+`ignore_patterns`: slash-separated paths, basename matching for patterns
+without a slash, and `/**` for a directory subtree. Matching uses the complete
+changed-path set before repository `ignore_patterns` filtering; an ignored-only
+diff still runs the fleet when it contains an operator-classified high-risk path.
+The enabled/disabled fleet mode is persisted when a run starts. Recovery uses
+that durable value plus a fingerprint of every profile, high-risk path,
+generated safe argument, and the once-resolved absolute Codex executable used
+for every invocation. The fingerprint also binds the complete resolved
+delivery configuration, including commands, auto-fix and CI policy,
+documentation/test settings, and the trusted `allow_repo_commands` decision.
+A changed contract
+fails recovery instead of weakening an already-started run. Push requires exact
+equality with the certified commit even if the fleet is later disabled.
+Raw reviewer, consolidator, and certifier messages are never streamed into
+persistent logs; only bounded, sanitized findings and bounded lifecycle status
+are retained. Each run also replaces ambient `HOME`, `CODEX_HOME`,
+`CODEX_SQLITE_HOME`, and XDG state directories with sandbox-local paths.
+
 ### ci_timeout
 
 How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, or Azure DevOps PR mergeability, before giving up.
@@ -351,7 +435,7 @@ The template supports literal text and two Go-style placeholders:
 
 | Variable | Value |
 | --- | --- |
-| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
+| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, `lint`, or `certify` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.

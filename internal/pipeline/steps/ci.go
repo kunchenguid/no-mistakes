@@ -51,7 +51,46 @@ type CIStep struct {
 	baseBranchTip func(context.Context) (string, bool)
 }
 
+func ciAutoFixLimit(sctx *pipeline.StepContext) int {
+	if ciFleetRun(sctx) {
+		return 0
+	}
+	return sctx.Config.AutoFix.CI
+}
+
 func (s *CIStep) Name() types.StepName { return types.StepCI }
+
+func (s *CIStep) ValidateApprovalGate(sctx *pipeline.StepContext) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if err := assertCertifiedRemoteHead(sctx); err != nil {
+		return err
+	}
+	provider := scm.DetectProviderContext(sctx.Ctx, sctx.Repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
+		provider = scm.DetectProviderContext(sctx.Ctx, *sctx.Run.PRURL)
+	}
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		return fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		return fmt.Errorf("review fleet requires available CI provider: %w", err)
+	}
+	if sctx.Run.PRURL == nil || strings.TrimSpace(*sctx.Run.PRURL) == "" {
+		return fmt.Errorf("review fleet requires a pull request URL for CI approval")
+	}
+	prURL := strings.TrimSpace(*sctx.Run.PRURL)
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return fmt.Errorf("extract PR number: %w", err)
+	}
+	if err := assertFleetTerminalCertification(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
+		return fmt.Errorf("verify certified PR source commit before approval: %w", err)
+	}
+	return nil
+}
 
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
@@ -71,6 +110,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if ciFleetRun(sctx) {
+			return false, fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
+		}
 		return false, fmt.Errorf("cannot check PR state: %s", skipReason)
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
@@ -94,6 +136,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
+		if err := assertFleetTerminalCertification(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
+			return false, err
+		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 			return false, err
 		}
@@ -103,6 +148,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		}
 		return true, nil
 	case scm.PRStateClosed:
+		if err := assertFleetTerminalCertification(sctx, host, &scm.PR{Number: prNumber, URL: prURL}); err != nil {
+			return false, err
+		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
 			return false, err
 		}
@@ -138,10 +186,16 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires CI provider observation: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires available CI provider: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -152,6 +206,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		prURL = *sctx.Run.PRURL
 	}
 	if prURL == "" {
+		if ciFleetRun(sctx) {
+			return nil, fmt.Errorf("review fleet requires a pull request URL for CI observation")
+		}
 		// Try to refresh from DB in case PR step set it
 		run, _ := sctx.DB.GetRun(sctx.Run.ID)
 		if run != nil && run.PRURL != nil {
@@ -258,6 +315,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
 		} else if state == scm.PRStateMerged {
+			if err := assertFleetTerminalCertification(sctx, host, pr); err != nil {
+				return nil, err
+			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 				return nil, err
 			}
@@ -265,6 +325,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
+			if err := assertFleetTerminalCertification(sctx, host, pr); err != nil {
+				return nil, err
+			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
 				return nil, err
 			}
@@ -272,6 +335,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateOpen {
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
+				return nil, err
+			}
+		}
+		if ciFleetRun(sctx) {
+			if err := assertCertifiedRemoteHead(sctx); err != nil {
 				return nil, err
 			}
 		}
@@ -299,7 +367,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
-		ciFixLimit := sctx.Config.AutoFix.CI
+		ciFixLimit := ciAutoFixLimit(sctx)
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			clearCIMonitorReady(sctx)

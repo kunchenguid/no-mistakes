@@ -531,9 +531,11 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -1029,7 +1031,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI} {
+	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepCertify, types.StepPush, types.StepPR, types.StepCI} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step in empty-after-rebase run", stepName)
@@ -2676,7 +2678,7 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 
 func assertPipelineStepsInOrder(t *testing.T, steps []ipc.StepResultInfo) {
 	t.Helper()
-	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepCertify, types.StepPush, types.StepPR, types.StepCI}
 	if len(steps) != len(expected) {
 		t.Fatalf("pipeline recorded %d steps, want %d", len(steps), len(expected))
 	}
@@ -2732,7 +2734,7 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 		"branch: feature/e2e",
 		baseSHA,
 		run.HeadSHA,
-		"ignore patterns: *.generated.go, vendor/**",
+		`ignore patterns: "*.generated.go, vendor/**"`,
 		"Do a full review pass before returning.",
 		"Do not stop after the first valid finding.",
 		"Do NOT run tests during review.",

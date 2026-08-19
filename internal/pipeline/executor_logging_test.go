@@ -213,6 +213,50 @@ func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
 	}
 }
 
+func TestStepLogWriterAggregatesConcurrentAgentPIDs(t *testing.T) {
+	var persisted []*int
+	var mu sync.Mutex
+	logger := newStepLogWriter(nil, nil, nil)
+	persist := func(_ string, pid *int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if pid == nil {
+			persisted = append(persisted, nil)
+			return
+		}
+		copyPID := *pid
+		persisted = append(persisted, &copyPID)
+	}
+	var wg sync.WaitGroup
+	for _, pid := range []int{4104, 4102, 4103, 4101} {
+		pid := pid
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.lifecycle(agent.LifecycleEvent{Agent: "codex", Phase: agent.LifecyclePhaseStart, PID: pid}, persist)
+		}()
+	}
+	wg.Wait()
+	if got := logger.activePIDLocked(); got == nil || *got != 4101 {
+		t.Fatalf("aggregate active pid = %v, want lowest active pid 4101", got)
+	}
+	logger.lifecycle(agent.LifecycleEvent{Agent: "codex", Phase: agent.LifecyclePhaseExit, PID: 4101}, persist)
+	if got := logger.activePIDLocked(); got == nil || *got != 4102 {
+		t.Fatalf("after one exit active pid = %v, want 4102", got)
+	}
+	for _, pid := range []int{4102, 4103, 4104} {
+		logger.lifecycle(agent.LifecycleEvent{Agent: "codex", Phase: agent.LifecyclePhaseExit, PID: pid}, persist)
+	}
+	if got := logger.activePIDLocked(); got != nil {
+		t.Fatalf("after all exits active pid = %v, want nil", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(persisted) != 8 {
+		t.Fatalf("persist callbacks = %d, want 8", len(persisted))
+	}
+}
+
 func TestExecutor_LogVsLogChunk(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

@@ -89,6 +89,23 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if ciFleetRun(sctx) {
+		command := strings.TrimSpace(sctx.Config.Commands.Document)
+		if command == "" {
+			return nil, fmt.Errorf("review fleet requires a deterministic commands.document")
+		}
+		sctx.Log(fmt.Sprintf("running documentation check: %s", command))
+		output, exitCode, err := runStepShellCommand(sctx, command)
+		if err != nil {
+			return nil, fmt.Errorf("run document command: %w", err)
+		}
+		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepDocument)
+		if exitCode != 0 {
+			findingsJSON, _ := json.Marshal(Findings{Items: []Finding{{Severity: "error", Description: fmt.Sprintf("documentation check failed with exit code %d", exitCode)}}, Summary: projectedOutput})
+			return &pipeline.StepOutcome{NeedsApproval: true, AutoFixable: false, Findings: string(findingsJSON), ExitCode: exitCode}, nil
+		}
+		return &pipeline.StepOutcome{}, nil
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 

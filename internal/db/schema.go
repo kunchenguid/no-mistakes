@@ -17,10 +17,13 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
-    no_mistakes_version     TEXT,
-    no_mistakes_build_sha   TEXT,
+    no_mistakes_version      TEXT,
+    no_mistakes_build_sha    TEXT,
     review_approved_head_sha TEXT,
-    status                  TEXT NOT NULL DEFAULT 'pending',
+    certified_head_sha       TEXT,
+    review_fleet_enabled     INTEGER NOT NULL DEFAULT 0,
+    review_fleet_fingerprint TEXT,
+    status                   TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
     pr_state_observed_at    INTEGER,
@@ -39,6 +42,16 @@ CREATE TABLE IF NOT EXISTS runs (
     parked_ms            INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_head_transitions (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    from_sha TEXT NOT NULL,
+    to_sha TEXT NOT NULL,
+    producer TEXT NOT NULL,
+    fleet_fingerprint TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, to_sha)
 );
 
 CREATE TABLE IF NOT EXISTS step_results (
@@ -67,6 +80,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
     reviewed_head_sha    TEXT,
+    certified_head_sha   TEXT,
     starting_head_sha    TEXT,
     trusted_config_sha   TEXT,
     global_config_yaml   BLOB,
@@ -167,6 +181,7 @@ var migrationStatements = []string{
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN certified_head_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN starting_head_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN trusted_config_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN global_config_yaml BLOB`,
@@ -193,6 +208,15 @@ var migrationStatements = []string{
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
+	// Certification authority is nullable and never inferred from a mutable
+	// run/worktree head. Only an atomically completed Certify step may write it.
+	`ALTER TABLE runs ADD COLUMN certified_head_sha TEXT`,
+	// Fleet delivery mode is captured when a run starts. Recovery must not let
+	// a later global-config edit downgrade exact certification into legacy Push.
+	`ALTER TABLE runs ADD COLUMN review_fleet_enabled INTEGER NOT NULL DEFAULT 0`,
+	// The exact effective fleet contract is hashed at run start. Recovery
+	// refuses changed models, efforts, paths, args, or Codex executable choice.
+	`ALTER TABLE runs ADD COLUMN review_fleet_fingerprint TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,
@@ -209,6 +233,7 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	`CREATE TABLE IF NOT EXISTS run_head_transitions (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, from_sha TEXT NOT NULL, to_sha TEXT NOT NULL, producer TEXT NOT NULL, fleet_fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (run_id, to_sha))`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

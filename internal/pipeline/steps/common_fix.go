@@ -104,6 +104,9 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	if currentHead == recorded {
 		return nil
 	}
+	if sctx.Run.ReviewFleetEnabled && sctx.Run.ReviewApprovedHeadSHA != nil {
+		return fmt.Errorf("refusing to run %s step: worktree HEAD %s changed outside the pipeline from recorded head %s", stepName, currentHead, recorded)
+	}
 	// Fail closed: refuse unless the recorded head is genuinely an ancestor of the
 	// live HEAD (a legitimate forward move). A non-ancestor result OR any git error
 	// (e.g. an unknown recorded object) aborts rather than proceeds.
@@ -117,11 +120,34 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
+	expectedHead := strings.TrimSpace(sctx.Run.HeadSHA)
+	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head before %s commit: %w", stepName, err)
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if currentHead != expectedHead {
+		return fmt.Errorf("refusing to commit %s fix: worktree HEAD changed from %s to %s", stepName, expectedHead, currentHead)
+	}
+	branchRef := normalizedBranchRef(sctx.Run.Branch)
+	branchHead, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", branchRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve recorded branch before %s commit: %w", stepName, err)
+	}
+	if strings.TrimSpace(branchHead) != expectedHead {
+		return fmt.Errorf("refusing to commit %s fix: recorded branch %s changed from %s to %s", stepName, branchRef, expectedHead, strings.TrimSpace(branchHead))
+	}
+	symbolicHeadRef, symbolicHeadErr := git.Run(ctx, sctx.WorkDir, "symbolic-ref", "-q", "HEAD")
+	if symbolicHeadErr == nil && strings.TrimSpace(symbolicHeadRef) != branchRef {
+		return fmt.Errorf("refusing to commit %s fix: checked-out branch %s does not match recorded branch %s", stepName, strings.TrimSpace(symbolicHeadRef), branchRef)
+	}
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect %s changes: %w", stepName, err)
+	}
 	if strings.TrimSpace(status) == "" {
+		if sctx.RequireFixMutation {
+			return fmt.Errorf("selected %s fix produced no changes; refusing to rerun without a recorded invalidation", stepName)
+		}
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
@@ -145,26 +171,67 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
 	}
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+	currentHead, err = git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("verify head after %s commit: %w", stepName, err)
+	}
+	if currentHead != headSHA {
+		return fmt.Errorf("refusing to record %s fix: worktree HEAD changed from %s to %s", stepName, headSHA, currentHead)
+	}
+	if err := requireCommitParent(sctx, headSHA, sctx.Run.HeadSHA, stepName); err != nil {
 		return err
 	}
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+	expectedBranchHead := expectedHead
+	if symbolicHeadErr == nil {
+		// A normal branch checkout advances its ref as part of git commit. A
+		// daemon run uses a detached worktree, so its recorded branch ref still
+		// needs the same compare-and-swap advancement explicitly.
+		expectedBranchHead = headSHA
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", branchRef, headSHA, expectedBranchHead); err != nil {
+		return fmt.Errorf("advance recorded branch after %s commit: %w", stepName, err)
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", "HEAD", headSHA, headSHA); err != nil {
+		return fmt.Errorf("verify checked-out ref after %s commit: %w", stepName, err)
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {
 		startingHead = sctx.Run.HeadSHA
 	}
-	sctx.Run.HeadSHA = headSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	if err := advanceFleetRunHead(sctx, stepName, sctx.Run.HeadSHA, headSHA); err != nil {
 		return err
 	}
+	sctx.Run.HeadSHA = headSHA
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
 	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
 	return nil
+}
+
+func requireCommitParent(sctx *pipeline.StepContext, childSHA, expectedParent string, stepName types.StepName) error {
+	parents, err := git.Run(sctx.Ctx, sctx.WorkDir, "show", "-s", "--format=%P", childSHA)
+	if err != nil {
+		return fmt.Errorf("inspect %s commit parents: %w", stepName, err)
+	}
+	fields := strings.Fields(parents)
+	if len(fields) != 1 || fields[0] != expectedParent {
+		return fmt.Errorf("refusing to record %s transition: commit %s does not have the recorded head %s as its sole parent", stepName, childSHA, expectedParent)
+	}
+	return nil
+}
+
+func advanceFleetRunHead(sctx *pipeline.StepContext, stepName types.StepName, fromSHA, toSHA string) error {
+	if !sctx.Run.ReviewFleetEnabled || sctx.Run.ReviewApprovedHeadSHA == nil {
+		return sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, toSHA)
+	}
+	if stepName != types.StepTest && stepName != types.StepDocument && stepName != types.StepLint && stepName != types.StepCertify {
+		return fmt.Errorf("refusing unowned fleet head transition from %s", stepName)
+	}
+	if sctx.Run.ReviewFleetFingerprint == nil || strings.TrimSpace(*sctx.Run.ReviewFleetFingerprint) == "" {
+		return fmt.Errorf("refusing fleet head transition without contract fingerprint")
+	}
+	return sctx.DB.AdvanceFleetRunHeadCAS(sctx.Run.ID, fromSHA, toSHA, string(stepName), strings.TrimSpace(*sctx.Run.ReviewFleetFingerprint))
 }
 
 func extractCommitSummary(result *agent.Result) (string, error) {
@@ -197,6 +264,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
 		return "", errors.New(opts.MissingFindingsError)
 	}
+	defer func() { sctx.RequireFixMutation = false }()
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
 	}
@@ -214,7 +282,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	var result *agent.Result
 	var err error
-	if opts.SessionRole != "" {
+	if opts.SessionRole != "" && !sctx.RequireFixMutation {
 		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
 	} else {
 		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)

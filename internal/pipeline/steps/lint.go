@@ -22,6 +22,9 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	lintCmd := sctx.Config.Commands.Lint
+	if ciFleetRun(sctx) && lintCmd == "" {
+		return nil, fmt.Errorf("review fleet requires a deterministic commands.lint")
+	}
 
 	if lintCmd == "" {
 		// The combined document+lint housekeeping pass already performed the
@@ -171,7 +174,7 @@ Previous lint findings to address:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
-			AutoFixable:   true,
+			AutoFixable:   !ciFleetRun(sctx),
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 			FixSummary:    fixSummary,
