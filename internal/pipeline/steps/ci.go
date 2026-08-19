@@ -94,6 +94,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
+		if err := assertFleetTerminalCertification(sctx); err != nil {
+			return false, err
+		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 			return false, err
 		}
@@ -103,6 +106,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		}
 		return true, nil
 	case scm.PRStateClosed:
+		if err := assertFleetTerminalCertification(sctx); err != nil {
+			return false, err
+		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
 			return false, err
 		}
@@ -217,11 +223,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	for {
-		if ciFleetRun(sctx) {
-			if err := assertCertifiedRemoteHead(sctx); err != nil {
-				return nil, err
-			}
-		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -263,6 +264,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
 		} else if state == scm.PRStateMerged {
+			if err := assertFleetTerminalCertification(sctx); err != nil {
+				return nil, err
+			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 				return nil, err
 			}
@@ -270,6 +274,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
+			if err := assertFleetTerminalCertification(sctx); err != nil {
+				return nil, err
+			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
 				return nil, err
 			}
@@ -277,6 +284,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateOpen {
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
+				return nil, err
+			}
+		}
+		if ciFleetRun(sctx) {
+			if err := assertCertifiedRemoteHead(sctx); err != nil {
 				return nil, err
 			}
 		}

@@ -397,6 +397,19 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	if r == nil || r.cfg == nil || r.settings == nil {
 		return nil, fmt.Errorf("review fleet runner is not configured")
 	}
+	invocation := *r
+	invocation.mu = sync.Mutex{}
+	invocation.sandboxRoot = ""
+	invocation.checkoutDir = ""
+	invocation.homeDir = ""
+	invocation.codexHome = ""
+	invocation.sandboxHead = ""
+	invocation.closed = false
+	defer invocation.Close()
+	return invocation.run(ctx, profile, opts)
+}
+
+func (r *reviewProfileRunner) run(ctx context.Context, profile ReviewProfile, opts agent.RunOpts) (*agent.Result, error) {
 	if strings.TrimSpace(opts.CWD) != "" && opts.CWD != r.workDir {
 		return nil, fmt.Errorf("review fleet runner refuses a worktree outside the shared read-only checkout")
 	}

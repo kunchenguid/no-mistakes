@@ -89,6 +89,9 @@ Previous test findings to address:
 	}
 
 	testCmd := sctx.Config.Commands.Test
+	if ciFleetRun(sctx) && testCmd == "" {
+		return nil, fmt.Errorf("review fleet requires a deterministic commands.test")
+	}
 	tested := []string{}
 	if testCmd != "" {
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))

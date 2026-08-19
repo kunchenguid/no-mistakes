@@ -1421,6 +1421,9 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
+	if run != nil && run.ReviewFleetEnabled && !verified {
+		return fmt.Errorf("refusing fleet completion without an exact clean certified worktree")
+	}
 	var err error
 	if verified {
 		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)

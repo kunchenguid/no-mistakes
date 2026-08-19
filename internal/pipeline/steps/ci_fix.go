@@ -168,6 +168,23 @@ func ciFleetRun(sctx *pipeline.StepContext) bool {
 	return err == nil && run != nil && (run.ReviewFleetEnabled || run.CertifiedHeadSHA != nil)
 }
 
+func assertFleetTerminalCertification(sctx *pipeline.StepContext) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable certification before terminal PR state: %w", err)
+	}
+	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
+		return fmt.Errorf("refusing terminal PR state: run has no durably recorded certified head")
+	}
+	if run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != strings.TrimSpace(*run.CertifiedHeadSHA) {
+		return fmt.Errorf("refusing terminal PR state: certified head was not exactly published")
+	}
+	return nil
+}
+
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	pushURL := resolvePushURL(sctx)

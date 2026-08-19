@@ -89,6 +89,10 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if ciFleetRun(sctx) {
+		sctx.Log("review fleet leaves documentation changes for deterministic repository checks")
+		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
