@@ -49,7 +49,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
+		// Sign off (see commitAgentFixes) so DCO-gated repositories accept the
+		// agent-fix commit without a follow-up Signed-off-by remediation commit.
+		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-s", "-m", "no-mistakes: apply agent fixes")
 		if err != nil {
 			return nil, fmt.Errorf("commit agent changes: %w", err)
 		}

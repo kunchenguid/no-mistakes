@@ -802,6 +802,30 @@ func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_SignsOffCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644)
+	if err := commitAgentFixes(sctx, types.StepDocument, "add signoff", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pipeline signs off its own auto-fix commits so DCO-gated repositories
+	// accept them without a follow-up Signed-off-by remediation commit. The
+	// trailer must match the committing identity (test <test@test.com> from
+	// setupGitRepo) or DCO would reject it.
+	body := gitCmd(t, dir, "log", "-1", "--pretty=%B")
+	want := "Signed-off-by: test <test@test.com>"
+	if !strings.Contains(body, want) {
+		t.Errorf("commit body = %q, want it to contain %q", body, want)
+	}
+}
+
 func TestMatchIgnorePattern(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

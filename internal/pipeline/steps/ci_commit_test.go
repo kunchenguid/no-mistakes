@@ -63,6 +63,12 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	if upstreamSHA == headSHA {
 		t.Error("upstream should have a new commit with CI fixes")
 	}
+
+	// The CI-fix commit is signed off so DCO-gated repositories accept it without
+	// a follow-up Signed-off-by remediation commit.
+	if body := gitCmd(t, dir, "log", "-1", "--pretty=%B"); !strings.Contains(body, "Signed-off-by: test <test@test.com>") {
+		t.Errorf("CI-fix commit body = %q, want a Signed-off-by trailer", body)
+	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
