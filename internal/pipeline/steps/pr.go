@@ -88,6 +88,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
+	if err := requireFleetPRHeadProof(sctx, host); err != nil {
+		return nil, err
+	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
@@ -143,6 +146,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+func requireFleetPRHeadProof(sctx *pipeline.StepContext, host scm.Host) error {
+	if !ciFleetRun(sctx) {
+		return nil
+	}
+	if _, ok := host.(scm.PRHeadReader); !ok {
+		return fmt.Errorf("review fleet requires a provider that can prove the pull request source commit")
+	}
+	return nil
 }
 
 func describePR(pr *scm.PR) string {

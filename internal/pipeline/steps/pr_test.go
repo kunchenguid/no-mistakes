@@ -18,8 +18,19 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRequireFleetPRHeadProofRejectsProviderWithoutSourceProof(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{Run: &db.Run{ReviewFleetEnabled: true}}
+	host := gitlab.New(nil, nil, "gitlab.example.com", "group/project")
+	if err := requireFleetPRHeadProof(sctx, host); err == nil {
+		t.Fatal("fleet PR delivery accepted a provider without source-commit proof")
+	}
+}
 
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	t.Parallel()

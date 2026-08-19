@@ -38,6 +38,9 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 			if sctx.PreviousFindings == "" {
 				t.Error("expected PreviousFindings to be set on auto-fix")
 			}
+			if !sctx.RequireFixMutation {
+				t.Error("expected auto-fix to require a recorded mutation")
+			}
 			return &StepOutcome{}, nil
 		},
 	}

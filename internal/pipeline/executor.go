@@ -972,6 +972,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", nil)
 				phaseStart = time.Now()
 				sctx.Fixing = true
+				sctx.RequireFixMutation = true
 				sctx.PreviousFindings = fixableFindings
 				nextTrigger = "auto_fix"
 				continue
