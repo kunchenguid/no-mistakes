@@ -306,6 +306,7 @@ When the target matches a first-class alias such as `acp:cursor`, no-mistakes su
 Configure custom target commands in the [Global Config Reference](/no-mistakes/reference/global-config/#acp_registry_overrides).
 
 no-mistakes invokes acpx with JSON output, approve-all permissions, denied non-interactive permission prompts, and the repo worktree as `--cwd`.
+The prompt is written to the bridge's stdin (`exec --file -`) instead of being passed as a command-line argument, so a large pipeline prompt cannot exceed the operating system's argument-length limit; this requires an `acpx` build that accepts `exec --file -`.
 Structured output is handled by appending the requested JSON schema to the prompt and validating the final assistant text.
 
 ## Checking agent availability

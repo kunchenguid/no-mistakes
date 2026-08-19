@@ -43,6 +43,8 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
+	// The prompt travels on stdin (`exec --file -`), never argv: pipeline prompts
+	// routinely exceed the OS argument-length limit, which fails the spawn outright.
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("acpx stdin pipe: %w", err)
