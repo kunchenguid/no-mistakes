@@ -25,6 +25,7 @@ type StepContext struct {
 	LogChunk              func(string) // raw streaming chunk (user-visible + file)
 	LogFile               func(string) // file-only log callback (not shown to user)
 	Fixing                bool         // true when re-executing after a "fix" action
+	RequireFixMutation    bool
 	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
 	ReviewStartingHeadSHA string
 	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)

@@ -668,6 +668,24 @@ func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_SelectedFixRequiresMutation(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.RequireFixMutation = true
+
+	err := commitAgentFixes(sctx, types.StepReview, "should not commit", "fallback")
+	if err == nil {
+		t.Fatal("selected review fix without changes succeeded")
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("HeadSHA changed unexpectedly: %s -> %s", headSHA, sctx.Run.HeadSHA)
+	}
+}
+
 func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

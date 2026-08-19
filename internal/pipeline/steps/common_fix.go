@@ -122,6 +122,9 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	}
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
+		if sctx.RequireFixMutation {
+			return fmt.Errorf("selected %s fix produced no changes; refusing to rerun without a recorded invalidation", stepName)
+		}
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
@@ -197,6 +200,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
 		return "", errors.New(opts.MissingFindingsError)
 	}
+	defer func() { sctx.RequireFixMutation = false }()
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
 	}
@@ -214,7 +218,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	var result *agent.Result
 	var err error
-	if opts.SessionRole != "" {
+	if opts.SessionRole != "" && !sctx.RequireFixMutation {
 		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
 	} else {
 		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)

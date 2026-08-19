@@ -296,12 +296,13 @@ func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
 }
 
 type stepExecutionState struct {
-	fixing           bool
-	previousFindings string
-	roundNum         int
-	autoFixAttempts  int
-	executionMS      int64
-	currentRoundID   string
+	fixing             bool
+	requireFixMutation bool
+	previousFindings  string
+	roundNum          int
+	autoFixAttempts   int
+	executionMS       int64
+	currentRoundID    string
 }
 
 type recoveredGate struct {
@@ -515,7 +516,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", nil)
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
-			fixing:           true,
+			fixing:             true,
+			requireFixMutation: true,
 			previousFindings: merged,
 			roundNum:         gate.round,
 			autoFixAttempts:  gate.autoFixes,
@@ -840,7 +842,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		RunReviewProfile: runReviewProfile,
 		EvidenceDir:      e.runEvidenceDir(run.ID),
 		Fixing:           state.fixing,
-		PreviousFindings: state.previousFindings,
+		RequireFixMutation: state.requireFixMutation,
+		PreviousFindings:    state.previousFindings,
 		Log:              writeLog,
 		LogChunk:         writeLogChunk,
 		LogFile: func(text string) {
@@ -1085,6 +1088,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
 			sctx.Fixing = true
+			sctx.RequireFixMutation = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
