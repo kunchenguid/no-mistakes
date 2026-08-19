@@ -167,7 +167,7 @@ type reviewFleetContract struct {
 	Reviewers       []reviewFleetContractProfile `json:"reviewers"`
 	Consolidator    reviewFleetContractProfile   `json:"consolidator"`
 	Certifier       reviewFleetContractProfile   `json:"certifier"`
-	TrustedGuidance  []config.PathInstruction     `json:"trusted_guidance"`
+	TrustedGuidance []config.PathInstruction     `json:"trusted_guidance"`
 }
 
 type reviewFleetContractProfile struct {
@@ -199,7 +199,7 @@ func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance 
 		Version:         reviewFleetContractVersion,
 		CodexExecutable: settings.CodexExecutable,
 		Reviewers:       make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
-		TrustedGuidance:  normalizeFleetGuidance(guidance),
+		TrustedGuidance: normalizeFleetGuidance(guidance),
 	}
 	for _, profile := range settings.Reviewers {
 		fingerprinted, err := reviewFleetFingerprintProfile(settings, profile)
@@ -589,16 +589,6 @@ func reviewFleetGitEnv() []string {
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=core.hooksPath",
 		"GIT_CONFIG_VALUE_0=" + os.DevNull,
-		"GIT_DIR=",
-		"GIT_WORK_TREE=",
-		"GIT_COMMON_DIR=",
-		"GIT_INDEX_FILE=",
-		"GIT_OBJECT_DIRECTORY=",
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
-		"GIT_CEILING_DIRECTORIES=",
-		"GIT_DISCOVERY_ACROSS_FILESYSTEM=",
-		"GIT_PREFIX=",
-		"GIT_SUPER_PREFIX=",
 	}
 }
 

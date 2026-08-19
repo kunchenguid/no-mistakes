@@ -120,14 +120,30 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
+	expectedHead := strings.TrimSpace(sctx.Run.HeadSHA)
 	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+		return fmt.Errorf("resolve head before %s commit: %w", stepName, err)
 	}
-	if currentHead != headSHA {
-		return fmt.Errorf("refusing to record %s fix: worktree HEAD changed from %s to %s", stepName, headSHA, currentHead)
+	if currentHead != expectedHead {
+		return fmt.Errorf("refusing to commit %s fix: worktree HEAD changed from %s to %s", stepName, expectedHead, currentHead)
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	branchRef := normalizedBranchRef(sctx.Run.Branch)
+	branchHead, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", branchRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve recorded branch before %s commit: %w", stepName, err)
+	}
+	if strings.TrimSpace(branchHead) != expectedHead {
+		return fmt.Errorf("refusing to commit %s fix: recorded branch %s changed from %s to %s", stepName, branchRef, expectedHead, strings.TrimSpace(branchHead))
+	}
+	symbolicHeadRef, symbolicHeadErr := git.Run(ctx, sctx.WorkDir, "symbolic-ref", "-q", "HEAD")
+	if symbolicHeadErr == nil && strings.TrimSpace(symbolicHeadRef) != branchRef {
+		return fmt.Errorf("refusing to commit %s fix: checked-out branch %s does not match recorded branch %s", stepName, strings.TrimSpace(symbolicHeadRef), branchRef)
+	}
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect %s changes: %w", stepName, err)
+	}
 	if strings.TrimSpace(status) == "" {
 		if sctx.RequireFixMutation {
 			return fmt.Errorf("selected %s fix produced no changes; refusing to rerun without a recorded invalidation", stepName)
@@ -155,7 +171,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
 	}
-	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	currentHead, err = git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("verify head after %s commit: %w", stepName, err)
 	}
@@ -165,9 +181,18 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := requireCommitParent(sctx, headSHA, sctx.Run.HeadSHA, stepName); err != nil {
 		return err
 	}
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA, headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+	expectedBranchHead := expectedHead
+	if symbolicHeadErr == nil {
+		// A normal branch checkout advances its ref as part of git commit. A
+		// daemon run uses a detached worktree, so its recorded branch ref still
+		// needs the same compare-and-swap advancement explicitly.
+		expectedBranchHead = headSHA
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", branchRef, headSHA, expectedBranchHead); err != nil {
+		return fmt.Errorf("advance recorded branch after %s commit: %w", stepName, err)
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", "HEAD", headSHA, headSHA); err != nil {
+		return fmt.Errorf("verify checked-out ref after %s commit: %w", stepName, err)
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {

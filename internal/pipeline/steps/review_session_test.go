@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -243,11 +244,10 @@ func TestReviewLoop_RereviewNeverResumesTheSessionThatPrescribedItsFixes(t *test
 	}
 }
 
-// TestReviewLoop_ParkRespondFixKeepsRoleSessions parks the review step at an
-// ask-user gate, responds with a fix action, and proves the user-driven fix
-// turn uses the durable fixer session while the follow-up full rereview stays
-// session-free.
-func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
+// TestReviewLoop_ParkRespondFixUsesColdFixer parks the review step at an
+// ask-user gate, responds with a fix action, and proves the selected-finding
+// fix runs cold while the follow-up full rereview also stays session-free.
+func TestReviewLoop_ParkRespondFixUsesColdFixer(t *testing.T) {
 	reviewRound := 0
 	mock := &sessionMockAgent{}
 	mock.respond = func(opts agent.RunOpts) *agent.Result {
@@ -261,6 +261,9 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 			}
 			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean"}`)}
 		default:
+			if err := os.WriteFile(filepath.Join(opts.CWD, "user-approved-review-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+				t.Errorf("write review fix: %v", err)
+			}
 			return &agent.Result{Output: []byte(`{"summary":"apply decision"}`)}
 		}
 	}
@@ -294,8 +297,8 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	if reviews[1].Session != nil {
 		t.Fatalf("post-park rereview must run session-free, got %+v", reviews[1].Session)
 	}
-	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
-		t.Fatalf("user-driven fix must start the fixer session, got %+v", fixes[0].Session)
+	if fixes[0].Session != nil {
+		t.Fatalf("user-driven selected-finding fix must run cold, got %+v", fixes[0].Session)
 	}
 	if !strings.Contains(reviews[1].Prompt, "Do a full review pass before returning") {
 		t.Fatalf("post-fix rereview lost the full-review demand:\n%s", reviews[1].Prompt)

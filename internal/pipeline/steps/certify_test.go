@@ -27,6 +27,7 @@ func withReviewFleetEnabled(t *testing.T, sctx *pipeline.StepContext, enabled bo
 			if enabled {
 				value := strings.Repeat("a", 64)
 				fingerprint = &value
+				sctx.Run.ReviewFleetFingerprint = &value
 			}
 			if err := sctx.DB.UpdateRunReviewFleetMode(sctx.Run.ID, enabled, fingerprint); err != nil {
 				t.Fatal(err)
@@ -57,11 +58,8 @@ func cleanCertifyResult() []byte {
 	return result
 }
 
-func TestCertifyStep_FinalizesPendingChangesBeforeColdReadOnlyCheck(t *testing.T) {
+func TestCertifyStep_FinalizesFormatterChangesBeforeColdReadOnlyCheck(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "final.txt"), []byte("intentional final change\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	agentMock := &mockAgent{name: "cold-certifier", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if opts.Purpose != "certify" {
 			t.Fatalf("purpose = %q, want certify", opts.Purpose)
@@ -71,7 +69,7 @@ func TestCertifyStep_FinalizesPendingChangesBeforeColdReadOnlyCheck(t *testing.T
 		}
 		return &agent.Result{Output: cleanCertifyResult()}, nil
 	}}
-	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "printf 'intentional final change\\n' > final.txt"})
 	withReviewFleetEnabled(t, sctx, true)
 
 	outcome, err := (&CertifyStep{}).Execute(sctx)
@@ -95,11 +93,28 @@ func TestCertifyStep_FinalizesPendingChangesBeforeColdReadOnlyCheck(t *testing.T
 	}
 }
 
-func TestCertifyStep_FormatterFailureCannotCertify(t *testing.T) {
+func TestCertifyStep_RejectsPreExistingDirtyWorktree(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "pending.txt"), []byte("pending\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "unowned.txt"), []byte("unowned\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	agentMock := &mockAgent{name: "cold-certifier"}
+	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{})
+	withReviewFleetEnabled(t, sctx, true)
+
+	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "worktree was dirty before finalization") {
+		t.Fatalf("expected dirty-start refusal, got %v", err)
+	}
+	if len(agentMock.calls) != 0 {
+		t.Fatal("certifier must not run for an unowned dirty worktree")
+	}
+	if got := gitStatusPorcelain(t, dir); got == "" {
+		t.Fatal("dirty-start refusal unexpectedly absorbed the unowned change")
+	}
+}
+
+func TestCertifyStep_FormatterFailureCannotCertify(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
 	agentMock := &mockAgent{name: "cold-certifier"}
 	sctx := newTestContextWithDBRecords(t, agentMock, dir, baseSHA, headSHA, config.Commands{Format: "exit 17"})
 	withReviewFleetEnabled(t, sctx, true)
@@ -139,7 +154,7 @@ func TestCertifyStepChecksContinuityBeforeFormatter(t *testing.T) {
 	withReviewFleetEnabled(t, sctx, true)
 	sctx.Run.HeadSHA = strings.Repeat("a", 40)
 
-	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "not a descendant") {
+	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "changed outside the pipeline") {
 		t.Fatalf("expected continuity failure, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "formatter-ran")); !os.IsNotExist(err) {

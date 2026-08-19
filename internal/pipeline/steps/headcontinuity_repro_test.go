@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -21,9 +20,9 @@ import (
 // even an ancestor of what shipped.
 //
 // commitAgentFixes must refuse to commit whenever the worktree HEAD is no longer
-// a descendant of the head the pipeline itself recorded, so the reviewed change
-// cannot be silently lost - while still allowing a legitimate forward agent
-// commit (e.g. git rebase --continue).
+// exactly the head the pipeline itself recorded. The pipeline owns every commit
+// it records, so an arbitrary forward agent commit is untrusted just as a reset
+// is: accepting either would create a transition the run did not durably record.
 
 // TestCommitAgentFixes_RefusesToCommitOnOutOfBandResetHead reproduces the
 // incident shape: a concurrent / divergent-sibling reset. It also proves the
@@ -78,8 +77,8 @@ func TestCommitAgentFixes_RefusesToCommitOnOutOfBandResetHead(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected commitAgentFixes to refuse committing on an out-of-band-reset HEAD, got nil")
 	}
-	if !strings.Contains(err.Error(), "not a descendant") {
-		t.Fatalf("expected a head-divergence error, got: %v", err)
+	if !strings.Contains(err.Error(), "worktree HEAD changed from") {
+		t.Fatalf("expected an exact-recorded-head refusal, got: %v", err)
 	}
 
 	// Nothing shipped: the worktree HEAD is still the clobber (no doc commit was
@@ -122,8 +121,8 @@ func TestCommitAgentFixes_RefusesOnBackwardReset(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected refusal on a backward-reset HEAD, got nil")
 	}
-	if !strings.Contains(err.Error(), "not a descendant") {
-		t.Fatalf("expected a head-divergence error, got: %v", err)
+	if !strings.Contains(err.Error(), "worktree HEAD changed from") {
+		t.Fatalf("expected an exact-recorded-head refusal, got: %v", err)
 	}
 	if sctx.Run.HeadSHA != reviewedHead {
 		t.Fatalf("recorded head must be preserved on refusal, got %s", sctx.Run.HeadSHA)
@@ -154,8 +153,8 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected refusal when HEAD is reset during commit")
 	}
-	if !strings.Contains(err.Error(), "not a descendant") {
-		t.Fatalf("expected a head-divergence error, got: %v", err)
+	if !strings.Contains(err.Error(), "does not have the recorded head") {
+		t.Fatalf("expected a post-commit parent-provenance refusal, got: %v", err)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != baseSHA {
 		t.Fatalf("expected hook to reset HEAD to %s, got %s", baseSHA, got)
@@ -165,12 +164,11 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 	}
 }
 
-// TestCommitAgentFixes_AllowsForwardAgentCommit confirms the guard does not
-// false-positive when an agent legitimately advances HEAD forward (e.g. a
-// `git rebase --continue` during conflict resolution) before the pipeline
-// commits its own fixes: the recorded head stays an ancestor, so committing is
-// allowed.
-func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
+// TestCommitAgentFixes_RefusesForwardAgentCommit proves that only pipeline-owned
+// commits may advance the recorded head. A forward commit made by an agent is
+// not yet a durable pipeline transition, so the next pipeline commit must fail
+// rather than silently absorb it.
+func TestCommitAgentFixes_RefusesForwardAgentCommit(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
@@ -185,15 +183,23 @@ func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "agent forward commit")
 	forward := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	// Pipeline then commits its own working-tree edits on top - must succeed.
+	// Pipeline then tries to commit its own working-tree edits on top. It must
+	// refuse because the arbitrary agent transition was never recorded.
 	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("pipeline fix\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := commitAgentFixes(sctx, types.StepReview, "apply fix", "fallback"); err != nil {
-		t.Fatalf("forward agent commit should be allowed, got: %v", err)
+	err := commitAgentFixes(sctx, types.StepReview, "apply fix", "fallback")
+	if err == nil {
+		t.Fatal("expected refusal of unrecorded forward agent commit")
 	}
-	if _, err := git.Run(sctx.Ctx, dir, "merge-base", "--is-ancestor", forward, sctx.Run.HeadSHA); err != nil {
-		t.Fatalf("expected forward commit %s to be an ancestor of new head %s", forward, sctx.Run.HeadSHA)
+	if !strings.Contains(err.Error(), "worktree HEAD changed from") {
+		t.Fatalf("expected an exact-recorded-head refusal, got: %v", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != forward {
+		t.Fatalf("refusal must not add a pipeline commit: HEAD moved from %s to %s", forward, got)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("recorded head changed to %s; expected original recorded head %s", sctx.Run.HeadSHA, headSHA)
 	}
 }
 
@@ -250,13 +256,19 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 				ag := &mockAgent{name: "codex"}
 				sctx := newTestContext(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
 				if step.Name() == types.StepCertify {
+					sctx = newTestContextWithDBRecords(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
 					withReviewFleetEnabled(t, sctx, true)
+					recordReviewApproval(t, sctx, reviewedHead)
 				}
 				clobberedHead := reset.move(t, dir, baseSHA)
 
 				_, err := step.Execute(sctx)
-				if err == nil || !strings.Contains(err.Error(), "not a descendant") {
-					t.Fatalf("%s must reject %s at entry, got %v", step.Name(), reset.name, err)
+				want := "not a descendant"
+				if step.Name() == types.StepCertify {
+					want = "worktree HEAD changed outside the pipeline"
+				}
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("%s must reject %s at entry with %q, got %v", step.Name(), reset.name, want, err)
 				}
 				if len(ag.calls) != 0 {
 					t.Fatalf("%s invoked an agent before rejecting %s", step.Name(), reset.name)
@@ -288,14 +300,21 @@ func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
 		t.Run(string(step.Name()), func(t *testing.T) {
 			dir, baseSHA, currentHead := setupGitRepo(t)
 			ag := &mockAgent{name: "codex"}
-			sctx := newTestContext(t, ag, dir, baseSHA, strings.Repeat("f", 40), config.Commands{})
+			recordedHead := strings.Repeat("f", 40)
+			sctx := newTestContext(t, ag, dir, baseSHA, recordedHead, config.Commands{})
 			if step.Name() == types.StepCertify {
+				sctx = newTestContextWithDBRecords(t, ag, dir, baseSHA, recordedHead, config.Commands{})
 				withReviewFleetEnabled(t, sctx, true)
+				recordReviewApproval(t, sctx, recordedHead)
 			}
 
 			_, err := step.Execute(sctx)
-			if err == nil || !strings.Contains(err.Error(), "not a descendant") {
-				t.Fatalf("%s must reject an unverifiable recorded head at entry, got %v", step.Name(), err)
+			want := "not a descendant"
+			if step.Name() == types.StepCertify {
+				want = "worktree HEAD changed outside the pipeline"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s must reject an unverifiable recorded head at entry with %q, got %v", step.Name(), want, err)
 			}
 			if len(ag.calls) != 0 {
 				t.Fatalf("%s invoked an agent before rejecting an unverifiable recorded head", step.Name())
@@ -303,7 +322,7 @@ func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
 			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != currentHead {
 				t.Fatalf("%s performed work before rejecting an unverifiable recorded head: HEAD moved from %s to %s", step.Name(), currentHead, got)
 			}
-			if sctx.Run.HeadSHA != strings.Repeat("f", 40) {
+			if sctx.Run.HeadSHA != recordedHead {
 				t.Fatalf("%s changed the unverifiable recorded head on refusal: got %s", step.Name(), sctx.Run.HeadSHA)
 			}
 			t.Logf("%s failed closed before agent or HEAD mutation: %v", step.Name(), err)
