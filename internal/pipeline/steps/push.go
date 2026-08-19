@@ -232,6 +232,29 @@ func assertCertifiedPushHead(sctx *pipeline.StepContext, proposedHead string) er
 	return nil
 }
 
+// assertCertifiedRemoteHead closes the interval after Push verified its
+// lease: publication and CI must never operate on a branch another writer has
+// advanced since the exact certified commit was delivered.
+func assertCertifiedRemoteHead(sctx *pipeline.StepContext) error {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable certification before remote binding: %w", err)
+	}
+	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
+		return fmt.Errorf("refusing remote publication: run has no durably recorded certified head")
+	}
+	certified := strings.TrimSpace(*run.CertifiedHeadSHA)
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	remote, err := git.LsRemote(sctx.Ctx, sctx.WorkDir, resolvePushURL(sctx), ref)
+	if err != nil {
+		return fmt.Errorf("verify certified remote branch: %w", err)
+	}
+	if remote != certified {
+		return fmt.Errorf("refusing remote publication: branch head %s does not equal certified head %s", shortObjectID(remote), shortObjectID(certified))
+	}
+	return nil
+}
+
 func isFullGitObjectID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
 		return false

@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"unicode"
@@ -37,6 +37,10 @@ const reviewFleetContractVersion = 1
 // reviewer completion is concurrent, but configuration and test evidence stay
 // deterministic.
 func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, error) {
+	return reviewFleetSettingsFromConfigForSource(cfg, "")
+}
+
+func reviewFleetSettingsFromConfigForSource(cfg *config.Config, sourceRoot string) (*ReviewFleetSettings, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -44,7 +48,7 @@ func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, er
 	if !settings.Enabled {
 		return settings, nil
 	}
-	executable, err := resolveReviewFleetCodexExecutable(cfg.AgentPathFor(types.AgentCodex))
+	executable, err := resolveReviewFleetExecutable(cfg.AgentPathFor(types.AgentCodex), sourceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -72,9 +76,40 @@ func reviewFleetSettingsFromConfig(cfg *config.Config) (*ReviewFleetSettings, er
 }
 
 func resolveReviewFleetCodexExecutable(configured string) (string, error) {
-	executable, err := exec.LookPath(strings.TrimSpace(configured))
-	if err != nil {
-		return "", fmt.Errorf("resolve review fleet Codex executable: %w", err)
+	return resolveReviewFleetExecutable(configured, "")
+}
+
+// resolveReviewFleetExecutable resolves an executable before a repository
+// checkout can influence a fleet subprocess. sourceRoot is optional for the
+// configuration-only callers; fleet execution always supplies it.
+func resolveReviewFleetExecutable(configured, sourceRoot string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return "", fmt.Errorf("review fleet executable is empty")
+	}
+	var executable string
+	var err error
+	if filepath.IsAbs(configured) {
+		executable = configured
+	} else {
+		pathValue, pathErr := reviewFleetCanonicalPATH(sourceRoot, os.Getenv("PATH"))
+		if pathErr != nil {
+			return "", pathErr
+		}
+		for _, dir := range filepath.SplitList(pathValue) {
+			candidate := filepath.Join(dir, configured)
+			if runtime.GOOS == "windows" && filepath.Ext(candidate) == "" {
+				candidate += ".exe"
+			}
+			info, statErr := os.Stat(candidate)
+			if statErr == nil && info.Mode().IsRegular() && (runtime.GOOS == "windows" || info.Mode().Perm()&0o111 != 0) {
+				executable = candidate
+				break
+			}
+		}
+		if executable == "" {
+			return "", fmt.Errorf("resolve review fleet executable from canonical PATH")
+		}
 	}
 	if !filepath.IsAbs(executable) {
 		executable, err = filepath.Abs(executable)
@@ -89,7 +124,41 @@ func resolveReviewFleetCodexExecutable(configured string) (string, error) {
 	if !filepath.IsAbs(executable) {
 		return "", fmt.Errorf("resolved review fleet Codex executable is not absolute")
 	}
+	if sourceRoot != "" && reviewFleetPathWithin(sourceRoot, executable) {
+		return "", fmt.Errorf("resolved review fleet executable is inside the source worktree")
+	}
 	return executable, nil
+}
+
+func reviewFleetCanonicalPATH(sourceRoot, pathValue string) (string, error) {
+	canonicalRoot := ""
+	if sourceRoot != "" {
+		var err error
+		canonicalRoot, err = filepath.EvalSymlinks(sourceRoot)
+		if err != nil {
+			return "", fmt.Errorf("canonicalize review fleet source root: %w", err)
+		}
+	}
+	dirs := make([]string, 0, len(filepath.SplitList(pathValue)))
+	for _, entry := range filepath.SplitList(pathValue) {
+		if !filepath.IsAbs(entry) {
+			continue
+		}
+		canonical, err := filepath.EvalSymlinks(entry)
+		if err != nil || !filepath.IsAbs(canonical) {
+			continue
+		}
+		if canonicalRoot != "" && reviewFleetPathWithin(canonicalRoot, canonical) {
+			continue
+		}
+		dirs = append(dirs, canonical)
+	}
+	return strings.Join(dirs, string(os.PathListSeparator)), nil
+}
+
+func reviewFleetPathWithin(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 type reviewFleetContract struct {
@@ -98,6 +167,7 @@ type reviewFleetContract struct {
 	Reviewers       []reviewFleetContractProfile `json:"reviewers"`
 	Consolidator    reviewFleetContractProfile   `json:"consolidator"`
 	Certifier       reviewFleetContractProfile   `json:"certifier"`
+	TrustedGuidance  []config.PathInstruction     `json:"trusted_guidance"`
 }
 
 type reviewFleetContractProfile struct {
@@ -115,6 +185,10 @@ type reviewFleetContractProfile struct {
 // path, generated safe argument, and resolved Codex executable. Recovery
 // requires exact equality instead of accepting a merely enabled fleet.
 func reviewFleetFingerprint(settings *ReviewFleetSettings) (string, error) {
+	return reviewFleetFingerprintWithGuidance(settings, nil)
+}
+
+func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance []config.PathInstruction) (string, error) {
 	if settings == nil || !settings.Enabled {
 		return "", fmt.Errorf("cannot fingerprint a disabled review fleet")
 	}
@@ -125,6 +199,7 @@ func reviewFleetFingerprint(settings *ReviewFleetSettings) (string, error) {
 		Version:         reviewFleetContractVersion,
 		CodexExecutable: settings.CodexExecutable,
 		Reviewers:       make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
+		TrustedGuidance:  normalizeFleetGuidance(guidance),
 	}
 	for _, profile := range settings.Reviewers {
 		fingerprinted, err := reviewFleetFingerprintProfile(settings, profile)
@@ -149,6 +224,16 @@ func reviewFleetFingerprint(settings *ReviewFleetSettings) (string, error) {
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func normalizeFleetGuidance(guidance []config.PathInstruction) []config.PathInstruction {
+	result := make([]config.PathInstruction, 0, len(guidance))
+	for _, rule := range guidance {
+		rule.Path = strings.TrimSpace(rule.Path)
+		rule.Instructions = strings.TrimSpace(rule.Instructions)
+		result = append(result, rule)
+	}
+	return result
 }
 
 func reviewFleetFingerprintProfile(settings *ReviewFleetSettings, profile ReviewProfile) (reviewFleetContractProfile, error) {
@@ -530,18 +615,11 @@ func reviewFleetBaseEnv(workDir string) []string {
 			filtered = append(filtered, entry)
 			continue
 		}
-		paths := make([]string, 0, len(filepath.SplitList(value)))
-		for _, candidate := range filepath.SplitList(value) {
-			if !filepath.IsAbs(candidate) {
-				continue
-			}
-			rel, err := filepath.Rel(workDir, candidate)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				continue
-			}
-			paths = append(paths, candidate)
+		paths, err := reviewFleetCanonicalPATH(workDir, value)
+		if err != nil {
+			paths = ""
 		}
-		filtered = append(filtered, "PATH="+strings.Join(paths, string(os.PathListSeparator)))
+		filtered = append(filtered, "PATH="+paths)
 	}
 	return filtered
 }

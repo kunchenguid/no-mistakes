@@ -160,6 +160,9 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
 		return "", err
 	}
+	if err := rejectDirtyCertificationStart(sctx); err != nil {
+		return "", err
+	}
 	if sctx.Config != nil && strings.TrimSpace(sctx.Config.Commands.Format) != "" {
 		formatCommand := strings.TrimSpace(sctx.Config.Commands.Format)
 		sctx.Log(fmt.Sprintf("running formatter before certification: %s", formatCommand))
@@ -174,12 +177,17 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 	if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
 		return "", err
 	}
-	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "-z")
 	if err != nil {
 		return "", fmt.Errorf("check worktree before certification: %w", err)
 	}
 	if strings.TrimSpace(status) != "" {
-		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		manifest := certificationChangeManifest(status)
+		if len(manifest) == 0 {
+			return "", fmt.Errorf("refusing certification: formatter changes have no stageable manifest")
+		}
+		args := append([]string{"add", "-A", "--"}, manifest...)
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, args...); err != nil {
 			return "", fmt.Errorf("stage final worktree changes: %w", err)
 		}
 		message := "no-mistakes(certify): finalize worktree"
@@ -200,6 +208,9 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		if err := assertCleanExactHead(sctx, head, "certification finalization commit"); err != nil {
 			return "", err
 		}
+		if err := requireCommitParent(sctx, head, sctx.Run.HeadSHA, types.StepCertify); err != nil {
+			return "", err
+		}
 		if err := advanceFleetRunHead(sctx, types.StepCertify, sctx.Run.HeadSHA, head); err != nil {
 			return "", err
 		}
@@ -213,6 +224,34 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		return "", err
 	}
 	return head, nil
+}
+
+func rejectDirtyCertificationStart(sctx *pipeline.StepContext) error {
+	status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "-z")
+	if err != nil {
+		return fmt.Errorf("check worktree before certification formatter: %w", err)
+	}
+	if status != "" {
+		return fmt.Errorf("refusing certification: worktree was dirty before finalization")
+	}
+	return nil
+}
+
+func certificationChangeManifest(status string) []string {
+	entries := strings.Split(status, "\x00")
+	paths := make([]string, 0, len(entries))
+	for index := 0; index < len(entries); index++ {
+		entry := entries[index]
+		if len(entry) < 4 {
+			continue
+		}
+		path := entry[3:]
+		paths = append(paths, path)
+		if entry[0] != '?' && entry[0] != '!' && entry[0] != ' ' && entry[1] != '?' && entry[1] != '!' && entry[1] != ' ' {
+			index++ // porcelain -z rename/copy records the source path separately.
+		}
+	}
+	return paths
 }
 
 func assertCleanExactHead(sctx *pipeline.StepContext, expectedHead, phase string) error {

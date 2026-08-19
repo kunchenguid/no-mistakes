@@ -190,7 +190,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if e.reviewFleetErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("resolve review fleet contract: %w", e.reviewFleetErr))
 		}
-		fingerprint, err := reviewFleetFingerprint(e.reviewFleet)
+		fingerprint, err := reviewFleetFingerprintWithGuidance(e.reviewFleet, e.config.Review.PathInstructions)
 		if err != nil {
 			return e.failRun(run, repo, err)
 		}
@@ -269,7 +269,7 @@ func (e *Executor) initializeRunScopes(runID string) {
 	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
 	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
-	e.reviewFleet, e.reviewFleetErr = reviewFleetSettingsFromConfig(e.config)
+	e.reviewFleet, e.reviewFleetErr = reviewFleetSettingsFromConfigForSource(e.config, e.workDir)
 }
 
 func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
@@ -285,7 +285,7 @@ func (e *Executor) validateRecoveredReviewFleet(run *db.Run) error {
 	if run.ReviewFleetFingerprint == nil || strings.TrimSpace(*run.ReviewFleetFingerprint) == "" {
 		return fmt.Errorf("recovered fleet run has no durable contract fingerprint")
 	}
-	current, err := reviewFleetFingerprint(e.reviewFleet)
+	current, err := reviewFleetFingerprintWithGuidance(e.reviewFleet, e.config.Review.PathInstructions)
 	if err != nil {
 		return fmt.Errorf("fingerprint recovered review fleet contract: %w", err)
 	}

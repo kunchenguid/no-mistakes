@@ -162,8 +162,11 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if currentHead != headSHA {
 		return fmt.Errorf("refusing to record %s fix: worktree HEAD changed from %s to %s", stepName, headSHA, currentHead)
 	}
+	if err := requireCommitParent(sctx, headSHA, sctx.Run.HeadSHA, stepName); err != nil {
+		return err
+	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
+	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA, headSHA); err != nil {
 		return fmt.Errorf("update local branch ref: %w", err)
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
@@ -178,6 +181,18 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
 	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	return nil
+}
+
+func requireCommitParent(sctx *pipeline.StepContext, childSHA, expectedParent string, stepName types.StepName) error {
+	parents, err := git.Run(sctx.Ctx, sctx.WorkDir, "show", "-s", "--format=%P", childSHA)
+	if err != nil {
+		return fmt.Errorf("inspect %s commit parents: %w", stepName, err)
+	}
+	fields := strings.Fields(parents)
+	if len(fields) != 1 || fields[0] != expectedParent {
+		return fmt.Errorf("refusing to record %s transition: commit %s does not have the recorded head %s as its sole parent", stepName, childSHA, expectedParent)
+	}
 	return nil
 }
 

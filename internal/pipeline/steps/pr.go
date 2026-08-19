@@ -54,6 +54,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		if err := assertCertifiedRemoteHead(sctx); err != nil {
+			return nil, err
+		}
+	}
 	ctx := sctx.Ctx
 
 	branch := sctx.Run.Branch
@@ -95,6 +100,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			updated = existing
 		}
 		if updated != nil && updated.URL != "" {
+			if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+				if err := assertCertifiedRemoteHead(sctx); err != nil {
+					return nil, err
+				}
+			}
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
 				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
 			}
@@ -110,6 +120,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		return &pipeline.StepOutcome{}, nil
+	}
+	if sctx.Run.ReviewFleetEnabled || sctx.Run.CertifiedHeadSHA != nil {
+		if err := assertCertifiedRemoteHead(sctx); err != nil {
+			return nil, err
+		}
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {

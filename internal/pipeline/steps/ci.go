@@ -217,6 +217,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	for {
+		if ciFleetRun(sctx) {
+			if err := assertCertifiedRemoteHead(sctx); err != nil {
+				return nil, err
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
