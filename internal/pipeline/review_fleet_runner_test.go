@@ -248,7 +248,6 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	}
 	execGit(t, dir, "add", "-A")
 	execGit(t, dir, "commit", "-m", "add prompt-control fixtures")
-	wantHead := strings.TrimSpace(gitCommandOutput(t, dir, "rev-parse", "HEAD"))
 
 	userHome := filepath.Join(root, "user-home")
 	sourceCodexHome := filepath.Join(userHome, ".codex")
@@ -288,16 +287,14 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"printf 'git_config_global=%s\\n' \"$GIT_CONFIG_GLOBAL\"\n" +
 		"printf 'git_dir=%s\\n' \"$GIT_DIR\"\n" +
 		"test -z \"$GIT_EXTERNAL_DIFF\" && printf 'external_diff=absent\\n'\n" +
-		"printf 'head=%s\\n' \"$(git rev-parse HEAD)\"\n" +
-		"printf 'status=%s\\n' \"$(git status --porcelain)\"\n" +
 		"test ! -e .agents/skills && printf 'repo_skills=absent\\n'\n" +
 		"test ! -e .codex && printf 'repo_codex=absent\\n'\n" +
+		"test ! -e .git && printf 'git_metadata=absent\\n'\n" +
+		"! git show HEAD:.agents/skills/evil/SKILL.md >/dev/null 2>&1 && printf 'git_show=blocked\\n'\n" +
 		"test ! -e \"$HOME/.agents/skills\" && printf 'user_skills=absent\\n'\n" +
 		"test -f \"$CODEX_HOME/auth.json\" && printf 'auth=present\\n'\n" +
 		"test ! -e \"$CODEX_HOME/config.toml\" && printf 'user_config=absent\\n'\n" +
 		"test ! -e \"$CODEX_HOME/plugins\" && printf 'plugins=absent\\n'\n" +
-		"test ! -e .git/objects/info/alternates && printf 'alternates=absent\\n'\n" +
-		"test -z \"$(git remote)\" && printf 'remotes=absent\\n'\n" +
 		"} > " + shellQuote(probePath) + "\n" +
 		"printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}}'\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
@@ -353,10 +350,10 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		t.Fatalf("isolated Codex SQLite home = %q", sqliteHome)
 	}
 	for _, required := range []string{
-		"head=" + wantHead,
-		"status=",
 		"repo_skills=absent",
 		"repo_codex=absent",
+		"git_metadata=absent",
+		"git_show=blocked",
 		"user_skills=absent",
 		"auth=present",
 		"codex_sqlite_home=" + sqliteHome,
@@ -365,8 +362,6 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"external_diff=absent",
 		"user_config=absent",
 		"plugins=absent",
-		"alternates=absent",
-		"remotes=absent",
 	} {
 		if !strings.Contains(probe, required) {
 			t.Fatalf("isolation probe missing %q:\n%s", required, probe)
@@ -447,7 +442,6 @@ func TestReviewProfileRunnerSharesOneShadowAndRefreshesAfterFixCommit(t *testing
 	writeTestFile(t, dir, "fix.txt", "fixed\n")
 	execGit(t, dir, "add", "-A")
 	execGit(t, dir, "commit", "-m", "apply review fix")
-	wantHead := strings.TrimSpace(gitCommandOutput(t, dir, "rev-parse", "HEAD"))
 	refreshed, _, err := runner.ensureSandbox(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -458,8 +452,11 @@ func TestReviewProfileRunnerSharesOneShadowAndRefreshesAfterFixCommit(t *testing
 	if _, err := os.Stat(first); !os.IsNotExist(err) {
 		t.Fatalf("stale review shadow was not removed: %v", err)
 	}
-	if got := strings.TrimSpace(gitCommandOutput(t, refreshed, "rev-parse", "HEAD")); got != wantHead {
-		t.Fatalf("refreshed shadow head = %s, want %s", got, wantHead)
+	if got, err := os.ReadFile(filepath.Join(refreshed, "fix.txt")); err != nil || string(got) != "fixed\n" {
+		t.Fatalf("refreshed source export did not contain the committed fix: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(refreshed, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("refreshed source export retained Git metadata: %v", err)
 	}
 }
 

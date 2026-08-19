@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -516,8 +517,8 @@ func safeReviewFleetRuntimeText(value string, maxBytes int) string {
 	return value + marker
 }
 
-// ensureSandbox returns a clean, detached shadow checkout for the exact source
-// HEAD being reviewed. The checkout deliberately excludes repository skills
+// ensureSandbox returns a clean, immutable source export for the exact source
+// HEAD being reviewed. The export deliberately excludes repository skills
 // and .codex state; HOME, CODEX_HOME, CODEX_SQLITE_HOME, and XDG state are
 // isolated, with only a bounded auth.json copy. A fix round that advances HEAD
 // gets a fresh shadow automatically.
@@ -573,21 +574,9 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 		_ = r.removeSandboxLocked()
 		return "", nil, err
 	}
-	if _, err := git.RunWithBaseEnv(ctx, root, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
+	if err := r.exportSandbox(ctx, head); err != nil {
 		_ = r.removeSandboxLocked()
-		return "", nil, fmt.Errorf("clone review fleet shadow checkout: %w", err)
-	}
-	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
-		_ = r.removeSandboxLocked()
-		return "", nil, fmt.Errorf("exclude checkout prompt-control directories: %w", err)
-	}
-	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
-		_ = r.removeSandboxLocked()
-		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
-	}
-	if _, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
-		_ = r.removeSandboxLocked()
-		return "", nil, fmt.Errorf("detach review fleet shadow from source: %w", err)
+		return "", nil, err
 	}
 	if err := r.verifySandbox(ctx, head); err != nil {
 		_ = r.removeSandboxLocked()
@@ -595,6 +584,81 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 	}
 	r.sandboxHead = head
 	return r.checkoutDir, r.isolatedEnv(), nil
+}
+
+func (r *reviewProfileRunner) exportSandbox(ctx context.Context, head string) error {
+	tree, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "ls-tree", "-r", "-z", "--full-tree", head)
+	if err != nil {
+		return fmt.Errorf("list review fleet source tree: %w", err)
+	}
+	if err := os.MkdirAll(r.checkoutDir, 0o700); err != nil {
+		return fmt.Errorf("create review fleet source export: %w", err)
+	}
+	for _, entry := range bytes.Split(tree, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		metadata, path, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			return fmt.Errorf("read malformed review fleet source-tree entry")
+		}
+		fields := bytes.Fields(metadata)
+		if len(fields) != 3 || string(fields[1]) != "blob" || string(fields[0]) == "120000" {
+			return fmt.Errorf("review fleet source export contains unsupported entry %q", path)
+		}
+		relative, pathErr := reviewFleetExportPath(string(path))
+		if pathErr != nil {
+			return pathErr
+		}
+		if reviewFleetExcludedExportPath(relative) {
+			continue
+		}
+		target := filepath.Join(r.checkoutDir, relative)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return fmt.Errorf("create review fleet export parent: %w", err)
+		}
+		contents, err := git.RunRawWithBaseEnv(ctx, r.workDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "cat-file", "blob", string(fields[2]))
+		if err != nil {
+			return fmt.Errorf("read review fleet source blob %q: %w", relative, err)
+		}
+		if err := os.WriteFile(target, contents, 0o600); err != nil {
+			return fmt.Errorf("write review fleet export file: %w", err)
+		}
+	}
+	return sealReviewFleetExport(r.checkoutDir)
+}
+
+func sealReviewFleetExport(root string) error {
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o444)
+		if info.IsDir() {
+			mode = 0o555
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("seal review fleet source export: %w", err)
+		}
+		return nil
+	})
+}
+
+func reviewFleetExportPath(name string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("review fleet source export contains forbidden path %q", name)
+	}
+	return clean, nil
+}
+
+func reviewFleetExcludedExportPath(path string) bool {
+	for _, excluded := range []string{filepath.Join(".agents", "skills"), ".codex", ".git"} {
+		if path == excluded || strings.HasPrefix(path, excluded+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewFleetGitEnv() []string {
@@ -634,34 +698,13 @@ func reviewFleetBaseEnv(workDir string) []string {
 }
 
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
-	head, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")
-	if err != nil {
-		return fmt.Errorf("verify review fleet shadow head: %w", err)
-	}
-	if head != expectedHead {
-		return fmt.Errorf("verify review fleet shadow head: got %q, want %q", head, expectedHead)
-	}
-	status, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		return fmt.Errorf("verify review fleet shadow cleanliness: %w", err)
-	}
-	if strings.TrimSpace(status) != "" {
-		return fmt.Errorf("verify review fleet shadow cleanliness: status %q", status)
+	if _, err := os.Lstat(filepath.Join(r.checkoutDir, ".git")); !os.IsNotExist(err) {
+		return fmt.Errorf("review fleet source export retained Git metadata")
 	}
 	for _, relative := range []string{filepath.Join(".agents", "skills"), ".codex"} {
 		if _, err := os.Lstat(filepath.Join(r.checkoutDir, relative)); !os.IsNotExist(err) {
-			return fmt.Errorf("review fleet shadow exposes excluded prompt-control path %s", relative)
+			return fmt.Errorf("review fleet source export exposes excluded prompt-control path %s", relative)
 		}
-	}
-	origin, err := r.reviewFleetGitRun(ctx, r.checkoutDir, "remote")
-	if err != nil {
-		return fmt.Errorf("inspect review fleet shadow remotes: %w", err)
-	}
-	if strings.TrimSpace(origin) != "" {
-		return fmt.Errorf("review fleet shadow retained source remote %q", origin)
-	}
-	if _, err := os.Lstat(filepath.Join(r.checkoutDir, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
-		return fmt.Errorf("review fleet shadow retained an object-store alternate")
 	}
 	sourceHead, err := r.reviewFleetGitRun(ctx, r.workDir, "rev-parse", "HEAD")
 	if err != nil {

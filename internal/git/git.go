@@ -78,6 +78,13 @@ func RunWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string,
 	return runInDirWithBaseEnv(ctx, dir, baseEnv, extraEnv, args...)
 }
 
+func RunRawWithBaseEnv(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) ([]byte, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithBaseEnvRaw(ctx, dir, baseEnv, extraEnv, args...)
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	return runInDirWithEnv(ctx, dir, nil, args...)
 }
