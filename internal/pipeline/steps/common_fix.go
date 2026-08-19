@@ -104,6 +104,9 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	if currentHead == recorded {
 		return nil
 	}
+	if sctx.Run.ReviewFleetEnabled && sctx.Run.ReviewApprovedHeadSHA != nil {
+		return fmt.Errorf("refusing to run %s step: worktree HEAD %s changed outside the pipeline from recorded head %s", stepName, currentHead, recorded)
+	}
 	// Fail closed: refuse unless the recorded head is genuinely an ancestor of the
 	// live HEAD (a legitimate forward move). A non-ancestor result OR any git error
 	// (e.g. an unknown recorded object) aborts rather than proceeds.
@@ -117,8 +120,12 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
+	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	if currentHead != headSHA {
+		return fmt.Errorf("refusing to record %s fix: worktree HEAD changed from %s to %s", stepName, headSHA, currentHead)
 	}
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
@@ -159,15 +166,28 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if startingHead == "" {
 		startingHead = sctx.Run.HeadSHA
 	}
-	sctx.Run.HeadSHA = headSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	if err := advanceFleetRunHead(sctx, stepName, sctx.Run.HeadSHA, headSHA); err != nil {
 		return err
 	}
+	sctx.Run.HeadSHA = headSHA
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
 	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
 	return nil
+}
+
+func advanceFleetRunHead(sctx *pipeline.StepContext, stepName types.StepName, fromSHA, toSHA string) error {
+	if !sctx.Run.ReviewFleetEnabled || sctx.Run.ReviewApprovedHeadSHA == nil {
+		return sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, toSHA)
+	}
+	if stepName != types.StepTest && stepName != types.StepDocument && stepName != types.StepLint && stepName != types.StepCertify {
+		return fmt.Errorf("refusing unowned fleet head transition from %s", stepName)
+	}
+	if sctx.Run.ReviewFleetFingerprint == nil || strings.TrimSpace(*sctx.Run.ReviewFleetFingerprint) == "" {
+		return fmt.Errorf("refusing fleet head transition without contract fingerprint")
+	}
+	return sctx.DB.AdvanceFleetRunHeadCAS(sctx.Run.ID, fromSHA, toSHA, string(stepName), strings.TrimSpace(*sctx.Run.ReviewFleetFingerprint))
 }
 
 func extractCommitSummary(result *agent.Result) (string, error) {

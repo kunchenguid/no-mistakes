@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_head_transitions (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    from_sha TEXT NOT NULL,
+    to_sha TEXT NOT NULL,
+    producer TEXT NOT NULL,
+    fleet_fingerprint TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, to_sha)
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -223,6 +233,7 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	`CREATE TABLE IF NOT EXISTS run_head_transitions (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, from_sha TEXT NOT NULL, to_sha TEXT NOT NULL, producer TEXT NOT NULL, fleet_fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (run_id, to_sha))`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

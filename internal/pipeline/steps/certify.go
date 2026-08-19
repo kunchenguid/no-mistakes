@@ -126,6 +126,16 @@ func requireFleetReviewApproval(sctx *pipeline.StepContext) error {
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approved, head); err != nil {
 		return fmt.Errorf("refusing certification: worktree HEAD is not descended from fleet review approval")
 	}
+	if run.ReviewFleetFingerprint == nil || strings.TrimSpace(*run.ReviewFleetFingerprint) == "" {
+		return fmt.Errorf("refusing certification: run has no fleet contract fingerprint")
+	}
+	valid, err := sctx.DB.HasFleetTransitionChain(run.ID, approved, head, strings.TrimSpace(*run.ReviewFleetFingerprint))
+	if err != nil {
+		return fmt.Errorf("verify fleet head provenance: %w", err)
+	}
+	if !valid {
+		return fmt.Errorf("refusing certification: worktree HEAD contains an unrecorded post-review transition")
+	}
 	return nil
 }
 
@@ -193,10 +203,10 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		if err := assertCleanExactHead(sctx, head, "certification finalization commit"); err != nil {
 			return "", err
 		}
-		sctx.Run.HeadSHA = head
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, head); err != nil {
+		if err := advanceFleetRunHead(sctx, types.StepCertify, sctx.Run.HeadSHA, head); err != nil {
 			return "", err
 		}
+		sctx.Run.HeadSHA = head
 	}
 	head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil {

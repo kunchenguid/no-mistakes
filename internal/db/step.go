@@ -225,6 +225,33 @@ func (d *DB) CompleteReviewStep(id, runID, approvedHeadSHA string, exitCode int,
 	return nil
 }
 
+func (d *DB) CompleteFleetReviewStep(id, runID, approvedHeadSHA string, exitCode int, durationMS int64, logPath string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete fleet review step: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	result, err := tx.Exec(`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`, types.StepStatusCompleted, exitCode, durationMS, logPath, ts, ts, fmt.Sprintf("status: %s", types.StepStatusCompleted), id)
+	if err != nil {
+		return fmt.Errorf("complete fleet review step: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("complete fleet review step: step row not found")
+	}
+	result, err = tx.Exec(`UPDATE runs SET review_approved_head_sha = ?, updated_at = ? WHERE id = ? AND head_sha = ?`, approvedHeadSHA, ts, runID, approvedHeadSHA)
+	if err != nil {
+		return fmt.Errorf("record fleet review-approved head: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("record fleet review-approved head: run head changed before approval")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit completed fleet review: %w", err)
+	}
+	return nil
+}
+
 // CompleteCertifyStep atomically completes a successful or explicitly
 // approved Certify step and records the exact clean head it examined. Neither
 // write survives if the other fails, so a parked/failed/skipped/cancelled

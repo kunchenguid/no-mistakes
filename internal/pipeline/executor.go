@@ -359,7 +359,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			if err := assertFleetReviewApprovalHead(ctx, workDir, run, gate.reviewedHeadSHA); err != nil {
 				return err
 			}
-			if err := e.db.CompleteReviewStep(gate.stepResult.ID, run.ID, gate.reviewedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+			if err := completeReviewAuthority(e.db, run, gate.stepResult.ID, gate.reviewedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 				return err
 			}
 			reviewedHead := gate.reviewedHeadSHA
@@ -1129,7 +1129,7 @@ done:
 		if err := assertFleetReviewApprovalHead(ctx, workDir, run, reviewApprovedHeadSHA); err != nil {
 			return false, err
 		}
-		if err := e.db.CompleteReviewStep(sr.ID, run.ID, reviewApprovedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
+		if err := completeReviewAuthority(e.db, run, sr.ID, reviewApprovedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
 			return false, fmt.Errorf("complete step %s: %w", stepName, err)
 		}
 		reviewedHead := reviewApprovedHeadSHA
@@ -1146,6 +1146,13 @@ done:
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+func completeReviewAuthority(database *db.DB, run *db.Run, stepID, approvedHeadSHA string, exitCode int, durationMS int64, logPath string) error {
+	if run != nil && run.ReviewFleetEnabled {
+		return database.CompleteFleetReviewStep(stepID, run.ID, approvedHeadSHA, exitCode, durationMS, logPath)
+	}
+	return database.CompleteReviewStep(stepID, run.ID, approvedHeadSHA, exitCode, durationMS, logPath)
 }
 
 func assertFleetReviewApprovalHead(ctx context.Context, workDir string, run *db.Run, expectedHead string) error {

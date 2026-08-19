@@ -510,6 +510,77 @@ func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
 	return nil
 }
 
+type RunHeadTransition struct {
+	FromSHA   string
+	ToSHA     string
+	Producer  string
+	Fingerprint string
+}
+
+func (d *DB) AdvanceFleetRunHeadCAS(runID, fromSHA, toSHA, producer, fingerprint string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin fleet head transition: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ? AND head_sha = ?`, toSHA, now(), runID, fromSHA)
+	if err != nil {
+		return fmt.Errorf("advance fleet run head: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows != 1 {
+		return fmt.Errorf("advance fleet run head: expected parent %s no longer matches", fromSHA)
+	}
+	if _, err := tx.Exec(`INSERT INTO run_head_transitions (run_id, from_sha, to_sha, producer, fleet_fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?)`, runID, fromSHA, toSHA, producer, fingerprint, now()); err != nil {
+		return fmt.Errorf("record fleet head transition: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fleet head transition: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) HasFleetTransitionChain(runID, approvedSHA, headSHA, fingerprint string) (bool, error) {
+	if approvedSHA == headSHA {
+		return true, nil
+	}
+	rows, err := d.sql.Query(`SELECT from_sha, to_sha, producer FROM run_head_transitions WHERE run_id = ? AND fleet_fingerprint = ?`, runID, fingerprint)
+	if err != nil {
+		return false, fmt.Errorf("load fleet head transitions: %w", err)
+	}
+	defer rows.Close()
+	byTo := map[string]RunHeadTransition{}
+	for rows.Next() {
+		var item RunHeadTransition
+		if err := rows.Scan(&item.FromSHA, &item.ToSHA, &item.Producer); err != nil {
+			return false, fmt.Errorf("scan fleet head transition: %w", err)
+		}
+		if item.Producer != "test" && item.Producer != "document" && item.Producer != "lint" && item.Producer != "certify" {
+			return false, nil
+		}
+		if _, exists := byTo[item.ToSHA]; exists {
+			return false, nil
+		}
+		byTo[item.ToSHA] = item
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate fleet head transitions: %w", err)
+	}
+	seen := map[string]bool{}
+	for current := headSHA; current != approvedSHA; {
+		if seen[current] {
+			return false, nil
+		}
+		seen[current] = true
+		item, ok := byTo[current]
+		if !ok {
+			return false, nil
+		}
+		current = item.FromSHA
+	}
+	return true, nil
+}
+
 // UpdateRunError sets the error message on a run.
 func (d *DB) UpdateRunError(id, errMsg string) error {
 	return d.UpdateRunErrorStatus(id, errMsg, types.RunFailed)
