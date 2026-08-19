@@ -198,6 +198,9 @@ func assertCertifiedPushHead(sctx *pipeline.StepContext, proposedHead string) er
 	if run == nil || run.CertifiedHeadSHA == nil || strings.TrimSpace(*run.CertifiedHeadSHA) == "" {
 		return fmt.Errorf("refusing to push: run has no durably recorded certified head")
 	}
+	if run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+		return fmt.Errorf("refusing to push: run has no durably recorded fleet review approval")
+	}
 	certifiedHead := strings.TrimSpace(*run.CertifiedHeadSHA)
 	if !isFullGitObjectID(certifiedHead) {
 		return fmt.Errorf("refusing to push: durable certified head is malformed")

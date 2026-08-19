@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +97,11 @@ func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args
 }
 
 func runInDirWithBaseEnvRaw(ctx context.Context, dir string, baseEnv, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	gitPath, err := executableFromBaseEnv("git", baseEnv)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, gitPath, args...)
 	cmd.Dir = dir
 	cmd.Env = append(NonInteractiveEnvFrom(baseEnv, dir), extraEnv...)
 	winproc.Harden(cmd)
@@ -109,6 +114,33 @@ func runInDirWithBaseEnvRaw(ctx context.Context, dir string, baseEnv, extraEnv [
 		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return out, nil
+}
+
+func executableFromBaseEnv(name string, baseEnv []string) (string, error) {
+	if baseEnv == nil {
+		baseEnv = os.Environ()
+	}
+	var searchPath string
+	for _, entry := range baseEnv {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(key, "PATH") {
+			searchPath = value
+		}
+	}
+	for _, dir := range filepath.SplitList(searchPath) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if runtime.GOOS == "windows" {
+			candidate += ".exe"
+		}
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("resolve git executable from supplied PATH")
 }
 
 // ValidateBareRepository verifies both the filesystem shape and Git's own bare

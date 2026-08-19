@@ -469,15 +469,15 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context, expectedHeads .
 		_ = r.removeSandboxLocked()
 		return "", nil, err
 	}
-	if _, err := git.RunWithBaseEnv(ctx, root, reviewFleetBaseEnv(), reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, root, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("clone review fleet shadow checkout: %w", err)
 	}
-	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(), reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("exclude checkout prompt-control directories: %w", err)
 	}
-	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(), reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
+	if _, err := git.RunWithBaseEnv(ctx, r.checkoutDir, reviewFleetBaseEnv(r.workDir), reviewFleetGitEnv(), "checkout", "--detach", head); err != nil {
 		_ = r.removeSandboxLocked()
 		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
 	}
@@ -518,10 +518,33 @@ func reviewFleetGitEnv() []string {
 }
 
 func reviewFleetGitRun(ctx context.Context, dir string, args ...string) (string, error) {
-	return git.RunWithBaseEnv(ctx, dir, reviewFleetBaseEnv(), reviewFleetGitEnv(), args...)
+	return git.RunWithBaseEnv(ctx, dir, reviewFleetBaseEnv(dir), reviewFleetGitEnv(), args...)
 }
 
-func reviewFleetBaseEnv() []string { return reviewFleetNonGitEnv(os.Environ()) }
+func reviewFleetBaseEnv(workDir string) []string {
+	env := reviewFleetNonGitEnv(os.Environ())
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.EqualFold(key, "PATH") {
+			filtered = append(filtered, entry)
+			continue
+		}
+		paths := make([]string, 0, len(filepath.SplitList(value)))
+		for _, candidate := range filepath.SplitList(value) {
+			if !filepath.IsAbs(candidate) {
+				continue
+			}
+			rel, err := filepath.Rel(workDir, candidate)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			paths = append(paths, candidate)
+		}
+		filtered = append(filtered, "PATH="+strings.Join(paths, string(os.PathListSeparator)))
+	}
+	return filtered
+}
 
 func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
 	head, err := reviewFleetGitRun(ctx, r.checkoutDir, "rev-parse", "HEAD")

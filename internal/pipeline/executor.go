@@ -355,6 +355,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			if gate.reviewedHeadSHA == "" {
 				return fmt.Errorf("recovered review has no durable reviewed head candidate")
 			}
+			if err := assertFleetReviewApprovalHead(ctx, workDir, run, gate.reviewedHeadSHA); err != nil {
+				return err
+			}
 			if err := e.db.CompleteReviewStep(gate.stepResult.ID, run.ID, gate.reviewedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 				return err
 			}
@@ -1119,6 +1122,9 @@ done:
 	// return earlier, and skipped reviews deliberately leave the binding empty.
 	// Completion and authority replacement are one DB transaction.
 	if stepName == types.StepReview && status == types.StepStatusCompleted && reviewApprovedHeadSHA != "" {
+		if err := assertFleetReviewApprovalHead(ctx, workDir, run, reviewApprovedHeadSHA); err != nil {
+			return false, err
+		}
 		if err := e.db.CompleteReviewStep(sr.ID, run.ID, reviewApprovedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
 			return false, fmt.Errorf("complete step %s: %w", stepName, err)
 		}
@@ -1136,6 +1142,27 @@ done:
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+func assertFleetReviewApprovalHead(ctx context.Context, workDir string, run *db.Run, expectedHead string) error {
+	if run == nil || !run.ReviewFleetEnabled {
+		return nil
+	}
+	liveHead, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("resolve fleet review head before approval: %w", err)
+	}
+	if liveHead != expectedHead {
+		return fmt.Errorf("refusing fleet review approval: worktree HEAD changed from %s to %s", expectedHead, liveHead)
+	}
+	status, err := git.Run(ctx, workDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("check fleet review worktree before approval: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("refusing fleet review approval: worktree is dirty")
+	}
+	return nil
 }
 
 func roundInsertID(_ string, inserted *db.StepRound, err error) string {

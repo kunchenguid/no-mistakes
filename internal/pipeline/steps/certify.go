@@ -100,7 +100,7 @@ Rules:
 		sctx.Run.BaseSHA,
 		headSHA,
 		executionContextPromptSection(),
-		userIntentPromptSection(sctx),
+		"",
 		pathInstructions)
 }
 
@@ -167,9 +167,6 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		}
 		if err := assertCleanExactHead(sctx, head, "certification finalization commit"); err != nil {
 			return "", err
-		}
-		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "update-ref", normalizedBranchRef(sctx.Run.Branch), head, sctx.Run.HeadSHA); err != nil {
-			return "", fmt.Errorf("update local branch ref after certification finalization: %w", err)
 		}
 		sctx.Run.HeadSHA = head
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, head); err != nil {

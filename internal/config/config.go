@@ -2185,6 +2185,11 @@ func validateReviewFleetGitPathGlob(pattern string) error {
 		if strings.ContainsAny(prefix, "*?[\\") {
 			return errors.New("subtree pattern directory must not contain glob metacharacters")
 		}
+		for _, component := range strings.Split(prefix, "/") {
+			if component == "" || component == "." || component == ".." {
+				return errors.New("subtree pattern directory must be canonical")
+			}
+		}
 		if _, err := path.Match(prefix, "a/b"); err != nil {
 			return err
 		}
