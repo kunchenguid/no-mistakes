@@ -80,6 +80,19 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	}
 }
 
+func TestCIAutoFixLimitDisablesFleetFixes(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "agent"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AutoFix.CI = 3
+	if got := ciAutoFixLimit(sctx); got != 3 {
+		t.Fatalf("ordinary CI auto-fix limit = %d, want 3", got)
+	}
+	sctx.Run.ReviewFleetEnabled = true
+	if got := ciAutoFixLimit(sctx); got != 0 {
+		t.Fatalf("fleet CI auto-fix limit = %d, want 0", got)
+	}
+}
+
 func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 

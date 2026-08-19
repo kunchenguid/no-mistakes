@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -59,6 +60,10 @@ func reviewFleetSettingsFromConfigForSource(cfg *config.Config, sourceRoot strin
 		return nil, err
 	}
 	settings.CodexExecutable = executable
+	settings.CodexExecutableDigest, err = reviewFleetExecutableDigest(executable)
+	if err != nil {
+		return nil, err
+	}
 	roles := []string{
 		config.ReviewFleetRoleTestAdversary,
 		config.ReviewFleetRoleCorrectness,
@@ -174,12 +179,13 @@ func reviewFleetPathWithin(root, candidate string) bool {
 }
 
 type reviewFleetContract struct {
-	Version         int                          `json:"version"`
-	CodexExecutable string                       `json:"codex_executable"`
-	Reviewers       []reviewFleetContractProfile `json:"reviewers"`
-	Consolidator    reviewFleetContractProfile   `json:"consolidator"`
-	Certifier       reviewFleetContractProfile   `json:"certifier"`
-	TrustedGuidance []config.PathInstruction     `json:"trusted_guidance"`
+	Version               int                          `json:"version"`
+	CodexExecutable       string                       `json:"codex_executable"`
+	CodexExecutableDigest string                       `json:"codex_executable_digest"`
+	Reviewers             []reviewFleetContractProfile `json:"reviewers"`
+	Consolidator          reviewFleetContractProfile   `json:"consolidator"`
+	Certifier             reviewFleetContractProfile   `json:"certifier"`
+	TrustedGuidance       []config.PathInstruction     `json:"trusted_guidance"`
 }
 
 type reviewFleetContractProfile struct {
@@ -207,11 +213,19 @@ func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance 
 	if !filepath.IsAbs(settings.CodexExecutable) {
 		return "", fmt.Errorf("review fleet Codex executable is not resolved")
 	}
+	digest, err := reviewFleetExecutableDigest(settings.CodexExecutable)
+	if err != nil {
+		return "", err
+	}
+	if settings.CodexExecutableDigest == "" || settings.CodexExecutableDigest != digest {
+		return "", fmt.Errorf("review fleet Codex executable changed since configuration")
+	}
 	contract := reviewFleetContract{
-		Version:         reviewFleetContractVersion,
-		CodexExecutable: settings.CodexExecutable,
-		Reviewers:       make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
-		TrustedGuidance: normalizeFleetGuidance(guidance),
+		Version:               reviewFleetContractVersion,
+		CodexExecutable:       settings.CodexExecutable,
+		CodexExecutableDigest: digest,
+		Reviewers:             make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
+		TrustedGuidance:       normalizeFleetGuidance(guidance),
 	}
 	for _, profile := range settings.Reviewers {
 		fingerprinted, err := reviewFleetFingerprintProfile(settings, profile)
@@ -236,6 +250,26 @@ func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance 
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+func reviewFleetExecutableDigest(executable string) (string, error) {
+	file, err := os.Open(executable)
+	if err != nil {
+		return "", fmt.Errorf("open review fleet Codex executable: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat review fleet Codex executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("review fleet Codex executable is not a regular file")
+	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", fmt.Errorf("hash review fleet Codex executable: %w", err)
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func normalizeFleetGuidance(guidance []config.PathInstruction) []config.PathInstruction {
@@ -452,6 +486,13 @@ func (r *reviewProfileRunner) run(ctx context.Context, profile ReviewProfile, op
 	}
 	if !filepath.IsAbs(r.settings.CodexExecutable) {
 		return nil, fmt.Errorf("review fleet Codex executable is not resolved")
+	}
+	digest, err := reviewFleetExecutableDigest(r.settings.CodexExecutable)
+	if err != nil {
+		return nil, err
+	}
+	if r.settings.CodexExecutableDigest == "" || digest != r.settings.CodexExecutableDigest {
+		return nil, fmt.Errorf("review fleet Codex executable changed since configuration")
 	}
 	base, err := agent.NewWithOptions(types.AgentCodex, r.settings.CodexExecutable, args, agent.Options{
 		ACPRegistryOverrides:   r.cfg.ACPRegistryOverrides,

@@ -140,7 +140,7 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 && !reviewFleetHasHighRiskChange(sctx, changed) {
+	if len(changed) == 0 || (!reviewFleetEnabled(sctx) && len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 && !reviewFleetHasHighRiskChange(sctx, changed)) {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",

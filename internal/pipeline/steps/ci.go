@@ -51,6 +51,13 @@ type CIStep struct {
 	baseBranchTip func(context.Context) (string, bool)
 }
 
+func ciAutoFixLimit(sctx *pipeline.StepContext) int {
+	if ciFleetRun(sctx) {
+		return 0
+	}
+	return sctx.Config.AutoFix.CI
+}
+
 func (s *CIStep) Name() types.StepName { return types.StepCI }
 
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
@@ -328,7 +335,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 
 		// Check CI status - wait for all checks to complete before fixing
-		ciFixLimit := sctx.Config.AutoFix.CI
+		ciFixLimit := ciAutoFixLimit(sctx)
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			clearCIMonitorReady(sctx)

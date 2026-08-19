@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/intent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
@@ -322,6 +323,9 @@ func parseReviewFleetFindings(result *agent.Result) (Findings, error) {
 }
 
 func sanitizeReviewFleetFindings(findings Findings) (Findings, error) {
+	if !validFleetRiskLevel(findings.RiskLevel) || !validFleetRiskScope(findings.RiskScope) {
+		return Findings{}, fmt.Errorf("structured output contains an invalid risk assessment")
+	}
 	if len(findings.Items) > maxReviewFleetFindings {
 		return Findings{}, fmt.Errorf("structured output contains more than %d findings", maxReviewFleetFindings)
 	}
@@ -335,6 +339,9 @@ func sanitizeReviewFleetFindings(findings Findings) (Findings, error) {
 		item.Source = safeFleetText(item.Source, 64)
 		item.UserInstructions = safeFleetText(item.UserInstructions, maxReviewFleetFieldBytes)
 		item.ReviewScope = safeFleetText(item.ReviewScope, 128)
+		if !validFleetSeverity(item.Severity) || !validFleetAction(item.Action) || !validFleetReviewScope(item.ReviewScope) {
+			return Findings{}, fmt.Errorf("structured output finding %d contains an invalid enum value", i+1)
+		}
 	}
 	findings.Summary = safeFleetText(findings.Summary, maxReviewFleetSummaryBytes)
 	findings.TestingSummary = safeFleetText(findings.TestingSummary, maxReviewFleetFieldBytes)
@@ -347,6 +354,26 @@ func sanitizeReviewFleetFindings(findings Findings) (Findings, error) {
 	// into later pipeline surfaces.
 	findings.Artifacts = nil
 	return findings, nil
+}
+
+func validFleetSeverity(value string) bool {
+	return value == "error" || value == "warning" || value == "info"
+}
+
+func validFleetAction(value string) bool {
+	return value == types.ActionNoOp || value == types.ActionAutoFix || value == types.ActionAskUser
+}
+
+func validFleetReviewScope(value string) bool {
+	return value == types.FindingReviewScopeSource || value == types.FindingReviewScopePipelineOwnedDelivery || value == types.FindingReviewScopeExternalDelivery
+}
+
+func validFleetRiskLevel(value string) bool {
+	return value == "low" || value == "medium" || value == "high"
+}
+
+func validFleetRiskScope(value string) bool {
+	return value == types.FindingsRiskScopeSourceOrExternal || value == types.FindingsRiskScopePipelineOwnedDelivery
 }
 
 func boundedFleetStrings(values []string, maxBytes, maxCount int) []string {
