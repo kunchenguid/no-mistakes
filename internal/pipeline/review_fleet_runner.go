@@ -3,17 +3,22 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
 	reviewFleetReadOnlySandbox = "read-only"
 	reviewFleetMaxArgBytes     = 4096
+	reviewFleetMaxAuthBytes    = 4 * 1024 * 1024
 )
 
 // reviewFleetSettingsFromConfig projects the trusted global-only config into
@@ -82,7 +87,7 @@ func validateReviewFleetIsolation(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var readOnly, ephemeral, ignoredRules, ignoredUserConfig, suppressedProjectDoc bool
+	var readOnly, ephemeral, ignoredRules, ignoredUserConfig, suppressedProjectDoc, restrictedShellEnv bool
 	for i := 0; i < len(validated); i++ {
 		arg := validated[i]
 		switch {
@@ -112,48 +117,64 @@ func validateReviewFleetIsolation(args []string) ([]string, error) {
 			if strings.TrimSpace(validated[i+1]) == "project_doc_max_bytes=0" {
 				suppressedProjectDoc = true
 			}
+			if strings.TrimSpace(validated[i+1]) == `shell_environment_policy.inherit="core"` {
+				restrictedShellEnv = true
+			}
 			i++
 		case strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "--config="):
 			value := arg[strings.IndexByte(arg, '=')+1:]
 			if strings.TrimSpace(value) == "project_doc_max_bytes=0" {
 				suppressedProjectDoc = true
 			}
+			if strings.TrimSpace(value) == `shell_environment_policy.inherit="core"` {
+				restrictedShellEnv = true
+			}
 		}
 	}
-	if !readOnly || !ephemeral || !ignoredRules || !ignoredUserConfig || !suppressedProjectDoc {
+	if !readOnly || !ephemeral || !ignoredRules || !ignoredUserConfig || !suppressedProjectDoc || !restrictedShellEnv {
 		return nil, fmt.Errorf("review fleet Codex args are missing mandatory read-only isolation controls")
 	}
 	return validated, nil
 }
 
 type reviewProfileRunner struct {
-	cfg          *config.Config
-	settings     *ReviewFleetSettings
-	db           *db.DB
-	runID        string
-	stepName     types.StepName
-	round        func() int
-	workDir      string
-	evidenceRoot string
-	onLifecycle  func(agent.LifecycleEvent)
+	cfg             *config.Config
+	settings        *ReviewFleetSettings
+	db              *db.DB
+	runID           string
+	stepName        types.StepName
+	round           func() int
+	workDir         string
+	evidenceRoot    string
+	onLifecycle     func(agent.LifecycleEvent)
+	sourceCodexHome string
+
+	mu          sync.Mutex
+	sandboxRoot string
+	checkoutDir string
+	homeDir     string
+	codexHome   string
+	sandboxHead string
+	closed      bool
 }
 
-func (e *Executor) newReviewProfileRunner(run *db.Run, stepName types.StepName, round func() int, onLifecycle func(agent.LifecycleEvent)) ReviewProfileRunner {
+func (e *Executor) newReviewProfileRunner(run *db.Run, stepName types.StepName, round func() int, onLifecycle func(agent.LifecycleEvent)) *reviewProfileRunner {
 	if e == nil || e.reviewFleet == nil || !e.reviewFleet.Enabled || e.config == nil || run == nil {
 		return nil
 	}
 	runner := &reviewProfileRunner{
-		cfg:          e.config,
-		settings:     e.reviewFleet,
-		db:           e.db,
-		runID:        run.ID,
-		stepName:     stepName,
-		round:        round,
-		workDir:      e.workDir,
-		evidenceRoot: e.runEvidenceDir(run.ID),
-		onLifecycle:  onLifecycle,
+		cfg:             e.config,
+		settings:        e.reviewFleet,
+		db:              e.db,
+		runID:           run.ID,
+		stepName:        stepName,
+		round:           round,
+		workDir:         e.workDir,
+		evidenceRoot:    e.runEvidenceDir(run.ID),
+		onLifecycle:     onLifecycle,
+		sourceCodexHome: reviewFleetSourceCodexHome(),
 	}
-	return runner.Run
+	return runner
 }
 
 func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, opts agent.RunOpts) (*agent.Result, error) {
@@ -162,6 +183,10 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	}
 	if strings.TrimSpace(opts.CWD) != "" && opts.CWD != r.workDir {
 		return nil, fmt.Errorf("review fleet runner refuses a worktree outside the shared read-only checkout")
+	}
+	checkoutDir, isolatedEnv, err := r.ensureSandbox(ctx)
+	if err != nil {
+		return nil, err
 	}
 	// Fleet invocations are always cold, even if a caller accidentally passes
 	// session metadata copied from the ordinary review loop.
@@ -203,6 +228,208 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 		}
 	}}
 	wrapped = &perfRecordingAgent{inner: wrapped, db: r.db, runID: r.runID, stepName: r.stepName, round: r.round}
-	opts.CWD = r.workDir
+	opts.CWD = checkoutDir
+	opts.Env = append(opts.Env, isolatedEnv...)
 	return wrapped.Run(ctx, opts)
+}
+
+// ensureSandbox returns a clean, detached shadow checkout for the exact source
+// HEAD being reviewed. The checkout deliberately excludes repository skills
+// and .codex state; HOME and CODEX_HOME are empty except for a bounded copy of
+// auth.json. A fix round that advances HEAD gets a fresh shadow automatically.
+func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return "", nil, fmt.Errorf("review fleet runner is closed")
+	}
+	head, err := git.HeadSHA(ctx, r.workDir)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve review fleet source head: %w", err)
+	}
+	status, err := git.Run(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return "", nil, fmt.Errorf("check review fleet source worktree: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return "", nil, fmt.Errorf("review fleet requires a clean committed source worktree")
+	}
+	if r.checkoutDir != "" && r.sandboxHead == head {
+		return r.checkoutDir, r.isolatedEnv(), nil
+	}
+	if err := r.removeSandboxLocked(); err != nil {
+		return "", nil, err
+	}
+	root, err := os.MkdirTemp("", "no-mistakes-review-fleet-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create review fleet isolation root: %w", err)
+	}
+	r.sandboxRoot = root
+	r.checkoutDir = filepath.Join(root, "checkout")
+	r.homeDir = filepath.Join(root, "home")
+	r.codexHome = filepath.Join(root, "codex")
+	for _, dir := range []string{
+		r.homeDir,
+		r.codexHome,
+		filepath.Join(root, "xdg-config"),
+		filepath.Join(root, "xdg-data"),
+		filepath.Join(root, "xdg-state"),
+		filepath.Join(root, "xdg-cache"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			_ = r.removeSandboxLocked()
+			return "", nil, fmt.Errorf("create review fleet isolation directory: %w", err)
+		}
+	}
+	if err := copyReviewFleetAuth(r.sourceCodexHome, r.codexHome); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, err
+	}
+	if _, err := git.Run(ctx, root, "clone", "--no-local", "--no-checkout", "--", r.workDir, r.checkoutDir); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, fmt.Errorf("clone review fleet shadow checkout: %w", err)
+	}
+	if _, err := git.Run(ctx, r.checkoutDir, "sparse-checkout", "set", "--no-cone", "/*", "!/.agents/skills/", "!/.codex/"); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, fmt.Errorf("exclude checkout prompt-control directories: %w", err)
+	}
+	if _, err := git.Run(ctx, r.checkoutDir, "checkout", "--detach", head); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, fmt.Errorf("checkout review fleet source head: %w", err)
+	}
+	if _, err := git.Run(ctx, r.checkoutDir, "remote", "remove", "origin"); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, fmt.Errorf("detach review fleet shadow from source: %w", err)
+	}
+	if err := r.verifySandbox(ctx, head); err != nil {
+		_ = r.removeSandboxLocked()
+		return "", nil, err
+	}
+	r.sandboxHead = head
+	return r.checkoutDir, r.isolatedEnv(), nil
+}
+
+func (r *reviewProfileRunner) verifySandbox(ctx context.Context, expectedHead string) error {
+	head, err := git.HeadSHA(ctx, r.checkoutDir)
+	if err != nil {
+		return fmt.Errorf("verify review fleet shadow head: %w", err)
+	}
+	if head != expectedHead {
+		return fmt.Errorf("verify review fleet shadow head: got %q, want %q", head, expectedHead)
+	}
+	status, err := git.Run(ctx, r.checkoutDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("verify review fleet shadow cleanliness: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("verify review fleet shadow cleanliness: status %q", status)
+	}
+	for _, relative := range []string{filepath.Join(".agents", "skills"), ".codex"} {
+		if _, err := os.Lstat(filepath.Join(r.checkoutDir, relative)); !os.IsNotExist(err) {
+			return fmt.Errorf("review fleet shadow exposes excluded prompt-control path %s", relative)
+		}
+	}
+	origin, err := git.Run(ctx, r.checkoutDir, "remote")
+	if err != nil {
+		return fmt.Errorf("inspect review fleet shadow remotes: %w", err)
+	}
+	if strings.TrimSpace(origin) != "" {
+		return fmt.Errorf("review fleet shadow retained source remote %q", origin)
+	}
+	if _, err := os.Lstat(filepath.Join(r.checkoutDir, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
+		return fmt.Errorf("review fleet shadow retained an object-store alternate")
+	}
+	sourceHead, err := git.HeadSHA(ctx, r.workDir)
+	if err != nil {
+		return fmt.Errorf("verify review fleet source head after preparing shadow: %w", err)
+	}
+	if sourceHead != expectedHead {
+		return fmt.Errorf("review fleet source head changed while preparing shadow: got %q, want %q", sourceHead, expectedHead)
+	}
+	sourceStatus, err := git.Run(ctx, r.workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("verify review fleet source cleanliness after preparing shadow: %w", err)
+	}
+	if strings.TrimSpace(sourceStatus) != "" {
+		return fmt.Errorf("review fleet source worktree changed while preparing shadow")
+	}
+	return nil
+}
+
+func (r *reviewProfileRunner) isolatedEnv() []string {
+	root := r.sandboxRoot
+	return []string{
+		"HOME=" + r.homeDir,
+		"CODEX_HOME=" + r.codexHome,
+		"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
+		"XDG_DATA_HOME=" + filepath.Join(root, "xdg-data"),
+		"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
+		"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
+		"PWD=" + r.checkoutDir,
+	}
+}
+
+func (r *reviewProfileRunner) Close() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	_ = r.removeSandboxLocked()
+}
+
+func (r *reviewProfileRunner) removeSandboxLocked() error {
+	root := r.sandboxRoot
+	r.sandboxRoot = ""
+	r.checkoutDir = ""
+	r.homeDir = ""
+	r.codexHome = ""
+	r.sandboxHead = ""
+	if root == "" {
+		return nil
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return fmt.Errorf("remove review fleet isolation root: %w", err)
+	}
+	return nil
+}
+
+func reviewFleetSourceCodexHome() string {
+	if configured := strings.TrimSpace(os.Getenv("CODEX_HOME")); configured != "" {
+		return configured
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+func copyReviewFleetAuth(sourceCodexHome, targetCodexHome string) error {
+	if strings.TrimSpace(sourceCodexHome) == "" {
+		return nil
+	}
+	source := filepath.Join(sourceCodexHome, "auth.json")
+	info, err := os.Lstat(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Codex auth for review fleet: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("Codex auth for review fleet must be a regular file")
+	}
+	if info.Size() > reviewFleetMaxAuthBytes {
+		return fmt.Errorf("Codex auth for review fleet exceeds %d bytes", reviewFleetMaxAuthBytes)
+	}
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read Codex auth for review fleet: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetCodexHome, "auth.json"), contents, 0o600); err != nil {
+		return fmt.Errorf("copy Codex auth for review fleet: %w", err)
+	}
+	return nil
 }

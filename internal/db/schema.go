@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS runs (
     no_mistakes_build_sha    TEXT,
     review_approved_head_sha TEXT,
     certified_head_sha       TEXT,
+    review_fleet_enabled     INTEGER NOT NULL DEFAULT 0,
     status                   TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
@@ -199,6 +200,9 @@ var migrationStatements = []string{
 	// Certification authority is nullable and never inferred from a mutable
 	// run/worktree head. Only an atomically completed Certify step may write it.
 	`ALTER TABLE runs ADD COLUMN certified_head_sha TEXT`,
+	// Fleet delivery mode is captured when a run starts. Recovery must not let
+	// a later global-config edit downgrade exact certification into legacy Push.
+	`ALTER TABLE runs ADD COLUMN review_fleet_enabled INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,

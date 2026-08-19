@@ -658,6 +658,28 @@ func TestUpdateRunReviewApprovedHeadSHAReplacesAuthority(t *testing.T) {
 	}
 }
 
+func TestUpdateRunReviewFleetEnabledPersistsDeliveryMode(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	if run.ReviewFleetEnabled {
+		t.Fatal("new run unexpectedly started in fleet mode")
+	}
+	if err := d.UpdateRunReviewFleetEnabled(run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ReviewFleetEnabled {
+		t.Fatal("fleet delivery mode was not persisted")
+	}
+	if err := d.UpdateRunReviewFleetEnabled("missing", true); err == nil {
+		t.Fatal("missing run update unexpectedly succeeded")
+	}
+}
+
 func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

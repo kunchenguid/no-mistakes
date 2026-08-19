@@ -1277,7 +1277,7 @@ func (c *Config) ReviewFleetCodexArgs(profile string, escalate bool) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	args := make([]string, 0, len(base)+8)
+	args := make([]string, 0, len(base)+10)
 	args = append(args, base...)
 	args = append(args,
 		"-m", selected.Model,
@@ -1285,6 +1285,7 @@ func (c *Config) ReviewFleetCodexArgs(profile string, escalate bool) ([]string, 
 		"--sandbox", "read-only",
 		"--ephemeral",
 		"-c", "project_doc_max_bytes=0",
+		"-c", `shell_environment_policy.inherit="core"`,
 		"--ignore-rules",
 		"--ignore-user-config",
 	)

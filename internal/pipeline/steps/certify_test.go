@@ -15,6 +15,18 @@ import (
 
 func withReviewFleetEnabled(t *testing.T, sctx *pipeline.StepContext, enabled bool) {
 	t.Helper()
+	sctx.Run.ReviewFleetEnabled = enabled
+	if sctx.DB != nil {
+		persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if persisted != nil {
+			if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, enabled); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	sctx.ReviewFleet = &pipeline.ReviewFleetSettings{
 		Enabled:   enabled,
 		Certifier: pipeline.ReviewProfile{Role: config.ReviewFleetProfileCertifier},
@@ -154,5 +166,20 @@ func TestCertifyStep_DisabledIsSkippedWithoutAgent(t *testing.T) {
 		t.Fatal(err)
 	} else if got.CertifiedHeadSHA != nil {
 		t.Fatalf("skipped certification created durable authority: %#v", got.CertifiedHeadSHA)
+	}
+}
+
+func TestCertifyStep_PersistedFleetModeFailsClosedWhenConfigIsDisabled(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "unused"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
+	if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	sctx.ReviewFleet = &pipeline.ReviewFleetSettings{Enabled: false}
+	sctx.Config.ReviewFleet.Enabled = false
+
+	if _, err := (&CertifyStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "was enabled when this run started") {
+		t.Fatalf("persisted fleet run did not fail closed: %v", err)
 	}
 }

@@ -18,6 +18,9 @@ type ReviewStep struct{}
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := requireAvailableReviewFleet(sctx); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
@@ -132,7 +135,7 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
+	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 && !reviewFleetHasHighRiskChange(sctx, changed) {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -238,9 +241,6 @@ Risk assessment (after listing all findings):
 		pathInstructions,
 	)
 
-	if sctx.ReviewFleetError != nil {
-		return nil, fmt.Errorf("review fleet configuration: %w", sctx.ReviewFleetError)
-	}
 	if reviewFleetEnabled(sctx) {
 		findings, err := executeReviewFleet(sctx, prompt, changed, workload)
 		if err != nil {

@@ -39,6 +39,7 @@ func cleanFleetOutput(t *testing.T) []byte {
 func TestExecuteReviewFleetStartsAllReviewersBeforeConsolidation(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "single"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
 	sctx.ReviewFleet = testReviewFleetSettings()
 
 	var mu sync.Mutex
@@ -94,6 +95,7 @@ func TestExecuteReviewFleetStartsAllReviewersBeforeConsolidation(t *testing.T) {
 func TestExecuteReviewFleetDoesNotPartiallyConsolidateOnFailure(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "single"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
 	sctx.ReviewFleet = testReviewFleetSettings()
 	var mu sync.Mutex
 	consolidated := false
@@ -132,6 +134,7 @@ func TestExecuteReviewFleetDoesNotPartiallyConsolidateOnFailure(t *testing.T) {
 func TestExecuteReviewFleetCancellationWaitsForAllReviewers(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "single"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
 	sctx.ReviewFleet = testReviewFleetSettings()
 	var mu sync.Mutex
 	finished := 0
@@ -186,6 +189,45 @@ func TestReviewFleetSecurityEscalationUsesCompletePaths(t *testing.T) {
 		if profile.Role == "security" && profile.SecurityEscalated {
 			t.Fatal("security profile escalated for a path outside configured high-risk globs")
 		}
+	}
+}
+
+func TestReviewStepIgnoredHighRiskPathStillRunsFleet(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "single"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
+	sctx.ReviewFleet = testReviewFleetSettings()
+	for i := range sctx.ReviewFleet.Reviewers {
+		if sctx.ReviewFleet.Reviewers[i].Role == "security" {
+			sctx.ReviewFleet.Reviewers[i].HighRiskPaths = []string{"feature.txt"}
+		}
+	}
+	sctx.Config.IgnorePatterns = []string{"*.txt"}
+
+	var mu sync.Mutex
+	roles := make(map[string]pipeline.ReviewProfile)
+	sctx.RunReviewProfile = func(_ context.Context, profile pipeline.ReviewProfile, _ agent.RunOpts) (*agent.Result, error) {
+		mu.Lock()
+		roles[profile.Role] = profile
+		mu.Unlock()
+		return &agent.Result{Output: cleanFleetOutput(t)}, nil
+	}
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Skipped {
+		t.Fatal("ignored high-risk path skipped the review fleet")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(roles) != 5 {
+		t.Fatalf("fleet roles invoked = %d, want 5 including consolidator", len(roles))
+	}
+	security := roles["security"]
+	if !security.SecurityEscalated || security.Reasoning != "xhigh" {
+		t.Fatalf("security profile = %#v, want ignored-path xhigh escalation", security)
 	}
 }
 

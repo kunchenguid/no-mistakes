@@ -268,13 +268,22 @@ required profile field reject the global config before a run starts.
 together so a matched path always has a complete escalation profile.
 
 Fleet invocations are always cold and add `--sandbox read-only`, `--ephemeral`,
-`--ignore-user-config`, `-c project_doc_max_bytes=0`, and `--ignore-rules`.
+`--ignore-user-config`, `-c project_doc_max_bytes=0`, `--ignore-rules`, and a
+core-only shell environment policy. Each Review or Certify execution uses a
+clean detached shadow checkout that excludes repository `.agents/skills` and
+`.codex` state. It also receives an isolated `HOME`, XDG directories, and
+`CODEX_HOME`; only a bounded regular-file copy of `auth.json` is admitted.
 Inherited Codex model, reasoning, sandbox, approval-bypass, session,
 project-document, and ignore-rules flags are rejected because they could
 defeat fleet isolation. The `service_tier` config override is the only
 inherited Codex flag allowed. `high_risk_paths` uses the same git-path glob semantics as
 `ignore_patterns`: slash-separated paths, basename matching for patterns
-without a slash, and `/**` for a directory subtree.
+without a slash, and `/**` for a directory subtree. Matching uses the complete
+changed-path set before repository `ignore_patterns` filtering; an ignored-only
+diff still runs the fleet when it contains an operator-classified high-risk path.
+The enabled/disabled fleet mode is persisted when a run starts. Recovery uses
+that durable value rather than current global configuration, and Push requires
+exact equality with the certified commit even if the fleet is later disabled.
 
 ### ci_timeout
 

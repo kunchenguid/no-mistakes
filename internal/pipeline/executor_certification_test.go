@@ -13,6 +13,21 @@ import (
 
 const testCertifiedHead = "1111111111111111111111111111111111111111"
 
+func TestExecutorCapturesReviewFleetModeBeforeExecution(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	exec := NewExecutor(database, p, &config.Config{ReviewFleet: config.ReviewFleet{Enabled: true}}, nil, nil, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ReviewFleetEnabled || !run.ReviewFleetEnabled {
+		t.Fatalf("fleet mode was not captured: durable=%t in-memory=%t", got.ReviewFleetEnabled, run.ReviewFleetEnabled)
+	}
+}
+
 func TestExecutor_CertifyAuthorityOnlyCompletesOrIsExplicitlyApproved(t *testing.T) {
 	t.Run("completed", func(t *testing.T) {
 		database, p, run, repo := setupTest(t)

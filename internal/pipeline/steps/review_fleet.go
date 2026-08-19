@@ -32,8 +32,25 @@ type reviewFleetCandidate struct {
 	payload string
 }
 
+func reviewFleetRequired(sctx *pipeline.StepContext) bool {
+	return sctx != nil && !sctx.ForceSingleReview && sctx.Run != nil && sctx.Run.ReviewFleetEnabled
+}
+
 func reviewFleetEnabled(sctx *pipeline.StepContext) bool {
-	return sctx != nil && !sctx.ForceSingleReview && sctx.ReviewFleet != nil && sctx.ReviewFleet.Enabled
+	return reviewFleetRequired(sctx) && sctx.ReviewFleet != nil && sctx.ReviewFleet.Enabled
+}
+
+func requireAvailableReviewFleet(sctx *pipeline.StepContext) error {
+	if !reviewFleetRequired(sctx) {
+		return nil
+	}
+	if sctx.ReviewFleetError != nil {
+		return fmt.Errorf("review fleet configuration: %w", sctx.ReviewFleetError)
+	}
+	if !reviewFleetEnabled(sctx) {
+		return fmt.Errorf("review fleet was enabled when this run started but is unavailable now")
+	}
+	return nil
 }
 
 func executeReviewFleet(sctx *pipeline.StepContext, basePrompt string, completePaths []string, workload *agent.InvocationWorkload) (Findings, error) {
@@ -216,6 +233,23 @@ func escalateSecurityProfile(profiles []pipeline.ReviewProfile, completePaths []
 		}
 	}
 	return escalated
+}
+
+// reviewFleetHasHighRiskChange prevents a pushed ignore_patterns value from
+// suppressing the operator-owned security escalation. Ordinary ignored-only
+// diffs still skip review, but an ignored path explicitly classified as high
+// risk must run the complete fleet so the security reviewer can examine it at
+// the configured elevated effort.
+func reviewFleetHasHighRiskChange(sctx *pipeline.StepContext, completePaths []string) bool {
+	if !reviewFleetEnabled(sctx) {
+		return false
+	}
+	for _, profile := range escalateSecurityProfile(sctx.ReviewFleet.Reviewers, completePaths) {
+		if strings.EqualFold(strings.TrimSpace(profile.Role), "security") && profile.SecurityEscalated {
+			return true
+		}
+	}
+	return false
 }
 
 func boundedReviewFleetPaths(paths []string) string {

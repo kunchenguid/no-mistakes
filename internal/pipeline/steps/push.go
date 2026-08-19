@@ -22,10 +22,18 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	if sctx.ReviewFleetError != nil {
-		return nil, fmt.Errorf("review fleet configuration: %w", sctx.ReviewFleetError)
+	durableRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load durable delivery mode before push: %w", err)
 	}
-	fleetEnabled := sctx.Config != nil && sctx.Config.ReviewFleet.Enabled
+	if durableRun == nil {
+		return nil, fmt.Errorf("load durable delivery mode before push: run not found")
+	}
+	// Certificate presence is a compatibility backstop for runs created during
+	// the brief schema transition. Current global configuration is deliberately
+	// irrelevant: a restart must not downgrade an already-selected fleet run.
+	fleetEnabled := durableRun.ReviewFleetEnabled || durableRun.CertifiedHeadSHA != nil
+	sctx.Run.ReviewFleetEnabled = fleetEnabled
 	newHeadSHA := ""
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return nil, err

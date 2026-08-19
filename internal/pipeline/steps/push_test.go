@@ -290,6 +290,36 @@ func TestPushStep_FleetModeRequiresCertificateAndDoesNotFormatOrCommit(t *testin
 	}
 }
 
+func TestPushStep_UsesDurableFleetModeAfterGlobalDisable(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Format: "touch formatter-must-not-run"})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	if err := sctx.DB.UpdateRunReviewFleetEnabled(sctx.Run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate recovery after the operator disabled the global fleet. Push must
+	// use the persisted run mode and refuse to invent legacy semantics.
+	sctx.Config.ReviewFleet.Enabled = false
+	sctx.ReviewFleet = &pipeline.ReviewFleetSettings{Enabled: false}
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "no durably recorded certified head") {
+		t.Fatalf("recovered fleet push did not fail closed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "formatter-must-not-run")); !os.IsNotExist(err) {
+		t.Fatalf("recovered fleet push entered legacy formatter path: %v", err)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != headSHA {
+		t.Fatalf("uncertified recovered head was pushed: %s", remoteHead)
+	}
+}
+
 func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

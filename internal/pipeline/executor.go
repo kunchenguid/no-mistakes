@@ -48,8 +48,9 @@ type Executor struct {
 	agent  agent.Agent
 	steps  []Step
 	// recoverySteps is the plan aligned to a persisted run during Resume. It
-	// may omit the newly inserted Certify step for a legacy nine-step run so an
-	// active pre-certification run can finish under its original semantics.
+	// may omit the newly inserted Certify step for a legacy nine-step run. A
+	// persisted fleet run still fails closed at Push without an invented
+	// certification result.
 	recoverySteps []Step
 	skips         map[types.StepName]bool
 
@@ -182,6 +183,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	e.initializeRunScopes(run.ID)
+	fleetEnabled := e.config != nil && e.config.ReviewFleet.Enabled
+	if err := e.db.UpdateRunReviewFleetEnabled(run.ID, fleetEnabled); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("capture review fleet mode: %w", err))
+	}
+	run.ReviewFleetEnabled = fleetEnabled
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -196,8 +203,6 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
-
-	e.initializeRunScopes(run.ID)
 
 	// Create step result records in DB
 	stepRecords := make(map[types.StepName]*db.StepResult)
@@ -757,8 +762,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 	}
 	var runReviewProfile ReviewProfileRunner
+	var profileRunner *reviewProfileRunner
 	if (stepName == types.StepReview || stepName == types.StepCertify) && e.reviewFleet != nil && e.reviewFleet.Enabled {
-		runReviewProfile = e.newReviewProfileRunner(run, stepName, func() int { return roundNum + 1 }, onAgentLifecycle)
+		profileRunner = e.newReviewProfileRunner(run, stepName, func() int { return roundNum + 1 }, onAgentLifecycle)
+		if profileRunner != nil {
+			defer profileRunner.Close()
+			runReviewProfile = profileRunner.Run
+		}
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI

@@ -258,6 +258,7 @@ func TestReviewFleetCodexArgsAreColdReadOnlyAndPreserveSafeOverrides(t *testing.
 		"--sandbox", "read-only",
 		"--ephemeral",
 		"-c", "project_doc_max_bytes=0",
+		"-c", `shell_environment_policy.inherit="core"`,
 		"--ignore-rules",
 		"--ignore-user-config",
 	}

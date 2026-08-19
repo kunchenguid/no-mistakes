@@ -19,10 +19,10 @@ type CertifyStep struct{}
 func (s *CertifyStep) Name() types.StepName { return types.StepCertify }
 
 func (s *CertifyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	if sctx.ReviewFleetError != nil {
-		return nil, fmt.Errorf("review fleet configuration: %w", sctx.ReviewFleetError)
+	if err := requireAvailableReviewFleet(sctx); err != nil {
+		return nil, err
 	}
-	if !reviewFleetEnabled(sctx) {
+	if !reviewFleetRequired(sctx) {
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if sctx.Fixing {
