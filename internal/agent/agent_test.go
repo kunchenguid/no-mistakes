@@ -152,7 +152,7 @@ func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
 	a := &acpxAgent{target: "gemini"}
 	args := a.buildArgs(RunOpts{Prompt: "do work"})
 
-	if got, want := args[len(args)-3:], []string{"gemini", "exec", "do work"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if got, want := args[len(args)-4:], []string{"gemini", "exec", "--file", "-"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("trailing args = %q, want %q", got, want)
 	}
 }
@@ -256,9 +256,12 @@ func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "acpx")
 	argLog := filepath.Join(dir, "args.txt")
+	stdinLog := filepath.Join(dir, "stdin.txt")
 	t.Setenv("ARG_LOG", argLog)
+	t.Setenv("STDIN_LOG", stdinLog)
 	contents := `#!/bin/sh
 printf '%s\n' "$@" > "$ARG_LOG"
+cat > "$STDIN_LOG"
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":123,"size":1000}}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"done\":true}"}}}}'
 `
@@ -271,10 +274,11 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("New() error = %v", err)
 	}
 	var chunks []string
+	schema := json.RawMessage(`{"type":"object"}`)
 	result, err := a.Run(context.Background(), RunOpts{
 		Prompt:     "do work",
 		CWD:        dir,
-		JSONSchema: json.RawMessage(`{"type":"object"}`),
+		JSONSchema: schema,
 		OnChunk:    func(text string) { chunks = append(chunks, text) },
 	})
 	if err != nil {
@@ -298,10 +302,20 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("read args: %v", err)
 	}
 	argsText := string(argsData)
-	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "do work"} {
+	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "exec\n--file\n-"} {
 		if !strings.Contains(argsText, want) {
 			t.Errorf("args missing %q in:\n%s", want, argsText)
 		}
+	}
+	if strings.Contains(argsText, "do work") {
+		t.Errorf("args contain prompt:\n%s", argsText)
+	}
+	stdinData, err := os.ReadFile(stdinLog)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	if got, want := string(stdinData), buildACPStructuredPrompt("do work", schema); got != want {
+		t.Errorf("stdin = %q, want %q", got, want)
 	}
 }
 
