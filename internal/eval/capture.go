@@ -645,12 +645,20 @@ func mergeGold(existing, computed Labels) Labels {
 		if isDerivedMergeGold(g.Source) {
 			continue
 		}
-		out.Findings = append(out.Findings, g)
-		if id := strings.TrimSpace(g.ID); id != "" {
+		id := strings.TrimSpace(g.ID)
+		if id != "" {
+			if keptID[id] {
+				continue
+			}
 			keptID[id] = true
 		} else {
-			keptContent[goldContentKey(g)] = true
+			key := goldContentKey(g)
+			if keptContent[key] {
+				continue
+			}
+			keptContent[key] = true
 		}
+		out.Findings = append(out.Findings, g)
 	}
 	for _, g := range computed.Findings {
 		id := strings.TrimSpace(g.ID)

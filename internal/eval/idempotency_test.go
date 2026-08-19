@@ -91,6 +91,45 @@ func TestCaptureTwiceDoesNotDuplicateUserAddedGoldWithoutID(t *testing.T) {
 	}
 }
 
+func TestCaptureRepairsDuplicateUserAddedGoldWithoutID(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	userFindings := `{"findings":[{"severity":"warning","file":"main.go","line":1,"description":"missing audit","action":"auto-fix","source":"user"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	if err := sourceDB.SetStepRoundUserFindings(reviewRound.ID, &userFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || len(cases[0].Labels.Findings) != 1 {
+		t.Fatalf("initial gold = %#v, want one ID-less user-added finding", cases)
+	}
+	corrupted := cases[0].Labels
+	corrupted.Findings = append(corrupted.Findings, corrupted.Findings[0])
+	if err := writeJSON(filepath.Join(cases[0].Dir, "labels.json"), corrupted); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repaired) != 1 || len(repaired[0].Labels.Findings) != 1 {
+		t.Fatalf("repaired gold = %#v, want one ID-less user-added finding", repaired)
+	}
+}
+
 func TestRelabelRunTwiceLeavesIdenticalLabels(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
