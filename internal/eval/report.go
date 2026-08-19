@@ -330,7 +330,10 @@ func sortedCompositionRows(rows []CompositionRow) []CompositionRow {
 		if a.Severity != b.Severity {
 			return a.Severity < b.Severity
 		}
-		return a.FindingType < b.FindingType
+		if a.FindingType != b.FindingType {
+			return a.FindingType < b.FindingType
+		}
+		return a.Cases < b.Cases
 	})
 	return rows
 }

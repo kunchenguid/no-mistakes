@@ -90,6 +90,17 @@ func TestInspectSetsKeepsRepositoriesWithTheSameDisplayNameSeparate(t *testing.T
 	}
 }
 
+func TestSortedCompositionRowsBreaksDisplayNameTiesDeterministically(t *testing.T) {
+	rows := []CompositionRow{
+		{Repo: "org/repo", Language: "go", Size: "small", Severity: "error", FindingType: "bug", Cases: 2},
+		{Repo: "org/repo", Language: "go", Size: "small", Severity: "error", FindingType: "bug", Cases: 1},
+	}
+	got := sortedCompositionRows(rows)
+	if got[0].Cases != 1 || got[1].Cases != 2 {
+		t.Fatalf("sorted case counts = [%d %d], want [1 2]", got[0].Cases, got[1].Cases)
+	}
+}
+
 // An unresolved fingerprint keeps its short opaque form: a dashboard never
 // blanks a repository it cannot name.
 func TestStoreRepoDisplayFallsBackToTheShortFingerprint(t *testing.T) {

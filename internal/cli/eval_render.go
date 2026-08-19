@@ -136,8 +136,8 @@ func fitRepoNames(rows []eval.CompositionRow, width int) []string {
 	for _, row := range rows {
 		name := row.Repo
 		if shorten {
-			if _, short, ok := strings.Cut(name, "/"); ok && short != "" {
-				name = short
+			if slash := strings.LastIndex(name, "/"); slash >= 0 && slash+1 < len(name) {
+				name = name[slash+1:]
 			}
 		}
 		names = append(names, truncateStatsLine(name, width))

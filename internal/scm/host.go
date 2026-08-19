@@ -248,9 +248,12 @@ func RepoPath(remoteURL string) string {
 		return ""
 	}
 
-	for i, part := range parts {
-		if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
-			return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+	isAzureDevOps := host == "dev.azure.com" || host == "ssh.dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	if isAzureDevOps {
+		for i, part := range parts {
+			if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
+				return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+			}
 		}
 	}
 	if (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") && len(parts) >= 4 && strings.EqualFold(parts[0], "v3") {

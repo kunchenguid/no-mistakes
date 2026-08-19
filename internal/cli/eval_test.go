@@ -383,7 +383,7 @@ func TestEvalSetsNamesTheRepositoryAndTablesTheConfusionMatrix(t *testing.T) {
 func TestEvalCompositionRepoColumnIsUniformAndFitsTheBox(t *testing.T) {
 	rows := []eval.CompositionRow{
 		{Repo: "a-very-long-organization-name/no-mistakes", Language: "go", Size: "large", Severity: "warning", FindingType: "warning/auto-fix", Cases: 2},
-		{Repo: "short", Language: "go", Size: "large", Severity: "error", FindingType: "error/ask-user", Cases: 1},
+		{Repo: "group/very-long-subgroup/actual-repo", Language: "go", Size: "large", Severity: "error", FindingType: "error/ask-user", Cases: 1},
 	}
 	lines := compositionLines(rows)
 	if len(lines) != len(rows) {
@@ -397,8 +397,11 @@ func TestEvalCompositionRepoColumnIsUniformAndFitsTheBox(t *testing.T) {
 	if strings.Contains(lines[0], "a-very-long-organization-name/no-mistakes") {
 		t.Fatalf("line = %q, want the long identity shortened when it does not fit its column", lines[0])
 	}
-	if !strings.Contains(lines[0], "no-mistakes") || !strings.Contains(lines[1], "short") {
-		t.Fatalf("lines = %q, want every repository still named", lines)
+	if !strings.Contains(lines[0], "no-mistakes") || !strings.Contains(lines[1], "actual-repo") {
+		t.Fatalf("lines = %q, want every repository's final path segment", lines)
+	}
+	if strings.Contains(lines[1], "very-long-subgroup") {
+		t.Fatalf("line = %q, want a uniformly shortened repository name", lines[1])
 	}
 	if !strings.Contains(lines[0], "warning/auto-fix") || !strings.Contains(lines[1], "error/ask-user") {
 		t.Fatalf("lines = %q, want the strata kept on every row", lines)
