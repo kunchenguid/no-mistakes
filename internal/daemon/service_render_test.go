@@ -155,6 +155,34 @@ func TestInstallShellIsDegraded(t *testing.T) {
 	}
 }
 
+// TestInstallShellIsDegraded_PlatformIndependent is the Windows CI
+// regression guard: installShellIsDegraded used to delegate to
+// filepath.IsAbs, which is platform-semantic (a POSIX path like /bin/bash
+// has no Windows drive letter or UNC prefix, so filepath.IsAbs returns false
+// for it under GOOS=windows). That misclassified every valid Unix shell path
+// as degraded and broke the Windows CI leg, even though this package's
+// Windows build never actually renders the Unix-only systemd/launchd
+// definitions installShellIsDegraded protects. The check must depend only on
+// the resolved value, not the host's path-parsing rules, so it must return
+// the same answer regardless of runtimeGOOS.
+func TestInstallShellIsDegraded_PlatformIndependent(t *testing.T) {
+	oldGOOS := runtimeGOOS
+	defer func() { runtimeGOOS = oldGOOS }()
+
+	for _, shell := range []string{"/bin/bash", "/run/current-system/sw/bin/bash", "/usr/bin/zsh", "bash", ""} {
+		var results []bool
+		for _, goos := range []string{"linux", "darwin", "windows"} {
+			runtimeGOOS = goos
+			results = append(results, installShellIsDegraded(shell))
+		}
+		for i := 1; i < len(results); i++ {
+			if results[i] != results[0] {
+				t.Fatalf("installShellIsDegraded(%q) depends on runtimeGOOS: %v", shell, results)
+			}
+		}
+	}
+}
+
 // TestRenderSystemdUnitBakesInInstallTimeShell and
 // TestRenderLaunchAgentBakesInInstallTimeShell are the NixOS root-cause
 // regression: a daemon started by systemd/launchd inherits only HOME, a
