@@ -147,8 +147,26 @@ func newEvalRunCmd() *cobra.Command {
 				return err
 			}
 			defer store.Close()
-			session, evaluations, runErr := eval.Replay(cmd.Context(), store, eval.ReplayOptions{Set: cases, Candidate: candidate, Repeats: repeats})
-			fmt.Fprintf(cmd.OutOrStdout(), "local eval session %s: %d replay(s), candidate %s, repeats %d\n", session.ID, len(evaluations), candidate, repeats)
+			out := cmd.OutOrStdout()
+			caseCount := 0
+			session, evaluations, runErr := eval.Replay(cmd.Context(), store, eval.ReplayOptions{
+				Set:       cases,
+				Candidate: candidate,
+				Repeats:   repeats,
+				OnPlan: func(session eval.Session, planned []eval.Case) {
+					caseCount = len(planned)
+					fmt.Fprintf(out, "replaying %d case(s) x %d repeat(s) with %s on %s (cohort %s)\n\n",
+						len(planned), session.Repeats, session.Candidate, session.Set, session.Cohort)
+				},
+				OnResult: func(evaluation eval.Evaluation, completed, total int) {
+					evalRunProgress(out, evaluation, completed, total)
+				},
+			})
+			if len(evaluations) > 0 {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, renderEvalRunSummary(session, evaluations, caseCount))
+			}
+			fmt.Fprintf(out, "local eval session %s: %d replay(s), candidate %s, repeats %d\n", session.ID, len(evaluations), candidate, repeats)
 			if runErr != nil {
 				return runErr
 			}
@@ -184,7 +202,7 @@ func newEvalSetsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprint(cmd.OutOrStdout(), eval.RenderSets(summaries))
+			fmt.Fprintln(cmd.OutOrStdout(), renderEvalSetsDashboard(summaries))
 			return nil
 		},
 	}

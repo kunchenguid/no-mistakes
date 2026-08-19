@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -639,6 +640,7 @@ func mergeGold(existing, computed Labels) Labels {
 		QueuedCandidateFindings: existing.QueuedCandidateFindings,
 	}
 	keptID := map[string]bool{}
+	keptContent := map[string]bool{}
 	for _, g := range existing.Findings {
 		if isDerivedMergeGold(g.Source) {
 			continue
@@ -646,6 +648,8 @@ func mergeGold(existing, computed Labels) Labels {
 		out.Findings = append(out.Findings, g)
 		if id := strings.TrimSpace(g.ID); id != "" {
 			keptID[id] = true
+		} else {
+			keptContent[goldContentKey(g)] = true
 		}
 	}
 	for _, g := range computed.Findings {
@@ -653,12 +657,24 @@ func mergeGold(existing, computed Labels) Labels {
 		if id != "" && keptID[id] {
 			continue
 		}
+		// A gold finding without an ID can only dedupe by content. Without
+		// this, every recapture or relabel appended another copy of the same
+		// ID-less finding, silently growing the label file.
+		if id == "" && keptContent[goldContentKey(g)] {
+			continue
+		}
 		out.Findings = append(out.Findings, g)
 		if id != "" {
 			keptID[id] = true
+		} else {
+			keptContent[goldContentKey(g)] = true
 		}
 	}
 	return out
+}
+
+func goldContentKey(g FindingGold) string {
+	return strings.Join([]string{g.Kind, g.Source, g.File, strconv.Itoa(g.Line), g.Description}, "\x00")
 }
 
 func isDerivedMergeGold(source string) bool {

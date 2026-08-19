@@ -11,9 +11,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// TestPhaseAUserFacingTranscripts exercises the same public renderers the
-// `eval sets` / `eval report` / `eval capture` commands print, and writes those
-// transcripts as reviewer-visible evidence when NM_EVIDENCE_DIR is set.
+// TestPhaseAUserFacingTranscripts exercises the same public summaries and
+// renderers the `eval sets` / `eval report` / `eval capture` commands consume,
+// and writes them as reviewer-visible evidence when NM_EVIDENCE_DIR is set.
+// The `eval sets` dashboard itself renders in internal/cli; here the set
+// summaries are recorded structurally.
 func TestPhaseAUserFacingTranscripts(t *testing.T) {
 	evidenceDir := strings.TrimSpace(os.Getenv("NM_EVIDENCE_DIR"))
 	write := func(name, body string) {
@@ -24,6 +26,14 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(evidenceDir, name), []byte(body), 0o644); err != nil {
 			t.Fatalf("write evidence %s: %v", name, err)
 		}
+	}
+	summariesJSON := func(t *testing.T, store *Store) string {
+		t.Helper()
+		data, err := json.MarshalIndent(mustInspectSets(t, store), "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data) + "\n"
 	}
 
 	t.Run("empty gold warns and does not fill diversified", func(t *testing.T) {
@@ -40,11 +50,11 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		if len(got) != 0 {
 			t.Fatalf("diversified = %#v, want empty when the corpus has no gold", got)
 		}
-		output := RenderSets(mustInspectSets(t, store))
-		if !strings.Contains(output, "diversified: 0 cases") || !strings.Contains(output, "no labeled gold") {
-			t.Fatalf("sets output = %q, want empty diversified plus a gold-only warning", output)
+		diversified := mustSetSummary(t, store, "diversified")
+		if diversified.Cases != 0 || !strings.Contains(diversified.Warning, "no labeled gold") {
+			t.Fatalf("diversified summary = %#v, want empty diversified plus a gold-only warning", diversified)
 		}
-		write("eval-sets-empty-gold.txt", output)
+		write("eval-sets-empty-gold.json", summariesJSON(t, store))
 	})
 
 	t.Run("official holdout vs tune leftover", func(t *testing.T) {
@@ -85,11 +95,10 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		if ids := caseIDs(leftover); len(ids) != 1 || ids[0] != tune.ID {
 			t.Fatalf("tune = %v, want leftover labeled gold %s", ids, tune.ID)
 		}
-		output := RenderSets(mustInspectSets(t, store))
-		if strings.Contains(output, "tune is empty") {
-			t.Fatalf("sets output = %q, unexpectedly warned that tune is empty", output)
+		if warning := mustSetSummary(t, store, "tune").Warning; warning != "" {
+			t.Fatalf("tune warning = %q, unexpectedly warned that tune is empty", warning)
 		}
-		write("eval-sets-official-vs-tune.txt", output)
+		write("eval-sets-official-vs-tune.json", summariesJSON(t, store))
 	})
 
 	t.Run("live cap shrink keeps at most one official case per stratum", func(t *testing.T) {
@@ -109,7 +118,7 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		if beforeCounts["repo-heavy"] != 2 {
 			t.Fatalf("setup diversified = %#v, want Hamilton to pin 2 cases in repo-heavy", beforeCounts)
 		}
-		beforeOut := RenderSets(mustInspectSets(t, store))
+		beforeOut := summariesJSON(t, store)
 
 		store.SetDiversifiedSize(0)
 		after, err := store.ListCases("diversified")
@@ -125,8 +134,8 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 				t.Fatalf("after cap 0, stratum %q has %d official cases (ids=%v)", stratum, n, caseIDs(after))
 			}
 		}
-		afterOut := RenderSets(mustInspectSets(t, store))
-		write("eval-sets-cap-reconcile.txt", "BEFORE (cap 3, Hamilton extras in one stratum):\n"+beforeOut+"\nAFTER (cap 0, at most one official case per stratum):\n"+afterOut)
+		afterOut := summariesJSON(t, store)
+		write("eval-sets-cap-reconcile.json", "BEFORE (cap 3, Hamilton extras in one stratum):\n"+beforeOut+"\nAFTER (cap 0, at most one official case per stratum):\n"+afterOut)
 	})
 
 	t.Run("lower cap fill does not dump leftover seats into one unoccupied stratum", func(t *testing.T) {
@@ -146,7 +155,7 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		if beforeCounts["repo-a"] < 2 || beforeCounts["repo-b"] < 2 || beforeCounts["repo-c"] != 0 {
 			t.Fatalf("setup diversified = %#v, want duplicate pins in repo-a/repo-b and repo-c unoccupied", beforeCounts)
 		}
-		beforeOut := RenderSets(mustInspectSets(t, store))
+		beforeOut := summariesJSON(t, store)
 
 		store.SetDiversifiedSize(5)
 		after, err := store.ListCases("diversified")
@@ -162,8 +171,8 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 				t.Fatalf("after cap 5, stratum %q has %d official cases (ids=%v)", stratum, n, caseIDs(after))
 			}
 		}
-		afterOut := RenderSets(mustInspectSets(t, store))
-		write("eval-sets-lower-cap-no-overallocate.txt", "BEFORE (cap 6, Hamilton pins duplicates in two strata and leaves a third unoccupied):\n"+beforeOut+"\nAFTER (cap 5, collapse-freed seats must not reallocate multiple official cases into one stratum):\n"+afterOut)
+		afterOut := summariesJSON(t, store)
+		write("eval-sets-lower-cap-no-overallocate.json", "BEFORE (cap 6, Hamilton pins duplicates in two strata and leaves a third unoccupied):\n"+beforeOut+"\nAFTER (cap 5, collapse-freed seats must not reallocate multiple official cases into one stratum):\n"+afterOut)
 	})
 
 	t.Run("report withholds F1 without FP gold and headlines it when FP gold exists", func(t *testing.T) {

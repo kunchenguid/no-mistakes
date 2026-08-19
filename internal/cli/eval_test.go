@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -26,8 +27,8 @@ func TestEvalSetsIsLocalOnlyAndEmitsNoTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v", err)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL CASE SETS") {
-		t.Fatalf("output = %q", out)
+	if !strings.Contains(out, "eval case sets") || !strings.Contains(out, "local-only") {
+		t.Fatalf("output = %q, want the eval case sets dashboard with its local-only footer", out)
 	}
 	if strings.Contains(out, "verdict") || strings.Contains(out, "park") || strings.Contains(out, ", pass ") {
 		t.Fatalf("eval sets still uses park/pass accuracy language: %q", out)
@@ -43,64 +44,14 @@ func TestEvalCaptureAndSetsSpeakInFindingGoldTerms(t *testing.T) {
 	t.Setenv("NM_HOME", root)
 	chdir(t, t.TempDir())
 
-	p := paths.WithRoot(root)
-	if err := p.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-	database, err := db.Open(p.DB())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-
-	gateDir := p.RepoDir("eval-repo")
-	if err := git.InitBare(ctx, gateDir); err != nil {
-		t.Fatal(err)
-	}
-	workDir := filepath.Join(root, "source")
-	mustCLIGit(t, ctx, root, "clone", gateDir, workDir)
-	mustCLIGit(t, ctx, workDir, "config", "user.email", "eval@example.test")
-	mustCLIGit(t, ctx, workDir, "config", "user.name", "Eval Test")
-	if err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package sample\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustCLIGit(t, ctx, workDir, "add", ".")
-	mustCLIGit(t, ctx, workDir, "commit", "-m", "base")
-	mustCLIGit(t, ctx, workDir, "branch", "-M", "main")
-	mustCLIGit(t, ctx, workDir, "push", "origin", "main")
-	baseSHA := mustCLIGit(t, ctx, workDir, "rev-parse", "HEAD")
-	mustCLIGit(t, ctx, workDir, "checkout", "-b", "feature/eval")
-	if err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package sample\n\nfunc Changed() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustCLIGit(t, ctx, workDir, "add", "main.go")
-	mustCLIGit(t, ctx, workDir, "commit", "-m", "change")
-	mustCLIGit(t, ctx, workDir, "push", "origin", "feature/eval")
-	headSHA := mustCLIGit(t, ctx, workDir, "rev-parse", "HEAD")
-
-	repo, err := database.InsertRepoWithID("eval-repo", workDir, "https://example.test/org/repo", "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := database.InsertRun(repo.ID, "feature/eval", headSHA, baseSHA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	step, err := database.InsertStepResult(run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
 	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
-	round, err := database.InsertReviewStepRoundWithProvenance(step.ID, 1, "initial", &findings, nil, headSHA, headSHA, baseSHA, []byte("{}\n"), []byte("{}\n"), 50)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
 	selected := `["real-bug"]`
-	if err := database.SetStepRoundSelection(round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+	if err := fixture.db.SetStepRoundSelection(fixture.round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := executeCmd("eval", "capture", run.ID)
+	out, err := executeCmd("eval", "capture", fixture.run.ID)
 	if err != nil {
 		t.Fatalf("eval capture: %v\n%s", err, out)
 	}
@@ -112,8 +63,11 @@ func TestEvalCaptureAndSetsSpeakInFindingGoldTerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "1 with finding-level gold (true-positive 1, false-negative 0, false-positive 0)") || !strings.Contains(out, "0 unlabeled / pending") {
+	if !strings.Contains(out, "true-positive 1 · false-negative 0 · false-positive 0") || !strings.Contains(out, "0 unlabeled / pending") {
 		t.Fatalf("sets output = %q, want finding-level gold, not park/pass", out)
+	}
+	if !strings.Contains(out, "Diversified holdout") || !strings.Contains(out, "Self-score") || !strings.Contains(out, "1/1 true issues") {
+		t.Fatalf("sets output = %q, want the diversified headline with its instant self-score", out)
 	}
 	if strings.Contains(out, "verdict") || strings.Contains(out, "park") || strings.Contains(out, ", pass ") {
 		t.Fatalf("sets output still uses park/pass accuracy language: %q", out)
@@ -134,6 +88,167 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	t.Setenv("NM_HOME", root)
 	chdir(t, t.TempDir())
 
+	findings := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
+	if err := fixture.db.UpdateStepStatus(fixture.step.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeCmd("eval", "miss", "ingest", fixture.run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
+	if err != nil {
+		t.Fatalf("eval miss ingest: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ingested 1 false-negative gold finding") {
+		t.Fatalf("ingest output = %q", out)
+	}
+
+	out, err = executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "true-positive 0 · false-negative 1 · false-positive 0") {
+		t.Fatalf("sets output = %q, want ingested false-negative gold", out)
+	}
+
+	out, err = executeCmd("eval", "capture", fixture.run.ID)
+	if err != nil {
+		t.Fatalf("recapture after ingest: %v\n%s", err, out)
+	}
+	out, err = executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets after recapture: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "true-positive 0 · false-negative 1 · false-positive 0") {
+		t.Fatalf("sets after recapture = %q, want ingested false-negative gold to persist", out)
+	}
+
+	out, err = executeCmd("eval", "miss", "ingest", fixture.run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
+	if err != nil {
+		t.Fatalf("duplicate eval miss ingest: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ingested 0 false-negative gold finding") {
+		t.Fatalf("duplicate ingest output = %q", out)
+	}
+}
+
+// Every read-or-converging eval subcommand must be idempotent at the CLI: the
+// second identical invocation prints the same output and leaves the same
+// state. (eval run is additive by design and is covered separately; eval miss
+// ingest's duplicate no-op is covered above.)
+func TestEvalCaptureSetsReportAndRelabelAreIdempotentAtTheCLI(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	chdir(t, t.TempDir())
+
+	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
+	selected := `["real-bug"]`
+	if err := fixture.db.SetStepRoundSelection(fixture.round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.UpdateRunPRState(fixture.run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, command := range [][]string{
+		{"eval", "capture", fixture.run.ID},
+		{"eval", "sets"},
+		{"eval", "sets", "--refresh-diversified"},
+		{"eval", "relabel", fixture.run.ID},
+		{"eval", "relabel"},
+		{"eval", "report"},
+	} {
+		first, err := executeCmd(command...)
+		if err != nil {
+			t.Fatalf("%v (first): %v\n%s", command, err, first)
+		}
+		second, err := executeCmd(command...)
+		if err != nil {
+			t.Fatalf("%v (second): %v\n%s", command, err, second)
+		}
+		if first != second {
+			t.Fatalf("%v is not idempotent:\nfirst: %s\nsecond: %s", command, first, second)
+		}
+	}
+}
+
+func TestEvalRunRendersProgressAndScoreDashboard(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	chdir(t, t.TempDir())
+
+	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	fixture := setupEvalCLIFixture(t, ctx, root, findings)
+	selected := `["real-bug"]`
+	if err := fixture.db.SetStepRoundSelection(fixture.round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	installFakeCLIReviewAgent(t, root, findings)
+
+	if out, err := executeCmd("eval", "capture", fixture.run.ID); err != nil {
+		t.Fatalf("eval capture: %v\n%s", err, out)
+	}
+	setsBefore, err := executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "2")
+	if err != nil {
+		t.Fatalf("eval run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "replaying 1 case(s) x 2 repeat(s) with claude+test on labeled") {
+		t.Fatalf("run output = %q, want the replay plan header", out)
+	}
+	if !strings.Contains(out, "1/2") || !strings.Contains(out, "2/2") || !strings.Contains(out, "TP 1 · FN 0 · FP 0 · pending 0") {
+		t.Fatalf("run output = %q, want one scored progress line per replay", out)
+	}
+	if !strings.Contains(out, " eval run ") || !strings.Contains(out, "Recall") || !strings.Contains(out, "2/2 true issues") {
+		t.Fatalf("run output = %q, want the score summary dashboard aggregating both repeats", out)
+	}
+	if !strings.Contains(out, "local eval session") {
+		t.Fatalf("run output = %q, want the trailing session line", out)
+	}
+
+	// Re-running the same eval run is additive (a fresh measurement session)
+	// but must stay safe: the frozen corpus is untouched, and the identical
+	// input lands in the same cohort so the report aggregates instead of
+	// fragmenting into a new comparison group.
+	if out, err = executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "2"); err != nil {
+		t.Fatalf("second eval run: %v\n%s", err, out)
+	}
+	setsAfter, err := executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setsBefore != setsAfter {
+		t.Fatalf("eval run mutated the case sets:\nbefore: %s\nafter: %s", setsBefore, setsAfter)
+	}
+	report, err := executeCmd("eval", "report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(report, "cohort"); got != 1 {
+		t.Fatalf("report = %q, want both identical runs aggregated into one cohort, got %d", report, got)
+	}
+	if !strings.Contains(report, "replays: 4") {
+		t.Fatalf("report = %q, want all four replays counted in the single cohort", report)
+	}
+}
+
+type evalCLIFixture struct {
+	run   *db.Run
+	round *db.StepRound
+	step  *db.StepResult
+	db    *db.DB
+}
+
+// setupEvalCLIFixture builds the minimal real gate, working clone, and
+// recorded review round the eval CLI commands read from.
+func setupEvalCLIFixture(t *testing.T, ctx context.Context, root, findings string) evalCLIFixture {
+	t.Helper()
 	p := paths.WithRoot(root)
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -142,7 +257,7 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	t.Cleanup(func() { _ = database.Close() })
 
 	gateDir := p.RepoDir("eval-repo")
 	if err := git.InitBare(ctx, gateDir); err != nil {
@@ -181,49 +296,34 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
-	if _, err := database.InsertReviewStepRoundWithProvenance(step.ID, 1, "initial", &findings, nil, headSHA, headSHA, baseSHA, []byte("{}\n"), []byte("{}\n"), 50); err != nil {
+	round, err := database.InsertReviewStepRoundWithProvenance(step.ID, 1, "initial", &findings, nil, headSHA, headSHA, baseSHA, []byte("{}\n"), []byte("{}\n"), 50)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateStepStatus(step.ID, types.StepStatusCompleted); err != nil {
+	return evalCLIFixture{run: run, round: round, step: step, db: database}
+}
+
+// installFakeCLIReviewAgent puts a scripted claude on PATH that replies with
+// the given review findings, mirroring the fake agent the internal/eval
+// replay tests use.
+func installFakeCLIReviewAgent(t *testing.T, root, findingsJSON string) {
+	t.Helper()
+	fakeDir := t.TempDir()
+	fake := filepath.Join(fakeDir, "claude")
+	reply := `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"review"}]}}
+{"type":"result","subtype":"success","is_error":false,"structured_output":` + findingsJSON + `,"usage":{"input_tokens":12,"output_tokens":3}}
+`
+	var script string
+	if runtime.GOOS == "windows" {
+		fake += ".cmd"
+		script = "@echo off\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+	} else {
+		script = "#!/bin/sh\n[ \"$NM_HOME\" = \"" + root + "\" ] && touch \"" + root + "/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+	}
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	out, err := executeCmd("eval", "miss", "ingest", run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
-	if err != nil {
-		t.Fatalf("eval miss ingest: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "ingested 1 false-negative gold finding") {
-		t.Fatalf("ingest output = %q", out)
-	}
-
-	out, err = executeCmd("eval", "sets")
-	if err != nil {
-		t.Fatalf("eval sets: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1, false-positive 0)") {
-		t.Fatalf("sets output = %q, want ingested false-negative gold", out)
-	}
-
-	out, err = executeCmd("eval", "capture", run.ID)
-	if err != nil {
-		t.Fatalf("recapture after ingest: %v\n%s", err, out)
-	}
-	out, err = executeCmd("eval", "sets")
-	if err != nil {
-		t.Fatalf("eval sets after recapture: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1, false-positive 0)") {
-		t.Fatalf("sets after recapture = %q, want ingested false-negative gold to persist", out)
-	}
-
-	out, err = executeCmd("eval", "miss", "ingest", run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
-	if err != nil {
-		t.Fatalf("duplicate eval miss ingest: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "ingested 0 false-negative gold finding") {
-		t.Fatalf("duplicate ingest output = %q", out)
-	}
+	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func mustCLIGit(t *testing.T, ctx context.Context, dir string, args ...string) string {

@@ -46,7 +46,7 @@ A case includes:
 - agent-neutral global configuration and the effective repository configuration frozen at capture
 - the original run, step, review-round, decision, and local invocation-metric records
 - a manifest with commit pins, changed-file counts, build identity, and a hash of the redacted remote URL
-- a local `labels.json` file that stores finding-level gold and queued unmatched candidate findings
+- a local `labels.json` file that stores finding-level gold; queued unmatched candidate findings are counted from the recorded replays themselves, so replays never rewrite a case's labels
 
 The manifest never stores a remote URL. Capture is read-only against the existing local database and gate. It does not fetch from the network.
 
@@ -84,7 +84,11 @@ Finding-level gold uses `labels.json` schema version 2. There is no migration fr
 no-mistakes eval sets
 ```
 
-The command shows counts, finding-level gold coverage, unlabeled / pending cases, queued candidate findings, and composition by repository fingerprint, dominant language, change-size bucket, source severity, and finding type.
+The command renders a dashboard headlined by the **diversified holdout** - the official gold-only set - showing its size, pin and cap state, finding-level gold composition, and stratum composition (repository fingerprint, dominant language, change-size bucket, source severity, finding type). The other sets appear as a compact footnote with their counts, gold coverage, unlabeled / pending cases, and queued candidate findings.
+
+The headline includes an instant **self-score**: the recorded source reviews of the diversified set scored against their own gold with the same matcher a replayed candidate faces. It is computed from the already-captured case files - no replay, agent invocation, or network - and is the baseline a candidate has to beat. Recall, precision bounds, and F1 follow the report's semantics, including withholding F1 when no false-positive gold exists.
+
+`eval sets` is safe to re-run: inspecting the sets materializes the diversified pins, and a second read returns the same summaries without repinning anything.
 
 Four logical sets are available to replay:
 
@@ -120,6 +124,8 @@ Matching is a documented cascade of strengths: the same finding ID, the same fil
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+
+The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, and the frozen corpus itself is never modified by a replay.
 
 ## Report results
 
