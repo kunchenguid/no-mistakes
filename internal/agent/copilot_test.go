@@ -318,6 +318,27 @@ func TestCopilotAgent_RunParsesJSONOutput(t *testing.T) {
 	}
 }
 
+func TestCopilotAgent_ZeroExitQuotaEventIsClassified(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCopilot(t, dir, []string{
+		`{"type":"assistant.message","data":{"content":"ordinary assistant output"}}`,
+		`{"type":"assistant.abort","data":{"message":"rate limit exceeded provider-secret"}}`,
+		`{"type":"result","exitCode":0}`,
+	}, 0)
+
+	ca := &copilotAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{Prompt: "do work", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("quota event unexpectedly succeeded")
+	}
+	if _, ok := quotaErrorReason(err); !ok {
+		t.Fatalf("error = %v, want provider quota classification", err)
+	}
+	if strings.Contains(err.Error(), "provider-secret") {
+		t.Fatalf("classified error leaked provider diagnostic: %v", err)
+	}
+}
+
 func TestCopilotAgent_RunReportsErrorOnNonZeroExit(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCopilot(t, dir, []string{

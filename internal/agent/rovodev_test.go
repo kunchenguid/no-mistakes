@@ -516,6 +516,33 @@ func TestRovodevAgent_FullFlow(t *testing.T) {
 	}
 }
 
+func TestRovodevAgent_HTTP429ResponseIsClassified(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v3/sessions/create":
+			fmt.Fprint(w, `{"session_id":"s1"}`)
+		case r.URL.Path == "/v3/set_chat_message":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/v3/stream_chat":
+			http.Error(w, "provider unavailable", http.StatusTooManyRequests)
+		case r.URL.Path == "/v3/sessions/s1", r.URL.Path == "/v3/cancel":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &rovodevAgent{bin: "acli", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatalf("expected quota error, got result %+v", result)
+	}
+	if reason, ok := quotaErrorReason(err); !ok || reason != "rate limit" {
+		t.Fatalf("quotaErrorReason(%v) = %q, %v, want rate limit, true", err, reason, ok)
+	}
+}
+
 // TestRovodevAgent_NoSchema tests that system prompt is skipped when no schema.
 func TestRovodevAgent_NoSchema(t *testing.T) {
 	calledPaths := make(map[string]bool)

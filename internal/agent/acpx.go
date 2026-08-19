@@ -67,7 +67,12 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		retErr := fmt.Errorf("acpx exited: %w: %s", waitErr, acpxProcessErrorOutput(stderrBuf, stdoutErr))
+		diagnostic := acpxProcessErrorOutput(stderrBuf, stdoutErr)
+		retErr := ClassifyProviderError(fmt.Errorf("acpx exited: %w: %s", waitErr, diagnostic), diagnostic)
+		emitAgentExited(opts, a.Name(), pid, retErr)
+		return nil, retErr
+	}
+	if retErr := completedProviderQuotaError(a.Name(), stdoutErr); retErr != nil {
 		emitAgentExited(opts, a.Name(), pid, retErr)
 		return nil, retErr
 	}
