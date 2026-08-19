@@ -363,7 +363,7 @@ func (r *reviewProfileRunner) Run(ctx context.Context, profile ReviewProfile, op
 	}}
 	wrapped = &perfRecordingAgent{inner: wrapped, db: r.db, runID: r.runID, stepName: r.stepName, round: r.round}
 	opts.CWD = checkoutDir
-	opts.Env = append(opts.Env, isolatedEnv...)
+	opts.Env = append(reviewFleetNonGitEnv(opts.Env), isolatedEnv...)
 	result, err := wrapped.Run(ctx, opts)
 	if err != nil {
 		return result, fmt.Errorf("review fleet profile %q failed: %s", profile.Role, safeReviewFleetRuntimeText(err.Error(), reviewFleetMaxRuntimeLogBytes))
@@ -492,6 +492,7 @@ func (r *reviewProfileRunner) ensureSandbox(ctx context.Context) (string, []stri
 
 func reviewFleetGitEnv() []string {
 	return []string{
+		"NO_MISTAKES_FLEET_GIT_ENV=1",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_ATTR_NOSYSTEM=1",
@@ -577,6 +578,18 @@ func (r *reviewProfileRunner) isolatedEnv() []string {
 		"PWD=" + r.checkoutDir,
 	}
 	return append(env, reviewFleetGitEnv()...)
+}
+
+func reviewFleetNonGitEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func (r *reviewProfileRunner) Close() {

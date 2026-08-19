@@ -199,6 +199,11 @@ func TestReviewFleetValidationBoundsAndEnums(t *testing.T) {
 			mut:  func(yaml string) string { return strings.Replace(yaml, "internal/auth/**", "internal/[a-/**", 1) },
 			want: "glob",
 		},
+		{
+			name: "wildcard_subtree_glob",
+			mut:  func(yaml string) string { return strings.Replace(yaml, "internal/auth/**", "internal/*/**", 1) },
+			want: "glob",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

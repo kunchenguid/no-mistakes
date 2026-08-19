@@ -72,6 +72,23 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitAndPushRefusesFleetRun(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("pending\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ReviewFleetEnabled = true
+
+	pushed, err := (&CIStep{}).commitAndPush(sctx)
+	if err == nil || !strings.Contains(err.Error(), "unavailable") || pushed {
+		t.Fatalf("fleet CI commit/push = pushed:%t err:%v", pushed, err)
+	}
+	if got := gitStatusPorcelain(t, dir); got == "" {
+		t.Fatal("fleet CI guard modified the worktree")
+	}
+}
+
 func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()

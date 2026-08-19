@@ -1,6 +1,11 @@
 package agent
 
-import "github.com/kunchenguid/no-mistakes/internal/git"
+import (
+	"os"
+	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/git"
+)
 
 // GateRoleEnvVar is exported into every spawned gate agent's environment as an
 // coarse diagnostic marker that the process is a no-mistakes gate agent (a
@@ -29,9 +34,34 @@ const GateRoleEnvVar = "NO_MISTAKES_GATE"
 // dir must be the value assigned to cmd.Dir so PWD stays coupled to the working
 // directory; see git.NonInteractiveEnv for why this matters.
 func gitSafeEnv(dir string, extra ...[]string) []string {
-	env := git.NonInteractiveEnv(dir)
+	base := os.Environ()
+	if len(extra) > 0 && hasFleetGitIsolation(extra[0]) {
+		base = withoutGitEnvironment(base)
+	}
+	env := git.NonInteractiveEnvFrom(base, dir)
 	if len(extra) > 0 {
 		env = append(env, extra[0]...)
 	}
 	return append(env, GateRoleEnvVar+"=1")
+}
+
+func hasFleetGitIsolation(env []string) bool {
+	for _, entry := range env {
+		if entry == "NO_MISTAKES_FLEET_GIT_ENV=1" {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutGitEnvironment(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }

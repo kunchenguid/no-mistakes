@@ -18,6 +18,9 @@ import (
 // Returns (true, nil) when changes were committed and pushed, (false, nil)
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
+	if sctx != nil && sctx.Run != nil && sctx.Run.ReviewFleetEnabled {
+		return false, fmt.Errorf("CI auto-fix is unavailable for a certified review-fleet run")
+	}
 	ctx := sctx.Ctx
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return false, err
@@ -121,6 +124,9 @@ CI logs:
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
+	if sctx != nil && sctx.Run != nil && sctx.Run.ReviewFleetEnabled {
+		return false, fmt.Errorf("CI auto-push is unavailable for a certified review-fleet run")
+	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)

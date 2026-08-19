@@ -251,6 +251,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 	t.Setenv("HOME", userHome)
 	t.Setenv("CODEX_HOME", sourceCodexHome)
 	t.Setenv("CODEX_SQLITE_HOME", "/poisoned-ambient-codex-sqlite")
+	t.Setenv("GIT_EXTERNAL_DIFF", "false")
 
 	argsPath := filepath.Join(root, "args.txt")
 	probePath := filepath.Join(root, "probe.txt")
@@ -264,6 +265,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"printf 'codex_sqlite_home=%s\\n' \"$CODEX_SQLITE_HOME\"\n" +
 		"printf 'git_config_global=%s\\n' \"$GIT_CONFIG_GLOBAL\"\n" +
 		"printf 'git_dir=%s\\n' \"$GIT_DIR\"\n" +
+		"test -z \"$GIT_EXTERNAL_DIFF\" && printf 'external_diff=absent\\n'\n" +
 		"printf 'head=%s\\n' \"$(git rev-parse HEAD)\"\n" +
 		"printf 'status=%s\\n' \"$(git status --porcelain)\"\n" +
 		"test ! -e .agents/skills && printf 'repo_skills=absent\\n'\n" +
@@ -329,6 +331,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 		"codex_sqlite_home=" + wantSQLiteHome,
 		"git_config_global=" + os.DevNull,
 		"git_dir=",
+		"external_diff=absent",
 		"user_config=absent",
 		"plugins=absent",
 		"alternates=absent",
@@ -437,13 +440,13 @@ func TestReviewProfileRunnerSharesOneShadowAndRefreshesAfterFixCommit(t *testing
 func TestReviewProfileRunnerShadowCheckoutIgnoresAmbientGitFilters(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
-	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "unrelated-git-dir"))
-	t.Setenv("GIT_WORK_TREE", t.TempDir())
 	marker := filepath.Join(t.TempDir(), "smudge-ran")
 	writeTestFile(t, dir, ".gitattributes", "victim filter=ambient-test\n")
 	writeTestFile(t, dir, "victim", "content\n")
 	execGit(t, dir, "add", "-A")
 	execGit(t, dir, "commit", "-m", "add filtered checkout fixture")
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "unrelated-git-dir"))
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(globalConfig, []byte("[filter \"ambient-test\"]\n\tsmudge = touch "+marker+"\n\tclean = cat\n"), 0o600); err != nil {
 		t.Fatal(err)
