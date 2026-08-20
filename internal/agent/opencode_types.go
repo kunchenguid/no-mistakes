@@ -1,6 +1,9 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // opencodeStreamEvent is the top-level JSON from an OpenCode SSE data field.
 type opencodeStreamEvent struct {
@@ -72,16 +75,31 @@ type opencodeMessageInfo struct {
 }
 
 // opencodeMessageError mirrors the discriminated AssistantError union in
-// opencode's session-v1 schema. We only need to recognise the
-// StructuredOutputError variant for a clean user-facing message; the raw
-// fields stay on the struct so future logging can use them. Other variants
-// (ProviderAuthError, MessageOutputLengthError, MessageAbortedError,
-// APIError, ContentFilterError, ContextOverflowError, UnknownError) are
-// decoded loosely into Message and any provider-specific extras are dropped.
+// opencode's session-v1 schema (StructuredOutputError, ProviderAuthError,
+// APIError, MessageOutputLengthError, MessageAbortedError,
+// ContentFilterError, ContextOverflowError, UnknownError).
+//
+// opencode serializes every NamedError as {"name": ..., "data": {...}}, so
+// the payload fields live under Data; the flat Message/Retries copies are
+// kept only as a fallback for older wire shapes.
 type opencodeMessageError struct {
-	Name    string `json:"name"`
+	Name string                    `json:"name"`
+	Data *opencodeMessageErrorData `json:"data,omitempty"`
+
+	// Legacy flat shape, superseded by Data.
 	Message string `json:"message,omitempty"`
 	Retries *int   `json:"retries,omitempty"`
+}
+
+// opencodeMessageErrorData is the payload opencode nests under the error
+// name. StatusCode and IsRetryable are only present on APIError, and
+// IsRetryable is opencode's own verdict on whether the provider call is
+// worth repeating - it is the authority for our retry decision.
+type opencodeMessageErrorData struct {
+	Message     string `json:"message,omitempty"`
+	Retries     *int   `json:"retries,omitempty"`
+	StatusCode  int    `json:"statusCode,omitempty"`
+	IsRetryable *bool  `json:"isRetryable,omitempty"`
 }
 
 // IsStructuredOutput reports whether the error is opencode's
@@ -89,6 +107,61 @@ type opencodeMessageError struct {
 // fails to elicit a StructuredOutput tool call after the configured retries.
 func (e *opencodeMessageError) IsStructuredOutput() bool {
 	return e != nil && e.Name == "StructuredOutputError"
+}
+
+func (e *opencodeMessageError) message() string {
+	if e == nil {
+		return ""
+	}
+	if e.Data != nil && e.Data.Message != "" {
+		return e.Data.Message
+	}
+	return e.Message
+}
+
+func (e *opencodeMessageError) retries() int {
+	if e == nil {
+		return 0
+	}
+	if e.Data != nil && e.Data.Retries != nil {
+		return *e.Data.Retries
+	}
+	if e.Retries != nil {
+		return *e.Retries
+	}
+	return 0
+}
+
+func (e *opencodeMessageError) statusCode() int {
+	if e == nil || e.Data == nil {
+		return 0
+	}
+	return e.Data.StatusCode
+}
+
+// retryable reports whether repeating the turn could plausibly succeed.
+// opencode's own isRetryable flag wins when present - a provider that
+// rejected the request as invalid (a model refusing the forced tool_choice
+// that json_schema output requires, for example) never becomes valid on a
+// retry, and burning the step's remaining attempts on it only delays an
+// actionable error. Without the flag we fall back to the status class, and
+// an error carrying no status at all (StructuredOutputError, which has
+// already exhausted opencode's internal retries) is not retried.
+func (e *opencodeMessageError) retryable() bool {
+	if e == nil {
+		return false
+	}
+	if e.Data != nil && e.Data.IsRetryable != nil {
+		return *e.Data.IsRetryable
+	}
+	switch code := e.statusCode(); {
+	case code == http.StatusTooManyRequests, code == http.StatusRequestTimeout:
+		return true
+	case code >= 500:
+		return true
+	default:
+		return false
+	}
 }
 
 type opencodeMessagePart struct {

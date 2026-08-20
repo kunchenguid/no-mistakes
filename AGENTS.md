@@ -34,6 +34,11 @@ Safest local verification sequence after non-trivial changes:
 - The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.
 - The comments in `internal/scm/gitlab/gitlab.go` own the full rationale for each trap; extend them there when you hit new glab version drift.
 
+**OpenCode Adapter Failure Reporting (`internal/agent/opencode*.go`)**
+
+- opencode reports a failed turn on `info.error` with an HTTP 200 and no parts, and serializes every named error as `{"name": ..., "data": {...}}` - the payload fields are nested under `data`, never at the top level. Decoding only the flat shape silently blanks the message, and ignoring non-`StructuredOutputError` variants drops the cause entirely so the run reports the undiagnosable `opencode returned no text output`. `opencodeMessageError` owns the wire shape and `opencodeMessageFailure` owns the surfaced error.
+- Retry is opencode's call, not ours: `classifyOpencodeTransient` trusts `data.isRetryable` (status class only as a fallback) and deliberately does not fall through to the shared substring matching, so a 400 quoting a provider's rate-limit prose is never retried. Regressions: `TestOpencodeAgent_FailedTurnSurfacesProviderErrorInsteadOfEmptyOutput`, `TestOpencodeAgent_StructuredOutputErrorReadsNestedErrorData`, `TestOpencodeAgent_RetriesRetryableProviderErrorThenSucceeds`, `TestClassifyOpencodeTransient`.
+
 **Documentation**
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
