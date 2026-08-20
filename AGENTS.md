@@ -42,6 +42,7 @@ Safest local verification sequence after non-trivial changes:
 - `tea pulls create` has no `--output json` flag and echoes the PR body into its human-readable stdout, so a body containing an `http(s)://` URL can defeat a naive "first URL line" scrape. `CreatePR` re-lists the PR by head branch via `tea pulls list` for a structured result instead of parsing create's own output; scraping stdout is only a last-resort fallback.
 - tea infers "which Gitea instance" from the current directory's git remote, which the daemon's detached bare-gate repo never has, so every invocation carries `--login <name>` explicitly. The login name is resolved from tea's own `config.yml` by host (`scm.ResolveGiteaLogin`), mirroring `glabKnowsHost`/`ghKnowsHost` for detection.
 - `Capabilities().MergeableState` is declined (matching Bitbucket): Gitea's PR `mergeable` field has a documented upstream bug (go-gitea/gitea#25849) that can stick `false` after a conflict is actually resolved.
+- `tea actions runs list`'s array order is not documented as newest-first, and a branch can have more than one run sharing the same head SHA (e.g. a manual UI re-run), so `GetChecks`/`FetchFailedCheckLogs` select the run via `mostRecentRun` (highest numeric run ID) rather than trusting list order or index `[0]`.
 - The comments in `internal/scm/gitea/gitea.go` own the full rationale for each trap.
 
 **Documentation**
