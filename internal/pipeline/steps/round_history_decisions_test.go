@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -267,9 +268,12 @@ func TestCompletedReviewDoesNotClearBranchDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decisions, err := f.db.GetBranchDecisionRounds(f.repo.ID, "feature", laterRun.ID, db.MaxBranchDecisionRounds)
+	decisions, truncated, err := f.db.GetBranchDecisionRounds(f.repo.ID, "feature", laterRun.ID, db.MaxBranchDecisionRounds)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("one branch decision must not report truncation")
 	}
 	if len(decisions) != 1 {
 		t.Fatalf("a completed review erased the decision: got %d", len(decisions))
@@ -411,6 +415,50 @@ func TestDecisionSectionBoundsALongHistory(t *testing.T) {
 	}
 	if n := strings.Count(got, "review round 1 declined:"); n != maxDecisionLinesPerSection {
 		t.Fatalf("rendered %d declined lines, want the bound %d", n, maxDecisionLinesPerSection)
+	}
+}
+
+func TestBranchDecisionLoaderTruncationIsVisible(t *testing.T) {
+	f := newDecisionFixture(t)
+	for i := 0; i < db.MaxBranchDecisionRounds+1; i++ {
+		run, err := f.db.InsertRun(f.repo.ID, "feature", fmt.Sprintf("prior-head-%d", i), "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, err := f.db.InsertStepResult(run.ID, types.StepReview)
+		if err != nil {
+			t.Fatal(err)
+		}
+		findings := fmt.Sprintf(`{"findings":[{"id":"prior-%d","severity":"error","description":"d","action":"ask-user"}]}`, i)
+		round, err := f.db.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.SetStepRoundDeclined(round.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	currentRun, err := f.db.InsertRun(f.repo.ID, "feature", "current-head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentStep, err := f.db.InsertStepResult(currentRun.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{DB: f.db, Repo: f.repo, Run: currentRun, StepResultID: currentStep.ID}
+	pipeline.BindBranchDecisions(sctx)
+
+	if len(sctx.PriorBranchDecisions) != db.MaxBranchDecisionRounds {
+		t.Fatalf("loaded %d branch decisions, want %d", len(sctx.PriorBranchDecisions), db.MaxBranchDecisionRounds)
+	}
+	if !sctx.PriorBranchDecisionsTruncated {
+		t.Fatal("bounded branch decisions did not retain truncation metadata")
+	}
+	got := branchDecisionsPromptSection(sctx)
+	if !strings.Contains(got, "Older branch decision round(s) omitted by the history limit") {
+		t.Fatalf("rendered bounded history did not disclose omitted rounds:\n%s", got)
 	}
 }
 

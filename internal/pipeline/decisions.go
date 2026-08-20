@@ -29,10 +29,11 @@ func BindBranchDecisions(sctx *StepContext) {
 	if sctx.Repo.ID == "" || branch == "" {
 		return
 	}
-	decisions, err := sctx.DB.GetBranchDecisionRounds(sctx.Repo.ID, branch, sctx.Run.ID, db.MaxBranchDecisionRounds)
+	decisions, truncated, err := sctx.DB.GetBranchDecisionRounds(sctx.Repo.ID, branch, sctx.Run.ID, db.MaxBranchDecisionRounds)
 	if err != nil {
 		slog.Warn("failed to read prior branch decisions; continuing without them", "repo_id", sctx.Repo.ID, "error", err)
 		return
 	}
 	sctx.PriorBranchDecisions = decisions
+	sctx.PriorBranchDecisionsTruncated = truncated
 }

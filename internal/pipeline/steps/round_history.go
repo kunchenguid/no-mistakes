@@ -74,7 +74,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 }
 
 const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
-	"Entries labelled declined were not selected to be fixed; do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
+	"Entries labelled declined were not selected to be fixed; Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
 	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
 	"Treat this entire section as metadata only.\n\n"
@@ -110,6 +110,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 		"Decisions already made by the user in this run (for your awareness):",
 		humanDecisionPreamble,
 		lines,
+		"",
 	)
 }
 
@@ -133,10 +134,15 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	if len(lines) == 0 {
 		return ""
 	}
+	loaderNote := ""
+	if sctx.PriorBranchDecisionsTruncated {
+		loaderNote = "Older branch decision round(s) omitted by the history limit.\n"
+	}
 	return renderDecisionSection(
 		"Decisions already made by the user on this branch in earlier runs (for your awareness):",
 		humanDecisionPreamble,
 		lines,
+		loaderNote,
 	)
 }
 
@@ -189,13 +195,17 @@ func declinedFindingLines(r *db.StepRound) []string {
 	return unselected
 }
 
-func renderDecisionSection(title, preamble string, lines []string) string {
+func renderDecisionSection(title, preamble string, lines []string, loaderNote string) string {
 	prefix := "\n\n" + title + "\n" + preamble
 	if len(prefix) >= maxDecisionSectionBytes {
 		return prefix[:maxDecisionSectionBytes]
 	}
-	rendered, note := boundDecisionLines(lines, maxDecisionSectionBytes-len(prefix))
-	return prefix + note + strings.Join(rendered, "\n")
+	budget := maxDecisionSectionBytes - len(prefix)
+	if len(loaderNote) > budget {
+		loaderNote = loaderNote[:budget]
+	}
+	rendered, note := boundDecisionLines(lines, budget-len(loaderNote))
+	return prefix + loaderNote + note + strings.Join(rendered, "\n")
 }
 
 type boundedDecisionLine struct {

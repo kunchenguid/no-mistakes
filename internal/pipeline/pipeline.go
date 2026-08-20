@@ -67,7 +67,8 @@ type StepContext struct {
 	// user made about this branch keeps standing until the branch's run history
 	// ages out of the loader's bound. Nil when none apply. Advisory prompt
 	// context only.
-	PriorBranchDecisions []*db.BranchDecisionRound
+	PriorBranchDecisions          []*db.BranchDecisionRound
+	PriorBranchDecisionsTruncated bool
 	// Sessions manages the run's durable review-fixer session. The session
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.

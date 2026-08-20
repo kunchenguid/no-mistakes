@@ -23,6 +23,8 @@ type BranchDecisionRound struct {
 
 // GetBranchDecisionRounds returns rounds from OTHER runs on the same repo and
 // branch that recorded a human decision, most recent first, bounded by limit.
+// The truncated result reports whether older matching rounds exist beyond the
+// returned recency window.
 //
 // It deliberately returns every round whose selection came from a human,
 // declined or partial, and leaves the "does this round actually carry a
@@ -34,10 +36,11 @@ type BranchDecisionRound struct {
 // pipeline range, which is why that channel could not carry a decision across
 // runs; a recorded decision has no such expiry and stays readable for the life
 // of the branch's run history.
-func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit int) ([]*BranchDecisionRound, error) {
+func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit int) ([]*BranchDecisionRound, bool, error) {
 	if limit <= 0 {
 		limit = MaxBranchDecisionRounds
 	}
+	queryLimit := limit + 1
 	rows, err := d.sql.Query(
 		`SELECT sr.id, sr.step_result_id, sr.round, sr.trigger_type, sr.findings_json,
 		        sr.reviewed_head_sha, sr.starting_head_sha, sr.trusted_config_sha,
@@ -55,10 +58,10 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 		  LIMIT ?`,
 		repoID, branch, excludeRunID,
 		RoundSelectionSourceUser, RoundSelectionSourceUserDeclined,
-		limit,
+		queryLimit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("get branch decision rounds: %w", err)
+		return nil, false, fmt.Errorf("get branch decision rounds: %w", err)
 	}
 	defer rows.Close()
 
@@ -74,11 +77,18 @@ func (d *DB) GetBranchDecisionRounds(repoID, branch, excludeRunID string, limit 
 			&r.DurationMS, &r.CreatedAt,
 			&entry.StepName, &entry.RunID,
 		); err != nil {
-			return nil, fmt.Errorf("scan branch decision round: %w", err)
+			return nil, false, fmt.Errorf("scan branch decision round: %w", err)
 		}
 		decisions = append(decisions, entry)
 	}
-	return decisions, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	truncated := len(decisions) > limit
+	if truncated {
+		decisions = decisions[:limit]
+	}
+	return decisions, truncated, nil
 }
 
 // SetStepRoundDeclined records that a human resolved this round's approval

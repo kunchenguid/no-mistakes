@@ -136,9 +136,12 @@ func TestGetBranchDecisionRounds_ScopesToOtherRunsOnTheSameBranch(t *testing.T) 
 	// A round with no recorded human decision must not surface.
 	seedRound(t, d, repoA.ID, "feature", types.StepTest)
 
-	got, err := d.GetBranchDecisionRounds(repoA.ID, "feature", current.ID, MaxBranchDecisionRounds)
+	got, truncated, err := d.GetBranchDecisionRounds(repoA.ID, "feature", current.ID, MaxBranchDecisionRounds)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("one matching decision must not report truncation")
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected exactly the other same-branch decision, got %d", len(got))
@@ -172,9 +175,12 @@ func TestGetBranchDecisionRounds_ExcludesAutoFixSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.GetBranchDecisionRounds(repo.ID, "feature", current.ID, MaxBranchDecisionRounds)
+	got, truncated, err := d.GetBranchDecisionRounds(repo.ID, "feature", current.ID, MaxBranchDecisionRounds)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("an empty result must not report truncation")
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected no human decisions, got %d", len(got))
@@ -198,11 +204,14 @@ func TestGetBranchDecisionRounds_BoundsTheHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.GetBranchDecisionRounds(repo.ID, "feature", current.ID, 3)
+	got, truncated, err := d.GetBranchDecisionRounds(repo.ID, "feature", current.ID, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("expected the bound to apply, got %d", len(got))
+	}
+	if !truncated {
+		t.Fatal("expected older matching decisions to report truncation")
 	}
 }
