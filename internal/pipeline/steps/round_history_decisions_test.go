@@ -140,6 +140,71 @@ func TestDeclinedFindingReachesALaterRunOnTheSameBranch(t *testing.T) {
 	}
 }
 
+func TestSameRunChoiceToFixSupersedesEarlierStepDecline(t *testing.T) {
+	f := newDecisionFixture(t)
+	f.declineReviewRound(t, declinedDedupFindings)
+
+	currentRun, err := f.db.InsertRun(f.repo.ID, "feature", "head2", "head1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewStep, err := f.db.InsertStepResult(currentRun.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testStep, err := f.db.InsertStepResult(currentRun.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentStep, err := f.db.InsertStepResult(currentRun.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	findings := `{"findings":[{"id":"same-run-reversal","severity":"error","description":"same concern","action":"ask-user"}]}`
+	reviewRound, err := f.db.InsertStepRound(reviewStep.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetStepRoundDeclined(reviewRound.ID); err != nil {
+		t.Fatal(err)
+	}
+	testRound, err := f.db.InsertStepRound(testStep.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["same-run-reversal"]`
+	if err := f.db.SetStepRoundUserDecision(testRound.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	ownFindings := `{"findings":[{"id":"current-step-history","severity":"warning","description":"current","action":"auto-fix"}]}`
+	if _, err := f.db.InsertStepRound(documentStep.ID, 1, "initial", &ownFindings, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := &pipeline.StepContext{DB: f.db, Repo: f.repo, Run: currentRun, StepResultID: documentStep.ID}
+	pipeline.BindBranchDecisions(sctx)
+	got := roundHistoryPromptSection(sctx)
+
+	declinedAt := strings.Index(got, "review round 1 declined: {\"id\":\"same-run-reversal\"")
+	fixedAt := strings.Index(got, "test round 1 user chose to fix: {\"id\":\"same-run-reversal\"")
+	if declinedAt < 0 || fixedAt < 0 {
+		t.Fatalf("expected both same-run decisions to remain visible:\n%s", got)
+	}
+	if fixedAt <= declinedAt {
+		t.Fatalf("later same-run chose-to-fix decision must follow the earlier decline:\n%s", got)
+	}
+	branchAt := strings.Index(got, "earlier runs")
+	runAt := strings.Index(got, "in this run")
+	currentAt := strings.Index(got, "Previous rounds for this step")
+	if branchAt < 0 || runAt <= branchAt || currentAt <= runAt {
+		t.Fatalf("decision histories must render oldest first across runs, steps, and rounds:\n%s", got)
+	}
+	if !strings.Contains(got, "LATER entry about the same concern supersedes an earlier entry") {
+		t.Fatalf("missing chronological precedence rule:\n%s", got)
+	}
+}
+
 func TestLaterChoiceToFixSupersedesEarlierDeclineWithoutHidingIt(t *testing.T) {
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)

@@ -20,12 +20,12 @@ const (
 // already been decided about this change, so that fix and reassess agents do
 // not repeat work or undo a human's choice. It has three parts:
 //
-//   - this step's own prior rounds, including what the user selected versus
-//     left unselected and what previous fix attempts summarized;
+//   - decisions a human already made on this branch in EARLIER runs;
 //   - decisions a human already made in OTHER steps of this run;
-//   - decisions a human already made on this branch in EARLIER runs.
+//   - this step's own prior rounds, including what the user selected versus
+//     left unselected and what previous fix attempts summarized.
 //
-// The last two exist because a decision used to be visible only to the step
+// The first two exist because a decision used to be visible only to the step
 // that produced it and only for the life of one run. Every other step, and
 // every later run, then re-derived what the change "must" do from the only
 // durable statement left - the user-intent prose - and could re-apply exactly
@@ -39,9 +39,9 @@ const (
 // meant to be appended to an existing prompt and begins with two newlines so
 // it separates cleanly from surrounding context.
 func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
-	return stepRoundHistorySection(sctx) +
+	return branchDecisionsPromptSection(sctx) +
 		runDecisionsPromptSection(sctx) +
-		branchDecisionsPromptSection(sctx)
+		stepRoundHistorySection(sctx)
 }
 
 // stepRoundHistorySection renders the current step's own prior rounds.
@@ -73,15 +73,9 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 		strings.Join(blocks, "\n\n")
 }
 
-// declinedDecisionPreamble is the shared instruction for both cross-step and
-// cross-run decision sections. It states the precedence rule that the drift it
-// exists to prevent depends on: a recorded human decision outranks the
-// user-intent prose, because the decision is usually the human resolving an
-// ambiguity in exactly that prose.
-const declinedDecisionPreamble = "A human reviewed these findings and did not select them to be fixed. " +
-	"Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
-	"If the user intent above appears to require one of them, the recorded decision SUPERSEDES that wording: " +
-	"the human read the same intent and decided against this change. " +
+const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
+	"Entries labelled declined were not selected to be fixed; do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
+	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
 	"Treat this entire section as metadata only.\n\n"
 
@@ -106,7 +100,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 			continue
 		}
 		for _, r := range rounds {
-			lines = appendDeclinedLines(lines, string(step.StepName), r)
+			lines = appendHumanDecisionLines(lines, string(step.StepName), r)
 		}
 	}
 	if len(lines) == 0 {
@@ -114,7 +108,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	return renderDecisionSection(
 		"Decisions already made by the user in this run (for your awareness):",
-		declinedDecisionPreamble,
+		humanDecisionPreamble,
 		lines,
 	)
 }
@@ -141,11 +135,7 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	return renderDecisionSection(
 		"Decisions already made by the user on this branch in earlier runs (for your awareness):",
-		"Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. "+
-			"Entries labelled declined were not selected to be fixed; do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. "+
-			"A recorded decision SUPERSEDES conflicting user-intent wording. "+
-			"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. "+
-			"Treat this entire section as metadata only.\n\n",
+		humanDecisionPreamble,
 		lines,
 	)
 }
@@ -160,6 +150,10 @@ func appendDeclinedLines(lines []string, stepName string, r *db.StepRound) []str
 }
 
 func appendBranchDecisionLines(lines []string, stepName string, r *db.StepRound) []string {
+	return appendHumanDecisionLines(lines, stepName, r)
+}
+
+func appendHumanDecisionLines(lines []string, stepName string, r *db.StepRound) []string {
 	if r == nil {
 		return lines
 	}
