@@ -620,6 +620,52 @@ func TestCommitAgentFixes_PersistsUncertifiedRangeForReview(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_BypassesMissingLegacyHuskyRuntime(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+
+	hooksDir := filepath.Join(dir, ".husky")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/usr/bin/env sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".husky/pre-commit")
+	gitCmd(t, dir, "commit", "-m", "add legacy Husky hook")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "core.hooksPath", ".husky")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(opts.CWD, "agent-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"apply review fix"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	if _, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{FallbackSummary: "apply review fix"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "agent-fix.txt" {
+		t.Fatalf("committed files = %q, want agent-fix.txt", got)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("expected clean worktree after correction commit, got %q", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sctx.Run.HeadSHA {
+		t.Fatalf("HEAD = %q, want recorded correction commit %q", got, sctx.Run.HeadSHA)
+	}
+	if _, err := os.Stat(filepath.Join(hooksDir, "_", "husky.sh")); !os.IsNotExist(err) {
+		t.Fatalf("legacy Husky runtime unexpectedly exists: %v", err)
+	}
+}
+
 func TestCommitAgentFixes_LintDoesNotPersistUncertifiedRange(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

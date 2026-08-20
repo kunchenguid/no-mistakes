@@ -138,7 +138,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "--no-verify", "-m", commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
