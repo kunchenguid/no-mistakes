@@ -39,10 +39,10 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		}
 	}
 
-	// Commit any uncommitted changes from agent fixes. Test evidence is
-	// deliberately not among them: it is collected outside the worktree and
-	// published to the orphan evidence branch (internal/evidence), so no
-	// artifact ever enters the pushed branch or the default branch's history.
+	// Commit any uncommitted changes from pipeline agents or the formatter. Test
+	// evidence is deliberately not among them: it is collected outside the
+	// worktree and published to the orphan evidence branch (internal/evidence),
+	// so no artifact ever enters the pushed branch or the default branch's history.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")

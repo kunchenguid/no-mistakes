@@ -121,7 +121,7 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // hook verification bypassed, and is the single owner of that bypass.
 //
 // A correction commit is machine-authored: the pipeline records the change its
-// own fix agents or its own formatter produced, inside the throwaway run
+// own agents or its own formatter produced, inside the throwaway run
 // worktree. That worktree is freshly carved from the bare gate repo, so tracked
 // hooks that depend on generated untracked runtime files cannot run there - the
 // canonical case is a repository whose shared config sets core.hooksPath=.husky

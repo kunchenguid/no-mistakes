@@ -746,6 +746,63 @@ func TestCommitAgentFixes_BypassesLegacyHuskyPrepareCommitMsgHook(t *testing.T) 
 	}
 }
 
+func TestCommitAgentFixes_BypassesCompleteCommitHookFamilyOnlyForCorrection(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+
+	hooksDir := filepath.Join(dir, ".husky")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookLog := filepath.Join(dir, "hook-family.log")
+	hookNames := []string{"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"}
+	for _, hookName := range hookNames {
+		body := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q >> hook-family.log\n", hookName)
+		if err := os.WriteFile(filepath.Join(hooksDir, hookName), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", ".husky")
+	gitCmd(t, dir, "commit", "-m", "add commit hook family")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "core.hooksPath", ".husky")
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	if err := commitAgentFixes(sctx, types.StepTest, "apply test fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(hookLog); !os.IsNotExist(err) {
+		t.Fatalf("pipeline correction commit ran repository hooks: %v", err)
+	}
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "agent-fix.txt" {
+		t.Fatalf("committed files = %q, want agent-fix.txt", got)
+	}
+
+	if got := gitCmd(t, dir, "config", "--get", "core.hooksPath"); got != ".husky" {
+		t.Fatalf("core.hooksPath = %q, want the repository's own .husky", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user-change.txt"), []byte("user change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), dir, "add", "user-change.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git.Run(context.Background(), dir, "commit", "-m", "user-authored commit"); err != nil {
+		t.Fatalf("hook-verified commit failed: %v\n%s", err, out)
+	}
+	gotHookLog, err := os.ReadFile(hookLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHookLog := strings.Join(hookNames, "\n") + "\n"
+	if string(gotHookLog) != wantHookLog {
+		t.Fatalf("hook family execution = %q, want %q", gotHookLog, wantHookLog)
+	}
+}
+
 func TestCommitAgentFixes_LintDoesNotPersistUncertifiedRange(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
