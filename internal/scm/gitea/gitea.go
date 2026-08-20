@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -122,7 +123,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	var items []giteaPRListItem
 	if err := json.Unmarshal(trimmed, &items); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("tea pulls list: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
 	base = strings.TrimSpace(base)
 	for _, item := range items {
@@ -323,44 +324,63 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if len(runs) == 0 {
 		return nil, nil
 	}
-	run := mostRecentRun(runs)
-	jobs, err := h.runJobs(ctx, run.ID)
+	_, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, view.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
 	if len(jobs) == 0 {
 		return nil, nil
 	}
-	// CI has not caught up with the latest push yet: the most recent run on
-	// this branch belongs to an older commit than the PR's current head. That
-	// stale run's checks must not be attributed to the new commit - it could
-	// misreport an all-green old commit as the current one's verdict.
-	if view.HeadSHA != "" && !anyJobMatchesHeadSHA(jobs, view.HeadSHA) {
-		return nil, nil
-	}
 	return jobsToChecks(jobs), nil
 }
 
-// mostRecentRun selects the run with the highest numeric ID rather than
-// trusting `tea actions runs list`'s array order. Gitea assigns run IDs
-// monotonically, but the list order is not documented as newest-first, and a
-// branch can have more than one run sharing the same head_sha (e.g. a manual
-// UI re-run) - trusting order alone could silently read a stale run's
-// checks. A run whose ID does not parse as an integer sorts last so it can
-// never mask a numerically comparable run.
-func mostRecentRun(runs []giteaRunSummary) giteaRunSummary {
-	best := runs[0]
-	bestID, bestOK := parseGiteaRunID(best.ID)
-	for _, run := range runs[1:] {
-		id, ok := parseGiteaRunID(run.ID)
-		if !ok {
-			continue
+// runsByIDDesc orders runs by highest numeric ID first rather than trusting
+// `tea actions runs list`'s array order, which is not documented as
+// newest-first. A run whose ID does not parse as an integer sorts last so it
+// can never mask a numerically comparable run.
+func runsByIDDesc(runs []giteaRunSummary) []giteaRunSummary {
+	ordered := make([]giteaRunSummary, len(runs))
+	copy(ordered, runs)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		idI, okI := parseGiteaRunID(ordered[i].ID)
+		idJ, okJ := parseGiteaRunID(ordered[j].ID)
+		if okI && okJ {
+			return idI > idJ
 		}
-		if !bestOK || id > bestID {
-			best, bestID, bestOK = run, id, true
+		return okI && !okJ
+	})
+	return ordered
+}
+
+// runJobsMatchingHeadSHA finds the run (and its jobs) whose jobs belong to
+// headSHA, searching candidate runs from highest ID to lowest. A branch can
+// have more than one run - e.g. a manual re-run of an older commit can land a
+// higher run ID than a newer commit's own run - so trusting the highest-ID
+// run alone (or list order) could silently attribute a stale or unrelated
+// commit's checks/logs to the PR's current head, or miss a matching lower-ID
+// run entirely. When headSHA is empty there is nothing to match against, so
+// only the highest-ID run is considered, preserving prior best-effort
+// behavior.
+func (h *Host) runJobsMatchingHeadSHA(ctx context.Context, runs []giteaRunSummary, headSHA string) (giteaRunSummary, []giteaJob, error) {
+	ordered := runsByIDDesc(runs)
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
+		run := ordered[0]
+		jobs, err := h.runJobs(ctx, run.ID)
+		return run, jobs, err
+	}
+	for _, run := range ordered {
+		jobs, err := h.runJobs(ctx, run.ID)
+		if err != nil {
+			return giteaRunSummary{}, nil, err
+		}
+		if anyJobMatchesHeadSHA(jobs, headSHA) {
+			return run, jobs, nil
 		}
 	}
-	return best
+	// No run yet matches the PR's current head commit: CI has not caught up
+	// with the latest push, or only stale/unrelated runs exist so far.
+	return giteaRunSummary{}, nil, nil
 }
 
 func parseGiteaRunID(id string) (int64, bool) {
@@ -393,7 +413,7 @@ func jobsToChecks(jobs []giteaJob) []scm.Check {
 	return checks
 }
 
-func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _ string, failingNames []string) (string, error) {
+func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, failingNames []string) (string, error) {
 	if len(failingNames) == 0 {
 		return "", nil
 	}
@@ -405,9 +425,12 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 	if err != nil || len(runs) == 0 {
 		return "", nil
 	}
-	run := mostRecentRun(runs)
-	jobs, err := h.runJobs(ctx, run.ID)
-	if err != nil {
+	matchSHA := strings.TrimSpace(headSHA)
+	if matchSHA == "" {
+		matchSHA = view.HeadSHA
+	}
+	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA)
+	if err != nil || run.ID == "" {
 		return "", nil
 	}
 	jobID := findFailedGiteaJobID(jobs, failingNames)

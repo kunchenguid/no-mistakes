@@ -205,6 +205,28 @@ func TestFindPRReturnsNilWhenNoneOpen(t *testing.T) {
 	}
 }
 
+func TestFindPRReturnsErrorOnMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	// A decoding failure on nonempty output must surface as an error, not be
+	// swallowed into a "not found" result: otherwise the PR step reads a
+	// provider response failure as an absent PR and attempts a duplicate
+	// create, or reports a misleading creation error.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls list --repo owner/repo --login work --fields index,title,state,url,head,base --output json": {
+			stdout: `[{"index":"7","title":"mine"`,
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	pr, err := host.FindPR(context.Background(), "feature/x", "main")
+	if err == nil {
+		t.Fatalf("FindPR() error = nil, want error for malformed JSON output; pr = %+v", pr)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil PR alongside the error", pr)
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
@@ -507,6 +529,39 @@ func TestGetChecksSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t *testing.T)
 	}
 }
 
+func TestGetChecksSearchesPastAHigherIDRunForAnotherCommit(t *testing.T) {
+	t.Parallel()
+
+	// Run 25 has a higher ID than run 10 but belongs to a different commit
+	// (e.g. a manual re-run of an older push landed after the PR's real head
+	// commit triggered run 10). Selecting the highest-ID run alone would find
+	// no match for the PR's current head SHA and wrongly report no checks;
+	// the matching lower-ID run must still be found.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
+			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"success","head_sha":"zzz999"}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("GetChecks() = %+v, want run 10's failing check (the run matching the PR head SHA)", checks)
+	}
+}
+
 func TestFetchFailedCheckLogsStripsHeaderAndTargetsFailedJob(t *testing.T) {
 	t.Parallel()
 
@@ -559,6 +614,41 @@ func TestFetchFailedCheckLogsSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t 
 	}
 	if logs != "exit status 1\nJob 'build' failed" {
 		t.Fatalf("FetchFailedCheckLogs() = %q, want stripped log body from the higher-ID run", logs)
+	}
+}
+
+func TestFetchFailedCheckLogsSearchesPastAHigherIDRunForAnotherCommit(t *testing.T) {
+	t.Parallel()
+
+	// Same trap as TestGetChecksSearchesPastAHigherIDRunForAnotherCommit: run
+	// 25 (higher ID) belongs to a different commit than the run's head SHA,
+	// so logs must come from run 10, the run that actually matches - never
+	// another commit's same-named job logs sent to the auto-fix agent.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
+			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"failure","head_sha":"zzz999"}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
+		},
+		"tea actions runs logs 10 --job 10 --repo owner/repo --login work": {
+			stdout: "Logs for job 10:\n---\nexit status 1\nJob 'build' failed\n",
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []string{"build"})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckLogs() error = %v", err)
+	}
+	if logs != "exit status 1\nJob 'build' failed" {
+		t.Fatalf("FetchFailedCheckLogs() = %q, want stripped log body from run 10 (the run matching the head SHA)", logs)
 	}
 }
 
