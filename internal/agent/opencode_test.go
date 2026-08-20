@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -518,5 +519,93 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 	}
 	if strings.Contains(msg, "Now I need to find the failing test") {
 		t.Errorf("error must not embed the reasoning prose snippet, got %q", msg)
+	}
+}
+
+func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *testing.T) {
+	var sessions atomic.Int32
+	var nativeFormatSeen atomic.Bool
+	var fallbackFormatSeen atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode native request: %v", err)
+			}
+			_, hasFormat := body["format"]
+			nativeFormatSeen.Store(hasFormat)
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"tool_choice 'required' is incompatible with thinking enabled"}}}}`)
+
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode fallback request: %v", err)
+			}
+			_, hasFormat := body["format"]
+			fallbackFormatSeen.Store(hasFormat)
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":\"all good\"}"}]}`)
+
+		case (r.URL.Path == "/session/s1" || r.URL.Path == "/session/s2") && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(result.Output); got != `{"summary":"all good"}` {
+		t.Fatalf("output = %s", got)
+	}
+	if !nativeFormatSeen.Load() {
+		t.Error("first request did not use native json_schema format")
+	}
+	if fallbackFormatSeen.Load() {
+		t.Error("fallback request unexpectedly used native json_schema format")
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want 2", got)
+	}
+}
+
+func TestThinkingToolChoiceConflictClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "deepseek", text: `tool_choice 'required' is incompatible with thinking enabled`, want: true},
+		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
+		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
+		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
+		{name: "unrelated provider failure", text: `provider does not support this model`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isThinkingToolChoiceConflictText(tt.text); got != tt.want {
+				t.Fatalf("isThinkingToolChoiceConflictText(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+		})
 	}
 }

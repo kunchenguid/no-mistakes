@@ -2,10 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 )
+
+var errOpencodeThinkingToolChoiceConflict = errors.New("opencode provider rejects required tool choice while thinking is enabled")
 
 // opencodeAgent starts a persistent HTTP server via `opencode serve`
 // and sends requests via REST with SSE streaming.
@@ -40,6 +44,23 @@ func (a *opencodeAgent) recoverTransientRetry(label string) {
 }
 
 func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	result, err := a.runOnceWithFormat(ctx, opts, true)
+	if err == nil || len(opts.JSONSchema) == 0 || !errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
+		return result, err
+	}
+
+	// OpenCode implements json_schema output as a required StructuredOutput
+	// tool call. Some thinking-enabled models reject that combination. Retry
+	// once without the native format, while keeping the schema in the prompt
+	// and validating the returned JSON against it in finalizeTextResult.
+	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)
+	}
+	return result, nil
+}
+
+func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nativeFormat bool) (*Result, error) {
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD, opts.Env)
 	if err != nil {
@@ -78,7 +99,11 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	defer msgCancel()
 	msgCh := make(chan messageResult, 1)
 	go func() {
-		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, opts.JSONSchema)
+		schema := opts.JSONSchema
+		if !nativeFormat {
+			schema = nil
+		}
+		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, schema)
 		msgCh <- messageResult{resp: resp, err: err}
 	}()
 
@@ -97,6 +122,9 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		select {
 		case mr := <-msgCh:
 			if mr.err != nil {
+				if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
+					return nil, fmt.Errorf("%w: %v", errOpencodeThinkingToolChoiceConflict, mr.err)
+				}
 				return nil, fmt.Errorf("opencode message: %w", mr.err)
 			}
 		default:
@@ -108,6 +136,9 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// Wait for message response
 	mr := <-msgCh
 	if mr.err != nil {
+		if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
+			return nil, fmt.Errorf("%w: %v", errOpencodeThinkingToolChoiceConflict, mr.err)
+		}
 		return nil, fmt.Errorf("opencode message: %w", mr.err)
 	}
 
@@ -175,6 +206,10 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		}, nil
 	}
 
+	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isThinkingToolChoiceConflict(mr.resp.Info.Error) {
+		return nil, errOpencodeThinkingToolChoiceConflict
+	}
+
 	// Surface opencode's StructuredOutputError directly. When the model
 	// fails to call the StructuredOutput tool after the configured retries,
 	// opencode sets info.error.name = "StructuredOutputError" and the
@@ -196,6 +231,26 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		outputText = state.lastText
 	}
 	return finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
+}
+
+func isThinkingToolChoiceConflict(e *opencodeMessageError) bool {
+	if e == nil {
+		return false
+	}
+	raw, err := json.Marshal(e)
+	return err == nil && isThinkingToolChoiceConflictText(string(raw))
+}
+
+func isThinkingToolChoiceConflictText(text string) bool {
+	lower := strings.ToLower(text)
+	toolChoice := strings.Contains(lower, "tool_choice") || strings.Contains(lower, "tool choice")
+	thinking := strings.Contains(lower, "thinking") || strings.Contains(lower, "reasoning")
+	forced := strings.Contains(lower, "required") || strings.Contains(lower, "forced")
+	incompatible := strings.Contains(lower, "incompatible") ||
+		strings.Contains(lower, "cannot") ||
+		strings.Contains(lower, "can't") ||
+		strings.Contains(lower, "not support")
+	return toolChoice && forced && thinking && incompatible
 }
 
 func (a *opencodeAgent) Close() error {

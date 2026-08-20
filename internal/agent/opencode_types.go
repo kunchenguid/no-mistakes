@@ -14,12 +14,13 @@ type opencodeStreamEventPayload struct {
 }
 
 type opencodeStreamEventProperties struct {
-	SessionID string             `json:"sessionID,omitempty"`
-	Field     string             `json:"field,omitempty"`
-	Delta     string             `json:"delta,omitempty"`
-	PartID    string             `json:"partID,omitempty"`
-	Part      *opencodeEventPart `json:"part,omitempty"`
-	Info      *opencodeEventInfo `json:"info,omitempty"`
+	SessionID string                `json:"sessionID,omitempty"`
+	Field     string                `json:"field,omitempty"`
+	Delta     string                `json:"delta,omitempty"`
+	PartID    string                `json:"partID,omitempty"`
+	Part      *opencodeEventPart    `json:"part,omitempty"`
+	Info      *opencodeEventInfo    `json:"info,omitempty"`
+	Error     *opencodeMessageError `json:"error,omitempty"`
 }
 
 type opencodeEventPart struct {
@@ -82,6 +83,10 @@ type opencodeMessageError struct {
 	Name    string `json:"name"`
 	Message string `json:"message,omitempty"`
 	Retries *int   `json:"retries,omitempty"`
+	// Data carries provider-specific APIError details. In particular, OpenCode
+	// nests downstream errors such as the thinking/tool_choice incompatibility
+	// here rather than in Message.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // IsStructuredOutput reports whether the error is opencode's
