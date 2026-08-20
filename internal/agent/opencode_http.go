@@ -21,7 +21,17 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string, env []stri
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
 	args := buildOpencodeServeArgs(a.extraArgs, port)
-	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port, env)
+	serveEnv := env
+	if a.disableProjectSettings {
+		// OPENCODE_DISABLE_PROJECT_CONFIG is opencode's internal (undocumented)
+		// flag to skip project-level AGENTS.md/CLAUDE.md/CONTEXT.md discovery. It
+		// is read from process.env by `opencode serve`; sessions inherit it.
+		// Appended here (gitSafeEnv keeps the last occurrence) so an inherited
+		// value cannot re-enable project settings. User-level global config
+		// (~/.config/opencode/AGENTS.md) still loads, which is correct.
+		serveEnv = append(append([]string(nil), env...), "OPENCODE_DISABLE_PROJECT_CONFIG=1")
+	}
+	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port, serveEnv)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
 	}

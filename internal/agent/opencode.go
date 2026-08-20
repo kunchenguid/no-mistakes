@@ -12,11 +12,25 @@ import (
 type opencodeAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// ensureServer exports OPENCODE_DISABLE_PROJECT_CONFIG on the serve process
+	// so sessions skip the target checkout's AGENTS.md/CLAUDE.md/CONTEXT.md.
+	disableProjectSettings bool
+	mu                     sync.Mutex
+	server                 *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }
+
+// NeutralizesGateInstructions reports whether opencode is currently launched
+// with the target repo's project agent-instruction files suppressed. It is
+// meaningful only under the opt-out (disableProjectSettings): the gate only
+// consults it when the repo opted out. The suppression is an environment
+// variable on the serve process, so there is no operator argv surface that can
+// defeat it and no extraArgs inspection is needed (pi-style).
+func (a *opencodeAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *opencodeAgent) ReportsAgentAttempts() bool { return true }
 
