@@ -293,11 +293,17 @@ func TestPartiallySelectedRoundCarriesItsDeclinedHalfAcrossSteps(t *testing.T) {
 	}
 
 	got := roundHistoryPromptSection(f.testStepContext())
-	if !strings.Contains(got, "keep-a") {
-		t.Fatalf("the declined half did not cross the step boundary:\n%s", got)
+	if !strings.Contains(got, `review round 1 declined: {"id":"keep-a"`) {
+		t.Fatalf("the declined half did not cross the step boundary under the declined label:\n%s", got)
 	}
-	if strings.Contains(got, "fix-me") {
-		t.Fatalf("a finding the user chose to FIX must not be reported as declined:\n%s", got)
+	if strings.Contains(got, `review round 1 user chose to fix: {"id":"keep-a"`) {
+		t.Fatalf("a declined finding must not be reported as chosen to fix:\n%s", got)
+	}
+	if !strings.Contains(got, `review round 1 user chose to fix: {"id":"fix-me"`) {
+		t.Fatalf("the selected half did not cross the step boundary under the chose-to-fix label:\n%s", got)
+	}
+	if strings.Contains(got, `review round 1 declined: {"id":"fix-me"`) {
+		t.Fatalf("a finding the user chose to fix must not be reported as declined:\n%s", got)
 	}
 }
 
