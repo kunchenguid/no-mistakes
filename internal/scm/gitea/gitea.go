@@ -117,9 +117,17 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err != nil {
 		return nil, fmt.Errorf("tea pulls list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
+	if strings.TrimSpace(string(out)) == "" {
+		return nil, nil
+	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		// Nonempty output with no JSON delimiter is not a legitimate "no
+		// open PRs" response (an empty list still prints "[]", which has a
+		// delimiter) - it must surface as an error rather than be read as
+		// absence, which would otherwise cause the PR step to attempt a
+		// duplicate create or report a misleading creation failure.
+		return nil, fmt.Errorf("tea pulls list: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
 	var items []giteaPRListItem
 	if err := json.Unmarshal(trimmed, &items); err != nil {

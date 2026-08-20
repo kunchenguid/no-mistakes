@@ -227,6 +227,28 @@ func TestFindPRReturnsErrorOnMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestFindPRReturnsErrorOnNonJSONOutput(t *testing.T) {
+	t.Parallel()
+
+	// Nonempty stdout that exits 0 but contains neither '[' nor '{' (e.g. a
+	// stray banner or plain-text notice) must also surface as an error, not
+	// be swallowed into a "not found" result via bytesTrimToJSON's empty
+	// return - the same duplicate-create hazard as malformed JSON.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls list --repo owner/repo --login work --fields index,title,state,url,head,base --output json": {
+			stdout: "a new release of tea is available\n",
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	pr, err := host.FindPR(context.Background(), "feature/x", "main")
+	if err == nil {
+		t.Fatalf("FindPR() error = nil, want error for non-JSON output; pr = %+v", pr)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil PR alongside the error", pr)
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
