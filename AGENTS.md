@@ -34,6 +34,16 @@ Safest local verification sequence after non-trivial changes:
 - The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.
 - The comments in `internal/scm/gitlab/gitlab.go` own the full rationale for each trap; extend them there when you hit new glab version drift.
 
+**Gitea Backend (`internal/scm/gitea`)**
+
+- Verified empirically against a real `tea 0.15.1` CLI and a real Gitea 1.27.2 + Actions instance (Docker/Podman `gitea/gitea` + `gitea/act_runner`), not guessed from docs. `tea whoami` has no `--login` flag (unlike every other tea entity subcommand), so `Host.Available` scopes its check through `tea api --login <name> /user` instead - the same host-scoping purpose as glab's `--hostname`.
+- `tea actions runs view --jobs --output json` does NOT emit clean structured JSON: `--output json` renders the run header as plain text and only the trailing jobs array is real JSON, and that array carries `status` (queued/in_progress/completed) but no `conclusion` (success/failure/...) at the job level. Job-level pass/fail is read from the REST endpoint (`GET /repos/{owner}/{repo}/actions/runs/{run}/jobs`, which does carry `status` + `conclusion`) reached through `tea api`, which reuses tea's own stored login/token - no separate HTTP client or credential needed.
+- `tea pulls list --output json` renders every field (including `index` and `mergeable`) as a JSON *string*, while `tea pulls <idx> --output json` (single-PR view) renders the same fields with native JSON types (`index` an int, `mergeable`/`hasMerged` bools). The two response shapes are genuinely different structs in `gitea.go`; do not unify them.
+- `tea pulls create` has no `--output json` flag and echoes the PR body into its human-readable stdout, so a body containing an `http(s)://` URL can defeat a naive "first URL line" scrape. `CreatePR` re-lists the PR by head branch via `tea pulls list` for a structured result instead of parsing create's own output; scraping stdout is only a last-resort fallback.
+- tea infers "which Gitea instance" from the current directory's git remote, which the daemon's detached bare-gate repo never has, so every invocation carries `--login <name>` explicitly. The login name is resolved from tea's own `config.yml` by host (`scm.ResolveGiteaLogin`), mirroring `glabKnowsHost`/`ghKnowsHost` for detection.
+- `Capabilities().MergeableState` is declined (matching Bitbucket): Gitea's PR `mergeable` field has a documented upstream bug (go-gitea/gitea#25849) that can stick `false` after a conflict is actually resolved.
+- The comments in `internal/scm/gitea/gitea.go` own the full rationale for each trap.
+
 **Documentation**
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.

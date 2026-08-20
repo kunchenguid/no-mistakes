@@ -441,7 +441,9 @@ The standalone runner rows inspect default binary names; the `cursor` row report
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
-`doctor` checks `gh` and `az` availability. [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, and the Azure DevOps extension and PAT.
+`doctor` checks `gh` and `az` availability. [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, Gitea, and the Azure DevOps extension and PAT.
+
+`tea` stays docs-only like `glab`, `forgejo-axi`, and Bitbucket's env vars, rather than an active `doctor` check like `gh`/`az`: Gitea is almost always self-hosted, so a bare "`tea` not found" row would be a near-universal, low-value warning for the vast majority of users who have no Gitea instance at all.
 
 ## no-mistakes update
 

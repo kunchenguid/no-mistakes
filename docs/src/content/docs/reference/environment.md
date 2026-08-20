@@ -204,7 +204,7 @@ When the upstream hostname is not `github.com`, no-mistakes reads gh's configure
 
 ## `XDG_CONFIG_HOME`
 
-Config directory used to locate glab's `config.yml` for self-hosted GitLab detection and gh's `hosts.yml` for self-hosted GitHub Enterprise detection.
+Config directory used to locate glab's `config.yml` for self-hosted GitLab detection, gh's `hosts.yml` for self-hosted GitHub Enterprise detection, and tea's `config.yml` for Gitea detection.
 
 |         |             |
 | ------- | ----------- |
@@ -213,6 +213,7 @@ Config directory used to locate glab's `config.yml` for self-hosted GitLab detec
 
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
+tea has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 
 ## `NO_MISTAKES_UMAMI_HOST`
 

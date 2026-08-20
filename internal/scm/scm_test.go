@@ -9,10 +9,11 @@ import (
 )
 
 func TestDetectProvider(t *testing.T) {
-	// Point glab and gh configs at empty temp dirs so a real CLI install on the
-	// host cannot influence the substring-based assertions below.
+	// Point glab, gh, and tea configs at empty temp dirs so a real CLI install
+	// on the host cannot influence the substring-based assertions below.
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	tests := []struct {
 		url  string
@@ -45,6 +46,7 @@ func TestDetectProvider_SSHHostAlias(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	t.Setenv("FORGEJO_BASE_URL", "https://github.com")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	tests := []struct {
 		name     string
@@ -263,6 +265,7 @@ func writeGlabConfig(t *testing.T, body string) {
 func TestDetectProvider_SelfHostedGitLabViaGlabConfig(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	t.Setenv("FORGEJO_BASE_URL", "https://gitlab.example.com")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeGlabConfig(t, `hosts:
     gitlab.example.com:
         token: xxx
@@ -289,6 +292,7 @@ func TestDetectProvider_SelfHostedGitLabViaGlabConfig(t *testing.T) {
 
 func TestDetectProvider_SelfHostedGitLabViaAPIHost(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// The remote host differs from the config key but matches api_host.
 	writeGlabConfig(t, `hosts:
     git.example.com:
@@ -305,9 +309,10 @@ func TestDetectProvider_SelfHostedGitLabViaAPIHost(t *testing.T) {
 }
 
 func TestDetectProvider_GlabConfigMissingFailsClosed(t *testing.T) {
-	// Both CLI configs point at empty dirs: no config files present.
+	// All CLI configs point at empty dirs: no config files present.
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(no glab config) = %q, want %q", got, ProviderUnknown)
 	}
@@ -315,6 +320,7 @@ func TestDetectProvider_GlabConfigMissingFailsClosed(t *testing.T) {
 
 func TestDetectProvider_GlabConfigMalformedFailsClosed(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeGlabConfig(t, "this: is: not: valid: yaml: ::::\n\t- broken")
 	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(malformed glab config) = %q, want %q", got, ProviderUnknown)
@@ -335,6 +341,7 @@ func writeGhConfig(t *testing.T, body string) {
 func TestDetectProvider_GHEViaGhConfig(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("FORGEJO_BASE_URL", "https://bbgithub.dev.bloomberg.com")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeGhConfig(t, `bbgithub.dev.bloomberg.com:
     user: someuser
     oauth_token: xxx
@@ -361,6 +368,7 @@ func TestDetectProvider_GHEViaGhConfig(t *testing.T) {
 func TestDetectProvider_GhConfigMissingFailsClosed(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if got := DetectProvider("https://ghe.example.com/org/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(no gh config) = %q, want %q", got, ProviderUnknown)
 	}
@@ -368,8 +376,125 @@ func TestDetectProvider_GhConfigMissingFailsClosed(t *testing.T) {
 
 func TestDetectProvider_GhConfigMalformedFailsClosed(t *testing.T) {
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeGhConfig(t, "this: is: not: valid: yaml: ::::\n\t- broken")
 	if got := DetectProvider("https://ghe.example.com/org/repo.git"); got != ProviderUnknown {
 		t.Errorf("DetectProvider(malformed gh config) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+// writeTeaConfig writes a synthetic tea config.yml into a temp dir and points
+// XDG_CONFIG_HOME at it. The host names are placeholders only.
+func writeTeaConfig(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tea"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tea", "config.yml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+}
+
+func TestDetectProvider_SelfHostedGiteaViaTeaConfig(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	writeTeaConfig(t, `logins:
+    - name: work
+      url: https://git.example.com
+      ssh_host: git.example.com
+      user: someuser
+      token: xxx
+`)
+
+	cases := []string{
+		"https://git.example.com/group/repo.git",
+		"git@git.example.com:group/repo.git",
+		"ssh://git@git.example.com:22/group/repo.git",
+	}
+	for _, url := range cases {
+		if got := DetectProvider(url); got != ProviderGitea {
+			t.Errorf("DetectProvider(%q) = %q, want %q", url, got, ProviderGitea)
+		}
+	}
+
+	// A host not in the config still resolves to unknown.
+	if got := DetectProvider("https://other.example.org/group/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(unconfigured host) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+func TestDetectProvider_SelfHostedGiteaViaSSHHost(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	// The remote host differs from the login's url but matches ssh_host.
+	writeTeaConfig(t, `logins:
+    - name: work
+      url: https://gitea.internal:3000
+      ssh_host: git.internal
+      user: someuser
+      token: xxx
+`)
+
+	if got := DetectProvider("https://gitea.internal/group/repo.git"); got != ProviderGitea {
+		t.Errorf("DetectProvider(url host match) = %q, want %q", got, ProviderGitea)
+	}
+	if got := DetectProvider("git@git.internal:group/repo.git"); got != ProviderGitea {
+		t.Errorf("DetectProvider(ssh_host match) = %q, want %q", got, ProviderGitea)
+	}
+}
+
+func TestDetectProvider_TeaConfigMissingFailsClosed(t *testing.T) {
+	// All CLI configs point at empty dirs: no config files present.
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(no tea config) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+func TestDetectProvider_TeaConfigMalformedFailsClosed(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	writeTeaConfig(t, "this: is: not: valid: yaml: ::::\n\t- broken")
+	if got := DetectProvider("https://selfhosted.example.com/group/repo.git"); got != ProviderUnknown {
+		t.Errorf("DetectProvider(malformed tea config) = %q, want %q", got, ProviderUnknown)
+	}
+}
+
+func TestResolveGiteaLogin(t *testing.T) {
+	writeTeaConfig(t, `logins:
+    - name: work
+      url: https://gitea.internal:3000
+      ssh_host: git.internal
+      user: someuser
+      token: xxx
+    - name: personal
+      url: https://gitea.example.org
+      ssh_host: gitea.example.org
+      user: otheruser
+      token: yyy
+`)
+
+	if got := ResolveGiteaLogin("gitea.internal"); got != "work" {
+		t.Errorf("ResolveGiteaLogin(url host match) = %q, want %q", got, "work")
+	}
+	if got := ResolveGiteaLogin("git.internal"); got != "work" {
+		t.Errorf("ResolveGiteaLogin(ssh_host match) = %q, want %q", got, "work")
+	}
+	if got := ResolveGiteaLogin("gitea.example.org"); got != "personal" {
+		t.Errorf("ResolveGiteaLogin(second login) = %q, want %q", got, "personal")
+	}
+	if got := ResolveGiteaLogin("unconfigured.example.net"); got != "" {
+		t.Errorf("ResolveGiteaLogin(unconfigured host) = %q, want empty", got)
+	}
+}
+
+func TestResolveGiteaLogin_NoConfigFailsClosed(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if got := ResolveGiteaLogin("gitea.internal"); got != "" {
+		t.Errorf("ResolveGiteaLogin(no config) = %q, want empty", got)
 	}
 }

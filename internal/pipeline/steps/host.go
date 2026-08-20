@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
 	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
+	"github.com/kunchenguid/no-mistakes/internal/scm/gitea"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
@@ -122,6 +123,24 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			TokenEnv:       tokenEnv,
 			Secrets:        forgejoTokenValuesForStep(sctx),
 		}), ""
+	case scm.ProviderGitea:
+		if sctx.Repo.ForkURL != "" {
+			// Fork PR routing for Gitea is intentionally not half-wired,
+			// mirroring GitLab, Bitbucket, and Azure DevOps: cross-repository
+			// routing needs distinct source/destination handling this
+			// provider does not implement yet.
+			return nil, "fork PR routing for Gitea is not implemented"
+		}
+		host := scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL)
+		repoSlug := scm.RepoPath(sctx.Repo.UpstreamURL)
+		if repoSlug == "" {
+			return nil, "could not resolve Gitea owner/repo from the remote URL"
+		}
+		// login comes from tea's own config.yml (see scm.ResolveGiteaLogin); an
+		// empty login is tolerated here and surfaces as an actionable error
+		// from Host.Available instead of failing host construction outright.
+		login := scm.ResolveGiteaLogin(host)
+		return gitea.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, login, repoSlug), ""
 	default:
 		return nil, fmt.Sprintf("provider %s is not supported yet", provider)
 	}

@@ -1,12 +1,13 @@
 ---
 title: Provider Integration
-description: Set up GitHub, GitLab, Forgejo, Bitbucket Cloud, or Azure DevOps for PR creation and CI monitoring.
+description: Set up GitHub, GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, or Gitea for PR creation and CI monitoring.
 ---
 
-The PR and CI steps need to talk to your git host. Five hosts are supported:
-GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps
-(`dev.azure.com` and legacy `*.visualstudio.com`). Everything else
-short-circuits the PR and CI steps with `skipped`.
+The PR and CI steps need to talk to your git host. Six hosts are supported:
+GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps
+(`dev.azure.com` and legacy `*.visualstudio.com`), and Gitea (almost always
+self-hosted). Everything else short-circuits the PR and CI steps with
+`skipped`.
 
 Provider integration is optional for the local gate. You only need it for the
 steps that happen after validation: opening or updating the PR, watching hosted
@@ -25,14 +26,14 @@ What you do not get is PR automation and CI monitoring.
 
 ## What each step needs
 
-| Step | GitHub | GitLab | Forgejo | Bitbucket Cloud | Azure DevOps |
-| --- | --- | --- | --- | --- | --- |
-| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `forgejo-axi`, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` | `az` CLI + `azure-devops` extension, authenticated |
-| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | `forgejo-axi` | same env vars | `az` CLI |
-| **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI |
-| **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI |
-| **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet |
-| **[Cancelled-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** | `gh` CLI | not supported | not supported | not supported | not supported |
+| Step | GitHub | GitLab | Forgejo | Bitbucket Cloud | Azure DevOps | Gitea |
+| --- | --- | --- | --- | --- | --- | --- |
+| **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `forgejo-axi`, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` | `az` CLI + `azure-devops` extension, authenticated | `tea` CLI, authenticated |
+| **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | `forgejo-axi` | same env vars | `az` CLI | `tea` CLI |
+| **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
+| **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
+| **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet | supported |
+| **[Cancelled-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** | `gh` CLI | not supported | not supported | not supported | not supported | not supported |
 
 ## What changes when provider wiring is present
 
@@ -203,6 +204,46 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   first-class build-log command)
 - Fork PR routing (same as GitLab, Forgejo, and Bitbucket)
 
+## Gitea
+
+Gitea uses `tea`, its official CLI. Install it and log in with a token:
+
+```sh
+# see https://gitea.com/gitea/tea for install options (Homebrew, packages, or a release binary)
+
+tea logins add --url https://your-gitea.example.com --token your-token --name your-instance
+```
+
+Create a token from **Settings → Applications → Manage Access Tokens** on your Gitea instance, with read/write `repository` and `issue` scopes.
+
+Verify:
+
+```sh
+tea logins list
+```
+
+**What you get:**
+
+- PR creation and update (`tea pulls create`/`edit`)
+- CI status polling through Gitea Actions until the PR is merged or closed, or the configured `ci_timeout` idle window elapses. Job-level pass/fail comes from Gitea's Actions REST API (`GET .../actions/runs/{run}/jobs`), reached through `tea api` (which reuses the same stored login/token, so no separate HTTP client or credential is needed) - `tea`'s own `--output json` on `actions runs view --jobs` reports each job's run/queued/completed status but not its pass/fail conclusion.
+- Failed job log fetching (`tea actions runs logs`) for the CI auto-fix step
+
+**What you don't get (yet):**
+
+- PR mergeability polling and merge-conflict auto-fix. Gitea's PR `mergeable` field has a documented upstream reliability bug ([go-gitea/gitea#25849](https://github.com/go-gitea/gitea/issues/25849)) that can stick `false` after a conflict is actually resolved, so no-mistakes declines the capability rather than trust it - the same posture as Bitbucket Cloud.
+- Fork PR routing (same as GitLab, Bitbucket Cloud, and Azure DevOps)
+- [Cancelled-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)
+
+Gitea Actions shipped in Gitea 1.19 (2023); older instances have no Actions API to poll. As with any repository with no CI, declare `no_ci: true` on the trusted default branch so the CI step does not wait for checks that will never appear - see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
+
+### Self-hosted Gitea
+
+Nearly every real Gitea instance is self-hosted at an arbitrary hostname with no `gitea` marker in it at all, so detection cannot use a substring match the way `gitlab.com`/`github.com` do. Instead, `no-mistakes` consults `tea`'s own login config (`config.yml`, under `$XDG_CONFIG_HOME/tea` or `~/.config/tea`) and treats the upstream as Gitea if its host matches a configured login's `url` or `ssh_host`.
+
+Running `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` is enough to make detection succeed; if `tea` has no login for the host, detection fails closed and the upstream is treated as unsupported.
+
+Because `tea` infers "which instance" from the current directory's git remote - context the daemon's detached worktree does not have - every `tea` invocation `no-mistakes` makes carries `--login <name>` explicitly, resolved from the matched login's name at request time.
+
 ## Self-hosted GitHub/GitLab
 
 Self-hosted GitHub Enterprise and self-hosted GitLab instances work through the same `gh` and `glab` CLIs. Authenticate the CLI against your instance (`gh auth login --hostname your-ghe.example.com`, `glab auth login --hostname gitlab.example.com`) and `no-mistakes` will route through the CLI as usual.
@@ -233,7 +274,7 @@ If `ssh -G` is unavailable or the alias does not resolve, detection falls back t
 
 ## Unsupported hosts
 
-If your upstream isn't GitHub, GitLab, Forgejo, Bitbucket Cloud, or Azure DevOps:
+If your upstream isn't GitHub, GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, or Gitea:
 
 - The **push** step still runs - `no-mistakes` pushes through git to the configured target like any other remote.
 - The **PR** step marks itself as `skipped`.
@@ -247,7 +288,7 @@ Everything before push (rebase, review, test, document, lint) still works regard
 no-mistakes doctor
 ```
 
-`doctor` checks `gh` and `az` availability. For GitLab, confirm `glab` is installed and authenticated. For Forgejo, run `FORGEJO_BASE_URL=<host> forgejo-axi status --json` from the daemon's environment. For Bitbucket Cloud, confirm the two env vars are set in that environment. For Azure DevOps, confirm the `azure-devops` extension is installed (`az extension show --name azure-devops`) and a PAT is available.
+`doctor` checks `gh` and `az` availability. For GitLab, confirm `glab` is installed and authenticated. For Forgejo, run `FORGEJO_BASE_URL=<host> forgejo-axi status --json` from the daemon's environment. For Bitbucket Cloud, confirm the two env vars are set in that environment. For Azure DevOps, confirm the `azure-devops` extension is installed (`az extension show --name azure-devops`) and a PAT is available. For Gitea, confirm `tea` is installed and has a login configured for your instance (`tea logins list`).
 
 :::note
 When the daemon runs through a managed service (launchd, systemd, Task Scheduler), it reloads environment from your login shell on macOS and Linux so CLI auth and provider token variables are picked up, and it augments `PATH` with common binary directories. If credentials or PATH-derived tools are missing, check `~/.no-mistakes/logs/daemon.log` for a login-shell environment resolution warning. On Windows it reuses the current process environment.

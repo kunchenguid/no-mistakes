@@ -113,13 +113,14 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	// Symlink each agent name to the same fake binary. Native agents dispatch
 	// by argv[0] basename; opencode does the same. Symlinks (not
-	// copies) keep the build cheap on subsequent tests. The `gh` symlink
-	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
-	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
-	// the fakeagent stub instead of a real, authenticated system gh.
-	// antigravity gets a second link under its probed binary name "agy"
-	// (internal/cli/doctor.go searches that name, not the agent name).
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh"} {
+	// copies) keep the build cheap on subsequent tests. The `gh` and `tea`
+	// symlinks are a guard rail: BinDir is prepended to PATH, so any stray
+	// invocation of gh/tea by the pipeline (e.g. PR/CI on a misconfigured
+	// origin) hits the fakeagent stub instead of a real, authenticated
+	// system CLI. antigravity gets a second link under its probed binary
+	// name "agy" (internal/cli/doctor.go searches that name, not the agent
+	// name).
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh", "tea"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)

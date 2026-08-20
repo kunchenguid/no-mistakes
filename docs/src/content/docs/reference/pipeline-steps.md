@@ -213,9 +213,9 @@ Creates or updates a pull request.
 
 **Skipped when:**
 - The branch is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch) (the repository's forge default branch, or the trusted `pr.base_branch` when configured)
-- The upstream host is not GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), or Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)
-- The provider CLI (`gh`, `glab`, or `forgejo-axi`) is not installed for GitHub, GitLab, or Forgejo
-- The provider CLI is not authenticated for GitHub, GitLab, or Forgejo
+- The upstream host is not GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), or Gitea
+- The provider CLI (`gh`, `glab`, `forgejo-axi`, or `tea`) is not installed for GitHub, GitLab, Forgejo, or Gitea
+- The provider CLI is not authenticated for GitHub, GitLab, Forgejo, or Gitea
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
 - The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited non-GitHub repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
@@ -224,7 +224,7 @@ Creates or updates a pull request.
 - Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate
 - If one exists, updates it. If not, creates a new one against the configured base branch.
 - If existing-PR discovery fails or its provider response cannot be decoded and validated as a PR listing for the configured repository, stops instead of treating the result as no PR and creating a duplicate.
-- Uses `gh` for GitHub, `glab` for GitLab, `forgejo-axi` for Forgejo, the Bitbucket API for Bitbucket Cloud, and `az` for Azure DevOps
+- Uses `gh` for GitHub, `glab` for GitLab, `forgejo-axi` for Forgejo, `tea` for Gitea, the Bitbucket API for Bitbucket Cloud, and `az` for Azure DevOps
 - For GitHub fork routing, keeps `gh --repo` pointed at the parent repository from `origin`, checks existing PRs with the bare branch name, filters matching PRs by head owner, and creates PRs with `--head <fork-owner>:<branch>`
 - PR title: agent-generated from the final branch delta with user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level. If drafting fails, the fallback uses the neutral title `chore: update pull request` rather than inferring scope from earlier commits.
 - Bounds the PR-drafting agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): an expired budget cancels the agent and uses that same fallback rather than leaving the run active indefinitely; a late successful title after the deadline is not used
@@ -264,13 +264,14 @@ The comment is intentionally data only. It does not declare any step required, p
 
 Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling apply to GitHub, GitLab, Forgejo, and Azure DevOps.
 
-**Active for GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)**.
+**Active for GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), and Gitea**.
 
 - GitHub requires `gh` CLI, installed and authenticated.
 - GitLab requires `glab` CLI, installed and authenticated.
 - Forgejo requires `forgejo-axi`, installed and authenticated.
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 - Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.
+- Gitea requires `tea` CLI, installed with a login configured for the instance.
 
 **Behavior:**
 
