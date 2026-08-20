@@ -87,7 +87,7 @@ func newAxiRunCmd() *cobra.Command {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
-						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
+						"Valid steps: intent, rebase, build, review, test, document, lint, push, pr, ci")
 				}
 				return runAxiRun(cmd, autoYes, skipSteps, intent)
 			})

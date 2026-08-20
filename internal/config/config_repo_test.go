@@ -22,6 +22,9 @@ func TestLoadRepo_Defaults(t *testing.T) {
 	if cfg.Commands.Lint != "" {
 		t.Errorf("lint = %q, want empty", cfg.Commands.Lint)
 	}
+	if cfg.Commands.Build != "" {
+		t.Errorf("build = %q, want empty", cfg.Commands.Build)
+	}
 	if cfg.Commands.Test != "" {
 		t.Errorf("test = %q, want empty", cfg.Commands.Test)
 	}
@@ -39,6 +42,7 @@ func TestLoadRepo_FromFile(t *testing.T) {
 	data := `agent: codex
 commands:
   lint: "golangci-lint run ./..."
+  build: "go build ./..."
   test: "go test -race ./..."
   format: "gofmt -w ."
 ignore_patterns:
@@ -58,6 +62,9 @@ ignore_patterns:
 	}
 	if cfg.Commands.Lint != "golangci-lint run ./..." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)
+	}
+	if cfg.Commands.Build != "go build ./..." {
+		t.Errorf("build = %q", cfg.Commands.Build)
 	}
 	if cfg.Commands.Test != "go test -race ./..." {
 		t.Errorf("test = %q", cfg.Commands.Test)

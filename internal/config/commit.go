@@ -51,6 +51,7 @@ func validateCommitRaw(raw CommitRaw) error {
 	}
 	for _, step := range []types.StepName{
 		types.StepReview,
+		types.StepBuild,
 		types.StepTest,
 		types.StepDocument,
 		types.StepLint,

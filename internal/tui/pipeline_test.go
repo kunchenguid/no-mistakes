@@ -36,6 +36,7 @@ func TestStepLabel(t *testing.T) {
 		label string
 	}{
 		{types.StepReview, "Review"},
+		{types.StepBuild, "Build"},
 		{types.StepTest, "Test"},
 		{types.StepLint, "Lint"},
 		{types.StepDocument, "Document"},

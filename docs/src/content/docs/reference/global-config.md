@@ -51,6 +51,7 @@ worktree_roots:
 auto_fix:
   rebase: 3
   review: 0
+  build: 3
   test: 3
   document: 3
   lint: 3
@@ -363,6 +364,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | ------------------- | ----- | ------- | ------------------------------------------------------------------------------------------- |
 | `auto_fix.rebase`   | `int` | `3`     | Rebase conflict auto-fix attempts                                                           |
 | `auto_fix.review`   | `int` | `0`     | Review finding auto-fix attempts                                                            |
+| `auto_fix.build`    | `int` | `3`     | Build failure auto-fix attempts                                                             |
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
@@ -394,7 +396,7 @@ The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_
 
 ### commit.fix_message
 
-Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
+Template for the subject of commits created by the shared Build, Review, Test, Document, and Lint fix path.
 
 | | |
 | --- | --- |
@@ -405,7 +407,7 @@ The template supports literal text and two Go-style placeholders:
 
 | Variable | Value |
 | --- | --- |
-| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
+| `{{.Step}}` | Pipeline step name, such as `build`, `review`, `test`, `document`, or `lint` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
@@ -422,7 +424,7 @@ A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_
 ### intent
 
 Transcript-based user-intent extraction settings.
-When enabled and no intent was supplied directly for the run, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to rebase, review, test, document, lint, CI auto-fix, and PR prompts, and include it in generated PR descriptions.
+When enabled and no intent was supplied directly for the run, no-mistakes can read recent local agent transcripts, match the session that produced the change, summarize the author's intent, pass that summary to rebase, build, review, test, document, lint, CI auto-fix, and PR prompts, and include it in generated PR descriptions.
 
 |      |          |
 | ---- | -------- |

@@ -25,6 +25,7 @@ agent: codex
 
 commands:
   lint: "golangci-lint run ./..."
+  build: "go build ./..."
   # Targeted local validation only - not a full-repo CI-parity suite.
   test: "go test ./internal/cli -run '^TestDoctor' -count=1"
   format: "gofmt -w ."
@@ -65,6 +66,7 @@ pr:
 auto_fix:
   rebase: 3
   review: 3
+  build: 3
   test: 3
   document: 3
   lint: 5
@@ -125,7 +127,7 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{build,test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
 | --- | --- |
@@ -196,6 +198,19 @@ Because this setting controls where a PR lands, a pushed branch cannot redirect 
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
 The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
 An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
+
+### commands.build
+
+Explicit build or compile command. Run once in the managed worktree via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | Empty (the agent discovers and runs the relevant build) |
+
+When set, the Build step runs this exact command and completes without invoking an agent when it succeeds. A non-zero exit records bounded compiler output and enters the normal fix/approval loop.
+Build verification must leave `HEAD` and all tracked or unignored worktree content unchanged; write generated output only to ignored paths or clean it before the command exits. A side effect fails the Build step even when the command also exits non-zero.
+When empty, the configured run-wide agent inspects the repository and runs the smallest relevant build or compile commands directly. It must report the exact commands it ran; if it cannot identify or execute a meaningful build, Build pauses for a decision instead of passing. Configure this field on the trusted default branch when the repository needs a deterministic baseline command.
 
 ### commands.test
 
@@ -348,6 +363,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | --- | --- | --- |
 | `auto_fix.rebase` | `int` | Inherits from global (default `3`) |
 | `auto_fix.review` | `int` | Inherits from global (default `0`) |
+| `auto_fix.build` | `int` | Inherits from global (default `3`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
 | `auto_fix.document` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
@@ -419,7 +435,7 @@ Override the auto-fix commit subject template for this repository.
 
 The value follows the [global `commit.fix_message` template syntax and validation rules](/no-mistakes/reference/global-config/#commitfix_message).
 That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
-The setting applies to the Review, Test, Document, and Lint fix path, not commits created by the Rebase, CI, or Push steps.
+The setting applies to the Build, Review, Test, Document, and Lint fix path, not commits created by the Rebase, CI, or Push steps.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
 

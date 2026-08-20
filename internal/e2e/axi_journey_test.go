@@ -580,7 +580,6 @@ func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
 	if _, ancErr := h.runGit(context.Background(), gateDir, "merge-base", "--is-ancestor", preserved, submitted); ancErr == nil {
 		t.Fatalf("preserved head %s is an ancestor of submitted %s", preserved, submitted)
 	}
-
 	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
 	if err != nil {
 		t.Fatalf("rebase-superset recovery escalated instead of returning custody: %v\n%s", err, recoverOut)

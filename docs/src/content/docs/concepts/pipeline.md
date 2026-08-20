@@ -1,18 +1,31 @@
 ---
 title: Pipeline
-description: The nine steps that run on every gated push.
+description: The ten steps that run on every gated push.
 ---
 
 The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
 
 ```
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → build → review → test → document → lint → push → pr → ci
 ```
 
 ```mermaid
 flowchart LR
-  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
-  review -. findings .-> action["Approve / fix / skip / abort"]
+  intent["Intent"]
+  rebase["Rebase"]
+  build["Build"]
+  review["Review"]
+  test["Test"]
+  document["Document"]
+  lint["Lint"]
+  push["Push"]
+  pr["PR"]
+  ci["CI"]
+  action["Approve / fix / skip / abort"]
+
+  intent --> rebase --> build --> review --> test --> document --> lint --> push --> pr --> ci
+  build -. findings .-> action
+  review -. findings .-> action
   test -. findings .-> action
   document -. findings .-> action
   lint -. findings .-> action
@@ -26,24 +39,25 @@ This page is the overview. For each step's exact behavior, defaults, skip rules,
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - the branch was checked against fresh remote upstream and the pushed-branch target first
-- review, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
+- build, review, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
 - the human stayed in control when a step needed judgment
 - the final branch update was guarded against discarding unincorporated commits already on the push target
 - push, PR creation, and CI monitoring only happened after the local gate was satisfied
 
-## The nine steps
+## The ten steps
 
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
 | 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
-| 3 | **Review** | AI code review of your diff | `0` (requires approval) |
-| 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
-| 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
-| 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
-| 7 | **Push** | Safely push the validated branch to the configured target | n/a |
-| 8 | **PR** | Create or update the pull request | n/a |
-| 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
+| 3 | **Build** | Run the configured build command or have the agent discover and run the relevant build | `3` |
+| 4 | **Review** | AI code review of your diff | `0` (requires approval) |
+| 5 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
+| 6 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
+| 7 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
+| 8 | **Push** | Safely push the validated branch to the configured target | n/a |
+| 9 | **PR** | Create or update the pull request | n/a |
+| 10 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
 
 ## Why these steps, in this order
 
@@ -51,6 +65,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
   It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
   If there's no diff left after the rebase, the pipeline skips the rest.
+- **Build before review and test** so the pipeline proves the rebased tree compiles and Review certifies any build repairs.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
   A later run's initial review also receives fix-round provenance for any uncertified pipeline-authored commits left on the branch when a previous run's re-review did not complete.
 - **Document after test** so docs are updated against code that's known to work.
@@ -77,7 +92,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
-- Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
+- Set explicit `commands.build`, `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
 - Store test evidence locally by default or, on a supported provider, opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
@@ -89,7 +104,7 @@ See [Configuration](/no-mistakes/guides/configuration/).
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
+- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all ten.
 - Adding new steps.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.

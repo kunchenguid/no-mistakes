@@ -28,6 +28,8 @@ const (
 var trustedRepoConfigWithPathInstructions = fmt.Sprintf(`ignore_patterns:
   - 'vendor/**'
 allow_repo_commands: true
+commands:
+  build: true
 review:
   path_instructions:
     - path: 'internal/scm/**'
@@ -46,6 +48,8 @@ var pushedRepoConfigAttemptingToSteerReview = fmt.Sprintf(`ignore_patterns:
   - 'vendor/**'
   - 'internal/scm/**'
 allow_repo_commands: true
+commands:
+  build: true
 review:
   path_instructions:
     - path: 'internal/scm/**'

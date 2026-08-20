@@ -304,7 +304,7 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 	}
 
 	plain := stripANSI(renderPipelineView(model.run, model.steps, 80, 0, 40))
-	for _, label := range []string{"Intent", "Rebase", "Review", "Test", "Document", "Lint", "Push", "PR", "CI"} {
+	for _, label := range []string{"Intent", "Rebase", "Build", "Review", "Test", "Document", "Lint", "Push", "PR", "CI"} {
 		if !strings.Contains(plain, label) {
 			t.Fatalf("expected pipeline view to contain %q, got:\n%s", label, plain)
 		}

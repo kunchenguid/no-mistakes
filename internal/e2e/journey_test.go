@@ -28,7 +28,7 @@ import (
 //     hook installation)
 //   - `git push no-mistakes <branch>` (real git transport, hook fires,
 //     daemon receives push notification)
-//   - the eight pipeline steps in sequence (rebase, review, test,
+//   - the ten pipeline steps in sequence (intent, rebase, build, review, test,
 //     document, lint, push, pr, ci)
 //   - real subprocess invocations of the agent binary, parsed by
 //     no-mistakes' real agent package
@@ -54,6 +54,29 @@ func TestUserJourney(t *testing.T) {
 	}
 }
 
+func TestUnconfiguredBuildSelectsAndExecutesAgentCommand(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	if out, err := h.Run("init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	const branch = "unconfigured-build"
+	h.CommitChange(branch, ".no-mistakes.yaml", "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: true\n", "remove configured build command")
+	h.CommitChange(branch, "build.go", "package buildprobe\n", "add buildable production code")
+	h.PushToGate(branch)
+	run := h.WaitForRun(branch, 60*time.Second)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("unconfigured Build run status = %s, error=%v", run.Status, deref(run.Error))
+	}
+	buildStep, ok := findStep(run.Steps, types.StepBuild)
+	if !ok || buildStep.Status != types.StepStatusCompleted {
+		t.Fatalf("unconfigured Build step = %+v, want completed", buildStep)
+	}
+	if invs := h.AgentInvocations(); !sawPromptContainingAll(invs, "smallest relevant build commands yourself", "branch: "+branch) {
+		t.Fatalf("unconfigured Build did not invoke the agent-driven build:\n%s", summarisePrompts(invs))
+	}
+}
+
 func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
 	out, err := h.Run("init")
@@ -66,7 +89,7 @@ func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 	if err := os.WriteFile(failingCommand, []byte(script), 0o755); err != nil {
 		t.Fatalf("write control-byte test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-control-byte-test-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-control-byte-test-e2e\n  lint: true\n"
 	h.CommitChange("control-byte-test-gate", ".no-mistakes.yaml", config, "configure control-byte test failure")
 	h.PushToGate("control-byte-test-gate")
 	run := waitForStepStatus(t, h, "control-byte-test-gate", types.StepTest, types.StepStatusAwaitingApproval, 60*time.Second)
@@ -298,6 +321,7 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertFailingTestCommandRun(t, h)
 	assertFailingLintCommandRun(t, h)
 	if agentName == "claude" {
+		assertBuildCommandAutoFixRun(t, h)
 		assertDifferentBranchDoesNotCancelActiveRun(t, h)
 		assertInvalidConfigPushCleansWorktree(t, h)
 		assertDocumentMissingFindingsRun(t, h)
@@ -357,6 +381,21 @@ func cleanReviewScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
+  - match: "Fix the unresolved build or compile failure with the smallest root-cause change.\n\nContext:\n- branch: build-command-autofix"
+    text: "fixed build input"
+    edits:
+      - path: "build-input.txt"
+        old: "broken"
+        new: "fixed"
+    structured:
+      summary: "fix build input"
+  - match: "Build or compile this repository's changed production code. Discover and run the smallest relevant build commands yourself."
+    text: "ran focused build command"
+    structured:
+      findings: []
+      summary: "production build passed"
+      tested:
+        - "go build ./..."
   - match: "report only what you could not resolve.\n\nContext:\n- branch: document-agent-error"
     text: "document agent error"
     edits:
@@ -1030,7 +1069,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("empty-after-rebase run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
-	for _, stepName := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI} {
+	for _, stepName := range []types.StepName{types.StepBuild, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step in empty-after-rebase run", stepName)
@@ -1064,7 +1103,7 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 		t.Fatalf("write e2e formatter: %v", err)
 	}
 	h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"nm-format-e2e\"\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  format: \"nm-format-e2e\"\n"
 	originalHead := h.CommitChange("agent-edits", ".no-mistakes.yaml", config, "configure formatter")
 	h.PushToGate("agent-edits")
 	run := h.WaitForRun("agent-edits", 60*time.Second)
@@ -1111,7 +1150,7 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 func assertFormatFailureWarningRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("format-fails", "format-fails.txt", "feature with failing formatter\n", "add format-fails branch")
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"exit 1\"\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  format: \"exit 1\"\n"
 	h.CommitChange("format-fails", ".no-mistakes.yaml", config, "configure failing formatter")
 	h.PushToGate("format-fails")
 	run := h.WaitForRun("format-fails", 60*time.Second)
@@ -1173,7 +1212,7 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 	if strings.TrimSpace(string(mergeBase)) != strings.TrimSpace(string(mainSHA)) {
 		t.Fatalf("non-empty-after-rebase merge-base = %s, want upstream main %s", strings.TrimSpace(string(mergeBase)), strings.TrimSpace(string(mainSHA)))
 	}
-	for _, stepName := range []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
+	for _, stepName := range []types.StepName{types.StepRebase, types.StepBuild, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush} {
 		step, ok := findStep(run.Steps, stepName)
 		if !ok {
 			t.Fatalf("expected %s step in non-empty-after-rebase run", stepName)
@@ -1332,7 +1371,7 @@ func assertConfiguredCommandRun(t *testing.T, h *Harness) {
 	if err := os.WriteFile(lintCommand, []byte("#!/bin/sh\nprintf lint-ran > \""+lintCommandLog+"\"\n"), 0o755); err != nil {
 		t.Fatalf("write e2e lint command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-e2e\n  lint: nm-lint-e2e\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-test-e2e\n  lint: nm-lint-e2e\n"
 	head := h.CommitChange("configured-commands", ".no-mistakes.yaml", config, "enable configured checks")
 	h.PushToGate("configured-commands")
 	run := h.WaitForRun("configured-commands", 60*time.Second)
@@ -1633,7 +1672,7 @@ func assertReviewExistingBranchUsesMergeBaseScope(t *testing.T, h *Harness) {
 
 func assertExplicitAttachUsesRepoWideActiveRun(t *testing.T, h *Harness) {
 	t.Helper()
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-explicit-attach-slow-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-explicit-attach-slow-e2e\n  lint: true\n"
 	slowCommand := filepath.Join(h.BinDir, "nm-explicit-attach-slow-e2e")
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
 		t.Fatalf("write explicit attach slow test command: %v", err)
@@ -2001,7 +2040,7 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-superseded-test-e2e\n  lint: true\n"
 	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
 	h.PushToGate("superseded-run")
 	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
@@ -2029,11 +2068,11 @@ func assertDifferentBranchDoesNotCancelActiveRun(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
 		t.Fatalf("write different-branch slow test command: %v", err)
 	}
-	slowConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-different-branch-slow-e2e\n  lint: true\n"
+	slowConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-different-branch-slow-e2e\n  lint: true\n"
 	h.CommitChange("different-branch-slow", ".no-mistakes.yaml", slowConfig, "configure different-branch slow test")
 	h.PushToGate("different-branch-slow")
 	slowRun := waitForStepStatus(t, h, "different-branch-slow", types.StepTest, types.StepStatusRunning, 60*time.Second)
-	fastConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: true\n"
+	fastConfig := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: true\n  lint: true\n"
 	h.CommitChange("different-branch-fast", ".no-mistakes.yaml", fastConfig, "configure different-branch fast checks")
 	h.PushToGate("different-branch-fast")
 	fastRun := h.WaitForRun("different-branch-fast", 60*time.Second)
@@ -2060,7 +2099,7 @@ func assertCancelRunStopsActivePipeline(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
 		t.Fatalf("write cancel slow test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-cancel-test-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-cancel-test-e2e\n  lint: true\n"
 	h.CommitChange("cancel-run", ".no-mistakes.yaml", config, "configure cancel slow test")
 	h.PushToGate("cancel-run")
 	run := waitForStepStatus(t, h, "cancel-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
@@ -2081,7 +2120,7 @@ func assertAbortByRunIDReapsRunFromOutsideWorktree(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
 		t.Fatalf("write abort-by-id slow test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-abort-byid-test-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-abort-byid-test-e2e\n  lint: true\n"
 	h.CommitChange("abort-by-id", ".no-mistakes.yaml", config, "configure abort-by-id slow test")
 	h.PushToGate("abort-by-id")
 	run := waitForStepStatus(t, h, "abort-by-id", types.StepTest, types.StepStatusRunning, 60*time.Second)
@@ -2117,7 +2156,7 @@ func assertRespondNoWaitingStepRun(t *testing.T, h *Harness) {
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 2\n"), 0o755); err != nil {
 		t.Fatalf("write slow e2e test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-slow-test-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-slow-test-e2e\n  lint: true\n"
 	h.CommitChange("respond-no-waiting", ".no-mistakes.yaml", config, "configure slow test command")
 	h.PushToGate("respond-no-waiting")
 	run := waitForStepStatus(t, h, "respond-no-waiting", types.StepTest, types.StepStatusRunning, 60*time.Second)
@@ -2140,7 +2179,7 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if err := os.WriteFile(failingCommand, []byte("#!/bin/sh\necho configured test failed\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("write failing e2e test command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-test-fails-e2e\n  lint: true\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: nm-test-fails-e2e\n  lint: true\n"
 	h.CommitChange("failing-test-command", ".no-mistakes.yaml", config, "configure failing test command")
 	h.PushToGate("failing-test-command")
 	run := waitForStepStatus(t, h, "failing-test-command", types.StepTest, types.StepStatusAwaitingApproval, 60*time.Second)
@@ -2201,13 +2240,40 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	}
 }
 
+func assertBuildCommandAutoFixRun(t *testing.T, h *Harness) {
+	t.Helper()
+	command := filepath.Join(h.BinDir, "nm-build-autofix-e2e")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nif grep -q '^fixed$' build-input.txt; then exit 0; fi\necho build input is broken\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write auto-fix e2e build command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: nm-build-autofix-e2e\n  test: true\n  lint: true\n"
+	h.CommitChange("build-command-autofix", "build-input.txt", "broken\n", "add broken build input")
+	h.CommitChange("build-command-autofix", ".no-mistakes.yaml", config, "configure auto-fix build command")
+	h.PushToGate("build-command-autofix")
+	completed := h.WaitForRun("build-command-autofix", 60*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("build auto-fix run status = %s, error=%v", completed.Status, completed.Error)
+	}
+	buildStep, ok := findStep(completed.Steps, types.StepBuild)
+	if !ok || buildStep.Status != types.StepStatusCompleted || len(buildStep.FixSummaries) == 0 || buildStep.FixSummaries[0] != "fix build input" {
+		t.Fatalf("auto-fixed build step = %+v", buildStep)
+	}
+	content, err := h.runGit(context.Background(), h.UpstreamDir, "show", "refs/heads/build-command-autofix:build-input.txt")
+	if err != nil {
+		t.Fatalf("read auto-fixed build input: %v\n%s", err, content)
+	}
+	if strings.TrimSpace(string(content)) != "fixed" {
+		t.Fatalf("auto-fixed build input = %q, want fixed", content)
+	}
+}
+
 func assertFailingLintCommandRun(t *testing.T, h *Harness) {
 	t.Helper()
 	failingCommand := filepath.Join(h.BinDir, "nm-lint-fails-e2e")
 	if err := os.WriteFile(failingCommand, []byte("#!/bin/sh\necho configured lint failed\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("write failing e2e lint command: %v", err)
 	}
-	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: true\n  lint: nm-lint-fails-e2e\n"
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  build: true\n  test: true\n  lint: nm-lint-fails-e2e\n"
 	h.CommitChange("failing-lint-command", ".no-mistakes.yaml", config, "configure failing lint command")
 	h.PushToGate("failing-lint-command")
 	run := waitForStepStatus(t, h, "failing-lint-command", types.StepLint, types.StepStatusAwaitingApproval, 60*time.Second)
@@ -2677,7 +2743,7 @@ func assertPushedHead(t *testing.T, runHeadSHA, upstreamHeadSHA string) {
 
 func assertPipelineStepsInOrder(t *testing.T, steps []ipc.StepResultInfo) {
 	t.Helper()
-	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
+	expected := []types.StepName{types.StepIntent, types.StepRebase, types.StepBuild, types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR, types.StepCI}
 	if len(steps) != len(expected) {
 		t.Fatalf("pipeline recorded %d steps, want %d", len(steps), len(expected))
 	}

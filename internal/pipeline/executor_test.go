@@ -10,6 +10,45 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestMatchRecoveredStepsPreservesLegacyRunWithoutBuild(t *testing.T) {
+	current := []Step{
+		newPassStep(types.StepIntent),
+		newPassStep(types.StepRebase),
+		newPassStep(types.StepBuild),
+		newPassStep(types.StepReview),
+		newPassStep(types.StepTest),
+		newPassStep(types.StepDocument),
+		newPassStep(types.StepLint),
+		newPassStep(types.StepPush),
+		newPassStep(types.StepPR),
+		newPassStep(types.StepCI),
+	}
+	legacy := []types.StepName{
+		types.StepIntent,
+		types.StepRebase,
+		types.StepReview,
+		types.StepTest,
+		types.StepDocument,
+		types.StepLint,
+		types.StepPush,
+		types.StepPR,
+		types.StepCI,
+	}
+
+	matched, err := MatchRecoveredSteps(legacy, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != len(legacy) {
+		t.Fatalf("matched steps = %d, want %d", len(matched), len(legacy))
+	}
+	for i, step := range matched {
+		if step.Name() != legacy[i] {
+			t.Fatalf("matched[%d] = %s, want %s", i, step.Name(), legacy[i])
+		}
+	}
+}
+
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader
 // happy-path orchestration (DB persistence, run/step status transitions,

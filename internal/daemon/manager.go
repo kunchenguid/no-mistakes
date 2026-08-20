@@ -157,6 +157,18 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}
 
 	execSteps := m.steps()
+	recordedSteps, err := m.db.GetStepsByRun(run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get recovered step plan: %w", err)
+	}
+	recordedNames := make([]types.StepName, len(recordedSteps))
+	for i, step := range recordedSteps {
+		recordedNames[i] = step.StepName
+	}
+	execSteps, err = pipeline.MatchRecoveredSteps(recordedNames, execSteps)
+	if err != nil {
+		return nil, err
+	}
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}

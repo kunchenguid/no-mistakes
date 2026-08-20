@@ -51,10 +51,10 @@ Full documentation: <https://kunchenguid.github.io/no-mistakes/>
         your branch
             │  git push no-mistakes
             ▼
-   ┌────────────────────────────────────────────────┐
-   │  disposable worktree — your work stays put     │
-   │  review → test → docs → lint → push → PR → CI  │
-   └────────────────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────┐
+   │  disposable worktree — your work stays put             │
+   │  build → review → test → docs → lint → push → PR → CI  │
+   └────────────────────────────────────────────────────────┘
             │  every check green
             ▼
         clean PR, opened for you

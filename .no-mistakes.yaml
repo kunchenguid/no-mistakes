@@ -5,9 +5,10 @@
 # remote CI (`go test -race ./...` in .github/workflows/ci.yml) and remains
 # mandatory before a PR is ready. See docs/src/content/docs/reference/repo-config.md
 # (commands.test) and docs/src/content/docs/reference/pipeline-steps.md (Test).
-# Lint and format stay explicit so those gates stay deterministic.
+# Build, lint, and format stay explicit so those gates stay deterministic.
 
 commands:
+  build: "make build"
   lint: "make lint"
   format: "gofmt -w ."
 

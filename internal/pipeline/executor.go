@@ -265,6 +265,39 @@ type recoveredGate struct {
 	reviewedHeadSHA string
 }
 
+// MatchRecoveredSteps binds persisted step records to the executable step
+// plan. Runs created before Build became a first-class stage keep their
+// original plan; recovery never inserts Build into an in-flight historical run.
+func MatchRecoveredSteps(recorded []types.StepName, current []Step) ([]Step, error) {
+	if stepPlanMatches(recorded, current) {
+		return current, nil
+	}
+	if len(recorded) == len(current)-1 {
+		legacy := make([]Step, 0, len(recorded))
+		for _, step := range current {
+			if step.Name() != types.StepBuild {
+				legacy = append(legacy, step)
+			}
+		}
+		if stepPlanMatches(recorded, legacy) {
+			return legacy, nil
+		}
+	}
+	return nil, fmt.Errorf("recovered run step plan does not match the current or pre-build pipeline")
+}
+
+func stepPlanMatches(recorded []types.StepName, steps []Step) bool {
+	if len(recorded) != len(steps) {
+		return false
+	}
+	for i, step := range steps {
+		if recorded[i] != step.Name() {
+			return false
+		}
+	}
+	return true
+}
+
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil {
 		return fmt.Errorf("run is not a recoverable parked run")

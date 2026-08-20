@@ -246,6 +246,10 @@ func (h *Harness) initGitRepos() {
 	if err := os.WriteFile(readme, []byte("# e2e\n"), 0o644); err != nil {
 		h.t.Fatalf("write readme: %v", err)
 	}
+	goMod := filepath.Join(h.WorkDir, "go.mod")
+	if err := os.WriteFile(goMod, []byte("module example.com/no-mistakes-e2e\n\ngo 1.25\n"), 0o644); err != nil {
+		h.t.Fatalf("write go.mod: %v", err)
+	}
 	// allow_repo_commands is committed to the trusted default-branch copy of
 	// .no-mistakes.yaml (never global, never the pushed branch). The harness
 	// models a trusted single-developer environment where the same user owns
@@ -256,11 +260,11 @@ func (h *Harness) initGitRepos() {
 		allowRepoCommands = *h.allowRepoCommands
 	}
 	repoConfig := filepath.Join(h.WorkDir, ".no-mistakes.yaml")
-	repoCfg := fmt.Sprintf("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: %t\n", allowRepoCommands)
+	repoCfg := fmt.Sprintf("ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\nallow_repo_commands: %t\ncommands:\n  build: true\n", allowRepoCommands)
 	if err := os.WriteFile(repoConfig, []byte(repoCfg), 0o644); err != nil {
 		h.t.Fatalf("write repo config: %v", err)
 	}
-	mustGit(h.WorkDir, "add", "README.md", ".no-mistakes.yaml")
+	mustGit(h.WorkDir, "add", "README.md", "go.mod", ".no-mistakes.yaml")
 	mustGit(h.WorkDir, "commit", "-m", "initial commit")
 	mustGit(h.WorkDir, "remote", "add", "origin", h.UpstreamDir)
 	mustGit(h.WorkDir, "push", "-u", "origin", "main")

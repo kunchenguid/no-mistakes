@@ -78,6 +78,8 @@ func TestConfigurableFixCommitMessageJourney(t *testing.T) {
   - '*.generated.go'
   - 'vendor/**'
 allow_repo_commands: true
+commands:
+  build: true
 commit:
   fix_message: 'fix(repo-{{.Step}}): {{.Summary}}'
 `, "configure pipeline fix commits")

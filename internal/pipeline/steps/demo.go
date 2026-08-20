@@ -43,6 +43,12 @@ func DemoSteps() []pipeline.Step {
 			log:        "Fetching origin...\nChecking default branch...\nRebasing onto origin/main...\nAlready up to date.",
 		},
 		&demoStep{
+			name:       types.StepBuild,
+			delay:      3 * time.Second,
+			displayDur: 14 * time.Second,
+			log:        "Running: go build ./...\n\nBuild completed successfully.",
+		},
+		&demoStep{
 			name:          types.StepReview,
 			delay:         5 * time.Second,
 			fixDelay:      4 * time.Second,

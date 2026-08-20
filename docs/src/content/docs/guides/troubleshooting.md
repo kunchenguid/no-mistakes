@@ -109,7 +109,7 @@ no-mistakes update
 Symptom: `doctor` reports that gate validation is unavailable, or a run fails before its first pipeline step because no runnable agent was found.
 
 This is a hard failure, not a degraded validation mode.
-`no-mistakes` will not silently skip review, test evidence, documentation, or agent-assisted lint and report the remaining work as a passed gate.
+`no-mistakes` will not silently skip agent-assisted build, review, test evidence, documentation, or agent-assisted lint and report the remaining work as a passed gate.
 
 ### Check PATH
 

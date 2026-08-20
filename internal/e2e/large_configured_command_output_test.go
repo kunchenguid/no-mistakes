@@ -46,7 +46,7 @@ exit 1
 				t.Fatalf("write large failure command: %v", err)
 			}
 
-			config := "allow_repo_commands: true\ncommands:\n  test: true\n  lint: true\n"
+			config := "allow_repo_commands: true\ncommands:\n  build: true\n  test: true\n  lint: true\n"
 			config = strings.Replace(config, "  "+tc.commandKey+": true", "  "+tc.commandKey+": "+commandName, 1)
 			h.CommitChange(tc.branch, ".no-mistakes.yaml", config, "configure large "+tc.name+" failure")
 			h.PushToGate(tc.branch)

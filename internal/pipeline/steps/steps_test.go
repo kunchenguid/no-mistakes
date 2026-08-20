@@ -47,6 +47,12 @@ func handleFakeCLI(mode string) {
 		fakeGlabHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
+	case "build-env":
+		if os.Getenv("BUILD_STEP_ENV") != "present" {
+			fmt.Fprintln(os.Stderr, "BUILD_STEP_ENV did not reach build command")
+			os.Exit(1)
+		}
+		os.Exit(0)
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":

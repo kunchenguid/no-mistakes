@@ -98,6 +98,9 @@ func TestMerge_AutoFixDefaults(t *testing.T) {
 	if cfg.AutoFix.Lint != 3 {
 		t.Errorf("lint = %d, want 3", cfg.AutoFix.Lint)
 	}
+	if cfg.AutoFix.Build != 3 {
+		t.Errorf("build = %d, want 3", cfg.AutoFix.Build)
+	}
 	if cfg.AutoFix.Test != 3 {
 		t.Errorf("test = %d, want 3", cfg.AutoFix.Test)
 	}
@@ -169,13 +172,14 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
-		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},
+		AutoFix: AutoFix{Lint: 5, Build: 6, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},
 	}
 	tests := []struct {
 		step types.StepName
 		want int
 	}{
 		{types.StepLint, 5},
+		{types.StepBuild, 6},
 		{types.StepTest, 2},
 		{types.StepReview, 0},
 		{types.StepDocument, 1},

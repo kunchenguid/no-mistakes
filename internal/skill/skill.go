@@ -22,7 +22,7 @@ const Name = "no-mistakes"
 // Description is the trigger-shaped frontmatter description: what the skill
 // does and when to use it. It is the single most important field for the
 // agent's decision to load the skill, so it leads with outcomes and keywords.
-const Description = "Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes."
+const Description = "Validate your code changes through the no-mistakes pipeline - automated build, code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes."
 
 // Markdown returns the complete SKILL.md document (YAML frontmatter plus body).
 // The output is deterministic so it can be regenerated and diff-checked. It is
@@ -51,7 +51,7 @@ const body = `
 # no-mistakes
 
 ` + "`no-mistakes`" + ` is a local gate that validates your code changes through a pipeline
-(intent, rebase, review, test, document, lint, push, PR, CI) before they reach
+(intent, rebase, build, review, test, document, lint, push, PR, CI) before they reach
 the configured push target. You drive it through the ` + "`no-mistakes axi`" + ` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
@@ -144,7 +144,7 @@ Run the pipeline and decide on its findings as they come up:
    ` + "```sh" + `
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ` + "```" + `
-   ` + "`axi run`" + ` and every ` + "`axi respond`" + ` block synchronously - the review, test,
+   ` + "`axi run`" + ` and every ` + "`axi respond`" + ` block synchronously - the build, review, test,
    and CI steps can each take **several minutes**, so a single call may not
    return for a while. That is normal; allow a long timeout and do not cancel
    or re-issue the command because it seems slow. To check progress without
@@ -178,7 +178,7 @@ Run the pipeline and decide on its findings as they come up:
    **Review auto-fix is disabled by default** (` + "`auto_fix.review: 0`" + `; a repo
    or global ` + "`auto_fix.review > 0`" + ` override re-enables it), so blocking and
    ask-user review findings park for your decision rather than being silently
-   self-fixed. (Other steps such as test and lint may auto-fix within the
+   self-fixed. (Other steps such as build, test, and lint may auto-fix within the
    pipeline and re-run before they ever gate.)
 
    Choose one response:
