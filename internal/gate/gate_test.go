@@ -1002,6 +1002,75 @@ func TestEjectCleansUpWorktrees(t *testing.T) {
 	}
 }
 
+// TestEjectCleansUpWorktreesInConfiguredRoot covers a repository whose run
+// worktrees the operator placed in a directory of their own (worktree_roots).
+// Eject removes the directories named by this repository's own run rows, and
+// nothing else: not the root, not the operator's files, and not a directory
+// that merely looks like a run worktree but belongs to no run of this
+// repository.
+func TestEjectCleansUpWorktreesInConfiguredRoot(t *testing.T) {
+	workDir := setupTestRepo(t)
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	ownRun, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	ownRunDir := filepath.Join(root, ownRun.ID)
+	// The run records where it was placed, the way startRun does; that record is
+	// what makes this directory ours to remove.
+	if err := d.SetRunWorktreeDir(ownRun.ID, ownRunDir); err != nil {
+		t.Fatalf("record placement: %v", err)
+	}
+	// A run-shaped directory this repository never created: a leftover from
+	// another tool, or from a repository that used to point here.
+	foreignRunDir := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")
+	operatorDir := filepath.Join(root, "scratch-checkout")
+	for _, dir := range []string{ownRunDir, foreignRunDir, operatorDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create dir: %v", err)
+		}
+	}
+	operatorFile := filepath.Join(root, "mise.local.toml")
+	if err := os.WriteFile(operatorFile, []byte("[tools]\n"), 0o644); err != nil {
+		t.Fatalf("write operator file: %v", err)
+	}
+	configYAML := "worktree_roots:\n  " + yamlPath(repo.WorkingPath) + ": " + yamlPath(root) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Eject(ctx, d, p, workDir); err != nil {
+		t.Fatalf("eject: %v", err)
+	}
+
+	if fileExists(ownRunDir) {
+		t.Error("expected the repository's own run worktree to be removed from the configured root")
+	}
+	for _, keep := range []string{root, foreignRunDir, operatorDir, operatorFile} {
+		if !fileExists(keep) {
+			t.Errorf("eject removed %q, which no run of this repository owned", keep)
+		}
+	}
+}
+
+// yamlPath quotes a path for YAML so a Windows drive letter is not read as a
+// mapping and its separators survive as literal backslashes.
+func yamlPath(path string) string {
+	return `"` + strings.ReplaceAll(path, `\`, `\\`) + `"`
+}
+
 func TestEjectNotInitialized(t *testing.T) {
 	work := filepath.Join(resolveSymlinks(t, t.TempDir()), "work")
 	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {

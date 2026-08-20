@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,6 +96,35 @@ func TestRoundHistoryPromptSection_RendersFindingsSelectionsAndFixSummary(t *tes
 		if !strings.Contains(got, w) {
 			t.Errorf("expected history to contain %q, got:\n%s", w, got)
 		}
+	}
+}
+
+func TestStepRoundHistorySectionBoundsDeclinedFindings(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+
+	items := make([]string, 0, maxDecisionLinesPerSection+5)
+	for i := 0; i < maxDecisionLinesPerSection+5; i++ {
+		items = append(items, fmt.Sprintf(`{"id":"finding-%02d","severity":"error","description":"%s","action":"ask-user"}`,
+			i, strings.Repeat("x", maxDecisionLineBytes)))
+	}
+	findings := `{"findings":[` + strings.Join(items, ",") + `]}`
+	round, err := sctx.DB.InsertStepRound(stepID, 1, "initial", &findings, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepRoundDeclined(round.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got := stepRoundHistorySection(sctx)
+	if len(got) > maxDecisionSectionBytes {
+		t.Fatalf("current-step history is %d bytes, want at most %d", len(got), maxDecisionSectionBytes)
+	}
+	if !strings.Contains(got, "omitted for length") || !strings.Contains(got, "truncated for length") {
+		t.Fatalf("bounded current-step history must disclose omissions and truncation:\n%s", got)
+	}
+	if !strings.Contains(got, "user_chose_to_ignore:") || !strings.Contains(got, "finding-44") {
+		t.Fatalf("bounded current-step history must retain the newest finding and its decision label:\n%s", got)
 	}
 }
 

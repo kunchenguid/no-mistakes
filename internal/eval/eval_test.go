@@ -383,6 +383,10 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 	if err := store.registerCase(c); err != nil {
 		t.Fatal(err)
 	}
+	labelsBefore, err := os.ReadFile(filepath.Join(caseDir, "labels.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.persistEvaluation(c, Evaluation{
 		ID:           "evaluation",
 		SessionID:    "session",
@@ -396,11 +400,21 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
+	queued, err := store.pendingFindingCounts()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if labels.QueuedCandidateFindings != 3 {
-		t.Fatalf("queued candidate findings = %d, want 3", labels.QueuedCandidateFindings)
+	if queued[c.ID] != 3 {
+		t.Fatalf("queued candidate findings = %d, want 3 derived from the recorded evaluation", queued[c.ID])
+	}
+	// The queue derives from the evaluations table; a replay must never rewrite
+	// the case's labels, or re-running the same eval run double-appends state.
+	labelsAfter, err := os.ReadFile(filepath.Join(caseDir, "labels.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(labelsBefore) != string(labelsAfter) {
+		t.Fatalf("persisting an evaluation rewrote labels.json:\nbefore: %s\nafter: %s", labelsBefore, labelsAfter)
 	}
 }
 
@@ -539,12 +553,9 @@ func TestCaptureDoesNotLabelSkipOrApproveAsPass(t *testing.T) {
 			if len(cases) != 1 || cases[0].Labels.HasGold() {
 				t.Fatalf("captured labels = %#v, want unlabeled pending gold", cases)
 			}
-			output := RenderSets(mustInspectSets(t, store))
-			if !strings.Contains(output, "0 with finding-level gold") || !strings.Contains(output, "1 unlabeled / pending") {
-				t.Fatalf("sets output = %q, want unlabeled / pending, not a pass", output)
-			}
-			if strings.Contains(output, "park") || strings.Contains(output, "verdict") || strings.Contains(output, ", pass ") {
-				t.Fatalf("sets output still uses park/pass accuracy language: %q", output)
+			all := mustSetSummary(t, store, "all")
+			if all.GoldCases != 0 || all.Unlabeled != 1 {
+				t.Fatalf("all summary = %#v, want unlabeled / pending, not a pass", all)
 			}
 		})
 	}

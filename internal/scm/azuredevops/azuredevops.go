@@ -315,7 +315,8 @@ func (h *Host) toPR(raw *azPR) *scm.PR {
 		id = strconv.Itoa(raw.PullRequestID)
 	}
 	return &scm.PR{
-		Number: id,
-		URL:    webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		Number:     id,
+		URL:        webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		BaseBranch: strings.TrimPrefix(strings.TrimSpace(raw.TargetRefName), "refs/heads/"),
 	}
 }

@@ -39,7 +39,7 @@ func run(argv []string) int {
 	case "claude":
 		return runClaude(args, os.Stdin, scenario)
 	case "codex":
-		return runCodex(args, scenario)
+		return runCodex(args, os.Stdin, scenario)
 	case "opencode":
 		return runOpencode(args, scenario)
 	case "gh":

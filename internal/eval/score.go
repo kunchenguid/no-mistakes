@@ -39,10 +39,11 @@ type Score struct {
 //   - Pending: unmatched candidate findings, never inferred as invalid
 //
 // Matching is a documented cascade of strengths: exact-id, exact-text,
-// nearby-line Jaccard, then gated containment. Assignment is maximum matching
-// per strength tier so an earlier gold cannot consume a candidate that a later
-// gold matches more strongly. Headline recall uses the full cascade; exact vs
-// fuzzy counts are reported separately so a threshold change is visible.
+// nearby-line Jaccard, then gated containment. Assignment is one globally
+// optimal assignment over the whole graph (see assignMatches), so neither
+// candidate ordering nor a tier boundary can consume a candidate another gold
+// needed. Headline recall uses the full cascade; exact vs fuzzy counts are
+// reported separately so a threshold change is visible.
 func ScoreCandidate(labels Labels, findingsJSON string) Score {
 	candidate := parseFindingItems(findingsJSON)
 	assigned := assignMatches(labels.Findings, candidate)
@@ -93,77 +94,189 @@ type assignedMatch struct {
 	strength string
 }
 
+// assignMatches pairs gold findings with candidate findings as one globally
+// optimal assignment rather than a per-strength-tier pass.
+//
+// Tiered assignment - maximum matching on exact edges, then on the residual for
+// each weaker strength - is not optimal for the whole graph, because WHICH
+// maximum exact matching it happens to pick decides what the weaker tiers can
+// still reach. With gold A matching candidate 1 exactly and candidate 2 by
+// location, and gold B matching only candidate 1 exactly, the exact tier can
+// hand candidate 1 to A and strand B forever, scoring one match where two exist.
+// That understates recall for reasons that have nothing to do with the review
+// under test, so the assignment is solved once over every edge at once.
+//
+// Optimality is lexicographic by strength: an exact pair is worth strictly more
+// than every possible combination of weaker pairs (weightFor scales each tier by
+// a base larger than any achievable count), so the optimum never trades one
+// exact match for two fuzzy ones, and among the assignments with the most exact
+// pairs it takes the one with the most location pairs, then the most containment
+// pairs. hungarianMinCost solves that max-weight assignment exactly.
 func assignMatches(golds []FindingGold, candidate []types.Finding) []assignedMatch {
 	out := make([]assignedMatch, len(golds))
 	for i := range out {
 		out[i].cand = -1
 	}
-	matchedGold := make([]bool, len(golds))
-	usedCand := make([]bool, len(candidate))
-	for _, strength := range []string{matchExactID, matchExactText, matchLocation, matchContainment} {
-		adj := make([][]int, len(golds))
-		for gi, gold := range golds {
-			if matchedGold[gi] {
-				continue
-			}
-			for ci, finding := range candidate {
-				if usedCand[ci] {
-					continue
-				}
-				if matchAt(gold, finding, strength) {
-					adj[gi] = append(adj[gi], ci)
+	if len(golds) == 0 || len(candidate) == 0 {
+		return out
+	}
+	base := int64(len(golds)+len(candidate)) + 1
+	weight := make([][]int64, len(golds))
+	strength := make([][]string, len(golds))
+	for gi, gold := range golds {
+		weight[gi] = make([]int64, len(candidate))
+		strength[gi] = make([]string, len(candidate))
+		for ci, finding := range candidate {
+			for _, s := range []string{matchExactID, matchExactText, matchLocation, matchContainment} {
+				if matchAt(gold, finding, s) {
+					weight[gi][ci] = weightFor(s, base)
+					strength[gi][ci] = s
+					break
 				}
 			}
 		}
-		goldToCand := maxBipartiteMatching(adj, len(candidate))
-		for gi, ci := range goldToCand {
-			if ci < 0 {
-				continue
-			}
-			out[gi] = assignedMatch{cand: ci, strength: strength}
-			matchedGold[gi] = true
-			usedCand[ci] = true
+	}
+	for gi, ci := range maxWeightAssignment(weight) {
+		// A zero-weight pair is the absence of an edge, not a match: the
+		// assignment is over a complete matrix so every row gets a column.
+		if ci < 0 || weight[gi][ci] == 0 {
+			continue
+		}
+		out[gi] = assignedMatch{cand: ci, strength: strength[gi][ci]}
+	}
+	return out
+}
+
+// weightFor ranks the strengths so that no number of weaker pairs can outweigh
+// a single stronger one. base exceeds the largest possible pair count, so the
+// total weight of an assignment reads as a positional number whose digits are
+// the per-strength counts.
+func weightFor(strength string, base int64) int64 {
+	switch strength {
+	case matchExactID, matchExactText:
+		return base * base
+	case matchLocation:
+		return base
+	case matchContainment:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// maxWeightAssignment returns, for each gold row, the candidate column assigned
+// to it (-1 when there are no columns), maximizing total weight. It solves the
+// rectangular assignment problem exactly, transposing when there are more rows
+// than columns because the solver requires rows <= columns.
+func maxWeightAssignment(weight [][]int64) []int {
+	rows, cols := len(weight), len(weight[0])
+	if rows <= cols {
+		return hungarianMinCost(negate(weight))
+	}
+	transposed := make([][]int64, cols)
+	for j := range transposed {
+		transposed[j] = make([]int64, rows)
+		for i := range weight {
+			transposed[j][i] = -weight[i][j]
+		}
+	}
+	colToRow := hungarianMinCost(transposed)
+	rowToCol := make([]int, rows)
+	for i := range rowToCol {
+		rowToCol[i] = -1
+	}
+	for j, i := range colToRow {
+		if i >= 0 {
+			rowToCol[i] = j
+		}
+	}
+	return rowToCol
+}
+
+func negate(weight [][]int64) [][]int64 {
+	out := make([][]int64, len(weight))
+	for i, row := range weight {
+		out[i] = make([]int64, len(row))
+		for j, w := range row {
+			out[i][j] = -w
 		}
 	}
 	return out
 }
 
-func maxBipartiteMatching(adj [][]int, candCount int) []int {
-	candToGold := make([]int, candCount)
-	for i := range candToGold {
-		candToGold[i] = -1
+// hungarianMinCost is the O(n^2*m) Hungarian (Kuhn-Munkres) algorithm for the
+// rectangular assignment problem: it returns the minimum-cost assignment of
+// every row to a distinct column, which is the exact optimum rather than a
+// greedy approximation. It requires len(cost) <= len(cost[0]).
+func hungarianMinCost(cost [][]int64) []int {
+	n := len(cost)
+	if n == 0 {
+		return nil
 	}
-	var dfs func(gi int, seen []bool) bool
-	dfs = func(gi int, seen []bool) bool {
-		for _, ci := range adj[gi] {
-			if seen[ci] {
-				continue
+	m := len(cost[0])
+	const inf = int64(1) << 62
+	// Potentials u/v and the column-to-row matching p are 1-indexed; index 0 is
+	// the algorithm's virtual starting column.
+	u := make([]int64, n+1)
+	v := make([]int64, m+1)
+	p := make([]int, m+1)
+	way := make([]int, m+1)
+	for i := 1; i <= n; i++ {
+		p[0] = i
+		j0 := 0
+		minv := make([]int64, m+1)
+		used := make([]bool, m+1)
+		for j := range minv {
+			minv[j] = inf
+		}
+		for {
+			used[j0] = true
+			i0 := p[j0]
+			delta := inf
+			j1 := 0
+			for j := 1; j <= m; j++ {
+				if used[j] {
+					continue
+				}
+				cur := cost[i0-1][j-1] - u[i0] - v[j]
+				if cur < minv[j] {
+					minv[j] = cur
+					way[j] = j0
+				}
+				if minv[j] < delta {
+					delta = minv[j]
+					j1 = j
+				}
 			}
-			seen[ci] = true
-			if candToGold[ci] < 0 || dfs(candToGold[ci], seen) {
-				candToGold[ci] = gi
-				return true
+			for j := 0; j <= m; j++ {
+				if used[j] {
+					u[p[j]] += delta
+					v[j] -= delta
+				} else {
+					minv[j] -= delta
+				}
+			}
+			j0 = j1
+			if p[j0] == 0 {
+				break
 			}
 		}
-		return false
-	}
-	for gi := range adj {
-		if len(adj[gi]) == 0 {
-			continue
-		}
-		seen := make([]bool, candCount)
-		_ = dfs(gi, seen)
-	}
-	goldToCand := make([]int, len(adj))
-	for i := range goldToCand {
-		goldToCand[i] = -1
-	}
-	for ci, gi := range candToGold {
-		if gi >= 0 {
-			goldToCand[gi] = ci
+		for j0 != 0 {
+			j1 := way[j0]
+			p[j0] = p[j1]
+			j0 = j1
 		}
 	}
-	return goldToCand
+	rowToCol := make([]int, n)
+	for i := range rowToCol {
+		rowToCol[i] = -1
+	}
+	for j := 1; j <= m; j++ {
+		if p[j] > 0 {
+			rowToCol[p[j]-1] = j - 1
+		}
+	}
+	return rowToCol
 }
 
 func matchAt(gold FindingGold, finding types.Finding, strength string) bool {
@@ -179,10 +292,6 @@ func matchAt(gold FindingGold, finding types.Finding, strength string) bool {
 	default:
 		return false
 	}
-}
-
-func sameUnderlyingIssue(gold FindingGold, finding types.Finding) bool {
-	return matchAt(gold, finding, matchExactID) || matchAt(gold, finding, matchExactText)
 }
 
 func exactTextMatch(gold FindingGold, finding types.Finding) bool {

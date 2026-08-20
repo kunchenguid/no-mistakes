@@ -53,7 +53,10 @@ func TestCaptureLeavesAutoFixClosedUnlabeled(t *testing.T) {
 	assertCaptureUnlabeled(t, ctx, p, sourceDB, run.ID)
 }
 
-func TestCaptureLeavesRevertedAutoFixUnlabeled(t *testing.T) {
+// A fix that was reverted (the same issue is raised again by a later round)
+// does not unmake the human's recorded decision to fix it on a run that merged:
+// the finding is still gold-standard evidence of a real issue.
+func TestCaptureLabelsSelectedAutoFixAsTruePositiveEvenWhenLaterRoundReRaisesIt(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -77,13 +80,22 @@ func TestCaptureLeavesRevertedAutoFixUnlabeled(t *testing.T) {
 		t.Fatalf("captured cases = %d, want both review rounds", len(cases))
 	}
 	for _, c := range cases {
-		if c.SourceRoundID == firstRound.ID && c.Labels.HasGold() {
-			t.Fatalf("reverted auto-fix round labels = %#v, want unlabeled (did not land)", c.Labels)
+		if c.SourceRoundID != firstRound.ID {
+			continue
+		}
+		if len(c.Labels.Findings) != 1 {
+			t.Fatalf("re-raised auto-fix round labels = %#v, want one gold finding", c.Labels)
+		}
+		gold := c.Labels.Findings[0]
+		if gold.Kind != GoldTruePositive || gold.Source != goldSourceAutoFixMerged || gold.ID != "real-bug" {
+			t.Fatalf("re-raised auto-fix gold = %#v, want recorded-auto-fix-merged true-positive from the recorded fix decision", gold)
 		}
 	}
 }
 
-func TestCaptureLeavesSupersededAutoFixUnlabeled(t *testing.T) {
+// Each round carries its own recorded decision, so a later round that rewrites
+// the finding under a new id does not retroactively unlabel the earlier one.
+func TestCaptureLabelsBothRoundsOfASupersededAutoFix(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -111,8 +123,9 @@ func TestCaptureLeavesSupersededAutoFixUnlabeled(t *testing.T) {
 	for _, c := range cases {
 		byRound[c.SourceRoundID] = c.Labels
 	}
-	if byRound[firstRound.ID].HasGold() {
-		t.Fatalf("superseded first-round labels = %#v, want unlabeled", byRound[firstRound.ID])
+	first := byRound[firstRound.ID]
+	if len(first.Findings) != 1 || first.Findings[0].Kind != GoldTruePositive || first.Findings[0].Source != goldSourceAutoFixMerged || first.Findings[0].ID != "real-bug" {
+		t.Fatalf("superseded first-round gold = %#v, want auto-fix-merged TP from its own recorded fix decision", first)
 	}
 	got := byRound[second.ID]
 	if len(got.Findings) != 1 || got.Findings[0].Kind != GoldTruePositive || got.Findings[0].Source != goldSourceAutoFixMerged || got.Findings[0].ID != "real-bug-v2" {
@@ -144,7 +157,10 @@ func TestCaptureWritesShippedUnfixedAsFalsePositive(t *testing.T) {
 	}
 }
 
-func TestCaptureLeavesLaterRoundLandedUnselectedUnlabeled(t *testing.T) {
+// The human resolved this round without selecting the finding and the run
+// merged, so it is shipped-unfixed false-positive gold. A later round raising a
+// different issue does not change what was decided about this one.
+func TestCaptureLabelsUnselectedFindingAsFalsePositiveEvenWhenALaterRoundDropsIt(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -171,8 +187,9 @@ func TestCaptureLeavesLaterRoundLandedUnselectedUnlabeled(t *testing.T) {
 	for _, c := range cases {
 		byRound[c.SourceRoundID] = c.Labels
 	}
-	if byRound[firstRound.ID].HasGold() {
-		t.Fatalf("later-fixed first-round labels = %#v, want unlabeled (finding no longer raised)", byRound[firstRound.ID])
+	first := byRound[firstRound.ID]
+	if len(first.Findings) != 1 || first.Findings[0].Kind != GoldFalsePositive || first.Findings[0].Source != goldSourceShippedUnfixed || first.Findings[0].ID != "real-bug" {
+		t.Fatalf("first-round gold = %#v, want shipped-unfixed FP from its own skip decision", first)
 	}
 	var second Labels
 	for id, labels := range byRound {
@@ -350,7 +367,10 @@ func TestRelabelDoesNotClobberAdjudicatedLabels(t *testing.T) {
 	}
 }
 
-func TestCaptureDoesNotWriteShippedUnfixedWhenIntermediateRoundThenFinalRoundDropsIt(t *testing.T) {
+// Round presence used to veto this label: the finding survived into round 2 but
+// was gone by the final round, so the earlier rounds stayed unlabeled. Labeling
+// now keys off each round's own recorded decision, which said "ship it".
+func TestCaptureWritesShippedUnfixedEvenWhenTheFinalRoundNoLongerRaisesIt(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -381,12 +401,16 @@ func TestCaptureDoesNotWriteShippedUnfixedWhenIntermediateRoundThenFinalRoundDro
 	for _, c := range cases {
 		byRound[c.SourceRoundID] = c.Labels
 	}
-	if byRound[firstRound.ID].HasGold() {
-		t.Fatalf("first-round labels = %#v, want unlabeled: the finding was gone from the final review round before merge", byRound[firstRound.ID])
+	first := byRound[firstRound.ID]
+	if len(first.Findings) != 1 || first.Findings[0].Kind != GoldFalsePositive || first.Findings[0].Source != goldSourceShippedUnfixed || first.Findings[0].ID != "real-bug" {
+		t.Fatalf("first-round gold = %#v, want shipped-unfixed FP keyed on this round's skip decision, not on the final round's finding list", first)
 	}
 }
 
-func TestRelabelRemovesShippedUnfixedWhenLaterRoundShowsTheFindingLanded(t *testing.T) {
+// Derived merge gold is recomputed, not appended: once the round records that
+// the human selected the finding for Fix, the earlier shipped-unfixed FP is gone
+// rather than kept alongside the true-positive label.
+func TestRelabelReplacesShippedUnfixedWhenTheRoundLaterRecordsAFixDecision(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -413,21 +437,19 @@ func TestRelabelRemovesShippedUnfixedWhenLaterRoundShowsTheFindingLanded(t *test
 		t.Fatalf("initial capture = %#v, want shipped-unfixed FP before the later round exists", first)
 	}
 
-	later := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
-	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &later, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+	if err := sourceDB.SetStepRoundSelection(firstRound.ID, strPtr(`["real-bug"]`), db.RoundSelectionSourceUser); err != nil {
 		t.Fatal(err)
 	}
 	relabeled, err := RelabelRun(ctx, store, p, sourceDB, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(relabeled) != 1 {
-		t.Fatalf("relabeled cases = %d, want the original round", len(relabeled))
+	if len(relabeled) != 1 || len(relabeled[0].Labels.Findings) != 1 {
+		t.Fatalf("relabeled = %#v, want exactly the recomputed user-fix gold", relabeled)
 	}
-	for _, gold := range relabeled[0].Labels.Findings {
-		if gold.ID == "real-bug" && gold.Source == goldSourceShippedUnfixed {
-			t.Fatalf("relabeled labels = %#v, want obsolete shipped-unfixed FP removed once a later round no longer raises the finding", relabeled[0].Labels)
-		}
+	gold := relabeled[0].Labels.Findings[0]
+	if gold.Kind != GoldTruePositive || gold.Source != goldSourceUserFix {
+		t.Fatalf("relabeled gold = %#v, want the obsolete shipped-unfixed FP replaced by the recorded user Fix", gold)
 	}
 }
 
@@ -469,15 +491,8 @@ func TestRelabelClearsStoredShippedUnfixedFPWhenRecomputedUnlabeled(t *testing.T
 	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
 		t.Fatal(err)
 	}
-	stillRaised := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"still present","risk_scope":"source-or-external"}`
-	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &stillRaised, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
-		t.Fatal(err)
-	}
-	final := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
-	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 3, "auto_fix", &final, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
-		t.Fatal(err)
-	}
-	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+	// The PR never merged, so approve-with-findings supports no label at all.
+	if err := sourceDB.UpdateRunPRState(run.ID, "open"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -538,6 +553,82 @@ func TestRelabelClearsStoredShippedUnfixedFPWhenRecomputedUnlabeled(t *testing.T
 		if gold.ID == "real-bug" && gold.Source == goldSourceShippedUnfixed {
 			t.Fatalf("labels.json = %#v, want stored shipped-unfixed FP removed from disk, not append-only retention", onDisk.Labels)
 		}
+	}
+}
+
+// TestGoldFromRoundLabelsByRecordedDecision pins the labeling contract itself:
+// what a finding is labeled follows from the round's recorded fix-vs-skip
+// decision plus the source run's merge state, and from nothing else.
+func TestGoldFromRoundLabelsByRecordedDecision(t *testing.T) {
+	raised := findingsJSON(findingSpec{ID: "real-bug", Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "auto-fix"})
+	informational := findingsJSON(findingSpec{ID: "note", Severity: "info", File: "main.go", Line: 3, Description: "style note", Action: "no-op"})
+
+	for _, tc := range []struct {
+		name     string
+		findings string
+		decision Decision
+		prState  string
+		wantKind string
+		wantGold string
+	}{
+		{
+			name: "selected for fix and merged is true-positive gold", findings: raised,
+			decision: Decision{Action: decisionFix, SelectionSource: db.RoundSelectionSourceAutoFix, SelectedFindingIDs: []string{"real-bug"}},
+			prState:  "merged", wantKind: GoldTruePositive, wantGold: goldSourceAutoFixMerged,
+		},
+		{
+			name: "user selected for fix needs no merge", findings: raised,
+			decision: Decision{Action: decisionFix, SelectionSource: db.RoundSelectionSourceUser, SelectedFindingIDs: []string{"real-bug"}},
+			prState:  "open", wantKind: GoldTruePositive, wantGold: goldSourceUserFix,
+		},
+		{
+			name: "skipped and merged is shipped-unfixed false-positive gold", findings: raised,
+			decision: Decision{Action: decisionApprove},
+			prState:  "merged", wantKind: GoldFalsePositive, wantGold: goldSourceShippedUnfixed,
+		},
+		{
+			name: "auto-fix selection leaves an unselected sibling shipped unfixed", findings: raised,
+			decision: Decision{Action: decisionFix, SelectionSource: db.RoundSelectionSourceAutoFix, SelectedFindingIDs: []string{"other"}},
+			prState:  "merged", wantKind: GoldFalsePositive, wantGold: goldSourceShippedUnfixed,
+		},
+		{
+			name: "no recorded decision stays unlabeled even on a merged run", findings: raised,
+			decision: Decision{Action: decisionUnknown},
+			prState:  "merged",
+		},
+		{
+			name: "an aborted round records no decision", findings: raised,
+			decision: Decision{Action: decisionAbort},
+			prState:  "merged",
+		},
+		{
+			name: "skipped without a merge stays unlabeled", findings: raised,
+			decision: Decision{Action: decisionApprove},
+			prState:  "open",
+		},
+		{
+			name: "informational no-op findings are never labeled", findings: informational,
+			decision: Decision{Action: decisionApprove},
+			prState:  "merged",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			round := &db.StepRound{Round: 1, FindingsJSON: strPtr(tc.findings)}
+			got := goldFromRound(round, tc.decision, tc.prState)
+			if tc.wantKind == "" {
+				if got.HasGold() {
+					t.Fatalf("labels = %#v, want unlabeled", got)
+				}
+				return
+			}
+			if len(got.Findings) != 1 {
+				t.Fatalf("labels = %#v, want exactly one gold finding", got)
+			}
+			gold := got.Findings[0]
+			if gold.Kind != tc.wantKind || gold.Source != tc.wantGold {
+				t.Fatalf("gold = %#v, want %s gold from %s", gold, tc.wantKind, tc.wantGold)
+			}
+		})
 	}
 }
 

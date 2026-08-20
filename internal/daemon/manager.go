@@ -26,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
@@ -138,7 +139,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
-	workDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), repo.ID, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
 	}
@@ -347,9 +348,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
-			}
+			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 			// A recovered run is a finished run too. This is the second of the
 			// two completion boundaries, and leaving it out is what let a run
 			// resumed after a daemon restart keep its empty evidence directory
@@ -493,16 +492,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // group the pipeline can name - only the worktree it is standing in still
 // identifies it (see internal/procreap).
 //
-// It runs before the worktree directory is removed, because a process that
-// outlives its worktree holds the deleted directory open through its cwd and
-// can no longer be attributed to any run. No age floor applies: the caller
-// owns this run and has already observed its execution return, so nothing
-// standing in it can still be legitimate work.
-func (m *RunManager) sweepRunWorktreeProcesses(wtDir string) {
-	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: m.paths.WorktreesDir(),
-		Scope:         wtDir,
-	}, "run_cleanup")
+// The run's own worktree is what the sweep is pointed at, so a placement
+// outside the default tree needs no configuration lookup and cannot be hidden
+// by a worktree_roots edit made while the run was executing. The ordering rule
+// and its rationale live on procreap.SweepRunWorktree, which every removal site
+// in every package goes through.
+func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
+	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
 }
 
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
@@ -537,6 +533,21 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	reapEvidence(m.db, root, policy, time.Now())
+}
+
+// removeRunWorktree tears one run's worktree down: it sweeps whatever is still
+// standing in the directory and only then removes it.
+//
+// Every removal of a run worktree this package performs goes through here, and
+// none calls git.WorktreeRemove directly, because the ordering is easy to forget
+// at one site and invisible when forgotten - a run whose setup failed, whose
+// execution returned, or which was resumed after a crash all reach this point by
+// different routes. reason distinguishes the routes in the log.
+func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
+	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
+	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
+		slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
+	}
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -835,14 +846,56 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	// Create worktree from the gate bare repo.
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_global_config")
+		return "", fmt.Errorf("load global config: %w", err)
+	}
+
+	// Create worktree from the gate bare repo, where this repository's
+	// worktree placement says it belongs (see internal/worktrees). This is the
+	// only point at which configuration decides placement: the resolved
+	// directory is recorded on the run before it exists on disk, and every
+	// later consumer reads that record back, so an edit to worktree_roots from
+	// here on is inert for this run.
 	gateDir := m.paths.RepoDir(repo.ID)
-	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
+	checkouts, err := registeredCheckouts(m.db)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("list registered checkouts: %s", err))
+		trackStartFailure("list_registered_checkouts")
+		return "", fmt.Errorf("list registered checkouts: %w", err)
+	}
+	if err := layout.ValidateCheckout(repo.WorkingPath, checkouts...); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("worktree placement: %s", err))
+		trackStartFailure("invalid_worktree_placement")
+		return "", fmt.Errorf("worktree placement: %w", err)
+	}
+	wtDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
+	if err := m.db.SetRunWorktreeDir(run.ID, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record worktree placement: %s", err))
+		trackStartFailure("record_worktree_placement")
+		return "", fmt.Errorf("record worktree placement: %w", err)
+	}
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
+
+	// The worktree exists from here on, so cleanup ownership is armed from here
+	// on: every later setup failure returns through this defer, and the
+	// background goroutine takes ownership only once it is running. Arming it any
+	// later would leave the directory behind - in the operator's own worktree
+	// root, unswept - for whichever failures happen in between.
+	bgOwnsWorktree := false
+	defer func() {
+		if !bgOwnsWorktree {
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
+		}
+	}()
+
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
@@ -869,23 +922,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}
 
-	// Track whether the background goroutine takes ownership of worktree cleanup.
-	// If setup fails before the goroutine launches, we must clean up here.
-	bgOwnsWorktree := false
-	defer func() {
-		if !bgOwnsWorktree {
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
-			}
-		}
-	}()
-
-	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_global_config")
-		return "", fmt.Errorf("load global config: %w", err)
-	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
@@ -1052,11 +1088,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(wtDir)
-			// Clean up worktree.
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
-			}
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
 			m.cleanupRunEvidence(cfg, run.ID)
 			// Remove tracking.
 			m.mu.Lock()

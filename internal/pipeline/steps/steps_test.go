@@ -113,6 +113,7 @@ func fakeRecordSuccessHandler() {
 
 func fakeGHHandler(args []string) {
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
+	prBase := os.Getenv("FAKE_CLI_PR_BASE")
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
@@ -121,8 +122,15 @@ func fakeGHHandler(args []string) {
 			fmt.Println("[]")
 			os.Exit(0)
 		}
+		// A real `gh pr list --base X` filters server-side by the PR's actual
+		// base, so an existing PR opened against a different base than the one
+		// requested here must not be returned.
+		if requestedBase, ok := fakeCLIFlagValue(args, "--base"); ok && prBase != "" && requestedBase != prBase {
+			fmt.Println("[]")
+			os.Exit(0)
+		}
 		number := extractTrailingNumber(prURL)
-		fmt.Printf("[{\"number\":%d,\"url\":%q}]\n", number, prURL)
+		fmt.Printf("[{\"number\":%d,\"url\":%q,\"baseRefName\":%q}]\n", number, prURL, prBase)
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
@@ -258,6 +266,15 @@ func fakeGlabHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func fakeCLIFlagValue(args []string, flag string) (string, bool) {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
 }
 
 func extractTrailingNumber(rawURL string) int {

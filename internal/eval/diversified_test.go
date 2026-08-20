@@ -42,12 +42,12 @@ func TestListCasesDiversified_GoldOnlyEmptyWarns(t *testing.T) {
 		t.Fatalf("all = %d, want the unlabeled case retained outside diversified", len(all))
 	}
 
-	output := RenderSets(mustInspectSets(t, store))
-	if !strings.Contains(output, "diversified: 0 cases") {
-		t.Fatalf("sets output = %q, want an empty diversified set", output)
+	diversified := mustSetSummary(t, store, "diversified")
+	if diversified.Cases != 0 {
+		t.Fatalf("diversified summary = %#v, want an empty diversified set", diversified)
 	}
-	if !strings.Contains(output, "no labeled gold") {
-		t.Fatalf("sets output = %q, want an empty-gold warning, not a silent unlabeled fill", output)
+	if !strings.Contains(diversified.Warning, "no labeled gold") {
+		t.Fatalf("diversified warning = %q, want an empty-gold warning, not a silent unlabeled fill", diversified.Warning)
 	}
 }
 
@@ -374,9 +374,8 @@ func TestListCasesTune_IsLabeledMinusPins(t *testing.T) {
 		t.Fatalf("tune = %v, want leftover labeled gold %s, not unlabeled or the pin", ids, leftover.ID)
 	}
 
-	output := RenderSets(mustInspectSets(t, store))
-	if strings.Contains(output, "tune is empty") {
-		t.Fatalf("sets output = %q, unexpectedly warned that tune is empty", output)
+	if warning := mustSetSummary(t, store, "tune").Warning; warning != "" {
+		t.Fatalf("tune warning = %q, unexpectedly warned that tune is empty", warning)
 	}
 }
 
@@ -401,10 +400,20 @@ func TestListCasesTune_WarnsWhenEmptyBecausePinsAreTheWholeLabeledSet(t *testing
 	if len(tune) != 0 {
 		t.Fatalf("tune = %#v, want empty when every labeled case is pinned", tune)
 	}
-	output := RenderSets(mustInspectSets(t, store))
-	if !strings.Contains(output, "tune is empty") {
-		t.Fatalf("sets output = %q, want a holdout warning when tune is empty", output)
+	if warning := mustSetSummary(t, store, "tune").Warning; !strings.Contains(warning, "tune is empty") {
+		t.Fatalf("tune warning = %q, want a holdout warning when tune is empty", warning)
 	}
+}
+
+func mustSetSummary(t *testing.T, store *Store, name string) SetSummary {
+	t.Helper()
+	for _, summary := range mustInspectSets(t, store) {
+		if summary.Name == name {
+			return summary
+		}
+	}
+	t.Fatalf("InspectSets returned no %q summary", name)
+	return SetSummary{}
 }
 
 func openEvalStore(t *testing.T) *Store {

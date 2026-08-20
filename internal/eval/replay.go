@@ -25,11 +25,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// ReplayOptions controls one isolated candidate comparison.
+// ReplayOptions controls one isolated candidate comparison. The optional
+// callbacks observe progress for interactive rendering: OnPlan fires once the
+// case set is reserved and the session is recorded, OnResult after each
+// replay's evaluation is persisted. Both run synchronously on the replay
+// goroutine and may be nil.
 type ReplayOptions struct {
 	Set       string
 	Candidate Candidate
 	Repeats   int
+	OnPlan    func(session Session, cases []Case)
+	OnResult  func(evaluation Evaluation, completed, total int)
 }
 
 // Session records the immutable local plan used for one replay batch.
@@ -74,7 +80,11 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 		store.releaseReplayReservation(session.ID)
 	}()
 
-	evaluations := make([]Evaluation, 0, len(cases)*opts.Repeats)
+	if opts.OnPlan != nil {
+		opts.OnPlan(session, cases)
+	}
+	total := len(cases) * opts.Repeats
+	evaluations := make([]Evaluation, 0, total)
 	var failed int
 	for repeat := 1; repeat <= opts.Repeats; repeat++ {
 		for _, c := range cases {
@@ -86,6 +96,9 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 				return session, evaluations, err
 			}
 			evaluations = append(evaluations, evaluation)
+			if opts.OnResult != nil {
+				opts.OnResult(evaluation, len(evaluations), total)
+			}
 		}
 	}
 	if failed > 0 {
@@ -550,26 +563,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		evaluation.InputTokens, evaluation.OutputTokens, evaluation.FreshInputTokens, evaluation.DurationMS, path)
 	if err != nil {
 		return fmt.Errorf("record eval result: %w", err)
-	}
-	if evaluation.Status == "completed" && evaluation.Pending > 0 {
-		if err := incrementQueuedFindings(c.Dir, evaluation.Pending); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func incrementQueuedFindings(caseDir string, count int) error {
-	if count <= 0 {
-		return nil
-	}
-	var labels Labels
-	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
-		return fmt.Errorf("read local labels queue: %w", err)
-	}
-	labels.QueuedCandidateFindings += count
-	if err := writeJSON(filepath.Join(caseDir, "labels.json"), labels); err != nil {
-		return fmt.Errorf("update local labels queue: %w", err)
 	}
 	return nil
 }

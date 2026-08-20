@@ -5,6 +5,7 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestEvalJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL CASE SETS") || !strings.Contains(out, "diversified:") {
+	if !strings.Contains(out, "eval case sets") || !strings.Contains(out, "Diversified holdout") || !strings.Contains(out, "local-only") {
 		t.Fatalf("sets output = %q", out)
 	}
 	t.Logf("eval sets output:\n%s", out)
@@ -151,6 +152,7 @@ func TestEvalAutoCaptureJourney(t *testing.T) {
 
 	// Collection runs after the pipeline reports its outcome, so the run being
 	// finished is not yet proof the case exists.
+	collected := regexp.MustCompile(`all\s+1 case\(s\)`)
 	var out string
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -159,12 +161,12 @@ func TestEvalAutoCaptureJourney(t *testing.T) {
 		if err != nil {
 			t.Fatalf("eval sets: %v\n%s", err, out)
 		}
-		if strings.Contains(out, "all: 1 cases") || time.Now().After(deadline) {
+		if collected.MatchString(out) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if !strings.Contains(out, "all: 1 cases") {
+	if !collected.MatchString(out) {
 		t.Fatalf("no eval case was collected without an explicit capture; sets output = %q", out)
 	}
 	t.Logf("eval sets output after an ordinary run:\n%s", out)

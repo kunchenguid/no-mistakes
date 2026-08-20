@@ -29,13 +29,13 @@ const (
 	labelsVersion = 2
 )
 
-// Gold kinds are the scientific labels written from recorded evidence.
-// Capture writes true-positive gold from a user Fix or from an auto-fix
-// selection that later landed in a merged PR, false-negative gold from a
-// user-added finding, and false-positive gold from a finding that shipped
-// unfixed in a merged PR. IngestPostPRMiss writes additional false-negative
-// gold after a green review. Adjudicated labels are never inferred from
-// pending unmatched candidate findings.
+// Gold kinds are the scientific labels written from the recorded gate decision
+// (see goldFromRound). Capture writes true-positive gold from a user Fix or
+// from an auto-fix selection on a merged run, false-negative gold from a
+// user-added finding, and false-positive gold from a finding the human did not
+// select for fix that shipped in a merged PR. IngestPostPRMiss writes
+// additional false-negative gold after a green review. Adjudicated labels are
+// never inferred from pending unmatched candidate findings.
 const (
 	GoldTruePositive  = "true-positive"
 	GoldFalseNegative = "false-negative"
@@ -109,7 +109,8 @@ type Manifest struct {
 
 // Decision records the human gate evidence available for the exported review
 // pass. Approval actions were not persisted in historical rows, so Action can
-// be "unknown". The original selections themselves are never guessed.
+// be "unknown". The original selections themselves are never guessed, and an
+// unknown action supports no label at all (see hasRecordedDecision).
 type Decision struct {
 	Action             string   `json:"action"`
 	SelectionSource    string   `json:"selection_source,omitempty"`
@@ -136,6 +137,12 @@ type FindingGold struct {
 // Labels is a local, growing label file. Finding-level gold is the unit of
 // truth. Queued candidate findings are kept as evidence for later
 // adjudication and are never scored as false positives.
+//
+// QueuedCandidateFindings is a legacy stored counter: replays used to
+// increment it in place, which made re-running the same eval run double-append
+// corpus state. The queued count now derives from the evaluations table (see
+// Store.pendingFindingCounts); the field remains only so older labels.json
+// files round-trip unchanged.
 type Labels struct {
 	Version                 int           `json:"version"`
 	Findings                []FindingGold `json:"findings,omitempty"`

@@ -652,6 +652,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 				}
 			}()
 
+			waitForDaemonReady(t, p)
 			completed := waitForRunTerminalState(t, d, run.ID)
 			if completed.Status != types.RunCompleted || completed.AwaitingAgentSince != nil {
 				t.Fatalf("historical CI gate after %s reconciliation = status %s awaiting %v", state, completed.Status, completed.AwaitingAgentSince)

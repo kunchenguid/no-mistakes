@@ -146,6 +146,7 @@ type mrPayload struct {
 	HasConflicts        bool   `json:"has_conflicts"`
 	DetailedMergeStatus string `json:"detailed_merge_status"`
 	MergeStatus         string `json:"merge_status"`
+	TargetBranch        string `json:"target_branch"`
 }
 
 func (p mrPayload) toPR() *scm.PR {
@@ -153,7 +154,7 @@ func (p mrPayload) toPR() *scm.PR {
 	if url == "" {
 		url = strings.TrimSpace(p.URL)
 	}
-	pr := &scm.PR{URL: url}
+	pr := &scm.PR{URL: url, BaseBranch: strings.TrimSpace(p.TargetBranch)}
 	if p.IID > 0 {
 		pr.Number = fmt.Sprintf("%d", p.IID)
 	}

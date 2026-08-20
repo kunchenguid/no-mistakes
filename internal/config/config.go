@@ -12,12 +12,14 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 	"gopkg.in/yaml.v3"
 )
 
@@ -89,10 +91,18 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	// WorktreeRoots places a repository's pipeline run worktrees under a
+	// directory the operator chose instead of the default
+	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
+	// (Repo.WorkingPath), values are absolute directories. It exists for
+	// directory-scoped toolchain configuration (mise, direnv), which resolves
+	// by path ancestry and therefore never reaches a worktree under NM_HOME.
+	// Placement is resolved for every consumer in internal/worktrees.
+	WorktreeRoots        map[string]string `yaml:"worktree_roots"`
+	CITimeout            time.Duration     `yaml:"-"`
+	StepQuietWarning     time.Duration     `yaml:"-"`
+	DaemonConnectTimeout time.Duration     `yaml:"-"`
+	LogLevel             string            `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -122,6 +132,7 @@ type globalConfigRaw struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	WorktreeRoots        map[string]string   `yaml:"worktree_roots"`
 	CITimeout            string              `yaml:"ci_timeout"`
 	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
@@ -148,12 +159,16 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	CI                CIRaw      `yaml:"ci"`
-	Commit            CommitRaw  `yaml:"commit"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool `yaml:"allow_repo_commands"`
+	// PR carries pull-request routing settings. BaseBranch controls where a PR
+	// lands, so EffectiveRepoConfig treats it as trusted-only unless the
+	// repository explicitly opts into pushed settings.
+	AutoFix AutoFixRaw `yaml:"auto_fix"`
+	CI      CIRaw      `yaml:"ci"`
+	Commit  CommitRaw  `yaml:"commit"`
+	Intent  IntentRaw  `yaml:"intent"`
+	Test    TestRaw    `yaml:"test"`
+	PR      PRRaw      `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -206,6 +221,15 @@ type ReviewRaw struct {
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
+}
+
+// PRRaw is the YAML representation of pull-request settings.
+type PRRaw struct {
+	// BaseBranch selects the forge branch a PR targets. It is gate-control
+	// configuration: the trusted default-branch copy wins unless the
+	// repository explicitly opts into pushed-branch settings with
+	// allow_repo_commands.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -327,6 +351,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -346,6 +371,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -425,6 +451,7 @@ type Config struct {
 	Test                  Test
 	Document              Document
 	Review                Review
+	PR                    PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -434,6 +461,11 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+}
+
+// PR is the resolved pull-request configuration.
+type PR struct {
+	BaseBranch string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -693,6 +725,19 @@ log_level: info
 #     - -c
 #     - model_reasoning_effort="low"
 #
+# Where a repository's pipeline run worktrees are created (optional). By
+# default they live under <NM_HOME>/worktrees/<repo id>, which inherits no
+# directory-scoped toolchain configuration. Point a checkout at a directory of
+# your own and its runs are created there instead, one directory per run, so
+# mise/direnv settings on that directory reach every run. Keys are the checkout
+# paths you ran "no-mistakes init" in, values must be absolute directories.
+# Only the directories no-mistakes' own run records name are ever created,
+# cleaned up, or removed there; everything else, including a directory that
+# merely looks like a run worktree, is left alone. Each checkout needs its own
+# root, and it must be outside NM_HOME and outside every checkout.
+# worktree_roots:
+#   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
+
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -1218,6 +1263,66 @@ func validateAgentArgsOverride(override map[string][]string) error {
 	return nil
 }
 
+// ValidateWorktreeRoots checks a worktree_roots map before any placement is
+// derived from it. Every entry must name an absolute checkout path and an
+// absolute directory: a relative path would be interpreted against whatever
+// working directory the daemon happens to have, so run worktrees would land
+// somewhere different depending on who started it - the opposite of the
+// deterministic placement the setting exists to provide.
+//
+// Two entries may not name the same root, and two keys may not name the same
+// checkout once canonicalized (a symlink and its target, "/x" and "/x/").
+// Both are rejected rather than resolved because the consequences are
+// destructive, not cosmetic: cleanup and eject identify a run worktree by its
+// position in a root, so two repositories sharing a root would delete each
+// other's runs, and a duplicate key would pick an arbitrary winner. A root
+// equal to its own checkout is rejected for the same reason - it would place
+// run worktrees inside the repository they are validating.
+func ValidateWorktreeRoots(roots map[string]string) error {
+	owners := make(map[string]string, len(roots))
+	checkouts := make(map[string]string, len(roots))
+	for _, checkout := range sortedKeys(roots) {
+		root := roots[checkout]
+		if strings.TrimSpace(checkout) == "" {
+			return fmt.Errorf("invalid worktree_roots: empty checkout path")
+		}
+		if !filepath.IsAbs(checkout) {
+			return fmt.Errorf("invalid worktree_roots: checkout path %q is not absolute", checkout)
+		}
+		if strings.TrimSpace(root) == "" {
+			return fmt.Errorf("invalid worktree_roots[%q]: empty worktree root", checkout)
+		}
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q is not an absolute path", checkout, root)
+		}
+		canonicalCheckout := worktrees.Canonical(checkout)
+		if first, dup := checkouts[canonicalCheckout]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q already names the same checkout", checkout, first)
+		}
+		checkouts[canonicalCheckout] = checkout
+		canonicalRoot := worktrees.Canonical(root)
+		if first, dup := owners[canonicalRoot]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root %q is already used by %q; each checkout needs its own root", checkout, root, first)
+		}
+		owners[canonicalRoot] = checkout
+		if canonicalRoot == canonicalCheckout {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root must not be the checkout itself", checkout)
+		}
+	}
+	return nil
+}
+
+// sortedKeys keeps validation errors deterministic: map iteration order would
+// otherwise decide which of several bad entries is reported.
+func sortedKeys(roots map[string]string) []string {
+	keys := make([]string, 0, len(roots))
+	for key := range roots {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
 // not already exist. Failures are logged at debug level and silently ignored.
 func EnsureDefaultGlobalConfig(path string) {
@@ -1248,6 +1353,140 @@ func DefaultGlobalConfig() *GlobalConfig {
 		SessionReuse:         true,
 		Eval:                 evalDefaults(),
 	}
+}
+
+// GlobalConfigMappingEntry is one entry of a top-level mapping, spelled the way
+// the document spells it.
+type GlobalConfigMappingEntry struct {
+	Key   string
+	Value string
+}
+
+// GlobalConfigMapping describes how a top-level mapping key is written in the
+// global config document. It is what decides which edit an operator can be told
+// to make, and every field answers a question the parsed configuration cannot.
+//
+// Presence: `key:` with nothing after it and `key: {}` both decode to a map of
+// length zero, exactly like an absent key, so anything that must not duplicate a
+// top-level key has to ask the document. YAML rejects a duplicate top-level key
+// outright, leaving a configuration that no longer loads.
+//
+// Shape: an entry line can be added under a key only when its value is a BLOCK
+// mapping. After `key: {}` or `key: {a: b}` an indented entry line is not a
+// continuation of the mapping at all - YAML rejects the document with "did not
+// find expected key" - and after a valueless `key:` the safe edit is the same
+// replacement, so both are reported as not appendable.
+//
+// Indentation: siblings of a block mapping all sit at the same column, so an
+// entry line added at a different one is rejected the same way. The document is
+// hand-maintained, so its indentation is whatever its operator chose.
+type GlobalConfigMapping struct {
+	// Present reports that the key is in the document, whatever its value.
+	Present bool
+
+	// AppendableBlock reports that one more indented entry line under the key is
+	// a valid edit.
+	AppendableBlock bool
+
+	// EntryIndent is the column the key's entries start at, counted from zero, so
+	// an added or replaced entry line matches its siblings. Zero when the key has
+	// no entries to match.
+	EntryIndent int
+
+	// Line is the document line that spells the key, as written, so guidance can
+	// name the line to replace. Empty when the key's value spans further lines.
+	Line string
+
+	// Entries are the key's entries in document order, so a replacement can
+	// carry the ones the operator already has.
+	Entries []GlobalConfigMappingEntry
+}
+
+// InspectGlobalConfigMapping describes the top-level key in the global config
+// document at path.
+//
+// It never fails: a missing or unreadable file has no key, and a file this
+// package cannot parse is scanned for the key written at the start of a line,
+// which is where a top-level key is - reported as present but not appendable, so
+// guidance falls back to naming the whole replacement. Callers that must not
+// write a second top-level key are the reason presence is still answered for a
+// document nothing could parse; every caller in this repository refuses such a
+// configuration before it asks.
+func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return GlobalConfigMapping{}
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key)}
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return GlobalConfigMapping{}
+	}
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return GlobalConfigMapping{}
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode, value := mapping.Content[i], mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		found := GlobalConfigMapping{Present: true}
+		if value.Kind == yaml.MappingNode {
+			found.AppendableBlock = value.Style&yaml.FlowStyle == 0
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				found.Entries = append(found.Entries, GlobalConfigMappingEntry{
+					Key:   value.Content[j].Value,
+					Value: value.Content[j+1].Value,
+				})
+			}
+			if found.AppendableBlock && len(value.Content) > 0 && value.Content[0].Column > 1 {
+				found.EntryIndent = value.Content[0].Column - 1
+			}
+		}
+		if !found.AppendableBlock {
+			found.Line = documentLine(data, keyNode, value)
+		}
+		return found
+	}
+	return GlobalConfigMapping{}
+}
+
+// documentLine returns the single line that holds the key and its whole value,
+// empty when the value continues past it and no one line can be named.
+func documentLine(data []byte, keyNode, value *yaml.Node) string {
+	if lastNodeLine(value) != keyNode.Line {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if keyNode.Line < 1 || keyNode.Line > len(lines) {
+		return ""
+	}
+	return strings.TrimRight(lines[keyNode.Line-1], " \t\r")
+}
+
+func lastNodeLine(n *yaml.Node) int {
+	last := n.Line
+	for _, child := range n.Content {
+		if line := lastNodeLine(child); line > last {
+			last = line
+		}
+	}
+	return last
+}
+
+// hasTopLevelKeyLine is the fallback for a document YAML cannot parse: a
+// top-level key starts its line, so an indented or commented occurrence is not
+// one.
+func hasTopLevelKeyLine(data []byte, key string) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, key+":") {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
@@ -1301,6 +1540,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.WorktreeRoots != nil {
+		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
+			return nil, err
+		}
+		cfg.WorktreeRoots = raw.WorktreeRoots
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -1417,11 +1662,30 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
+	if err := validatePRRaw(cfg.PR); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validatePRRaw fails the config closed on a pr.base_branch value Git would
+// reject as a branch name, the same convention validateTestRaw already
+// applies to test.evidence.branch. An empty value is valid: it means "fall
+// back to the repository's forge default branch" and is intentionally not
+// normalized to any particular name here.
+func validatePRRaw(pr PRRaw) error {
+	if pr.BaseBranch == "" {
+		return nil
+	}
+	if _, err := evidence.NormalizeBranch(pr.BaseBranch); err != nil {
+		return fmt.Errorf("pr.base_branch: %w", err)
+	}
+	return nil
 }
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
@@ -1499,8 +1763,10 @@ func validatePathInstructionGlob(pattern string) error {
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
-// provider-side workflow run billed to the repository. All five ignore
-// allowRepoCommands, which scopes only the code-executing selection fields.
+// provider-side workflow run billed to the repository. These gate-control
+// fields ignore allowRepoCommands. PR is the explicit exception: the
+// allowRepoCommands opt-in also permits a pushed PR target because it controls
+// where a maintainer-authorized PR lands, not code execution.
 // When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
@@ -1552,6 +1818,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// artifacts are collected. The publisher independently refuses any
 		// branch without its marker file, so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
+		// pr.base_branch controls where the contributor's PR lands, so it is
+		// trusted-only unless the repository explicitly opts into pushed
+		// settings alongside commands and agent selection.
+		if !allowRepoCommands {
+			effective.PR = trusted.PR
+		}
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
@@ -1559,6 +1831,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Test.Evidence.Branch = nil
+		if !allowRepoCommands {
+			effective.PR = PRRaw{}
+		}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1913,6 +2188,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

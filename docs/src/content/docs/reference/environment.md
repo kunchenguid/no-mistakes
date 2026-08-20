@@ -16,7 +16,7 @@ When set, everything else moves under this root:
 
 - Global config: `$NM_HOME/config.yaml`
 - Gate repos: `$NM_HOME/repos/<id>.git`
-- Worktrees: `$NM_HOME/worktrees/<repoID>/<runID>/`
+- Worktrees: `$NM_HOME/worktrees/<repoID>/<runID>/`, unless [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) places a repository's run worktrees elsewhere
 - Logs: `$NM_HOME/logs/`
 - Database: `$NM_HOME/state.sqlite`
 - Socket / PID / singleton lock: `$NM_HOME/socket`, `$NM_HOME/daemon.pid`, and `$NM_HOME/daemon.lock`

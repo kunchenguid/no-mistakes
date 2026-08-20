@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -12,11 +13,19 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID               string
-	RepoID           string
-	Branch           string
-	HeadSHA          string
-	BaseSHA          string
+	ID      string
+	RepoID  string
+	Branch  string
+	HeadSHA string
+	BaseSHA string
+	// WorktreeDir is the directory this run's worktree was created in, resolved
+	// once at run creation from the operator's configured placement (see
+	// internal/worktrees). Every consumer of an existing run's worktree reads
+	// it instead of re-deriving placement, so editing that configuration while
+	// a run exists cannot retarget the run. It is nil only for runs recorded
+	// before the column existed, which worktrees.RecordedDir resolves to the
+	// default placement.
+	WorktreeDir      *string
 	SubmittedHeadSHA *string
 	// NoMistakesVersion and NoMistakesBuildSHA identify the binary that created
 	// this run. They remain nil only for runs recorded before these fields.
@@ -66,13 +75,13 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
@@ -80,6 +89,16 @@ func scanRun(row interface {
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
+}
+
+// WorktreePath returns the recorded worktree directory of this run, or "" for
+// a run recorded before placement was durable. Callers resolve the empty case
+// through worktrees.RecordedDir rather than treating it as a path.
+func (r *Run) WorktreePath() string {
+	if r == nil || r.WorktreeDir == nil {
+		return ""
+	}
+	return *r.WorktreeDir
 }
 
 // InsertRun creates a new run record.
@@ -118,6 +137,127 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
+}
+
+// RunWorktree is one run's recorded worktree placement, identified by the run
+// and repository that own it.
+type RunWorktree struct {
+	RunID  string
+	RepoID string
+	Dir    string
+}
+
+// ActiveRunWorktrees returns the identity and recorded placement of every
+// pending or running run, and is the one runs query that must work against a
+// database this binary has not migrated yet.
+//
+// The gate-execution-context preflight runs before any command opens the database
+// read-write, so on the first invocation after an upgrade it reads through
+// OpenReadOnly, which deliberately does not migrate. A query naming a column the
+// schema does not have yet fails there, and because that preflight guards every
+// pipeline-control command - including the ones that would perform the migration -
+// the whole CLI would be unusable until the file was repaired by hand. So the
+// placement column is selected only when the schema has it; a database without it
+// predates worktree_roots entirely, and the empty value resolves to the default
+// placement (see worktrees.RecordedDir), which is the only one such a run can
+// have.
+func (d *DB) ActiveRunWorktrees() ([]RunWorktree, error) {
+	placement := "''"
+	if d.hasColumn("runs", "worktree_dir") {
+		placement = "COALESCE(worktree_dir, '')"
+	}
+	rows, err := d.sql.Query(
+		`SELECT id, repo_id, `+placement+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
+		types.RunPending, types.RunRunning,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get active run worktrees: %w", err)
+	}
+	defer rows.Close()
+	var out []RunWorktree
+	for rows.Next() {
+		var wt RunWorktree
+		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Dir); err != nil {
+			return nil, fmt.Errorf("scan active run worktree: %w", err)
+		}
+		out = append(out, wt)
+	}
+	return out, rows.Err()
+}
+
+// hasColumn reports whether a table currently has a column. It reads the live
+// schema rather than assuming this binary's migrations have been applied, which
+// is what lets a read-only caller work against an older database.
+func (d *DB) hasColumn(table, column string) bool {
+	rows, err := d.sql.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
+// RunWorktreesOutside returns every run whose recorded worktree directory is
+// not under prefix, newest first. It exists so startup recovery can find the
+// run worktrees this machine placed outside <NM_HOME>/worktrees without asking
+// the configuration where they might be: an edited or deleted worktree_roots
+// entry must not hide a directory a run recorded, and the run rows are the only
+// record of it.
+//
+// The prefix test is a cheap pre-filter, not the authority - a caller compares
+// canonical paths itself, since two spellings of one directory (/var and
+// /private/var) are equal to the filesystem but not to SQLite. It errs toward
+// returning too much for that reason.
+//
+// Rows with no recorded placement are deliberately excluded. A run predating
+// the column also predates worktree_roots, so its worktree can only be in the
+// default tree, which is walked directly.
+//
+// Run rows are never pruned, so this grows with the history of a repository
+// that uses worktree_roots. Callers therefore bound what they do with it -
+// see ActiveRunWorktreesOutside for the bounded set, and the daemon's startup
+// recovery for how the two are used.
+func (d *DB) RunWorktreesOutside(prefix string) ([]RunWorktree, error) {
+	return d.runWorktreesOutside(prefix, "")
+}
+
+// ActiveRunWorktreesOutside is RunWorktreesOutside restricted to runs that are
+// still pending or running.
+//
+// It is the bounded set: it holds a handful of rows at any time, where the full
+// set grows with a repository's whole history. That matters where the cost is
+// per row rather than per directory on disk - the startup process sweep turns
+// every entry into a path matcher tested against every candidate process - and
+// it is the right restriction there, because a worktree that is gone while
+// something is still standing in it belongs to a run that was executing when
+// this daemon started. Read it BEFORE crash recovery settles run statuses,
+// which turns exactly those runs terminal.
+func (d *DB) ActiveRunWorktreesOutside(prefix string) ([]RunWorktree, error) {
+	return d.runWorktreesOutside(prefix, ` AND status IN ('pending', 'running')`)
+}
+
+func (d *DB) runWorktreesOutside(prefix, statusClause string) ([]RunWorktree, error) {
+	bounded := strings.TrimSuffix(filepath.Clean(prefix), string(filepath.Separator)) + string(filepath.Separator)
+	rows, err := d.sql.Query(
+		`SELECT id, repo_id, worktree_dir FROM runs
+		 WHERE worktree_dir IS NOT NULL AND worktree_dir <> '' AND substr(worktree_dir, 1, ?) <> ?`+
+			statusClause+
+			` ORDER BY created_at DESC, id DESC`,
+		len(bounded), bounded,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get run worktrees outside %s: %w", prefix, err)
+	}
+	defer rows.Close()
+	var out []RunWorktree
+	for rows.Next() {
+		var wt RunWorktree
+		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Dir); err != nil {
+			return nil, fmt.Errorf("scan run worktree: %w", err)
+		}
+		out = append(out, wt)
+	}
+	return out, rows.Err()
 }
 
 // GetRun returns a run by ID.
@@ -447,6 +587,18 @@ func (d *DB) UpdateRunReviewApprovedHeadSHA(id, headSHA string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET review_approved_head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run review-approved head sha: %w", err)
+	}
+	return nil
+}
+
+// SetRunWorktreeDir records the directory this run's worktree is created in.
+// The caller writes it before the directory exists, so the run's placement is
+// durable from the moment anything can observe the run, and never changes
+// afterwards even if the operator edits worktree_roots.
+func (d *DB) SetRunWorktreeDir(id, dir string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET worktree_dir = ?, updated_at = ? WHERE id = ?`, dir, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run worktree dir: %w", err)
 	}
 	return nil
 }

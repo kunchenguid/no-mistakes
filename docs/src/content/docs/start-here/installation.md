@@ -101,4 +101,6 @@ rm -f ~/.local/bin/no-mistakes /usr/local/bin/no-mistakes
 rm -rf ~/.no-mistakes
 ```
 
+If you configured [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots), also delete the run worktree directories it placed outside `~/.no-mistakes`.
+
 On macOS, also remove `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`. On Linux, also remove `~/.config/systemd/user/no-mistakes-daemon-*.service`. On Windows, remove the `no-mistakes-daemon-*` Task Scheduler task.

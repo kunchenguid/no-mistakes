@@ -235,6 +235,23 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	return env, logFile
 }
 
+// fakeGHWithBase behaves like fakeGH but additionally records the existing
+// PR's actual base branch, so the fake `gh pr list --base X` only returns the
+// PR when X matches it - mirroring GitHub's server-side base filtering.
+func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	logFile = filepath.Join(t.TempDir(), "gh.log")
+	linkTestBinary(t, binDir, "gh")
+	env = fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":    "gh",
+		"FAKE_CLI_LOG":     logFile,
+		"FAKE_CLI_PR_URL":  prViewURL,
+		"FAKE_CLI_PR_BASE": prBase,
+	})
+	return env, logFile
+}
+
 type fakeBitbucketPRAPI struct {
 	server         *httptest.Server
 	listCalls      int

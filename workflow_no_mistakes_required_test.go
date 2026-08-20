@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -80,18 +81,51 @@ func TestNoMistakesRequiredWorkflowReadsPRBodyViaEnv(t *testing.T) {
 // TestNoMistakesRequiredWorkflowTriggersOnRelevantPREvents ensures the check
 // re-runs when the PR body is edited so a contributor cannot bypass by opening
 // clean then editing the body.
+//
+// It also pins the deliberate absence of "synchronize". The verdict is a pure
+// function of pull_request.body, and a push never changes that body, so a
+// synchronize run can only restate the last body-event verdict. What it does
+// change is the head SHA: the pipeline pushes (Push step) before it writes the
+// deterministic "## Pipeline" section (PR step), so on any PR whose body is not
+// yet compliant - every PR the pipeline adopts rather than opens itself - the
+// synchronize run pins a FAILURE check run to the new head for a body the same
+// run is about to fix. GitHub keeps that failure alongside the later `edited`
+// SUCCESS instead of replacing it, and `gh pr checks` collapses same-named
+// check runs by startedAt alone, so the pipeline's own CI monitor can read the
+// stale failure and park the run red with no push able to clear it (PR #773
+// carried check runs 96017425510 FAILURE and 96017420271 SUCCESS on one head).
+// No ruleset requires this status, so no head SHA needs a run of its own.
 func TestNoMistakesRequiredWorkflowTriggersOnRelevantPREvents(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
+	types := requiredWorkflowPullRequestTypes(t, loadRequiredWorkflow(t))
 
-	for _, typ := range []string{"opened", "edited", "synchronize", "reopened"} {
-		if !strings.Contains(content, typ) {
-			t.Errorf("workflow must trigger on pull_request type %q", typ)
+	for _, typ := range []string{"opened", "edited", "reopened"} {
+		if !slices.Contains(types, typ) {
+			t.Errorf("workflow must trigger on pull_request type %q, got %v", typ, types)
 		}
 	}
+	if slices.Contains(types, "synchronize") {
+		t.Errorf("workflow must not judge PR-body compliance on synchronize, got %v", types)
+	}
+}
+
+// requiredWorkflowPullRequestTypes reads the workflow's pull_request event
+// types from the parsed document, so a type named only in a comment cannot
+// satisfy a trigger assertion.
+func requiredWorkflowPullRequestTypes(t *testing.T, workflow requiredWorkflow) []string {
+	t.Helper()
+	pullRequest, ok := workflow.On["pull_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow on.pull_request = %T, want a mapping", workflow.On["pull_request"])
+	}
+	raw, ok := pullRequest["types"].([]any)
+	if !ok {
+		t.Fatalf("workflow on.pull_request.types = %T, want a sequence", pullRequest["types"])
+	}
+	types := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		types = append(types, fmt.Sprint(entry))
+	}
+	return types
 }
 
 // TestNoMistakesRequiredWorkflowExecutesEveryBodyEvent reproduces the
@@ -128,8 +162,8 @@ func TestNoMistakesRequiredWorkflowPreservesHeadEventCoalescing(t *testing.T) {
 		{Action: "opened", PRNumber: 549, RunID: 1001},
 		{Action: "edited", PRNumber: 549, RunID: 1002},
 		{Action: "edited", PRNumber: 549, RunID: 1003},
-		{Action: "synchronize", PRNumber: 549, RunID: 1004},
 		{Action: "reopened", PRNumber: 549, RunID: 1005},
+		{Action: "reopened", PRNumber: 549, RunID: 1006},
 	}
 	groups := make([]string, len(events))
 	for i, event := range events {
@@ -139,11 +173,11 @@ func TestNoMistakesRequiredWorkflowPreservesHeadEventCoalescing(t *testing.T) {
 		t.Fatalf("body-bearing event groups must be unique: %v", groups[:3])
 	}
 	if groups[3] != groups[4] {
-		t.Fatalf("synchronize/reopened groups = %q and %q, want preserved coalescing", groups[3], groups[4])
+		t.Fatalf("reopened groups = %q and %q, want preserved coalescing", groups[3], groups[4])
 	}
 	for _, bodyGroup := range groups[:3] {
 		if bodyGroup == groups[3] {
-			t.Fatalf("body event group %q can be canceled by a head event", bodyGroup)
+			t.Fatalf("body event group %q can be canceled by a reopen", bodyGroup)
 		}
 	}
 }
