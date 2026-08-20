@@ -103,6 +103,85 @@ func TestExecutor_GateResolutionsWithoutASelectionRecordTheDecline(t *testing.T)
 	}
 }
 
+// Recovery must preserve the same decision semantics as the live executor.
+// Otherwise a daemon restart while parked would silently reopen the original
+// drift path for approve, skip, and abort.
+func TestExecutor_RecoveredGateResolutionsWithoutASelectionRecordTheDecline(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action types.ApprovalAction
+	}{
+		{"approve", types.ActionApprove},
+		{"skip", types.ActionSkip},
+		{"abort", types.ActionAbort},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetStepFindings(stepResult.ID, declinedTestFindings); err != nil {
+				t.Fatal(err)
+			}
+			findings := declinedTestFindings
+			if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			exec := NewExecutor(database, p, nil, nil, []Step{newApprovalStep(types.StepTest, declinedTestFindings)}, nil)
+			done := make(chan error, 1)
+			go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if err := exec.Respond(types.StepTest, tc.action, nil); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("recovered gate never accepted the response")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovered executor timed out")
+			}
+
+			rounds, err := database.GetRoundsByStep(stepResult.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rounds) != 1 {
+				t.Fatalf("expected 1 round, got %d", len(rounds))
+			}
+			if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceUserDeclined {
+				t.Fatalf("selection_source = %v, want %q", rounds[0].SelectionSource, db.RoundSelectionSourceUserDeclined)
+			}
+			if rounds[0].SelectedFindingIDs == nil || *rounds[0].SelectedFindingIDs != db.DeclinedSelectionJSON {
+				t.Fatalf("selected_finding_ids = %v, want %q", rounds[0].SelectedFindingIDs, db.DeclinedSelectionJSON)
+			}
+		})
+	}
+}
+
 // A round that produced nothing to decide about must not be labelled a
 // decision, or every clean step would render as a decline.
 func TestExecutor_GateResolutionWithNoFindingsRecordsNoDecision(t *testing.T) {

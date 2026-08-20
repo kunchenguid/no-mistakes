@@ -614,8 +614,8 @@ func goldForRecordedFinding(finding types.Finding, source, kind string) FindingG
 // hasRecordedDecision reports whether the gate resolution for this round was
 // actually persisted. Only then can an unselected finding be read as "the human
 // looked at this and chose not to fix it", which is what makes a shipped-unfixed
-// false-positive label evidence rather than a guess. An unknown or aborted round
-// records no such choice, so its findings stay unlabeled.
+// false-positive label evidence rather than a guess. A legacy or unresolved round
+// with no persisted decision records no such choice, so its findings stay unlabeled.
 func hasRecordedDecision(decision Decision) bool {
 	if strings.TrimSpace(decision.SelectionSource) != "" {
 		return true

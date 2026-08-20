@@ -22,6 +22,14 @@ They instead require an executable interface or a typed or normalized semantic m
 Reading a file remains valid when that file is itself an owned output or data contract, and deterministic tests may inspect the final emitted agent prompt as a generated interface; model interpretation is reserved for development-only evaluation.
 Review flags every newly added violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic, without expanding the change into a repository-wide test cleanup.
 
+## Finding decision history
+
+When a human resolves a findings gate with Approve, Skip, or Abort without selecting a fix, no-mistakes records that the round's findings were declined. A gate with no findings records no decision. When the human selects only some findings to fix, the unselected complement is recorded as declined; findings merely left out by automatic filtering remain undecided.
+
+Review, Test, Document, and Lint agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
+
+This context is advisory and fails open. It tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but it does not block a step or commit and is not a reversion detector. Rebase and CI fix prompts do not receive this decision history.
+
 ## Intent
 
 Uses explicit intent when a run provides it, including exact explicit intent inherited by a rerun, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
@@ -89,7 +97,7 @@ AI code review of your diff.
 
 **Approval:** required if any finding has severity `error` or `warning`. Findings with `action: ask-user` pause for approval instead of entering the normal auto-fix loop. This is for findings that challenge the author's intent, not routine correctness, reliability, or security fixes that may need to re-add a small amount of deleted logic. With the default `auto_fix.review: 0`, blocking review findings park for approval even when their action is `auto-fix`; setting repo or global `auto_fix.review` above `0` re-enables the automatic review fix loop for eligible `auto-fix` findings. Findings with `action: no-op` are informational only. The shared [finding-action model](/no-mistakes/concepts/auto-fix/#finding-actions) owns the behavior for a missing `action`.
 
-**Auto-fix:** the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and which findings the user left unselected.
+**Auto-fix:** the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and the shared [finding decision history](#finding-decision-history), including earlier fix summaries for this step.
 The fixer applies all selected fixes before running one focused verification limited to the changed area, and it is instructed not to run the complete repository test or lint suite during the fix round.
 The dedicated Test and Lint steps after review remain the authoritative gates, although their coverage may be focused when commands are unconfigured.
 Follow-up review passes use the history to avoid re-reporting user-ignored findings unless the code now has a materially different problem.
@@ -118,7 +126,7 @@ Local Test is never a repository-wide regression-suite substitute; broad regress
 
 **Approval:** test findings with `action: ask-user` pause for approval, including missing-evidence warnings for user intent. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
-**Auto-fix:** the agent receives the previous test findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles. Repair mode reproduces the specific failure, applies a root-cause fix, and re-runs only focused verification - not a complete-suite confirmation - then the step's configured baseline (if any) and evidence path run again.
+**Auto-fix:** the agent receives the previous test findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and the shared [finding decision history](#finding-decision-history), including earlier fix summaries for this step. Repair mode reproduces the specific failure, applies a root-cause fix, and re-runs only focused verification - not a complete-suite confirmation - then the step's configured baseline (if any) and evidence path run again.
 
 **Default auto-fix limit:** `3`.
 
@@ -136,7 +144,7 @@ Updates matching documentation for code changes and reports only unresolved gaps
 - Returns findings only for unresolved documentation gaps or human judgment calls
 - Requires approval whenever any unresolved documentation finding is returned, including `info` findings
 
-**Auto-fix:** documentation fixes happen during the initial document pass. Unresolved findings pause for approval instead of starting another automatic document/fix loop. If you manually trigger a fix from the TUI or AXI interface, the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings, and sanitized prior-round history.
+**Auto-fix:** documentation fixes happen during the initial document pass. Unresolved findings pause for approval instead of starting another automatic document/fix loop. If you manually trigger a fix from the TUI or AXI interface, the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings, and the shared [finding decision history](#finding-decision-history).
 
 **Default auto-fix limit:** not used for automatic document follow-up loops.
 
@@ -153,7 +161,7 @@ Runs linters and static analysis.
 `action: no-op` findings are informational only.
 Combined-pass lint findings use the same gate: `error` and `warning` findings pause for a decision, while `info` findings do not.
 
-**Auto-fix:** when `commands.lint` is configured, the lint step follows the same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and a sanitized history of prior rounds for that step, including earlier fix summaries and any findings the user left unselected in prior approval cycles, then lint re-runs.
+**Auto-fix:** when `commands.lint` is configured, the lint step follows the same pattern as test - the agent fixes `action: auto-fix` issues using the previous findings plus any per-finding user notes, any selected user-authored findings from the TUI or AXI interface, and the shared [finding decision history](#finding-decision-history), including earlier fix summaries for this step, then lint re-runs.
 When `commands.lint` is empty, unresolved findings from the combined pass pause for approval instead of starting another automatic lint/fix loop, because the agent already attempted safe fixes during housekeeping.
 
 **Default auto-fix limit:** `3`.
