@@ -587,6 +587,53 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	if got := sessions.Load(); got != 2 {
 		t.Fatalf("sessions = %d, want 2", got)
 	}
+	t.Logf("native format=%v; fallback format=%v; validated output=%s", nativeFormatSeen.Load(), fallbackFormatSeen.Load(), result.Output)
+}
+
+func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testing.T) {
+	var sessions atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"responseBody":"Thinking may not be enabled when tool_choice forces tool use."}}}}`)
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":42}"}]}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err == nil {
+		t.Fatalf("Run unexpectedly succeeded with result %+v", result)
+	}
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
+	}
+	if !strings.Contains(err.Error(), "summary must be string") {
+		t.Fatalf("error = %q, want original schema's string constraint", err)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want 2", got)
+	}
+	t.Logf("two attempts completed; invalid fallback rejected: %v", err)
 }
 
 func TestOpencodeAgent_UnrelatedThinkingLimitationDoesNotFallback(t *testing.T) {
