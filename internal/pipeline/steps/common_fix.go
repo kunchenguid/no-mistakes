@@ -141,9 +141,10 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // and the directory is removed afterwards, so nothing persists in the
 // repository, the user's configuration, or the daemon's environment.
 //
-// Reach is deliberately narrow. Only commitAgentFixes (Review, Lint, Document)
-// and the Push step's leftover-worktree commit route here, because those are the
-// two commits the pipeline authors from its own agents' and formatter's output.
+// Reach is deliberately narrow. Only commitAgentFixes (Review, Test, Document,
+// Lint) and the Push step's leftover-worktree commit route here, because those
+// are the two commits the pipeline authors from its own agents' and formatter's
+// output.
 // CI repair commits, the generic git runner, and every user-authored commit keep
 // hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
 // remain the authoritative quality checks for what these commits contain.
