@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,6 +116,30 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	return nil
 }
 
+// commitPipelineCorrection creates a pipeline-authored correction commit with
+// hook verification bypassed, and is the single owner of that bypass.
+//
+// A correction commit is machine-authored: the pipeline records the change its
+// own fix agents or its own formatter produced, inside the throwaway run
+// worktree. That worktree is freshly carved from the bare gate repo, so tracked
+// hooks that depend on generated untracked runtime files cannot run there - the
+// canonical case is a repository whose shared config sets core.hooksPath=.husky
+// while the tracked .husky/pre-commit sources the generated .husky/_/husky.sh
+// that no install step ever created in this worktree. The hook exits nonzero,
+// the correction commit fails, and the whole run dies on setup state that says
+// nothing about the change under review.
+//
+// Reach is deliberately narrow. Only commitAgentFixes (Review, Lint, Document)
+// and the Push step's leftover-worktree commit route here, because those are the
+// two commits the pipeline authors from its own agents' and formatter's output.
+// CI repair commits, the generic git runner, and every user-authored commit keep
+// hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
+// remain the authoritative quality checks for what these commits contain.
+func commitPipelineCorrection(ctx context.Context, workDir, message string) error {
+	_, err := git.Run(ctx, workDir, "commit", "--no-verify", "-m", message)
+	return err
+}
+
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
@@ -138,7 +163,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "--no-verify", "-m", commitMessage); err != nil {
+	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
