@@ -476,6 +476,37 @@ func TestGetChecksReturnsNilWhenNoRunsExistYet(t *testing.T) {
 	}
 }
 
+func TestGetChecksSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t *testing.T) {
+	t.Parallel()
+
+	// Both runs share the PR's current head_sha (e.g. a manual UI re-run), and
+	// the list response deliberately puts the higher-ID (newer) run second, so
+	// only explicit ID selection - not array order - can find it.
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
+			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"success","head_sha":"abc123"}]}`,
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "7"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("GetChecks() = %+v, want the newer run's passing check", checks)
+	}
+}
+
 func TestFetchFailedCheckLogsStripsHeaderAndTargetsFailedJob(t *testing.T) {
 	t.Parallel()
 
@@ -500,6 +531,34 @@ func TestFetchFailedCheckLogsStripsHeaderAndTargetsFailedJob(t *testing.T) {
 	}
 	if logs != "exit status 1\nJob 'build' failed" {
 		t.Fatalf("FetchFailedCheckLogs() = %q, want stripped log body", logs)
+	}
+}
+
+func TestFetchFailedCheckLogsSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"},` +
+				`{"id":"25","status":"completed","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/25/jobs": {
+			stdout: `{"jobs":[{"id":25,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
+		},
+		"tea actions runs logs 25 --job 25 --repo owner/repo --login work": {
+			stdout: "Logs for job 25:\n---\nexit status 1\nJob 'build' failed\n",
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	logs, err := host.FetchFailedCheckLogs(context.Background(), &scm.PR{Number: "7"}, "", "", []string{"build"})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckLogs() error = %v", err)
+	}
+	if logs != "exit status 1\nJob 'build' failed" {
+		t.Fatalf("FetchFailedCheckLogs() = %q, want stripped log body from the higher-ID run", logs)
 	}
 }
 

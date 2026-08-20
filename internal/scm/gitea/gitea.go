@@ -323,7 +323,8 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if len(runs) == 0 {
 		return nil, nil
 	}
-	jobs, err := h.runJobs(ctx, runs[0].ID)
+	run := mostRecentRun(runs)
+	jobs, err := h.runJobs(ctx, run.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -338,6 +339,36 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, nil
 	}
 	return jobsToChecks(jobs), nil
+}
+
+// mostRecentRun selects the run with the highest numeric ID rather than
+// trusting `tea actions runs list`'s array order. Gitea assigns run IDs
+// monotonically, but the list order is not documented as newest-first, and a
+// branch can have more than one run sharing the same head_sha (e.g. a manual
+// UI re-run) - trusting order alone could silently read a stale run's
+// checks. A run whose ID does not parse as an integer sorts last so it can
+// never mask a numerically comparable run.
+func mostRecentRun(runs []giteaRunSummary) giteaRunSummary {
+	best := runs[0]
+	bestID, bestOK := parseGiteaRunID(best.ID)
+	for _, run := range runs[1:] {
+		id, ok := parseGiteaRunID(run.ID)
+		if !ok {
+			continue
+		}
+		if !bestOK || id > bestID {
+			best, bestID, bestOK = run, id, true
+		}
+	}
+	return best
+}
+
+func parseGiteaRunID(id string) (int64, bool) {
+	n, err := strconv.ParseInt(strings.TrimSpace(id), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func anyJobMatchesHeadSHA(jobs []giteaJob, sha string) bool {
@@ -374,7 +405,8 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 	if err != nil || len(runs) == 0 {
 		return "", nil
 	}
-	jobs, err := h.runJobs(ctx, runs[0].ID)
+	run := mostRecentRun(runs)
+	jobs, err := h.runJobs(ctx, run.ID)
 	if err != nil {
 		return "", nil
 	}
@@ -382,7 +414,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 	if jobID == 0 {
 		return "", nil
 	}
-	logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", runs[0].ID,
+	logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
 		"--job", strconv.Itoa(jobID),
 		"--repo", h.repoSlug,
 		"--login", h.login,
