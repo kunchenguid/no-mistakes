@@ -60,6 +60,21 @@ CREATE TABLE IF NOT EXISTS step_results (
     auto_fix_limit   INTEGER
 );
 
+-- A validation checkpoint is a mechanical digest of the authoritative run,
+-- step, round, log, and test-artifact evidence at the exact commit that
+-- completed lint. It contains no generated summary or agent-authored claim.
+CREATE TABLE IF NOT EXISTS validation_checkpoints (
+    run_id          TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    version         INTEGER NOT NULL,
+    validated_sha   TEXT NOT NULL,
+    base_sha        TEXT NOT NULL,
+    config_hash     TEXT NOT NULL,
+    intent_hash     TEXT NOT NULL,
+    evidence_hashes TEXT NOT NULL,
+    reused_from_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    created_at      INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_rounds (
     id                   TEXT PRIMARY KEY,
     step_result_id       TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,

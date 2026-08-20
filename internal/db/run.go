@@ -597,6 +597,10 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 // in preserved. Callers use preserved only after independently proving a run
 // can be reconstructed safely.
 func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}) (int, error) {
+	return d.RecoverStaleRunsExceptWithCheckpoints(errMsg, preserved, nil)
+}
+
+func (d *DB) RecoverStaleRunsExceptWithCheckpoints(errMsg string, preserved, preservedCheckpoints map[string]struct{}) (int, error) {
 	ts := now()
 
 	tx, err := d.sql.Begin()
@@ -621,6 +625,26 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stale steps: %w", err)
+	}
+
+	checkpointPlaceholders, checkpointIDs := recoveryRunIDExclusionClause(preservedCheckpoints)
+	checkpointArgs := []any{types.RunPending, types.RunRunning}
+	checkpointArgs = append(checkpointArgs, args...)
+	checkpointArgs = append(checkpointArgs, checkpointIDs...)
+	if _, err := tx.Exec(`DELETE FROM validation_checkpoints WHERE run_id IN (
+		SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`
+	)`+checkpointPlaceholders, checkpointArgs...); err != nil {
+		return 0, fmt.Errorf("invalidate stale validation checkpoints: %w", err)
+	}
+
+	verifiedPlaceholders, verifiedIDs := recoveryInclusionClause(preservedCheckpoints)
+	if verifiedPlaceholders != "" {
+		verifiedArgs := []any{ts, types.RunPending, types.RunRunning}
+		verifiedArgs = append(verifiedArgs, verifiedIDs...)
+		if _, err := tx.Exec(`UPDATE runs SET terminal_head_verified_at = ?
+			WHERE status IN (?, ?)`+verifiedPlaceholders, verifiedArgs...); err != nil {
+			return 0, fmt.Errorf("verify interrupted CI recovery heads: %w", err)
+		}
 	}
 
 	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
@@ -663,6 +687,24 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 		args = append(args, id)
 	}
 	return " AND id NOT IN (" + strings.Join(placeholders, ", ") + ")", args
+}
+
+func recoveryRunIDExclusionClause(preserved map[string]struct{}) (string, []any) {
+	clause, args := recoveryExclusionClause(preserved)
+	return strings.Replace(clause, "id NOT IN", "run_id NOT IN", 1), args
+}
+
+func recoveryInclusionClause(included map[string]struct{}) (string, []any) {
+	if len(included) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(included))
+	placeholders := make([]string, 0, len(included))
+	for id := range included {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	return " AND id IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or

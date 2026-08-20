@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,11 +62,13 @@ type RunManager struct {
 	// permanently discard the older one's payload. The critical section
 	// contains no blocking operation and no I/O, so hold time is
 	// O(subscribers) memory writes.
-	subMu          sync.Mutex
-	subscribers    map[string][]*eventMailbox // runID → subscriber mailboxes
-	stateRevs      map[string]int64           // runID → monotonic state revision
-	completedRuns  map[string]bool            // runIDs whose goroutines have finished
-	completedOrder []string                   // insertion order for FIFO eviction
+	subMu                    sync.Mutex
+	subscribers              map[string][]*eventMailbox // runID → subscriber mailboxes
+	stateRevs                map[string]int64           // runID → monotonic state revision
+	completedRuns            map[string]bool            // runIDs whose goroutines have finished
+	completedOrder           []string                   // insertion order for FIFO eviction
+	recoveredWorktreeCleanup func(string, string) error
+	recoveredEvidenceCleanup func(*config.Config, string)
 }
 
 // maxSubscribersPerRun bounds the global mailbox footprint: queued bytes can
@@ -92,22 +95,24 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 }
 
 type recoveredRunPlan struct {
-	run     *db.Run
-	repo    *db.Repo
-	workDir string
-	gateDir string
-	cfg     *config.Config
-	agent   agent.Agent
-	steps   []pipeline.Step
+	run            *db.Run
+	repo           *db.Repo
+	workDir        string
+	gateDir        string
+	cfg            *config.Config
+	agent          agent.Agent
+	steps          []pipeline.Step
+	resumeDelivery bool
 }
 
-func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+func (m *RunManager) recoverableParkedRuns(ctx context.Context) ([]recoveredRunPlan, map[string]struct{}) {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
 		slog.Error("failed to list active runs for recovery", "error", err)
-		return nil
+		return nil, nil
 	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
+	preservedCheckpoints := make(map[string]struct{})
 	branchCounts := make(map[string]int, len(runs))
 	for _, run := range runs {
 		branchCounts[run.RepoID+"\x00"+run.Branch]++
@@ -119,17 +124,25 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		}
 		plan, err := m.prepareRecoveredRun(ctx, run)
 		if err != nil {
+			if errors.Is(err, pipeline.ErrInterruptedCIMonitor) {
+				preservedCheckpoints[run.ID] = struct{}{}
+			}
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
 		}
 		plans = append(plans, *plan)
 	}
-	return plans
+	return plans, preservedCheckpoints
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
-		return nil, fmt.Errorf("run is not a parked running run")
+	if run == nil || run.Branch == "" || (run.Status != types.RunPending && run.Status != types.RunRunning) {
+		return nil, fmt.Errorf("run is not active")
+	}
+	parkedGate := run.Status == types.RunRunning && run.AwaitingAgentSince != nil
+	deliveryCheckpoint := run.AwaitingAgentSince == nil
+	if !parkedGate && !deliveryCheckpoint {
+		return nil, fmt.Errorf("run has no recoverable boundary")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil {
@@ -156,12 +169,29 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}
 
 	execSteps := m.steps()
-	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
-		return nil, err
-	}
 	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
 	if err != nil {
 		return nil, err
+	}
+	// The checkpoint was created after startRun resolved auto/fallback agents,
+	// so recovery must fingerprint the same effective configuration rather than
+	// the unresolved on-disk selector.
+	if !steps.IsDemoMode() {
+		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+			return nil, err
+		}
+	}
+	if parkedGate {
+		if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
+			return nil, err
+		}
+	} else {
+		if status, statusErr := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all"); statusErr != nil || strings.TrimSpace(status) != "" {
+			return nil, fmt.Errorf("delivery checkpoint worktree is dirty or unreadable")
+		}
+		if err := pipeline.ValidateRecoverableDeliveryRun(ctx, m.db, m.paths, cfg, run, execSteps); err != nil {
+			return nil, err
+		}
 	}
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
 	if err != nil {
@@ -174,13 +204,14 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		}
 	}
 	return &recoveredRunPlan{
-		run:     run,
-		repo:    repo,
-		workDir: workDir,
-		gateDir: gateDir,
-		cfg:     cfg,
-		agent:   ag,
-		steps:   execSteps,
+		run:            run,
+		repo:           repo,
+		workDir:        workDir,
+		gateDir:        gateDir,
+		cfg:            cfg,
+		agent:          ag,
+		steps:          execSteps,
+		resumeDelivery: deliveryCheckpoint,
 	}, nil
 }
 
@@ -338,23 +369,14 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				errMsg := fmt.Sprintf("internal panic: %v", recovered)
-				plan.run.Status = types.RunFailed
-				plan.run.Error = &errMsg
-				if err := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); err != nil {
+				if err := m.terminalizeRecoveredRunAfterError(plan, errors.New(errMsg)); err != nil {
 					slog.Error("failed to update recovered run after panic", "run_id", plan.run.ID, "error", err)
 				}
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
-			}
-			// A recovered run is a finished run too. This is the second of the
-			// two completion boundaries, and leaving it out is what let a run
-			// resumed after a daemon restart keep its empty evidence directory
-			// until some later run or restart happened to sweep it.
-			m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+			m.cleanupRecoveredRunMaterial(plan)
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
@@ -362,14 +384,15 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.mu.Unlock()
 		}()
 
-		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
-			if plan.run.Status == types.RunRunning {
-				errMsg := err.Error()
-				plan.run.Status = types.RunFailed
-				plan.run.Error = &errMsg
-				if dbErr := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); dbErr != nil {
-					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
-				}
+		var executionErr error
+		if plan.resumeDelivery {
+			executionErr = executor.ResumeDelivery(runCtx, plan.run, plan.repo, plan.workDir)
+		} else {
+			executionErr = executor.Resume(runCtx, plan.run, plan.repo, plan.workDir)
+		}
+		if err := executionErr; err != nil {
+			if dbErr := m.terminalizeRecoveredRunAfterError(plan, err); dbErr != nil {
+				slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 			}
 			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
 		}
@@ -389,6 +412,74 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		addRunPerformanceSummary(m.db, plan.run.ID, fields)
 		telemetry.Track("run", fields)
 	}()
+}
+
+func (m *RunManager) terminalizeRecoveredRunAfterError(plan recoveredRunPlan, cause error) error {
+	durable, err := m.db.GetRun(plan.run.ID)
+	if err != nil {
+		return err
+	}
+	switch durable.Status {
+	case types.RunCompleted, types.RunFailed, types.RunCancelled:
+		plan.run.Status = durable.Status
+		plan.run.Error = durable.Error
+		return nil
+	case types.RunPending, types.RunRunning:
+		return m.failRecoveredRun(plan, cause)
+	default:
+		return fmt.Errorf("recovered run has unknown durable status %q", durable.Status)
+	}
+}
+
+func (m *RunManager) recoveredRunCleanupAllowed(runID string) bool {
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		return false
+	}
+	return run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled
+}
+
+func (m *RunManager) cleanupRecoveredRunMaterial(plan recoveredRunPlan) {
+	if !m.recoveredRunCleanupAllowed(plan.run.ID) {
+		return
+	}
+	cleanupWorktree := m.recoveredWorktreeCleanup
+	if cleanupWorktree == nil {
+		cleanupWorktree = func(gateDir, workDir string) error {
+			return git.WorktreeRemove(context.Background(), gateDir, workDir)
+		}
+	}
+	if err := cleanupWorktree(plan.gateDir, plan.workDir); err != nil {
+		slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+	}
+	if m.recoveredEvidenceCleanup != nil {
+		m.recoveredEvidenceCleanup(plan.cfg, plan.run.ID)
+	} else {
+		m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+	}
+}
+
+func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {
+	errMsg := cause.Error()
+	changed, err := m.db.FailActiveRecoveredRun(plan.run.ID, errMsg, plan.resumeDelivery)
+	if err != nil {
+		return err
+	}
+	if changed {
+		plan.run.Status = types.RunFailed
+		plan.run.Error = &errMsg
+		return nil
+	}
+	durable, err := m.db.GetRun(plan.run.ID)
+	if err != nil {
+		return err
+	}
+	if durable.Status != types.RunCompleted && durable.Status != types.RunFailed && durable.Status != types.RunCancelled {
+		return fmt.Errorf("recovered run remained active after terminalization race")
+	}
+	plan.run.Status = durable.Status
+	plan.run.Error = durable.Error
+	return nil
 }
 
 func agentListsEqual(a, b []types.AgentName) bool {
@@ -981,6 +1072,20 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				trackStartFailure("gate_not_neutralized")
 				return "", err
 			}
+		}
+	}
+
+	// A retry with the unmodified step plan may reuse the immediately preceding
+	// run's completed validation when every mechanical checkpoint input still
+	// matches. The pipeline owns the proof and cloned step history; this setup
+	// path merely offers the fresh run/worktree/config to that authoritative
+	// owner. Any rejection leaves the new run empty so Execute follows its
+	// existing full-validation path.
+	if len(skipSteps) == 0 {
+		if sourceRunID, reuseErr := pipeline.PrepareValidationReuse(ctx, m.db, m.paths, cfg, run, wtDir); reuseErr != nil {
+			slog.Debug("validation checkpoint not reused", "run_id", run.ID, "reason", reuseErr)
+		} else {
+			slog.Info("resuming delivery from validated checkpoint", "run_id", run.ID, "source_run_id", sourceRunID, "head", run.HeadSHA)
 		}
 	}
 

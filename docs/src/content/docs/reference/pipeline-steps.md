@@ -158,6 +158,14 @@ When `commands.lint` is empty, unresolved findings from the combined pass pause 
 
 **Default auto-fix limit:** `3`.
 
+### Reusing validation after a delivery failure
+
+Lint completion is the boundary between local validation and delivery. At that boundary, no-mistakes records a mechanical checkpoint only when Intent through Lint have complete step, round, log, and test-artifact evidence. The checkpoint binds the exact validated commit, base commit, effective pipeline configuration, run intent, no-mistakes build, and a SHA-256 hash for every required evidence record and file. It contains no AI-generated checkpoint summary and no later agent call is used to certify it.
+
+When the immediately preceding run on the same branch failed during Push, PR, or CI, an unchanged rerun can copy that validation history and continue at Push. Push, PR, and CI still execute through their ordinary implementations, including remote re-reading, force-with-lease, existing-PR lookup, and CI observation. The new run remains separately auditable and records which prior run supplied its checkpoint.
+
+Reuse fails closed to the ordinary full pipeline when any bound value is absent, malformed, or different. That includes a changed or rebased head, changed base, changed effective config or intent, a different no-mistakes build, changed review authority or step/round/log/artifact evidence, an uncommitted agent or formatter edit, returned branch custody, an altered skip plan, or any newer/concurrent same-branch run. A daemon crash after checkpoint persistence is handled by the same proof: a clean active worktree resumes at its first pending delivery step, and an interrupted Push or PR operation can be rearmed through its ordinary idempotent implementation. An in-progress CI monitor is not rearmed because its timeout and repair budget are intentionally process-local; that active run fails through normal crash recovery, and an explicit rerun may still reuse the exact validation checkpoint. Ambiguous, dirty, or unverifiable state always follows normal crash failure behavior. The [daemon crash-recovery section](/no-mistakes/concepts/daemon/#crash-recovery) owns startup ordering; this section owns reuse eligibility and invalidation.
+
 ## Push
 
 Pushes the validated branch to the configured push target.

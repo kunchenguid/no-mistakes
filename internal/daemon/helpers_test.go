@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
@@ -21,6 +22,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	buildinfo.Version = "v0.0.0-test"
+	buildinfo.Commit = strings.Repeat("a", 40)
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
@@ -38,6 +41,18 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "daemon":
 		if err := Run(); err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "delivery-resume-daemon":
+		p := paths.WithRoot(os.Getenv("NM_HOME"))
+		database, err := db.Open(p.DB())
+		if err == nil {
+			err = RunWithOptions(p, database, nil)
+			_ = database.Close()
+		}
+		if err != nil {
 			_, _ = os.Stderr.WriteString(err.Error() + "\n")
 			os.Exit(2)
 		}

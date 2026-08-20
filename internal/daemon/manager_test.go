@@ -2,23 +2,303 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // --- RunManager integration tests ---
+
+type deliveryResumeProbe struct {
+	calls       [9]atomic.Int32
+	failAt      types.StepName
+	failureLive atomic.Bool
+}
+
+type deliveryResumeProbeStep struct {
+	name  types.StepName
+	probe *deliveryResumeProbe
+}
+
+type evidenceWritingProbeStep struct {
+	*deliveryResumeProbeStep
+	path string
+}
+
+func (s *evidenceWritingProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(s.path, []byte("keep"), 0o644); err != nil {
+		return nil, err
+	}
+	return s.deliveryResumeProbeStep.Execute(sctx)
+}
+
+func (s *deliveryResumeProbeStep) Name() types.StepName { return s.name }
+
+func (s *deliveryResumeProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.probe.calls[s.name.Order()-1].Add(1)
+	if s.name == s.probe.failAt && s.probe.failureLive.CompareAndSwap(true, false) {
+		return nil, errors.New("temporary delivery failure")
+	}
+	outcome := &pipeline.StepOutcome{}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
+}
+
+func TestRerunResumesValidatedRunAtDeliveryBoundary(t *testing.T) {
+	for _, failAt := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
+		t.Run(string(failAt), func(t *testing.T) {
+			probe := &deliveryResumeProbe{failAt: failAt}
+			probe.failureLive.Store(true)
+			p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				result := make([]pipeline.Step, 0, len(types.AllSteps()))
+				for _, name := range types.AllSteps() {
+					result = append(result, &deliveryResumeProbeStep{name: name, probe: probe})
+				}
+				return result
+			})
+
+			repoID := "delivery-resume-" + string(failAt)
+			_, headSHA := setupTestGitRepo(t, p, d, repoID)
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			var first ipc.PushReceivedResult
+			if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				Gate: p.RepoDir(repoID), Ref: "refs/heads/main",
+				Old: strings.Repeat("0", 40), New: headSHA,
+			}, &first); err != nil {
+				t.Fatal(err)
+			}
+			if run := waitForRunTerminalState(t, d, first.RunID); run.Status != types.RunFailed {
+				t.Fatalf("source run status = %s, want failed", run.Status)
+			}
+
+			var retry ipc.RerunResult
+			if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: "main"}, &retry); err != nil {
+				t.Fatal(err)
+			}
+			if retry.RunID == first.RunID {
+				t.Fatal("rerun did not create a separately auditable delivery attempt")
+			}
+			if run := waitForRunTerminalState(t, d, retry.RunID); run.Status != types.RunCompleted {
+				t.Fatalf("retry status = %s, want completed (error %v)", run.Status, run.Error)
+			}
+
+			for _, name := range validationStepNamesForTest() {
+				if got := probe.calls[name.Order()-1].Load(); got != 1 {
+					t.Errorf("validation step %s executed %d times, want 1", name, got)
+				}
+			}
+			for _, name := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
+				want := int32(1)
+				if name.Order() <= failAt.Order() {
+					want = 2
+				}
+				if got := probe.calls[name.Order()-1].Load(); got != want {
+					t.Errorf("delivery step %s executed %d times, want %d", name, got, want)
+				}
+			}
+		})
+	}
+}
+
+func validationStepNamesForTest() []types.StepName {
+	return []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
+}
+
+func TestExecutorFailedMemoryStillTerminalizesPendingDeliveryRun(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/tmp/recovered-delivery", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &db.ValidationCheckpoint{
+		RunID: run.ID, Version: 1, ValidatedSHA: run.HeadSHA, BaseSHA: run.BaseSHA,
+		ConfigHash: strings.Repeat("c", 64), IntentHash: strings.Repeat("d", 64),
+		EvidenceHashes: map[string]string{"artifact-manifest": strings.Repeat("e", 64)},
+	}
+	if err := database.PutValidationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	run.Status = types.RunFailed
+	manager := NewRunManager(database, nil, nil)
+	if err := manager.terminalizeRecoveredRunAfterError(recoveredRunPlan{run: run, resumeDelivery: true}, errors.New("checkpoint drifted")); err != nil {
+		t.Fatal(err)
+	}
+	gotRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCheckpoint, err := database.GetValidationCheckpoint(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRun.Status != types.RunFailed || gotCheckpoint != nil {
+		t.Fatalf("recovered run status = %s, checkpoint = %#v", gotRun.Status, gotCheckpoint)
+	}
+}
+
+func TestFailRecoveredRunKeepsActiveMemoryWhenTerminalizationFails(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo("/tmp/recovered-terminalization", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, nil, nil)
+	if err := manager.failRecoveredRun(recoveredRunPlan{run: run, resumeDelivery: true}, errors.New("checkpoint drifted")); err == nil {
+		t.Fatal("failRecoveredRun() unexpectedly succeeded")
+	}
+	if run.Status != types.RunPending || run.Error != nil {
+		t.Fatalf("in-memory run status = %s, error = %v", run.Status, run.Error)
+	}
+}
+
+func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
+	root := t.TempDir()
+	p := paths.WithRoot(root)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, headSHA := setupTestGitRepo(t, p, database, "recovered-cleanup")
+	workDir := p.WorktreeDir(repo.ID, "recovered-run")
+	if err := git.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), workDir, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	evidencePath := filepath.Join(p.RunEvidenceDir(cfg.Test.Evidence.LocalRoot, run.ID), "recovery-evidence")
+	probe := &deliveryResumeProbe{failAt: types.StepPush}
+	probe.failureLive.Store(true)
+	execSteps := make([]pipeline.Step, 0, len(types.AllSteps()))
+	for _, name := range types.AllSteps() {
+		step := &deliveryResumeProbeStep{name: name, probe: probe}
+		if name == types.StepTest {
+			execSteps = append(execSteps, &evidenceWritingProbeStep{deliveryResumeProbeStep: step, path: evidencePath})
+		} else {
+			execSteps = append(execSteps, step)
+		}
+	}
+	if err := pipeline.NewExecutor(database, p, cfg, agent.NewNoop(), execSteps, nil).Execute(context.Background(), run, repo, workDir); err == nil {
+		t.Fatal("initial delivery failure unexpectedly succeeded")
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(results[types.StepPush.Order()-1].ID, types.StepStatusPending); err != nil {
+		t.Fatal(err)
+	}
+	injector, err := sql.Open("sqlite", p.DB()+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injector.Exec(`CREATE TRIGGER reject_recovered_terminal_write
+		BEFORE UPDATE OF status ON runs
+		WHEN OLD.id = '` + run.ID + `' AND NEW.status = 'failed'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected recovered terminal failure');
+		END`); err != nil {
+		injector.Close()
+		t.Fatal(err)
+	}
+	if err := injector.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probe.failureLive.Store(true)
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	var worktreeCleanupCalls atomic.Int32
+	var evidenceCleanupCalls atomic.Int32
+	manager.recoveredWorktreeCleanup = func(string, string) error {
+		worktreeCleanupCalls.Add(1)
+		return nil
+	}
+	manager.recoveredEvidenceCleanup = func(*config.Config, string) {
+		evidenceCleanupCalls.Add(1)
+	}
+	plan := recoveredRunPlan{
+		run: run, repo: repo, cfg: cfg, agent: agent.NewNoop(), steps: execSteps,
+		workDir: workDir, gateDir: p.RepoDir(repo.ID), resumeDelivery: true,
+	}
+	manager.resumeRecoveredRun(plan)
+	manager.wg.Wait()
+	if worktreeCleanupCalls.Load() != 0 || evidenceCleanupCalls.Load() != 0 {
+		t.Fatalf("cleanup calls = worktree %d, evidence %d", worktreeCleanupCalls.Load(), evidenceCleanupCalls.Load())
+	}
+	if _, err := os.Stat(workDir); err != nil {
+		t.Fatalf("recovery worktree removed: %v", err)
+	}
+	if _, err := os.Stat(evidencePath); err != nil {
+		t.Fatalf("recovery evidence removed: %v", err)
+	}
+	durable, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptCheckpoint, err := database.GetValidationCheckpoint(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable.Status != types.RunRunning || keptCheckpoint == nil {
+		t.Fatalf("durable status = %s, checkpoint = %#v", durable.Status, keptCheckpoint)
+	}
+}
 
 func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
