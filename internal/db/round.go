@@ -5,7 +5,24 @@ import "fmt"
 const (
 	RoundSelectionSourceUser    = "user"
 	RoundSelectionSourceAutoFix = "auto_fix"
+	// RoundSelectionSourceUserDeclined records that a human resolved the
+	// round's approval gate without selecting any finding to fix: approve,
+	// skip, or abort. Before this existed, those three resolutions wrote no
+	// finding-level state at all, so "the human declined every finding" and
+	// "there were no findings" were the same row and no later step or run
+	// could tell them apart. The decline itself is still stored the way a
+	// partial selection stores one, as the complement of
+	// SelectedFindingIDs, so this source is written with an explicit empty
+	// JSON array rather than a NULL.
+	RoundSelectionSourceUserDeclined = "user_declined"
 )
+
+// DeclinedSelectionJSON is the SelectedFindingIDs value written alongside
+// RoundSelectionSourceUserDeclined. It must be an empty JSON *array* and not
+// an empty string: readers derive the declined set as
+// findings_json minus selected_finding_ids, and a NULL column means "no
+// decision was recorded" rather than "nothing was selected".
+const DeclinedSelectionJSON = "[]"
 
 // StepRound represents one execution round within a pipeline step.
 type StepRound struct {
@@ -174,8 +191,12 @@ func (d *DB) insertStepRound(stepResultID string, round int, trigger string, fin
 
 // SetStepRoundSelection records which findings were selected for fix AFTER the
 // given round produced its findings, along with whether that selection came
-// from the user or auto-fix filtering. Passing a nil or empty JSON array clears
-// both columns.
+// from the user or auto-fix filtering.
+//
+// Passing nil or an empty *string* clears both columns, which means "no
+// decision was recorded". Passing DeclinedSelectionJSON ("[]") with a source
+// is different and deliberate: it records a real decision that selected
+// nothing, so readers can distinguish a decline from an unresolved round.
 func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source string) error {
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {
@@ -190,6 +211,11 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 	return nil
 }
 
+// SetStepRoundUserDecision records the user's resolution of a round: which
+// findings were selected for fix, how the selection was made, and the merged
+// finding list dispatched to the fix agent. The same empty-string versus
+// DeclinedSelectionJSON distinction described on SetStepRoundSelection
+// applies here.
 func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {

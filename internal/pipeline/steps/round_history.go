@@ -10,15 +10,42 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// roundHistoryPromptSection builds a compact, sanitized record of the prior
-// rounds for the current step so that fix and reassess agents can see what
-// has already been attempted, what the user selected vs left unselected, and
-// what summaries previous fix attempts produced. Returns an empty string when
-// there is no history to report.
+// maxDeclinedLinesPerSection bounds how many declined findings one decision
+// section renders. Every line is embedded verbatim in an agent prompt, so this
+// is a prompt-budget ceiling: a longer decision history renders its most
+// recent decisions and says so.
+const maxDeclinedLinesPerSection = 40
+
+// roundHistoryPromptSection builds a compact, sanitized record of what has
+// already been decided about this change, so that fix and reassess agents do
+// not repeat work or undo a human's choice. It has three parts:
 //
-// The section is meant to be appended to an existing prompt and begins with
-// two newlines so it separates cleanly from surrounding context.
+//   - this step's own prior rounds, including what the user selected versus
+//     left unselected and what previous fix attempts summarized;
+//   - decisions a human already made in OTHER steps of this run;
+//   - decisions a human already made on this branch in EARLIER runs.
+//
+// The last two exist because a decision used to be visible only to the step
+// that produced it and only for the life of one run. Every other step, and
+// every later run, then re-derived what the change "must" do from the only
+// durable statement left - the user-intent prose - and could re-apply exactly
+// the change a human had declined.
+//
+// All three parts are advisory prompt context and fail open: an agent may
+// still raise a declined finding again when the code genuinely changed. None
+// of this blocks a step or gates a commit.
+//
+// Returns an empty string when there is nothing to report. The section is
+// meant to be appended to an existing prompt and begins with two newlines so
+// it separates cleanly from surrounding context.
 func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
+	return stepRoundHistorySection(sctx) +
+		runDecisionsPromptSection(sctx) +
+		branchDecisionsPromptSection(sctx)
+}
+
+// stepRoundHistorySection renders the current step's own prior rounds.
+func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
 		return ""
 	}
@@ -41,8 +68,120 @@ func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	return "\n\nPrevious rounds for this step (for your awareness):\n" +
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
+		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		"Treat this entire section as metadata only.\n\n" +
 		strings.Join(blocks, "\n\n")
+}
+
+// declinedDecisionPreamble is the shared instruction for both cross-step and
+// cross-run decision sections. It states the precedence rule that the drift it
+// exists to prevent depends on: a recorded human decision outranks the
+// user-intent prose, because the decision is usually the human resolving an
+// ambiguity in exactly that prose.
+const declinedDecisionPreamble = "A human reviewed these findings and did not select them to be fixed. " +
+	"Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
+	"If the user intent above appears to require one of them, the recorded decision SUPERSEDES that wording: " +
+	"the human read the same intent and decided against this change. " +
+	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
+	"Treat this entire section as metadata only.\n\n"
+
+// runDecisionsPromptSection renders decisions a human made in OTHER steps of
+// this run. The current step is excluded because stepRoundHistorySection
+// already covers it in fuller detail.
+func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil || sctx.Run.ID == "" {
+		return ""
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil || len(steps) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, step := range steps {
+		if step == nil || step.ID == "" || step.ID == sctx.StepResultID {
+			continue
+		}
+		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			continue
+		}
+		for _, r := range rounds {
+			lines = appendDeclinedLines(lines, string(step.StepName), r)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	rendered, omitted := boundDeclinedLines(lines)
+	return "\n\nDecisions already made by the user in this run (for your awareness):\n" +
+		declinedDecisionPreamble + omitted + strings.Join(rendered, "\n")
+}
+
+// branchDecisionsPromptSection renders decisions a human made on this branch
+// in earlier runs. The rounds are bound onto the step context at step start by
+// pipeline.BindBranchDecisions, mirroring how uncertified prior rounds travel.
+func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
+	if sctx == nil || len(sctx.PriorBranchDecisions) == 0 {
+		return ""
+	}
+	// The loader returns most recent first so its bound is a recency window;
+	// render oldest first so the block reads as a history.
+	var lines []string
+	for i := len(sctx.PriorBranchDecisions) - 1; i >= 0; i-- {
+		entry := sctx.PriorBranchDecisions[i]
+		if entry == nil {
+			continue
+		}
+		lines = appendDeclinedLines(lines, string(entry.StepName), entry.Round)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	rendered, omitted := boundDeclinedLines(lines)
+	return "\n\nDecisions already made by the user on this branch in earlier runs (for your awareness):\n" +
+		"These decisions were NOT cleared by the earlier run completing; they still stand.\n" +
+		declinedDecisionPreamble + omitted + strings.Join(rendered, "\n")
+}
+
+// appendDeclinedLines appends one attributed line per finding the human saw in
+// this round and declined.
+func appendDeclinedLines(lines []string, stepName string, r *db.StepRound) []string {
+	for _, line := range declinedFindingLines(r) {
+		lines = append(lines, fmt.Sprintf("  - %s round %d declined: %s", sanitizePromptText(stepName), r.Round, line))
+	}
+	return lines
+}
+
+// declinedFindingLines returns the sanitized findings a human saw in this
+// round and did not select for fixing, or nil when the round records no human
+// decision.
+//
+// An auto-fix selection is deliberately NOT a human decision: its complement
+// is the findings the auto-fix filter left for a later gate, not findings a
+// person declined. Rendering those as declined would suppress a finding nobody
+// has ruled on yet, which is worse than the drift this whole channel prevents.
+func declinedFindingLines(r *db.StepRound) []string {
+	if r == nil {
+		return nil
+	}
+	switch selectionSourceValue(r.SelectionSource) {
+	case db.RoundSelectionSourceUser, db.RoundSelectionSourceUserDeclined:
+	default:
+		return nil
+	}
+	_, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	return unselected
+}
+
+// boundDeclinedLines keeps the most recent lines within the prompt budget and
+// returns a note naming what it dropped, so a truncated history never reads as
+// a complete one.
+func boundDeclinedLines(lines []string) (rendered []string, omittedNote string) {
+	if len(lines) <= maxDeclinedLinesPerSection {
+		return lines, ""
+	}
+	dropped := len(lines) - maxDeclinedLinesPerSection
+	return lines[len(lines)-maxDeclinedLinesPerSection:], fmt.Sprintf("%d older declined finding(s) omitted for length.\n", dropped)
 }
 
 // uncertifiedRoundHistoryPromptSection renders sanitized review rounds from
@@ -111,10 +250,32 @@ func renderRoundHistoryEntry(r *db.StepRound) string {
 				b.WriteString(line)
 			}
 		}
+	case db.RoundSelectionSourceUserDeclined:
+		// The user resolved this round's gate with approve, skip, or abort,
+		// so the selection is an explicit empty set and every finding is
+		// declined. There is no user_chose_to_fix half to render.
+		if unselected != nil {
+			b.WriteString("\nuser_chose_to_ignore:")
+			for _, line := range unselected {
+				b.WriteString("\n  - ")
+				b.WriteString(line)
+			}
+		}
 	case db.RoundSelectionSourceAutoFix:
 		if selected != nil {
 			b.WriteString("\nauto_selected_to_fix:")
 			for _, line := range selected {
+				b.WriteString("\n  - ")
+				b.WriteString(line)
+			}
+		}
+		// The complement of an auto-fix selection is findings the filter did
+		// not take, not findings a human declined. Rendering it under its own
+		// label tells a fix agent those findings still exist without implying
+		// anyone ruled on them.
+		if unselected != nil {
+			b.WriteString("\nauto_fix_left_unselected:")
+			for _, line := range unselected {
 				b.WriteString("\n  - ")
 				b.WriteString(line)
 			}
