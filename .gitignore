@@ -1,6 +1,7 @@
 # Build output
 bin/
 tmp/
+.tmp/
 
 # Go
 *.exe
@@ -31,3 +32,4 @@ demo_raw.gif
 # Environment
 .env
 .env.local
+.no-mistakes/evidence/

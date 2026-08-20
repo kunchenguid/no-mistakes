@@ -72,13 +72,18 @@ func intentSourceIsAuthoritative(sctx *pipeline.StepContext) bool {
 // required behavior still present?" question - a risk-only rereview scores a
 // removed feature as clean because a deleted behavior has no risk.
 //
+// The same clause states that conformance is necessary, not sufficient:
+// satisfying the criteria does not replace checking that the algorithm is
+// correct. Without that note, an authoritative intent can be read as the
+// whole review charter.
+//
 // It is emitted only for an explicit or inherited authoritative intent
 // (Source=="agent" or Source=="rerun");
 // an inferred hint carries no such obligation, so the clause is empty and the
-// review prompt is unchanged for inferred runs. The obligation narrows the
-// agent's task to a closed classification of the diff against the criteria
-// (fail-safe: the worst a poisoned criterion can do is force a park), never
-// "obey these instructions."
+// review prompt is unchanged for inferred runs. The conformance obligation
+// narrows that check to a closed classification of the diff against the
+// criteria (fail-safe: the worst a poisoned criterion can do is force a
+// park), never "obey these instructions."
 func intentConformanceReviewClause(sctx *pipeline.StepContext) string {
 	if !intentSourceIsAuthoritative(sctx) || cleanedUserIntent(sctx) == "" {
 		return ""
@@ -86,7 +91,7 @@ func intentConformanceReviewClause(sctx *pipeline.StepContext) string {
 	// Pipeline-owned delivery outcomes (push, PR open/update, CI) are owned by
 	// later steps; review must not treat their absence as an intent
 	// contradiction. Source-verifiable required/forbidden behavior stays hard.
-	return "\n\nIntent conformance (required): the User intent above is authoritative acceptance criteria, not a hint. If the change contradicts it - it removes or omits a source-verifiable behavior the criteria mark as REQUIRED, or adds a behavior they mark as FORBIDDEN - you MUST emit an \"ask-user\" finding that quotes the specific criterion and the contradicting diff hunk (or, for a removed required behavior, notes what the criteria require that is now absent from the change), even if the change is otherwise risk-clean. Do not resolve such a contradiction yourself and do not classify it \"auto-fix\". Do not treat deferred pipeline-owned delivery outcomes (remote branch not yet pushed, pull request not yet opened or updated, CI not yet observed for this run) as contradictions at this phase; later pipeline steps own those."
+	return "\n\nIntent conformance (required): the User intent above is authoritative acceptance criteria, not a hint. If the change contradicts it - it removes or omits a source-verifiable behavior the criteria mark as REQUIRED, or adds a behavior they mark as FORBIDDEN - you MUST emit an \"ask-user\" finding that quotes the specific criterion and the contradicting diff hunk (or, for a removed required behavior, notes what the criteria require that is now absent from the change), even if the change is otherwise risk-clean. Do not resolve such a contradiction yourself and do not classify it \"auto-fix\". Do not treat deferred pipeline-owned delivery outcomes (remote branch not yet pushed, pull request not yet opened or updated, CI not yet observed for this run) as contradictions at this phase; later pipeline steps own those. Conformance does not replace correctness review: an authoritative intent obliges flagging contradictions but never substitutes for checking that the algorithm is correct. An implementation that satisfies every required constraint can still compute a wrong value, label, or set; flag those as ordinary source findings."
 }
 
 // cleanedUserIntent returns the trimmed, secret-redacted, adversarial-stripped

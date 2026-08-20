@@ -19,11 +19,25 @@ import (
 // the pipes close immediately and Wait returns without waiting.
 const defaultWaitDelay = 5 * time.Second
 
+// terminateGrace is how long a process group may take to exit after SIGTERM
+// before it is SIGKILLed. SIGTERM first is not politeness: a test runner, a
+// build watcher, or a worker script given the chance to exit flushes its
+// output and removes its own temporary state, which SIGKILL denies it. The
+// grace is short because the escalation must still land well inside
+// defaultWaitDelay, so a group that ignores SIGTERM cannot hold an inherited
+// pipe past the exec package's own backstop.
+const terminateGrace = 3 * time.Second
+
 // ConfigureShellCommand isolates cmd in its own process group (Setpgid) and
-// installs a cmd.Cancel that SIGKILLs the whole group when cmd's context is
+// installs a cmd.Cancel that terminates the whole group when cmd's context is
 // cancelled. exec.CommandContext otherwise only kills the direct child PID,
 // leaving grandchildren (a test runner's worker processes, an agent-spawned
 // git/build/editor) running and holding the worktree locked.
+//
+// A process group contains only descendants that stayed in it: anything that
+// calls setsid(2) or setpgid(2) leaves, and no signal aimed at this group can
+// reach it afterwards. internal/procreap is the identity-based backstop that
+// covers those escapees; this function covers the ordinary tree.
 //
 // Cancellation is only half the lifecycle: cmd.Cancel never fires when the
 // command exits on its own (success or failure). Use RunShellCommand,
@@ -47,11 +61,24 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		pgid := cmd.Process.Pid
+		err := syscall.Kill(-pgid, syscall.SIGTERM)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		// Escalate out of band. cmd.Cancel runs on the goroutine that owns
+		// cmd.Wait, so blocking here for the grace period would delay every
+		// cancellation by that long even when the group exits immediately.
+		go func() {
+			if groupGoneWithin(pgid, terminateGrace) {
+				return
+			}
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}()
+		return nil
 	}
 }
 
@@ -62,8 +89,8 @@ func StartShellCommand(cmd *exec.Cmd) error {
 	return cmd.Start()
 }
 
-// TerminateShellCommandGroup SIGKILLs the whole process group led by a command
-// configured with ConfigureShellCommand. It is the success/failure-path
+// TerminateShellCommandGroup terminates the whole process group led by a
+// command configured with ConfigureShellCommand. It is the success/failure-path
 // counterpart to cmd.Cancel: callers defer it right after a successful Start so
 // the group is reaped however Run returns - clean exit, parse error, or
 // wait error - not only on context cancellation.
@@ -80,12 +107,39 @@ func StartShellCommand(cmd *exec.Cmd) error {
 //
 // It is safe to call unconditionally after Wait: the group persists only while
 // a member is alive, so when the leader exited cleanly with no survivors the
-// kill is a harmless no-op (ESRCH). A nil or never-started command is a no-op.
+// first signal fails with ESRCH and the call returns immediately. A nil or
+// never-started command is a no-op.
+//
+// Survivors get SIGTERM first and are only SIGKILLed if they are still alive
+// after terminateGrace, so a worker pool that handles SIGTERM gets to shut
+// down cleanly instead of leaving half-written state behind.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
 	// Negative PID targets the whole group (Setpgid made the leader's PID the
 	// group ID). errors.Is(ESRCH) is the expected, benign "no survivors" case.
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	pgid := cmd.Process.Pid
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+		return
+	}
+	if groupGoneWithin(pgid, terminateGrace) {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
+// groupGoneWithin reports whether the process group emptied out before the
+// window elapsed.
+func groupGoneWithin(pgid int, window time.Duration) bool {
+	deadline := time.Now().Add(window)
+	for {
+		if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }

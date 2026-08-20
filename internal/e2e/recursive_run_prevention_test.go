@@ -208,7 +208,7 @@ func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName, executab
 		execAgent = fmt.Sprintf(`exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
 	}
 	switch agentName {
-	case "claude":
+	case "claude", "codex":
 		promptSource = `prompt=$(cat)`
 		execAgent = fmt.Sprintf(`printf '%%s' "$prompt" | exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
 	case "opencode":

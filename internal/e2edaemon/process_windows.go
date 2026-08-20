@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -118,4 +120,15 @@ func terminateDaemonPID(pid int) error {
 		return nil
 	}
 	return fmt.Errorf("pid %d still alive after kill", pid)
+}
+
+func terminateProcessTree(pid int) error {
+	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("taskkill %d: %w: %s", pid, err, strings.TrimSpace(string(output)))
+	}
+	if waitProcessExit(pid, 2*time.Second) {
+		return nil
+	}
+	return fmt.Errorf("process tree %d still alive after kill", pid)
 }

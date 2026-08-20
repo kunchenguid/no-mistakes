@@ -97,6 +97,7 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 			return false, err
 		}
+		notifyPRMerged(sctx)
 		if sctx.Log != nil {
 			sctx.Log("PR has been merged; clearing stale CI approval gate")
 		}
@@ -168,6 +169,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	baseBranch := effectivePRBaseBranch(sctx)
+	// A resumed run may have a different trusted configuration than the run
+	// that created this PR. Re-read the forge record without a base filter so
+	// conflict repair and tip monitoring follow the PR's actual target.
+	if reader, ok := host.(scm.PRBaseBranchReader); ok {
+		if actual, readErr := reader.GetPRBaseBranch(ctx, pr); readErr == nil {
+			pr.BaseBranch = actual
+		}
+	}
+	if strings.TrimSpace(pr.BaseBranch) != "" {
+		baseBranch = strings.TrimSpace(pr.BaseBranch)
+	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
@@ -190,7 +203,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 		}
 	}
 	started := now()
@@ -260,6 +273,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 				return nil, err
 			}
+			notifyPRMerged(sctx)
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
@@ -578,4 +592,11 @@ func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool)
 		sctx.CIReadinessChanged(ready, declaredNoCI)
 	}
 	return nil
+}
+
+func notifyPRMerged(sctx *pipeline.StepContext) {
+	if sctx == nil || sctx.OnPRMerged == nil || sctx.Run == nil {
+		return
+	}
+	sctx.OnPRMerged(sctx.Ctx, sctx.Run.ID)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const ErrorCode = "nested_gate_context"
@@ -129,11 +130,14 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 	// adapter omits it. Attach run/phase only when the worktree path and active
 	// DB record agree exactly; otherwise omit them rather than guessing.
 	if result.ManagedGit && result.RunID == "" && managedRepoID != "" && worktreeRoot != "" {
+		// Where a run's worktree is is recorded on the run, so the comparison
+		// reads that placement rather than deriving one from configuration this
+		// process may not be able to read (see worktrees.RecordedDir).
 		for _, step := range active {
 			if step.repoID != managedRepoID {
 				continue
 			}
-			want := i.Paths.WorktreeDir(step.repoID, step.runID)
+			want := worktrees.RecordedDir(i.Paths, step.worktreeDir, step.repoID, step.runID)
 			if sameCanonicalPath(worktreeRoot, want) {
 				result.RunID = step.runID
 				result.Phase = step.phase
@@ -145,23 +149,32 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 }
 
 type activeAgentStep struct {
-	runID    string
-	repoID   string
-	phase    types.StepName
-	agentPID int
+	runID  string
+	repoID string
+	// worktreeDir is the run's recorded worktree placement, empty for a run
+	// recorded before it was durable. It travels with the step so attribution
+	// compares against the directory the run was created in rather than the
+	// one current configuration would derive.
+	worktreeDir string
+	phase       types.StepName
+	agentPID    int
 }
 
 func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	if i.DB == nil {
 		return nil, nil
 	}
-	runs, err := i.DB.GetActiveRuns()
+	// The narrow placement query rather than whole run rows: this runs in the
+	// CLI preflight, which reads a database no command has migrated yet, so it
+	// must not name a column the schema may not have (see
+	// db.ActiveRunWorktrees).
+	runs, err := i.DB.ActiveRunWorktrees()
 	if err != nil {
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
 	}
 	var out []activeAgentStep
 	for _, run := range runs {
-		steps, err := i.DB.GetStepsByRun(run.ID)
+		steps, err := i.DB.GetStepsByRun(run.RunID)
 		if err != nil {
 			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
 		}
@@ -173,7 +186,7 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 			if step.AgentPID != nil {
 				pid = *step.AgentPID
 			}
-			out = append(out, activeAgentStep{runID: run.ID, repoID: run.RepoID, phase: step.StepName, agentPID: pid})
+			out = append(out, activeAgentStep{runID: run.RunID, repoID: run.RepoID, worktreeDir: run.Dir, phase: step.StepName, agentPID: pid})
 		}
 	}
 	return out, nil
@@ -243,15 +256,10 @@ func ancestry(pid int, parent func(int) (int, error)) (map[int]bool, error) {
 	return chain, nil
 }
 
+// canonicalPath is the shared worktree_roots canonicalization, so a path that
+// compares equal here compares equal everywhere placement is resolved.
 func canonicalPath(path string) string {
-	path = filepath.Clean(path)
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	return filepath.Clean(path)
+	return worktrees.Canonical(path)
 }
 
 func sameCanonicalPath(a, b string) bool {

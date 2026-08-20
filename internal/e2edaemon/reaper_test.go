@@ -158,6 +158,54 @@ func safetyReap(t *testing.T) {
 	})
 }
 
+func TestSyncProcessAllowsCandidateThatAlreadyExited(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(EnvInventory, filepath.Join(root, "inventory"))
+	ownership, err := Acquire(filepath.Join(root, "nm-eval-finished", "nmhome"), "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownership.Release()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownership.SyncProcess(cmd.Process.Pid); err != nil {
+		t.Fatalf("SyncProcess rejected a candidate that had already exited: %v", err)
+	}
+}
+
+func TestReapAll_OwnedCandidateProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix process model")
+	}
+	lab := labRoot(t)
+	t.Setenv(EnvInventory, filepath.Join(lab, "inv"))
+	safetyReap(t)
+	nmHome := filepath.Join(lab, "nm-eval-owned", "nmhome")
+	ownership, err := Acquire(nmHome, "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", "sleep 60 & wait")
+	detachTestProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownership.SyncProcess(cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	result := ownership.Inv.ReapAll()
+	if result.Killed != 1 || result.Removed != 1 {
+		t.Fatalf("reap result = %+v", result)
+	}
+	_ = cmd.Wait()
+	if alive, _ := ProcessAlive(cmd.Process.Pid); alive {
+		t.Fatalf("candidate pid %d remains alive", cmd.Process.Pid)
+	}
+}
+
 func TestReapAll_NormalCompletion(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix process model")

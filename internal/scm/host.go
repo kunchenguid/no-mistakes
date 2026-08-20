@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,10 @@ type PR struct {
 	// being certified. Providers that expose CI outside the PR check rollup
 	// use it to include those runs.
 	HeadSHA string
+	// BaseBranch is the forge's actual target branch for this PR. It is
+	// authoritative once a PR exists and protects resumed CI repair from a
+	// later configuration change.
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -201,6 +206,13 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
+// PRBaseBranchReader is implemented by providers that can read the target
+// branch of an existing PR by its durable identity. CI uses it when a run is
+// resumed after repository configuration changes.
+type PRBaseBranchReader interface {
+	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
+}
+
 // CheckRerunner re-runs the provider-side work behind a failed check without
 // changing the commit under test. It is deliberately a separate interface
 // rather than a Host method: a backend whose provider exposes no rerun
@@ -212,4 +224,56 @@ type CheckRerunner interface {
 	// returns an error when the request could not be made, including when the
 	// check names no job or workflow run the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
+}
+
+// RepoPath extracts a repository path from a git remote or web URL. Nested
+// namespaces are preserved. Azure DevOps remotes use project/repository.
+func RepoPath(remoteURL string) string {
+	raw := strings.TrimSpace(remoteURL)
+	if raw == "" {
+		return ""
+	}
+
+	host := ExtractHost(raw)
+	switch {
+	case strings.Contains(raw, "://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+		raw = u.Path
+	case strings.Contains(raw, ":"):
+		colon := strings.IndexByte(raw, ':')
+		if colon <= 0 || strings.Contains(raw[:colon], "/") {
+			return ""
+		}
+		raw = raw[colon+1:]
+	}
+
+	parts := strings.Split(strings.Trim(raw, "/"), "/")
+	clean := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	parts = clean
+	if len(parts) == 0 {
+		return ""
+	}
+
+	isAzureDevOps := host == "dev.azure.com" || host == "ssh.dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	if isAzureDevOps {
+		for i, part := range parts {
+			if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
+				return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+			}
+		}
+	}
+	if (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") && len(parts) >= 4 && strings.EqualFold(parts[0], "v3") {
+		return parts[len(parts)-2] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".git")
+	}
+	parts[len(parts)-1] = strings.TrimSuffix(parts[len(parts)-1], ".git")
+	return strings.Join(parts, "/")
 }

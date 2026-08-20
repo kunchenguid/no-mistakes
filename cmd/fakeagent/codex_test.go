@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -181,18 +182,37 @@ func TestExtractCodexOutputSchemaPath(t *testing.T) {
 	}
 }
 
-func TestExtractCodexPromptSkipsOutputSchemaValue(t *testing.T) {
-	t.Helper()
-
-	args := []string{
-		"exec",
-		"--output-schema", "/tmp/schema.json",
-		"--model", "gpt-5.4",
-		"review this diff",
-		"--json",
+func TestExtractCodexPromptReadsStdin(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "fresh",
+			args: []string{"exec", "--output-schema", "/tmp/schema.json", "--model", "gpt-5.4", "-", "--json", "--color", "never"},
+		},
+		{
+			name: "resume",
+			args: []string{"exec", "resume", "--model", "gpt-5.4", "thread-123", "-", "--json"},
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const prompt = "review this diff"
+			got, err := extractCodexPrompt(tc.args, strings.NewReader(prompt))
+			if err != nil {
+				t.Fatalf("extractCodexPrompt: %v", err)
+			}
+			if got != prompt {
+				t.Fatalf("prompt = %q, want %q", got, prompt)
+			}
+		})
+	}
+}
 
-	if got := extractCodexPrompt(args); got != "review this diff" {
-		t.Fatalf("prompt = %q, want %q", got, "review this diff")
+func TestExtractCodexPromptRejectsArgvPrompt(t *testing.T) {
+	_, err := extractCodexPrompt([]string{"exec", "prompt in argv", "--json"}, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("expected argv prompt to be rejected")
 	}
 }

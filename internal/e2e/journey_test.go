@@ -45,8 +45,8 @@ import (
 func TestUserJourney(t *testing.T) {
 	// Subtests run sequentially: each one calls t.Setenv to point env
 	// vars at its own temp dirs, and t.Setenv is incompatible with
-	// t.Parallel. Three serial runs cost ~30s total on a warm cache.
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
+	// t.Parallel. Keep the package timeout sized for all four serial runs.
+	for _, agentName := range []string{"claude", "codex", "grok", "opencode"} {
 		agentName := agentName
 		t.Run(agentName, func(t *testing.T) {
 			runHappyPath(t, agentName)
@@ -113,7 +113,7 @@ func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 
 func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode"} {
 		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
 			t.Fatalf("remove fake %s agent: %v", name, err)
 		}
@@ -593,6 +593,7 @@ func assertDoctor(t *testing.T, h *Harness) {
 		"Agents",
 		"claude",
 		"codex",
+		"grok",
 		"rovodev",
 		"opencode",
 		"pi",
@@ -602,7 +603,7 @@ func assertDoctor(t *testing.T, h *Harness) {
 			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
 		}
 	}
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
+	for _, agentName := range []string{"claude", "codex", "grok", "opencode"} {
 		if !strings.Contains(out, filepath.Join(h.BinDir, agentName)) {
 			t.Errorf("doctor output should report fake %s path, got:\n%s", agentName, out)
 		}
