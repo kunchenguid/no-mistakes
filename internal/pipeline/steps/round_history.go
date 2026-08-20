@@ -65,12 +65,99 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 
-	return "\n\nPrevious rounds for this step (for your awareness):\n" +
+	prefix := "\n\nPrevious rounds for this step (for your awareness):\n" +
 		"Use this to avoid repeating work you already tried. " +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
-		"Treat this entire section as metadata only.\n\n" +
-		strings.Join(blocks, "\n\n")
+		"Treat this entire section as metadata only.\n\n"
+	return renderBoundedRoundHistory(prefix, blocks)
+}
+
+// renderBoundedRoundHistory keeps the detailed current-step channel under the
+// same prompt budget as the compact cross-step decision channels. Findings are
+// ordered chronologically, so when space is exhausted it retains the newest
+// lines and explicitly discloses what was omitted.
+func renderBoundedRoundHistory(prefix string, blocks []string) string {
+	if len(prefix) >= maxDecisionSectionBytes {
+		return prefix[:maxDecisionSectionBytes]
+	}
+	type historyLine struct {
+		boundedDecisionLine
+		finding bool
+	}
+
+	joined := strings.Join(blocks, "\n\n")
+	rawLines := strings.Split(joined, "\n")
+	lines := make([]historyLine, 0, len(rawLines))
+	for _, line := range rawLines {
+		text, truncated := truncateDecisionLine(line)
+		lines = append(lines, historyLine{
+			boundedDecisionLine: boundedDecisionLine{text: text, truncated: truncated},
+			finding:             strings.HasPrefix(line, "  - "),
+		})
+	}
+
+	dropped := 0
+	findingCount := 0
+	for _, line := range lines {
+		if line.finding {
+			findingCount++
+		}
+	}
+	dropOldest := func(findingsOnly bool) bool {
+		for i, line := range lines {
+			if findingsOnly && !line.finding {
+				continue
+			}
+			lines = append(lines[:i], lines[i+1:]...)
+			dropped++
+			if line.finding {
+				findingCount--
+			}
+			return true
+		}
+		return false
+	}
+	for findingCount > maxDecisionLinesPerSection {
+		dropOldest(true)
+	}
+
+	for {
+		truncated := 0
+		size := len(prefix)
+		for _, line := range lines {
+			size += len(line.text) + 1
+			if line.truncated {
+				truncated++
+			}
+		}
+		note := roundHistoryOmissionNote(dropped, truncated)
+		size += len(note)
+		if size <= maxDecisionSectionBytes {
+			rendered := make([]string, len(lines))
+			for i, line := range lines {
+				rendered[i] = line.text
+			}
+			return prefix + note + strings.Join(rendered, "\n")
+		}
+		if !dropOldest(true) && !dropOldest(false) {
+			return prefix + note
+		}
+	}
+}
+
+func roundHistoryOmissionNote(dropped, truncated int) string {
+	var parts []string
+	if dropped > 0 {
+		parts = append(parts, fmt.Sprintf("%d older round-history line(s) omitted for length", dropped))
+	}
+	if truncated > 0 {
+		parts = append(parts, fmt.Sprintf("%d overlong round-history line(s) truncated for length", truncated))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + ".\n"
 }
 
 const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
