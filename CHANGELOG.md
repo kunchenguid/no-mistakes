@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.55.1](https://github.com/kunchenguid/no-mistakes/compare/v1.55.0...v1.55.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **eval:** prevent display state mutations and clipped strata ([#787](https://github.com/kunchenguid/no-mistakes/issues/787)) ([a076b87](https://github.com/kunchenguid/no-mistakes/commit/a076b878bf74b7e0a97ae076a370d1665f88700d))
+* **pipeline:** preserve declined finding decisions across runs ([#790](https://github.com/kunchenguid/no-mistakes/issues/790)) ([a4411ed](https://github.com/kunchenguid/no-mistakes/commit/a4411ed85175ff54d348e38f74a9fe1b5743944c))
+
 ## [1.55.0](https://github.com/kunchenguid/no-mistakes/compare/v1.54.0...v1.55.0) (2026-08-19)
 
 
