@@ -73,12 +73,12 @@ type opencodeMessageInfo struct {
 }
 
 // opencodeMessageError mirrors the discriminated AssistantError union in
-// opencode's session-v1 schema. We only need to recognise the
-// StructuredOutputError variant for a clean user-facing message; the raw
-// fields stay on the struct so future logging can use them. Other variants
+// opencode's session-v1 schema. StructuredOutputError supplies a clean
+// user-facing failure, while APIError.Data preserves provider details needed
+// to identify the narrow thinking/tool-choice fallback. Other variants
 // (ProviderAuthError, MessageOutputLengthError, MessageAbortedError,
-// APIError, ContentFilterError, ContextOverflowError, UnknownError) are
-// decoded loosely into Message and any provider-specific extras are dropped.
+// ContentFilterError, ContextOverflowError, UnknownError) are decoded loosely
+// into Message and provider-specific extras are dropped.
 type opencodeMessageError struct {
 	Name    string `json:"name"`
 	Message string `json:"message,omitempty"`
