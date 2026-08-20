@@ -135,8 +135,55 @@ func TestDeclinedFindingReachesALaterRunOnTheSameBranch(t *testing.T) {
 	if !strings.Contains(got, "earlier runs") {
 		t.Fatalf("missing the cross-run decision section:\n%s", got)
 	}
-	if !strings.Contains(got, "still stand") {
-		t.Fatalf("missing the still-standing statement:\n%s", got)
+	if !strings.Contains(got, "Entries are chronological") {
+		t.Fatalf("missing the decision-history ordering statement:\n%s", got)
+	}
+}
+
+func TestLaterChoiceToFixSupersedesEarlierDeclineWithoutHidingIt(t *testing.T) {
+	f := newDecisionFixture(t)
+	f.declineReviewRound(t, declinedDedupFindings)
+
+	fixRun, err := f.db.InsertRun(f.repo.ID, "feature", "head2", "head1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixStep, err := f.db.InsertStepResult(fixRun.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := declinedDedupFindings
+	fixRound, err := f.db.InsertStepRound(fixStep.ID, 1, "initial", &findings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["journal-version-deduplication"]`
+	if err := f.db.SetStepRoundUserDecision(fixRound.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	currentRun, err := f.db.InsertRun(f.repo.ID, "feature", "head3", "head2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentStep, err := f.db.InsertStepResult(currentRun.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{DB: f.db, Repo: f.repo, Run: currentRun, StepResultID: currentStep.ID}
+	pipeline.BindBranchDecisions(sctx)
+
+	got := roundHistoryPromptSection(sctx)
+	declinedAt := strings.Index(got, "review round 1 declined:")
+	fixedAt := strings.Index(got, "review round 1 user chose to fix:")
+	if declinedAt < 0 || fixedAt < 0 {
+		t.Fatalf("expected both contrary decisions to remain visible:\n%s", got)
+	}
+	if fixedAt <= declinedAt {
+		t.Fatalf("newer chose-to-fix decision must follow the older decline:\n%s", got)
+	}
+	if !strings.Contains(got, "LATER entry about the same concern supersedes an earlier entry") {
+		t.Fatalf("missing chronological precedence rule:\n%s", got)
 	}
 }
 
@@ -281,17 +328,35 @@ func TestDecisionSectionsAreAbsentWithoutRunOrRepo(t *testing.T) {
 func TestDecisionSectionBoundsALongHistory(t *testing.T) {
 	f := newDecisionFixture(t)
 	var items []string
-	for i := 0; i < maxDeclinedLinesPerSection+5; i++ {
+	for i := 0; i < maxDecisionLinesPerSection+5; i++ {
 		items = append(items, `{"id":"finding-`+string(rune('a'+i%26))+string(rune('a'+i/26))+
 			`","severity":"error","description":"d","action":"ask-user"}`)
 	}
 	f.declineReviewRound(t, `{"findings":[`+strings.Join(items, ",")+`]}`)
 
 	got := roundHistoryPromptSection(f.testStepContext())
-	if !strings.Contains(got, "older declined finding(s) omitted for length") {
+	if !strings.Contains(got, "older decision finding(s) omitted for length") {
 		t.Fatalf("expected a truncation note:\n%s", got)
 	}
-	if n := strings.Count(got, "review round 1 declined:"); n != maxDeclinedLinesPerSection {
-		t.Fatalf("rendered %d declined lines, want the bound %d", n, maxDeclinedLinesPerSection)
+	if n := strings.Count(got, "review round 1 declined:"); n != maxDecisionLinesPerSection {
+		t.Fatalf("rendered %d declined lines, want the bound %d", n, maxDecisionLinesPerSection)
+	}
+}
+
+func TestDecisionSectionBoundsOneOversizedFinding(t *testing.T) {
+	f := newDecisionFixture(t)
+	findings := `{"findings":[{"id":"huge","severity":"error","description":"` +
+		strings.Repeat("x", maxDecisionSectionBytes*4) + `","action":"ask-user"}]}`
+	f.declineReviewRound(t, findings)
+
+	got := runDecisionsPromptSection(f.testStepContext())
+	if len(got) > maxDecisionSectionBytes {
+		t.Fatalf("decision section is %d bytes, want at most %d", len(got), maxDecisionSectionBytes)
+	}
+	if !strings.Contains(got, "overlong decision finding(s) truncated") {
+		t.Fatalf("expected a named truncation note:\n%s", got)
+	}
+	if !strings.Contains(got, "huge") {
+		t.Fatalf("truncation removed the finding identity:\n%s", got)
 	}
 }

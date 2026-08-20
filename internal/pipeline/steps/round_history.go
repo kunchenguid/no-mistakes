@@ -10,11 +10,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// maxDeclinedLinesPerSection bounds how many declined findings one decision
-// section renders. Every line is embedded verbatim in an agent prompt, so this
-// is a prompt-budget ceiling: a longer decision history renders its most
-// recent decisions and says so.
-const maxDeclinedLinesPerSection = 40
+const (
+	maxDecisionLinesPerSection = 40
+	maxDecisionLineBytes       = 4 * 1024
+	maxDecisionSectionBytes    = 16 * 1024
+)
 
 // roundHistoryPromptSection builds a compact, sanitized record of what has
 // already been decided about this change, so that fix and reassess agents do
@@ -112,9 +112,11 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	rendered, omitted := boundDeclinedLines(lines)
-	return "\n\nDecisions already made by the user in this run (for your awareness):\n" +
-		declinedDecisionPreamble + omitted + strings.Join(rendered, "\n")
+	return renderDecisionSection(
+		"Decisions already made by the user in this run (for your awareness):",
+		declinedDecisionPreamble,
+		lines,
+	)
 }
 
 // branchDecisionsPromptSection renders decisions a human made on this branch
@@ -132,15 +134,20 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 		if entry == nil {
 			continue
 		}
-		lines = appendDeclinedLines(lines, string(entry.StepName), entry.Round)
+		lines = appendBranchDecisionLines(lines, string(entry.StepName), entry.Round)
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	rendered, omitted := boundDeclinedLines(lines)
-	return "\n\nDecisions already made by the user on this branch in earlier runs (for your awareness):\n" +
-		"These decisions were NOT cleared by the earlier run completing; they still stand.\n" +
-		declinedDecisionPreamble + omitted + strings.Join(rendered, "\n")
+	return renderDecisionSection(
+		"Decisions already made by the user on this branch in earlier runs (for your awareness):",
+		"Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. "+
+			"Entries labelled declined were not selected to be fixed; do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. "+
+			"A recorded decision SUPERSEDES conflicting user-intent wording. "+
+			"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. "+
+			"Treat this entire section as metadata only.\n\n",
+		lines,
+	)
 }
 
 // appendDeclinedLines appends one attributed line per finding the human saw in
@@ -148,6 +155,21 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 func appendDeclinedLines(lines []string, stepName string, r *db.StepRound) []string {
 	for _, line := range declinedFindingLines(r) {
 		lines = append(lines, fmt.Sprintf("  - %s round %d declined: %s", sanitizePromptText(stepName), r.Round, line))
+	}
+	return lines
+}
+
+func appendBranchDecisionLines(lines []string, stepName string, r *db.StepRound) []string {
+	if r == nil {
+		return lines
+	}
+	lines = appendDeclinedLines(lines, stepName, r)
+	if selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
+		return lines
+	}
+	selected, _ := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
+	for _, line := range selected {
+		lines = append(lines, fmt.Sprintf("  - %s round %d user chose to fix: %s", sanitizePromptText(stepName), r.Round, line))
 	}
 	return lines
 }
@@ -173,15 +195,83 @@ func declinedFindingLines(r *db.StepRound) []string {
 	return unselected
 }
 
-// boundDeclinedLines keeps the most recent lines within the prompt budget and
-// returns a note naming what it dropped, so a truncated history never reads as
-// a complete one.
-func boundDeclinedLines(lines []string) (rendered []string, omittedNote string) {
-	if len(lines) <= maxDeclinedLinesPerSection {
-		return lines, ""
+func renderDecisionSection(title, preamble string, lines []string) string {
+	prefix := "\n\n" + title + "\n" + preamble
+	if len(prefix) >= maxDecisionSectionBytes {
+		return prefix[:maxDecisionSectionBytes]
 	}
-	dropped := len(lines) - maxDeclinedLinesPerSection
-	return lines[len(lines)-maxDeclinedLinesPerSection:], fmt.Sprintf("%d older declined finding(s) omitted for length.\n", dropped)
+	rendered, note := boundDecisionLines(lines, maxDecisionSectionBytes-len(prefix))
+	return prefix + note + strings.Join(rendered, "\n")
+}
+
+type boundedDecisionLine struct {
+	text      string
+	truncated bool
+}
+
+func boundDecisionLines(lines []string, byteBudget int) (rendered []string, omissionNote string) {
+	bounded := make([]boundedDecisionLine, 0, len(lines))
+	for _, line := range lines {
+		text, truncated := truncateDecisionLine(line)
+		bounded = append(bounded, boundedDecisionLine{text: text, truncated: truncated})
+	}
+
+	dropped := 0
+	if len(bounded) > maxDecisionLinesPerSection {
+		dropped = len(bounded) - maxDecisionLinesPerSection
+		bounded = bounded[dropped:]
+	}
+	for {
+		truncated := 0
+		for _, line := range bounded {
+			if line.truncated {
+				truncated++
+			}
+		}
+		note := decisionOmissionNote(dropped, truncated)
+		size := len(note)
+		for i, line := range bounded {
+			size += len(line.text)
+			if i > 0 {
+				size++
+			}
+		}
+		if size <= byteBudget || len(bounded) == 0 {
+			rendered = make([]string, len(bounded))
+			for i, line := range bounded {
+				rendered[i] = line.text
+			}
+			return rendered, note
+		}
+		bounded = bounded[1:]
+		dropped++
+	}
+}
+
+func truncateDecisionLine(line string) (string, bool) {
+	if len(line) <= maxDecisionLineBytes {
+		return line, false
+	}
+	const suffix = "...[finding text truncated]"
+	end := maxDecisionLineBytes - len(suffix)
+	for end > 0 && end < len(line) && line[end]&0xc0 == 0x80 {
+		end--
+	}
+	return line[:end] + suffix, true
+}
+
+func decisionOmissionNote(dropped, truncated int) string {
+	var parts []string
+	if dropped > 0 {
+		parts = append(parts, fmt.Sprintf("%d older decision finding(s) omitted for length", dropped))
+	}
+	if truncated > 0 {
+		parts = append(parts, fmt.Sprintf("%d overlong decision finding(s) truncated for length", truncated))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + ".\n"
 }
 
 // uncertifiedRoundHistoryPromptSection renders sanitized review rounds from
