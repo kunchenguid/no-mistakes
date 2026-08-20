@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 )
 
 var errOpencodeThinkingToolChoiceConflict = errors.New("opencode provider rejects required tool choice while thinking is enabled")
+
+var thinkingToolChoiceConflictPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(?:(?:required|forced)\s+tool[_ ]choice|tool[_ ]choice\s*(?:is\s*)?["']?(?:required|forced)["']?)\s+(?:is\s+)?(?:incompatible with|cannot be combined with|can't be combined with|cannot be used with|can't be used with|not supported (?:with|when))\s+(?:thinking|reasoning)(?:\s+(?:enabled|mode))?`),
+	regexp.MustCompile(`(?i)(?:thinking|reasoning)(?:\s+(?:enabled|mode))?\s+(?:is\s+)?(?:incompatible with|cannot be combined with|can't be combined with|cannot be used with|can't be used with|not supported (?:with|when))\s+(?:(?:a|an|the)\s+)?(?:(?:required|forced)\s+tool[_ ]choice|tool[_ ]choice\s*(?:is\s*)?["']?(?:required|forced)["']?)`),
+}
 
 // opencodeAgent starts a persistent HTTP server via `opencode serve`
 // and sends requests via REST with SSE streaming.
@@ -242,18 +248,12 @@ func isThinkingToolChoiceConflict(e *opencodeMessageError) bool {
 }
 
 func isThinkingToolChoiceConflictText(text string) bool {
-	lower := strings.ToLower(text)
-	toolChoice := strings.Contains(lower, "tool_choice") || strings.Contains(lower, "tool choice")
-	thinking := strings.Contains(lower, "thinking") || strings.Contains(lower, "reasoning")
-	forced := strings.Contains(lower, "required") || strings.Contains(lower, "forced")
-	incompatible := strings.Contains(lower, "incompatible with") ||
-		strings.Contains(lower, "cannot be combined with") ||
-		strings.Contains(lower, "can't be combined with") ||
-		strings.Contains(lower, "cannot be used with") ||
-		strings.Contains(lower, "can't be used with") ||
-		strings.Contains(lower, "not supported with") ||
-		strings.Contains(lower, "not supported when")
-	return toolChoice && forced && thinking && incompatible
+	for _, pattern := range thinkingToolChoiceConflictPatterns {
+		if pattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *opencodeAgent) Close() error {

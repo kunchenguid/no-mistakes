@@ -589,7 +589,7 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	}
 }
 
-func TestOpencodeAgent_CompatibleToolChoiceMessageDoesNotFallback(t *testing.T) {
+func TestOpencodeAgent_UnrelatedThinkingLimitationDoesNotFallback(t *testing.T) {
 	var sessions atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -600,7 +600,7 @@ func TestOpencodeAgent_CompatibleToolChoiceMessageDoesNotFallback(t *testing.T) 
 		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
 		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
-			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"tool_choice is required and cannot be disabled when thinking is enabled"}}}}`)
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"tool_choice is required. Thinking is not supported when streaming."}}}}`)
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -636,6 +636,7 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
 		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
 		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
+		{name: "unrelated multi-clause limitation", text: `tool_choice is required. Thinking is not supported when streaming.`, want: false},
 		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
 		{name: "unrelated provider failure", text: `provider does not support this model`, want: false},
 	}
