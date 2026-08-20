@@ -12,12 +12,14 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,6 +66,20 @@ const (
 	// copy of the repository. The cap exists to bound that JSON and to keep
 	// the corpus a recent, representative window rather than an archive.
 	DefaultEvalMaxCases = 200
+	// DefaultEvalDiversifiedSize caps the official gold-only eval set.
+	// 0 means one gold case per stratum with no Hamilton bound.
+	DefaultEvalDiversifiedSize = 32
+	// DefaultEvidenceRetention is how long a run's on-disk evidence survives
+	// before the daemon reaps it. It is comfortably longer than typical PR
+	// review latency because a PR body references these artifacts by local path
+	// whenever publishing is off or the provider has no derivable links. This
+	// is no-mistakes' own budget: the point of owning it is that no OS temp
+	// timer decides when a user's screenshots disappear.
+	DefaultEvidenceRetention = 14 * 24 * time.Hour
+	// DefaultEvidenceMaxRuns caps how many run directories survive regardless
+	// of age, so a burst of parallel runs that all land inside the retention
+	// window still cannot grow the directory without bound.
+	DefaultEvidenceMaxRuns = 200
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
@@ -75,10 +91,18 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	// WorktreeRoots places a repository's pipeline run worktrees under a
+	// directory the operator chose instead of the default
+	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
+	// (Repo.WorkingPath), values are absolute directories. It exists for
+	// directory-scoped toolchain configuration (mise, direnv), which resolves
+	// by path ancestry and therefore never reaches a worktree under NM_HOME.
+	// Placement is resolved for every consumer in internal/worktrees.
+	WorktreeRoots        map[string]string `yaml:"worktree_roots"`
+	CITimeout            time.Duration     `yaml:"-"`
+	StepQuietWarning     time.Duration     `yaml:"-"`
+	DaemonConnectTimeout time.Duration     `yaml:"-"`
+	LogLevel             string            `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -108,6 +132,7 @@ type globalConfigRaw struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	WorktreeRoots        map[string]string   `yaml:"worktree_roots"`
 	CITimeout            string              `yaml:"ci_timeout"`
 	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
@@ -134,12 +159,16 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	CI                CIRaw      `yaml:"ci"`
-	Commit            CommitRaw  `yaml:"commit"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool `yaml:"allow_repo_commands"`
+	// PR carries pull-request routing settings. BaseBranch controls where a PR
+	// lands, so EffectiveRepoConfig treats it as trusted-only unless the
+	// repository explicitly opts into pushed settings.
+	AutoFix AutoFixRaw `yaml:"auto_fix"`
+	CI      CIRaw      `yaml:"ci"`
+	Commit  CommitRaw  `yaml:"commit"`
+	Intent  IntentRaw  `yaml:"intent"`
+	Test    TestRaw    `yaml:"test"`
+	PR      PRRaw      `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -192,6 +221,15 @@ type ReviewRaw struct {
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
+}
+
+// PRRaw is the YAML representation of pull-request settings.
+type PRRaw struct {
+	// BaseBranch selects the forge branch a PR targets. It is gate-control
+	// configuration: the trusted default-branch copy wins unless the
+	// repository explicitly opts into pushed-branch settings with
+	// allow_repo_commands.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -313,6 +351,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -332,6 +371,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -411,6 +451,7 @@ type Config struct {
 	Test                  Test
 	Document              Document
 	Review                Review
+	PR                    PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -420,6 +461,11 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+}
+
+// PR is the resolved pull-request configuration.
+type PR struct {
+	BaseBranch string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -452,6 +498,19 @@ type EvidenceRaw struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// aim evidence commits at another branch of the repository.
 	Branch *string `yaml:"branch"`
+	// LocalRoot, Retention, and MaxRuns describe this MACHINE's evidence
+	// storage: where the daemon writes artifacts on local disk and how long it
+	// keeps them. They are global-only - Merge resolves them straight from
+	// GlobalConfig and never from a repository, trusted copy included. A
+	// repository does not get to name a filesystem path the daemon writes to,
+	// nor to set the retention budget for a resource every other repository on
+	// the machine shares. (Contrast Branch, which is trusted-repo-settable
+	// because a branch genuinely is per-repository state.)
+	//
+	// LocalRoot must be absolute; see validateTestRaw.
+	LocalRoot *string `yaml:"local_root"`
+	Retention *string `yaml:"retention"`
+	MaxRuns   *int    `yaml:"max_runs"`
 }
 
 // Test is the resolved test-step config.
@@ -463,12 +522,19 @@ type Test struct {
 // run publishes its evidence artifacts to the orphan Branch of the same
 // repository, under Dir, and links them from the pull request body. Evidence
 // never enters the pushed code branch, so it never reaches the default
-// branch's history. Otherwise evidence stays in a temporary directory
+// branch's history. Otherwise evidence stays on local disk under LocalRoot,
 // referenced only by local path.
 type Evidence struct {
 	StoreInRepo bool
 	Dir         string
 	Branch      string
+	// LocalRoot overrides the app-root default for on-disk evidence; empty
+	// means paths.EvidenceDir(). Retention and MaxRuns bound how much of it
+	// survives: no-mistakes reaps its own evidence rather than leaving that to
+	// an OS temp-directory timer. Zero disables the corresponding bound.
+	LocalRoot string
+	Retention time.Duration
+	MaxRuns   int
 }
 
 // EvalRaw is the YAML representation of local evaluation-corpus settings.
@@ -477,6 +543,7 @@ type EvalRaw struct {
 	CaptureProvenance *bool `yaml:"capture_provenance"`
 	AutoCapture       *bool `yaml:"auto_capture"`
 	MaxCases          *int  `yaml:"max_cases"`
+	DiversifiedSize   *int  `yaml:"diversified_size"`
 }
 
 // Eval is the resolved local evaluation-corpus config. It is deliberately a
@@ -501,6 +568,9 @@ type Eval struct {
 	// candidate replays, so a corpus you have spent tokens on is never
 	// silently reclaimed underneath a comparison.
 	MaxCases int
+	// DiversifiedSize caps the official gold-only eval set. 0 means one gold
+	// case per stratum (no Hamilton bound). Unlabeled cases never fill it.
+	DiversifiedSize int
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -596,8 +666,8 @@ func resolvePathInstructions(entries []PathInstruction) []PathInstruction {
 const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
-# for example: agent: [codex, claude]
-# Options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>
+# for example: agent: [codex, grok]
+# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
@@ -631,7 +701,7 @@ daemon_connect_timeout: "3s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude and codex; other agents run cold. Set false to
+# its fixes. Supported for claude, codex, and grok; other agents run cold. Set false to
 # force every agent invocation cold.
 session_reuse: true
 
@@ -643,6 +713,7 @@ log_level: info
 # agent_path_override:
 #   claude: /usr/local/bin/claude
 #   codex: /opt/codex
+#   grok: /Users/you/.grok/bin/grok
 
 # Extra native agent CLI flags (optional, global only)
 # Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
@@ -655,6 +726,19 @@ log_level: info
 #     - -c
 #     - model_reasoning_effort="low"
 #
+# Where a repository's pipeline run worktrees are created (optional). By
+# default they live under <NM_HOME>/worktrees/<repo id>, which inherits no
+# directory-scoped toolchain configuration. Point a checkout at a directory of
+# your own and its runs are created there instead, one directory per run, so
+# mise/direnv settings on that directory reach every run. Keys are the checkout
+# paths you ran "no-mistakes init" in, values must be absolute directories.
+# Only the directories no-mistakes' own run records name are ever created,
+# cleaned up, or removed there; everything else, including a directory that
+# merely looks like a run worktree, is left alone. Each checkout needs its own
+# root, and it must be outside NM_HOME and outside every checkout.
+# worktree_roots:
+#   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
+
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -693,16 +777,28 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# publish them to an orphan evidence branch in the same repository and link them
-# from the PR body. The evidence branch shares no history with your code
-# branches, so artifacts never enter the pushed branch or the default branch.
+# gathers to demonstrate the change works). By default they are kept on local
+# disk under <NM_HOME>/evidence and referenced by local path. Opt in to
+# store_in_repo to publish them to an orphan evidence branch in the same
+# repository and link them from the PR body. The evidence branch shares no
+# history with your code branches, so artifacts never enter the pushed branch or
+# the default branch.
+#
+# no-mistakes reaps its own evidence rather than leaving that to an OS temp
+# directory timer: retention ages run directories out (default 14 days) and
+# max_runs caps how many survive regardless of age (default 200). Set retention
+# to "unlimited", or either to 0, to disable that bound. local_root moves the
+# directory to another disk and must be an absolute path. These three are
+# global-only - a repository's .no-mistakes.yaml cannot change where this
+# machine writes evidence or how long it keeps it.
 # test:
 #   evidence:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
 #     branch: no-mistakes/evidence
+#     local_root: /var/lib/no-mistakes/evidence
+#     retention: 720h
+#     max_runs: 50
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
 # agent+model candidates against review passes your own pipeline already made.
@@ -714,18 +810,22 @@ intent:
 # case costs its own records plus the objects its commits introduced - not a
 # copy of the repository. max_cases bounds the corpus: the oldest cases are
 # dropped first, and a case that already has recorded replays is never dropped.
-# Set max_cases to 0 to keep every case. Everything stays under <NM_HOME>/eval
-# and is never uploaded anywhere.
+# Set max_cases to 0 to keep every case. diversified_size caps the official
+# gold-only eval set (default 32); 0 means one gold case per stratum. Unlabeled
+# cases never fill it. Everything stays under <NM_HOME>/eval and is never
+# uploaded anywhere.
 eval:
   capture_provenance: true
   auto_capture: true
   max_cases: 200
+  diversified_size: 32
 `
 
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
 	types.AgentClaude:   "claude",
 	types.AgentCodex:    "codex",
+	types.AgentGrok:     "grok",
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
 	types.AgentPi:       "pi",
@@ -736,6 +836,7 @@ var defaultBinary = map[types.AgentName]string{
 var nativeAgentProbeOrder = []types.AgentName{
 	types.AgentClaude,
 	types.AgentCodex,
+	types.AgentGrok,
 	types.AgentOpenCode,
 	types.AgentRovoDev,
 	types.AgentPi,
@@ -925,7 +1026,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
@@ -1082,6 +1183,7 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentClaude):   true,
 	string(types.AgentCodex):    true,
+	string(types.AgentGrok):     true,
 	string(types.AgentRovoDev):  true,
 	string(types.AgentOpenCode): true,
 	string(types.AgentPi):       true,
@@ -1117,6 +1219,33 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--json":       true,
 		"--color":      true,
 	},
+	string(types.AgentGrok): {
+		"-p":                       true,
+		"--single":                 true,
+		"--prompt-file":            true,
+		"--prompt-json":            true,
+		"--output-format":          true,
+		"--json-schema":            true,
+		"-r":                       true,
+		"--resume":                 true,
+		"-c":                       true,
+		"--continue":               true,
+		"--fork-session":           true,
+		"--session-id":             true,
+		"--system-prompt-override": true,
+		"--system-prompt":          true,
+		"--rules":                  true,
+		"--append-system-prompt":   true,
+		"--agent":                  true,
+		"--agents":                 true,
+		"--verbatim":               true,
+		"--no-subagents":           true,
+		"--no-auto-update":         true,
+		"--cwd":                    true,
+		"--restore-code":           true,
+		"--worktree":               true,
+		"--worktree-ref":           true,
+	},
 	string(types.AgentRovoDev): {
 		"rovodev":                 true,
 		"serve":                   true,
@@ -1146,7 +1275,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, grok, rovodev, opencode, pi, copilot)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {
@@ -1163,6 +1292,66 @@ func validateAgentArgsOverride(override map[string][]string) error {
 		}
 	}
 	return nil
+}
+
+// ValidateWorktreeRoots checks a worktree_roots map before any placement is
+// derived from it. Every entry must name an absolute checkout path and an
+// absolute directory: a relative path would be interpreted against whatever
+// working directory the daemon happens to have, so run worktrees would land
+// somewhere different depending on who started it - the opposite of the
+// deterministic placement the setting exists to provide.
+//
+// Two entries may not name the same root, and two keys may not name the same
+// checkout once canonicalized (a symlink and its target, "/x" and "/x/").
+// Both are rejected rather than resolved because the consequences are
+// destructive, not cosmetic: cleanup and eject identify a run worktree by its
+// position in a root, so two repositories sharing a root would delete each
+// other's runs, and a duplicate key would pick an arbitrary winner. A root
+// equal to its own checkout is rejected for the same reason - it would place
+// run worktrees inside the repository they are validating.
+func ValidateWorktreeRoots(roots map[string]string) error {
+	owners := make(map[string]string, len(roots))
+	checkouts := make(map[string]string, len(roots))
+	for _, checkout := range sortedKeys(roots) {
+		root := roots[checkout]
+		if strings.TrimSpace(checkout) == "" {
+			return fmt.Errorf("invalid worktree_roots: empty checkout path")
+		}
+		if !filepath.IsAbs(checkout) {
+			return fmt.Errorf("invalid worktree_roots: checkout path %q is not absolute", checkout)
+		}
+		if strings.TrimSpace(root) == "" {
+			return fmt.Errorf("invalid worktree_roots[%q]: empty worktree root", checkout)
+		}
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q is not an absolute path", checkout, root)
+		}
+		canonicalCheckout := worktrees.Canonical(checkout)
+		if first, dup := checkouts[canonicalCheckout]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q already names the same checkout", checkout, first)
+		}
+		checkouts[canonicalCheckout] = checkout
+		canonicalRoot := worktrees.Canonical(root)
+		if first, dup := owners[canonicalRoot]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root %q is already used by %q; each checkout needs its own root", checkout, root, first)
+		}
+		owners[canonicalRoot] = checkout
+		if canonicalRoot == canonicalCheckout {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root must not be the checkout itself", checkout)
+		}
+	}
+	return nil
+}
+
+// sortedKeys keeps validation errors deterministic: map iteration order would
+// otherwise decide which of several bad entries is reported.
+func sortedKeys(roots map[string]string) []string {
+	keys := make([]string, 0, len(roots))
+	for key := range roots {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
@@ -1195,6 +1384,140 @@ func DefaultGlobalConfig() *GlobalConfig {
 		SessionReuse:         true,
 		Eval:                 evalDefaults(),
 	}
+}
+
+// GlobalConfigMappingEntry is one entry of a top-level mapping, spelled the way
+// the document spells it.
+type GlobalConfigMappingEntry struct {
+	Key   string
+	Value string
+}
+
+// GlobalConfigMapping describes how a top-level mapping key is written in the
+// global config document. It is what decides which edit an operator can be told
+// to make, and every field answers a question the parsed configuration cannot.
+//
+// Presence: `key:` with nothing after it and `key: {}` both decode to a map of
+// length zero, exactly like an absent key, so anything that must not duplicate a
+// top-level key has to ask the document. YAML rejects a duplicate top-level key
+// outright, leaving a configuration that no longer loads.
+//
+// Shape: an entry line can be added under a key only when its value is a BLOCK
+// mapping. After `key: {}` or `key: {a: b}` an indented entry line is not a
+// continuation of the mapping at all - YAML rejects the document with "did not
+// find expected key" - and after a valueless `key:` the safe edit is the same
+// replacement, so both are reported as not appendable.
+//
+// Indentation: siblings of a block mapping all sit at the same column, so an
+// entry line added at a different one is rejected the same way. The document is
+// hand-maintained, so its indentation is whatever its operator chose.
+type GlobalConfigMapping struct {
+	// Present reports that the key is in the document, whatever its value.
+	Present bool
+
+	// AppendableBlock reports that one more indented entry line under the key is
+	// a valid edit.
+	AppendableBlock bool
+
+	// EntryIndent is the column the key's entries start at, counted from zero, so
+	// an added or replaced entry line matches its siblings. Zero when the key has
+	// no entries to match.
+	EntryIndent int
+
+	// Line is the document line that spells the key, as written, so guidance can
+	// name the line to replace. Empty when the key's value spans further lines.
+	Line string
+
+	// Entries are the key's entries in document order, so a replacement can
+	// carry the ones the operator already has.
+	Entries []GlobalConfigMappingEntry
+}
+
+// InspectGlobalConfigMapping describes the top-level key in the global config
+// document at path.
+//
+// It never fails: a missing or unreadable file has no key, and a file this
+// package cannot parse is scanned for the key written at the start of a line,
+// which is where a top-level key is - reported as present but not appendable, so
+// guidance falls back to naming the whole replacement. Callers that must not
+// write a second top-level key are the reason presence is still answered for a
+// document nothing could parse; every caller in this repository refuses such a
+// configuration before it asks.
+func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return GlobalConfigMapping{}
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key)}
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return GlobalConfigMapping{}
+	}
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return GlobalConfigMapping{}
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode, value := mapping.Content[i], mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		found := GlobalConfigMapping{Present: true}
+		if value.Kind == yaml.MappingNode {
+			found.AppendableBlock = value.Style&yaml.FlowStyle == 0
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				found.Entries = append(found.Entries, GlobalConfigMappingEntry{
+					Key:   value.Content[j].Value,
+					Value: value.Content[j+1].Value,
+				})
+			}
+			if found.AppendableBlock && len(value.Content) > 0 && value.Content[0].Column > 1 {
+				found.EntryIndent = value.Content[0].Column - 1
+			}
+		}
+		if !found.AppendableBlock {
+			found.Line = documentLine(data, keyNode, value)
+		}
+		return found
+	}
+	return GlobalConfigMapping{}
+}
+
+// documentLine returns the single line that holds the key and its whole value,
+// empty when the value continues past it and no one line can be named.
+func documentLine(data []byte, keyNode, value *yaml.Node) string {
+	if lastNodeLine(value) != keyNode.Line {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if keyNode.Line < 1 || keyNode.Line > len(lines) {
+		return ""
+	}
+	return strings.TrimRight(lines[keyNode.Line-1], " \t\r")
+}
+
+func lastNodeLine(n *yaml.Node) int {
+	last := n.Line
+	for _, child := range n.Content {
+		if line := lastNodeLine(child); line > last {
+			last = line
+		}
+	}
+	return last
+}
+
+// hasTopLevelKeyLine is the fallback for a document YAML cannot parse: a
+// top-level key starts its line, so an indented or commented occurrence is not
+// one.
+func hasTopLevelKeyLine(data []byte, key string) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, key+":") {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
@@ -1248,6 +1571,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.WorktreeRoots != nil {
+		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
+			return nil, err
+		}
+		cfg.WorktreeRoots = raw.WorktreeRoots
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -1364,11 +1693,30 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
+	if err := validatePRRaw(cfg.PR); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validatePRRaw fails the config closed on a pr.base_branch value Git would
+// reject as a branch name, the same convention validateTestRaw already
+// applies to test.evidence.branch. An empty value is valid: it means "fall
+// back to the repository's forge default branch" and is intentionally not
+// normalized to any particular name here.
+func validatePRRaw(pr PRRaw) error {
+	if pr.BaseBranch == "" {
+		return nil
+	}
+	if _, err := evidence.NormalizeBranch(pr.BaseBranch); err != nil {
+		return fmt.Errorf("pr.base_branch: %w", err)
+	}
+	return nil
 }
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
@@ -1446,8 +1794,10 @@ func validatePathInstructionGlob(pattern string) error {
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
-// provider-side workflow run billed to the repository. All five ignore
-// allowRepoCommands, which scopes only the code-executing selection fields.
+// provider-side workflow run billed to the repository. These gate-control
+// fields ignore allowRepoCommands. PR is the explicit exception: the
+// allowRepoCommands opt-in also permits a pushed PR target because it controls
+// where a maintainer-authorized PR lands, not code execution.
 // When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
@@ -1499,6 +1849,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// artifacts are collected. The publisher independently refuses any
 		// branch without its marker file, so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
+		// pr.base_branch controls where the contributor's PR lands, so it is
+		// trusted-only unless the repository explicitly opts into pushed
+		// settings alongside commands and agent selection.
+		if !allowRepoCommands {
+			effective.PR = trusted.PR
+		}
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
@@ -1506,6 +1862,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Test.Evidence.Branch = nil
+		if !allowRepoCommands {
+			effective.PR = PRRaw{}
+		}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1581,6 +1940,9 @@ func testDefaults() Test {
 			StoreInRepo: false,
 			Dir:         ".no-mistakes/evidence",
 			Branch:      evidence.DefaultBranch,
+			LocalRoot:   "",
+			Retention:   DefaultEvidenceRetention,
+			MaxRuns:     DefaultEvidenceMaxRuns,
 		},
 	}
 }
@@ -1588,6 +1950,10 @@ func testDefaults() Test {
 // applyTestOverrides applies non-nil raw values onto resolved defaults.
 // The branch name is validated at config parse time (validateTestRaw), so an
 // unusable value never reaches here.
+//
+// It deliberately covers only the repository-relevant half of test.evidence.
+// The local-storage half is applied separately by applyEvidenceStorageOverrides
+// so a repository config can never reach it (see EvidenceRaw.LocalRoot).
 func applyTestOverrides(dst *Test, src *TestRaw) {
 	if src.Evidence.StoreInRepo != nil {
 		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
@@ -1602,13 +1968,54 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 }
 
+// applyEvidenceStorageOverrides applies the global-only local-storage half of
+// test.evidence. Merge calls it with the GlobalConfig copy and nothing else, so
+// neither a pushed nor a trusted repository config can move the daemon's
+// evidence directory or change its retention budget. Values are validated at
+// config parse time (validateTestRaw), so an unusable value never reaches here.
+func applyEvidenceStorageOverrides(dst *Evidence, src *EvidenceRaw) {
+	if src.LocalRoot != nil && strings.TrimSpace(*src.LocalRoot) != "" {
+		dst.LocalRoot = strings.TrimSpace(*src.LocalRoot)
+	}
+	if src.Retention != nil {
+		if d, err := parseEvidenceRetention(*src.Retention); err == nil {
+			dst.Retention = d
+		}
+	}
+	if src.MaxRuns != nil && *src.MaxRuns >= 0 {
+		dst.MaxRuns = *src.MaxRuns
+	}
+}
+
+// parseEvidenceRetention interprets test.evidence.retention. The keyword
+// "unlimited" (also "none"/"off"/"never"), or any non-positive duration,
+// disables age-based reaping and resolves to 0, which keeps every run's
+// evidence until the max_runs ceiling removes it.
+func parseEvidenceRetention(value string) (time.Duration, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "":
+		return DefaultEvidenceRetention, nil
+	case "unlimited", "none", "off", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("test.evidence.retention: parse %q: %w", value, err)
+	}
+	if d <= 0 {
+		return 0, nil
+	}
+	return d, nil
+}
+
 // evalDefaults returns the default local evaluation-corpus settings. Both
 // halves are on by default: provenance is unrecoverable if it was not recorded
 // at review time, and a corpus nobody has to remember to collect is the only
 // kind that exists when a comparison is finally needed. The default cap keeps
 // the corpus a rolling window rather than an unbounded archive.
 func evalDefaults() Eval {
-	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases}
+	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases, DiversifiedSize: DefaultEvalDiversifiedSize}
 }
 
 // applyEvalOverrides applies non-nil raw values onto resolved defaults. The
@@ -1623,6 +2030,9 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 	if src.MaxCases != nil && *src.MaxCases >= 0 {
 		dst.MaxCases = *src.MaxCases
 	}
+	if src.DiversifiedSize != nil && *src.DiversifiedSize >= 0 {
+		dst.DiversifiedSize = *src.DiversifiedSize
+	}
 }
 
 // validateEvalRaw fails the config closed on a negative eval.max_cases. A
@@ -1631,6 +2041,9 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 func validateEvalRaw(raw EvalRaw) error {
 	if raw.MaxCases != nil && *raw.MaxCases < 0 {
 		return fmt.Errorf("eval.max_cases must be 0 (keep every case) or greater, got %d", *raw.MaxCases)
+	}
+	if raw.DiversifiedSize != nil && *raw.DiversifiedSize < 0 {
+		return fmt.Errorf("eval.diversified_size must be 0 (one gold case per stratum) or greater, got %d", *raw.DiversifiedSize)
 	}
 	return nil
 }
@@ -1643,11 +2056,31 @@ func validateEvalRaw(raw EvalRaw) error {
 // though EffectiveRepoConfig only honors the trusted branch name: a branch
 // carrying an invalid value has to fail before it merges.
 func validateTestRaw(test TestRaw) error {
-	if test.Evidence.Branch == nil {
-		return nil
+	if test.Evidence.Branch != nil {
+		if _, err := evidence.NormalizeBranch(*test.Evidence.Branch); err != nil {
+			return fmt.Errorf("test.evidence.branch: %w", err)
+		}
 	}
-	if _, err := evidence.NormalizeBranch(*test.Evidence.Branch); err != nil {
-		return fmt.Errorf("test.evidence.branch: %w", err)
+	// local_root must be absolute. The daemon's working directory is a bare
+	// gate repository, so a relative path would resolve somewhere the operator
+	// never named - and evidence would silently scatter instead of landing
+	// where they asked. Surface the mistake in the config rather than at run
+	// time. Like branch, this also validates the PUSHED copy even though the
+	// value is honored only from the global config: a branch carrying an
+	// invalid value has to fail before it merges.
+	if test.Evidence.LocalRoot != nil {
+		root := strings.TrimSpace(*test.Evidence.LocalRoot)
+		if root != "" && !filepath.IsAbs(root) {
+			return fmt.Errorf("test.evidence.local_root must be an absolute path, got %q", root)
+		}
+	}
+	if test.Evidence.Retention != nil {
+		if _, err := parseEvidenceRetention(*test.Evidence.Retention); err != nil {
+			return err
+		}
+	}
+	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
+		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
 	return nil
 }
@@ -1750,6 +2183,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	test := testDefaults()
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
+	// Applied last and from the global config only: where the daemon writes
+	// evidence on this machine, and how long it keeps it, is never a
+	// repository's decision (see EvidenceRaw.LocalRoot).
+	applyEvidenceStorageOverrides(&test.Evidence, &global.Test.Evidence)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {
@@ -1782,6 +2219,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

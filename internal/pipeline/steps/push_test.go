@@ -323,7 +323,7 @@ func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 	recordReviewApproval(t, sctx, headSHA)
 
 	// Evidence for this run exists, collected outside the worktree.
-	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	evidenceDir := testEvidenceDir(sctx)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

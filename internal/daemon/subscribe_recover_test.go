@@ -516,10 +516,18 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 		}
 		select {
 		case <-errCh:
-		case <-time.After(3 * time.Second):
+		// Shutdown waits for in-flight recovery cleanup. On Windows, git can
+		// hold a recovered worktree long enough that the historical three-second
+		// test cap races that deliberate drain period.
+		case <-time.After(35 * time.Second):
 			t.Error("daemon did not stop")
 		}
 	}()
+
+	// A recovered daemon binds its IPC socket only after startup recovery has
+	// rebuilt its run state. Do not race approval against that work on Windows,
+	// where the git-backed recovery path can exceed the old five-second loop.
+	waitForDaemonReady(t, p)
 
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
@@ -647,11 +655,15 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 				}
 				select {
 				case <-errCh:
-				case <-time.After(3 * time.Second):
+				// Match RunManager.Shutdown's 30-second in-flight drain budget;
+				// recovered worktree cleanup is especially process-spawn-bound on
+				// Windows.
+				case <-time.After(35 * time.Second):
 					t.Error("daemon did not stop")
 				}
 			}()
 
+			waitForDaemonReady(t, p)
 			completed := waitForRunTerminalState(t, d, run.ID)
 			if completed.Status != types.RunCompleted || completed.AwaitingAgentSince != nil {
 				t.Fatalf("historical CI gate after %s reconciliation = status %s awaiting %v", state, completed.Status, completed.AwaitingAgentSince)

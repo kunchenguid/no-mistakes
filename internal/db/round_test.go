@@ -227,6 +227,46 @@ func TestStepRoundStats(t *testing.T) {
 	}
 }
 
+func TestStepRoundStats_DeclinedSelectionIsNotPendingFix(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	t.Run("declined empty selection", func(t *testing.T) {
+		run, _ := d.InsertRun(repo.ID, "declined", "abc", "def")
+		step, _ := d.InsertStepResult(run.ID, types.StepReview)
+		round, _ := d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
+		if err := d.SetStepRoundDeclined(round.ID); err != nil {
+			t.Fatalf("set declined: %v", err)
+		}
+
+		stats, err := d.StepRoundStats(step.ID)
+		if err != nil {
+			t.Fatalf("step round stats: %v", err)
+		}
+		if stats.SelectedForFix || stats.AutoSelectedForFix || stats.PendingFixSource != "" {
+			t.Fatalf("fix state = selected %v auto %v source %q, want no pending fix", stats.SelectedForFix, stats.AutoSelectedForFix, stats.PendingFixSource)
+		}
+	})
+
+	t.Run("real selection", func(t *testing.T) {
+		run, _ := d.InsertRun(repo.ID, "selected", "abc", "def")
+		step, _ := d.InsertStepResult(run.ID, types.StepReview)
+		round, _ := d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
+		selected := `["review-1"]`
+		if err := d.SetStepRoundSelection(round.ID, &selected, RoundSelectionSourceUser); err != nil {
+			t.Fatalf("set selection: %v", err)
+		}
+
+		stats, err := d.StepRoundStats(step.ID)
+		if err != nil {
+			t.Fatalf("step round stats: %v", err)
+		}
+		if !stats.SelectedForFix || stats.AutoSelectedForFix || stats.PendingFixSource != RoundSelectionSourceUser {
+			t.Fatalf("fix state = selected %v auto %v source %q, want pending user fix", stats.SelectedForFix, stats.AutoSelectedForFix, stats.PendingFixSource)
+		}
+	})
+}
+
 func TestStepFixSummariesNoFixRounds(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -262,7 +302,7 @@ func TestStepRoundCascadeDelete(t *testing.T) {
 	}
 }
 
-func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
+func TestSetStepRoundUserDecision(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
@@ -275,8 +315,9 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	}
 
 	selected := `["review-1"]`
-	if err := d.SetStepRoundSelection(r.ID, &selected, RoundSelectionSourceUser); err != nil {
-		t.Fatalf("set selected: %v", err)
+	userFindings := `{"findings":[{"id":"user-1","source":"user","description":"missing check"}]}`
+	if err := d.SetStepRoundUserDecision(r.ID, &selected, RoundSelectionSourceUser, &userFindings); err != nil {
+		t.Fatalf("set user decision: %v", err)
 	}
 
 	rounds, err := d.GetRoundsByStep(step.ID)
@@ -292,10 +333,12 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != RoundSelectionSourceUser {
 		t.Errorf("selection_source = %v, want %q", rounds[0].SelectionSource, RoundSelectionSourceUser)
 	}
+	if rounds[0].UserFindingsJSON == nil || *rounds[0].UserFindingsJSON != userFindings {
+		t.Errorf("user_findings_json = %v, want %q", rounds[0].UserFindingsJSON, userFindings)
+	}
 
-	// Clearing the selection resets the column to NULL.
-	if err := d.SetStepRoundSelection(r.ID, nil, RoundSelectionSourceUser); err != nil {
-		t.Fatalf("clear selected: %v", err)
+	if err := d.SetStepRoundUserDecision(r.ID, nil, RoundSelectionSourceUser, nil); err != nil {
+		t.Fatalf("clear user decision: %v", err)
 	}
 	rounds, err = d.GetRoundsByStep(step.ID)
 	if err != nil {
@@ -306,5 +349,8 @@ func TestSetStepRoundSelectedFindingIDs(t *testing.T) {
 	}
 	if rounds[0].SelectionSource != nil {
 		t.Errorf("expected nil selection_source after clear, got %v", rounds[0].SelectionSource)
+	}
+	if rounds[0].UserFindingsJSON != nil {
+		t.Errorf("expected nil user_findings_json after clear, got %v", rounds[0].UserFindingsJSON)
 	}
 }

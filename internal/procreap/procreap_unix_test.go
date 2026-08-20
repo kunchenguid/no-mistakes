@@ -36,7 +36,7 @@ func TestSweepReapsSetsidEscapeeThatProcessGroupTeardownCannotReach(t *testing.T
 		t.Fatalf("precondition failed: escapee %d should have reparented to init, has ppid %d", escapee, ppid)
 	}
 
-	victims, err := Sweep(Options{WorktreesRoot: root, Scope: wt, Grace: 5 * time.Second})
+	victims, err := Sweep(Options{WorktreesRoot: root, Scopes: []string{wt}, Grace: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}

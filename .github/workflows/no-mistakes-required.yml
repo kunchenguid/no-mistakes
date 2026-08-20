@@ -3,7 +3,17 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # Body-bearing events only. The verdict is a pure function of
+    # pull_request.body, so a push carries no new body to judge - but it does
+    # move the head SHA. The pipeline pushes (Push step) before it writes the
+    # deterministic "## Pipeline" section (PR step), so a `synchronize` trigger
+    # pinned a FAILURE check run to the new head for a body the same run was
+    # about to fix. GitHub keeps that failure next to the later `edited` SUCCESS
+    # rather than replacing it, and `gh pr checks` collapses same-named check
+    # runs by startedAt alone, so the pipeline's own CI monitor could read the
+    # stale failure and park the run red forever (PR #773). No ruleset requires
+    # this status check, so no head SHA needs a run of its own.
+    types: [opened, edited, reopened]
     branches:
       - main
     # Never create a run for a release-please PR. The job-level author exemption
@@ -19,7 +29,7 @@ permissions:
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
 # an immutable per-event group so first-time-fork approvals can never collapse
-# opened/edited checks. Keep synchronize/reopened coalescing as before.
+# opened/edited checks. Keep reopened coalescing as before.
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true

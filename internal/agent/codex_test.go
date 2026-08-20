@@ -12,12 +12,12 @@ import (
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("fix the bug", "", "")
+	args := ca.buildArgs("", "")
 
 	// Default (no opt-out): pristine args, no project-doc suppression - ordinary
 	// repos keep loading AGENTS.md (backward-compat).
 	expected := []string{
-		"exec", "fix the bug",
+		"exec", "-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -35,12 +35,12 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_ExtraArgsAfterExec(t *testing.T) {
 	ca := &codexAgent{bin: "codex", extraArgs: []string{"-m", "gpt-5.4"}}
-	args := ca.buildArgs("fix it", "", "")
+	args := ca.buildArgs("", "")
 
 	expected := []string{
 		"exec",
 		"-m", "gpt-5.4",
-		"fix it",
+		"-",
 		"--json",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--color", "never",
@@ -64,7 +64,7 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 	}
 	for _, extra := range tests {
 		ca := &codexAgent{bin: "codex", extraArgs: extra}
-		args := ca.buildArgs("p", "", "")
+		args := ca.buildArgs("", "")
 
 		bypassCount := 0
 		for _, a := range args {
@@ -84,10 +84,10 @@ func TestCodexAgent_BuildArgs_UserExecutionModeSuppressesBypass(t *testing.T) {
 
 func TestCodexAgent_BuildArgs_WithOutputSchema(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review", "/tmp/schema.json", "")
+	args := ca.buildArgs("/tmp/schema.json", "")
 
 	want := []string{
-		"exec", "review",
+		"exec", "-",
 		"--json",
 		"--output-schema", "/tmp/schema.json",
 		"--dangerously-bypass-approvals-and-sandbox",
@@ -118,6 +118,38 @@ func writeFakeCodex(t *testing.T, dir, posixScript, windowsScript string) string
 		t.Fatalf("write fake codex: %v", err)
 	}
 	return bin
+}
+
+func TestCodexAgent_RunSendsLargePromptOnlyOnStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' "$@" > argv.txt
+cat > stdin.txt
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, "")
+	prompt := strings.Repeat("codex-prompt-", 512)
+	ca := &codexAgent{bin: bin}
+	if _, err := ca.Run(context.Background(), RunOpts{Prompt: prompt, CWD: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	argv, err := os.ReadFile(filepath.Join(dir, "argv.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(argv), prompt) || !strings.Contains(string(argv), "\n-\n") {
+		t.Fatalf("argv must contain stdin marker, not prompt: %q", argv)
+	}
+	stdin, err := os.ReadFile(filepath.Join(dir, "stdin.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdin) != prompt {
+		t.Fatalf("stdin prompt mismatch: got %d bytes, want %d", len(stdin), len(prompt))
+	}
 }
 
 func TestCodexAgent_RunWritesOutputSchemaFile(t *testing.T) {
@@ -485,7 +517,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 // suppression knobs are emitted under the opt-out.
 func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("review the diff", "", "")
+	args := ca.buildArgs("", "")
 	if !argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, want a `-c project_doc_max_bytes=0` pair", args)
 	}
@@ -499,7 +531,7 @@ func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 // exactly as before.
 func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
-	args := ca.buildArgs("review the diff", "", "")
+	args := ca.buildArgs("", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") || argsContain(args, "--ignore-rules") {
 		t.Errorf("buildArgs = %v, must add no suppression when the repo did not opt out", args)
 	}
@@ -510,7 +542,7 @@ func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 // but still accepts the global -c and --ignore-rules.
 func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
-	args := ca.buildArgs("rereview", "", "thread-123")
+	args := ca.buildArgs("", "thread-123")
 	if args[0] != "exec" || args[1] != "resume" || args[2] != "thread-123" {
 		t.Fatalf("resume positional prefix disturbed: %v", args)
 	}
@@ -523,7 +555,7 @@ func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
 // pinned their own project_doc_max_bytes is not double-set even under opt-out.
 func TestCodexAgent_BuildArgs_UserProjectDocOverrideWins(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true, extraArgs: []string{"-c", "project_doc_max_bytes=4096"}}
-	args := ca.buildArgs("p", "", "")
+	args := ca.buildArgs("", "")
 	if argsContainPair(args, "-c", "project_doc_max_bytes=0") {
 		t.Errorf("buildArgs = %v, must not add project_doc_max_bytes=0 over a user pin", args)
 	}

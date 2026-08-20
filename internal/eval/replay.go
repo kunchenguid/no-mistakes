@@ -25,11 +25,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// ReplayOptions controls one isolated candidate comparison.
+// ReplayOptions controls one isolated candidate comparison. The optional
+// callbacks observe progress for interactive rendering: OnPlan fires once the
+// case set is reserved and the session is recorded, OnResult after each
+// replay's evaluation is persisted. Both run synchronously on the replay
+// goroutine and may be nil.
 type ReplayOptions struct {
 	Set       string
 	Candidate Candidate
 	Repeats   int
+	OnPlan    func(session Session, cases []Case)
+	OnResult  func(evaluation Evaluation, completed, total int)
 }
 
 // Session records the immutable local plan used for one replay batch.
@@ -74,7 +80,11 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 		store.releaseReplayReservation(session.ID)
 	}()
 
-	evaluations := make([]Evaluation, 0, len(cases)*opts.Repeats)
+	if opts.OnPlan != nil {
+		opts.OnPlan(session, cases)
+	}
+	total := len(cases) * opts.Repeats
+	evaluations := make([]Evaluation, 0, total)
 	var failed int
 	for repeat := 1; repeat <= opts.Repeats; repeat++ {
 		for _, c := range cases {
@@ -86,6 +96,9 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 				return session, evaluations, err
 			}
 			evaluations = append(evaluations, evaluation)
+			if opts.OnResult != nil {
+				opts.OnResult(evaluation, len(evaluations), total)
+			}
 		}
 	}
 	if failed > 0 {
@@ -172,9 +185,9 @@ func (s *Store) releaseReplayReservation(sessionID string) {
 	_, _ = s.db.Exec(`DELETE FROM replay_case_reservations WHERE session_id = ?`, sessionID)
 }
 
-func replayOne(ctx context.Context, store *Store, c Case, session Session, candidate Candidate, repeat int) Evaluation {
+func replayOne(ctx context.Context, store *Store, c Case, session Session, candidate Candidate, repeat int) (evaluation Evaluation) {
 	started := time.Now()
-	evaluation := Evaluation{
+	evaluation = Evaluation{
 		ID:        newSessionID(),
 		SessionID: session.ID,
 		CaseID:    c.ID,
@@ -184,11 +197,24 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		StartedAt: started.Unix(),
 		Status:    "failed",
 	}
-	if c.Labels.Verdict.Known {
-		expected := c.Labels.Verdict.ShouldPark
-		evaluation.ExpectedPark = &expected
-	}
+	evaluation.HasFindingGold = c.Labels.HasGold()
+	evaluation.GoldCount = c.Labels.TrueIssueCount()
+	evaluation.FalsePositiveGold = c.Labels.FalsePositiveCount()
+	defer func() {
+		if evaluation.Status != "completed" {
+			evaluation.FalseNegative = evaluation.GoldCount
+			if evaluation.CompletedAt == 0 {
+				evaluation.CompletedAt = time.Now().Unix()
+			}
+		}
+	}()
 
+	// The replay sandbox deliberately stays OUTSIDE the source NM_HOME: it
+	// materializes its own nested NM_HOME and worktree, and the eval store,
+	// object pools, and Store.Prune all live under <NM_HOME>/eval, so a live
+	// sandbox nested there would sit inside the very state it is replaying.
+	// That isolation outranks moving it off the system temp directory; see the
+	// held-scope note in AGENTS.md ("no-mistakes Owns Its Own Scratch").
 	root, err := os.MkdirTemp("", "nm-eval-replay-")
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create isolated replay root: %v", err))
@@ -248,7 +274,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		return evaluation
 	}
 	defer baseAgent.Close()
-	observed := &observedAgent{inner: agent.WithSteering(baseAgent), ownership: ownership}
+	observed := &observedAgent{inner: agent.WithSteering(baseAgent, isolatedPaths.EvidenceDir()), ownership: ownership}
 
 	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
 	if err != nil {
@@ -329,9 +355,16 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		return evaluation
 	}
 	evaluation.Status = "completed"
-	evaluation.CandidateParked = outcome.NeedsApproval || hasAskUserFindings(outcome.Findings)
 	evaluation.FindingsJSON = outcome.Findings
 	evaluation.FindingCount = findingCount(outcome.Findings)
+	score := ScoreCandidate(c.Labels, outcome.Findings)
+	evaluation.TruePositive = score.TruePositive
+	evaluation.TruePositiveExact = score.TruePositiveExact
+	evaluation.TruePositiveFuzzy = score.TruePositiveFuzzy
+	evaluation.FalseNegative = score.FalseNegative
+	evaluation.FalsePositive = score.FalsePositive
+	evaluation.FalsePositiveGold = score.FalsePositiveGold
+	evaluation.Pending = score.Pending
 	return evaluation
 }
 
@@ -496,11 +529,6 @@ func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Res
 	return result, err
 }
 
-func hasAskUserFindings(raw string) bool {
-	findings, err := types.ParseFindingsJSON(raw)
-	return err == nil && types.HasAskUserFindings(findings)
-}
-
 func findingCount(raw string) int {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
@@ -522,50 +550,19 @@ func (s *Store) persistEvaluation(c Case, evaluation Evaluation) error {
 	if err := writeJSON(path, evaluation); err != nil {
 		return fmt.Errorf("write eval result: %w", err)
 	}
-	var expected any
-	if evaluation.ExpectedPark != nil {
-		if *evaluation.ExpectedPark {
-			expected = 1
-		} else {
-			expected = 0
-		}
-	}
-	parked := 0
-	if evaluation.CandidateParked {
-		parked = 1
-	}
 	reported := 0
 	if evaluation.TokensReported {
 		reported = 1
 	}
 	_, err := s.db.Exec(`INSERT INTO evaluations
-(id, session_id, case_id, candidate, repeat_number, started_at, completed_at, status, expected_park, candidate_parked, tokens_reported, input_tokens, output_tokens, fresh_input_tokens, duration_ms, path)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+(id, session_id, case_id, candidate, repeat_number, started_at, completed_at, status, gold_count, true_positive, false_negative, false_positive, pending, tokens_reported, input_tokens, output_tokens, fresh_input_tokens, duration_ms, path)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		evaluation.ID, evaluation.SessionID, evaluation.CaseID, evaluation.Candidate, evaluation.Repeat,
-		evaluation.StartedAt, evaluation.CompletedAt, evaluation.Status, expected, parked, reported,
+		evaluation.StartedAt, evaluation.CompletedAt, evaluation.Status, evaluation.GoldCount,
+		evaluation.TruePositive, evaluation.FalseNegative, evaluation.FalsePositive, evaluation.Pending, reported,
 		evaluation.InputTokens, evaluation.OutputTokens, evaluation.FreshInputTokens, evaluation.DurationMS, path)
 	if err != nil {
 		return fmt.Errorf("record eval result: %w", err)
-	}
-	if evaluation.Status == "completed" && evaluation.ExpectedPark != nil && !*evaluation.ExpectedPark && evaluation.CandidateParked {
-		if err := incrementQueuedFindings(c.Dir, evaluation.FindingCount); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func incrementQueuedFindings(caseDir string, count int) error {
-	if count <= 0 {
-		return nil
-	}
-	var labels Labels
-	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
-		return fmt.Errorf("read local labels queue: %w", err)
-	}
-	labels.QueuedCandidateFindings += count
-	if err := writeJSON(filepath.Join(caseDir, "labels.json"), labels); err != nil {
-		return fmt.Errorf("update local labels queue: %w", err)
 	}
 	return nil
 }

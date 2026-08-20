@@ -81,6 +81,34 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 	return r, nil
 }
 
+// RepoWorkingPaths returns the working path of every registered repository.
+//
+// It is the set of checkouts a run worktree placement must stay out of (see
+// worktrees.CheckPlacement): a run worktree inside a checkout leaves it dirty
+// for the duration of the run. Both gates that judge placement read the set from
+// here - the daemon at startup and `init --worktree-root` before it prints an
+// entry - so the two cannot diverge on which checkouts exist.
+func (d *DB) RepoWorkingPaths() ([]string, error) {
+	rows, err := d.sql.Query(`SELECT working_path FROM repos ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("get repo working paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("scan repo working path: %w", err)
+		}
+		paths = append(paths, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate repo working paths: %w", err)
+	}
+	return paths, nil
+}
+
 // GetRepos returns every authoritative repository record ordered by ID.
 func (d *DB) GetRepos() ([]*Repo, error) {
 	rows, err := d.sql.Query(

@@ -165,7 +165,7 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -195,13 +195,14 @@ Task:
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
 - For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
+- For any new or changed logic, construct at least one concrete input or state and trace it through the code, looking for a case that produces a wrong result without erroring.
 - When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
 - Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
 - Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
 - Do NOT run tests during review. The pipeline has a dedicated test step after review.
 - Analyze for bugs, risks, and code simplification opportunities.
 - "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
-- Treat security issues, performance regressions, breaking changes, and insufficient error handling as risks.
+- Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
 - Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 
 Rules:
@@ -295,13 +296,15 @@ Risk assessment (after listing all findings):
 // it, the round-history section reads as "found and fixed" and invites less
 // scrutiny of exactly the code the pipeline itself just wrote: the fixer
 // authors both code and tests in one round, so the only independent check
-// that code ever gets is this rereview. Empty outside fix mode, leaving the
-// initial review prompt unchanged.
+// that code ever gets is this rereview.
+//
+// The same framing is emitted for an uncertified range left by a previous
+// run whose re-review did not complete, even when Fixing is false, so a
+// replacement initial review is not cold on those commits. Empty when
+// neither case applies, leaving an ordinary initial review unchanged.
 func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
-	if !sctx.Fixing {
-		return ""
-	}
-	return `
+	if sctx != nil && sctx.Fixing {
+		return `
 
 Fix-round provenance:
 - This is a re-review after this run's automated fix round(s): every commit after the starting head, plus any uncommitted worktree changes, was authored by the pipeline's own fixer agent, not by the change author.
@@ -309,6 +312,20 @@ Fix-round provenance:
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
 `
+	}
+	if sctx == nil || strings.TrimSpace(sctx.UncertifiedToSHA) == "" {
+		return ""
+	}
+	fromSHA := strings.TrimSpace(sctx.UncertifiedFromSHA)
+	toSHA := strings.TrimSpace(sctx.UncertifiedToSHA)
+	return fmt.Sprintf(`
+
+Fix-round provenance:
+- Commits after %s through %s on this branch were authored by a previous run's fixer and were never certified: that run's re-review did not complete. Review them as pipeline-authored code under the same adversarial standard.
+- Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
+- Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
+- A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+`, fromSHA, toSHA)
 }
 
 // approvedReviewOutcome captures the immutable commit examined by this full

@@ -21,6 +21,7 @@ func TestNew_KnownAgents(t *testing.T) {
 	}{
 		{name: "claude", agent: types.AgentClaude, bin: "claude", wantName: "claude"},
 		{name: "codex", agent: types.AgentCodex, bin: "codex", wantName: "codex"},
+		{name: "grok", agent: types.AgentGrok, bin: "grok", wantName: "grok"},
 		{name: "rovodev", agent: types.AgentRovoDev, bin: "acli", wantName: "rovodev"},
 		{name: "opencode", agent: types.AgentOpenCode, bin: "opencode", wantName: "opencode"},
 		{name: "pi", agent: types.AgentPi, bin: "pi", wantName: "pi"},
@@ -152,7 +153,7 @@ func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
 	a := &acpxAgent{target: "gemini"}
 	args := a.buildArgs(RunOpts{Prompt: "do work"})
 
-	if got, want := args[len(args)-3:], []string{"gemini", "exec", "do work"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if got, want := args[len(args)-4:], []string{"gemini", "exec", "--file", "-"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("trailing args = %q, want %q", got, want)
 	}
 }
@@ -256,9 +257,12 @@ func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "acpx")
 	argLog := filepath.Join(dir, "args.txt")
+	stdinLog := filepath.Join(dir, "stdin.txt")
 	t.Setenv("ARG_LOG", argLog)
+	t.Setenv("STDIN_LOG", stdinLog)
 	contents := `#!/bin/sh
 printf '%s\n' "$@" > "$ARG_LOG"
+cat > "$STDIN_LOG"
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":123,"size":1000}}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"done\":true}"}}}}'
 `
@@ -271,10 +275,11 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("New() error = %v", err)
 	}
 	var chunks []string
+	schema := json.RawMessage(`{"type":"object"}`)
 	result, err := a.Run(context.Background(), RunOpts{
 		Prompt:     "do work",
 		CWD:        dir,
-		JSONSchema: json.RawMessage(`{"type":"object"}`),
+		JSONSchema: schema,
 		OnChunk:    func(text string) { chunks = append(chunks, text) },
 	})
 	if err != nil {
@@ -298,10 +303,20 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("read args: %v", err)
 	}
 	argsText := string(argsData)
-	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "do work"} {
+	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "exec\n--file\n-"} {
 		if !strings.Contains(argsText, want) {
 			t.Errorf("args missing %q in:\n%s", want, argsText)
 		}
+	}
+	if strings.Contains(argsText, "do work") {
+		t.Errorf("args contain prompt:\n%s", argsText)
+	}
+	stdinData, err := os.ReadFile(stdinLog)
+	if err != nil {
+		t.Fatalf("read stdin: %v", err)
+	}
+	if got, want := string(stdinData), buildACPStructuredPrompt("do work", schema); got != want {
+		t.Errorf("stdin = %q, want %q", got, want)
 	}
 }
 
@@ -593,26 +608,32 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 func TestFencedJSONCandidates_IgnoreBackticksInsideJSONString(t *testing.T) {
 	text := "review complete\n```json\n{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n```\npostlude"
 
-	got := fencedJSONCandidates(text)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
+	closed, open := fencedJSONCandidates(text)
+	if len(open) != 0 {
+		t.Fatalf("expected no open candidates, got %d", len(open))
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed candidate, got %d", len(closed))
 	}
 	want := "{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n"
-	if got[0] != want {
-		t.Fatalf("candidate = %q, want %q", got[0], want)
+	if closed[0] != want {
+		t.Fatalf("candidate = %q, want %q", closed[0], want)
 	}
 }
 
 func TestFencedJSONCandidates_AllowIndentedClosingFence(t *testing.T) {
 	text := "review complete\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n   ```\nnext paragraph"
 
-	got := fencedJSONCandidates(text)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
+	closed, open := fencedJSONCandidates(text)
+	if len(open) != 0 {
+		t.Fatalf("expected no open candidates, got %d", len(open))
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed candidate, got %d", len(closed))
 	}
 	want := "{\"summary\":\"ok\",\"findings\":[]}\n"
-	if got[0] != want {
-		t.Fatalf("candidate = %q, want %q", got[0], want)
+	if closed[0] != want {
+		t.Fatalf("candidate = %q, want %q", closed[0], want)
 	}
 }
 
@@ -628,8 +649,9 @@ func TestFinalizeTextResult_WithSchemaIgnoresJSONInsideNonJSONFence(t *testing.T
 		"Final answer: not valid JSON",
 	}, "\n")
 
-	if got := fencedJSONCandidates(text); len(got) != 0 {
-		t.Fatalf("expected no fenced JSON candidates, got %q", got)
+	closed, open := fencedJSONCandidates(text)
+	if len(closed) != 0 || len(open) != 0 {
+		t.Fatalf("expected no fenced JSON candidates, got closed=%q open=%q", closed, open)
 	}
 
 	_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
@@ -660,5 +682,73 @@ func TestOutputSnippet_TruncatesLongText(t *testing.T) {
 	}
 	if runes := []rune(got); len(runes) != 201 {
 		t.Errorf("expected 200 runes plus ellipsis, got %d runes", len(runes))
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesPiSameLineFence(t *testing.T) {
+	// Regression: pi JSONL output concatenates content blocks without
+	// separators, producing ```json glued to the JSON body on the same line
+	// (no newline after the fence info token). The fence parser must still
+	// recognize the ```json fence and extract the body.
+	text := "The change is docs-only: 3 lines appended to README.md.```json{  \"findings\": [],  \"summary\": \"docs-only change\"}"
+	result, err := finalizeTextResult("pi", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []any  `json:"findings"`
+		Summary  string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.Summary != "docs-only change" {
+		t.Errorf("expected summary=docs-only change, got %q", output.Summary)
+	}
+}
+
+func TestFenceContentStart_InfoTokenWithSameLineBody(t *testing.T) {
+	// fence info token followed immediately by content on the same line.
+	start, info := fenceContentStart("```json{\"findings\":[]}", 0)
+	if info != "json" {
+		t.Errorf("expected info=json, got %q", info)
+	}
+	want := `{"findings":[]}`
+	if got := "```json{\"findings\":[]}"[start:]; got != want {
+		t.Errorf("content start = %d (got %q), want %q", start, got, want)
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesProseQuotingFenceExampleThenClosedBlock(t *testing.T) {
+	// Regression (upstream PR review failure): pi review output quotes
+	// ```json{...} as an inline example inside prose (an unclosed fence),
+	// then ends with a real closed ```json block. The quoted example must
+	// not shadow the trailing block, and must not fail the whole parse.
+	text := strings.Join([]string{
+		"The fix: ` ```json{\"findings\":[]}` glued to the body on the same line.",
+		"I traced the old fence parser in internal/agent/agent.go.",
+		"```json",
+		`{"findings":[{"id":"F1","severity":"warning"}],"summary":"one issue"}`,
+		"```",
+	}, "\n")
+	result, err := finalizeTextResult("pi", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []struct {
+			ID       string `json:"id"`
+			Severity string `json:"severity"`
+		} `json:"findings"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if len(output.Findings) != 1 || output.Findings[0].ID != "F1" {
+		t.Errorf("expected trailing block findings F1, got %+v", output.Findings)
+	}
+	if output.Summary != "one issue" {
+		t.Errorf("expected summary=one issue, got %q", output.Summary)
 	}
 }

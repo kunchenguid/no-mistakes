@@ -38,6 +38,23 @@ func TestExtractHost(t *testing.T) {
 	}
 }
 
+func TestRepoPathPreservesNonAzureGitNamespace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		remote string
+		want   string
+	}{
+		{"https://gitlab.example.com/group/_git/project.git", "group/_git/project"},
+		{"https://dev.azure.com/org/project/_git/repo", "project/repo"},
+		{"https://org.visualstudio.com/project/_git/repo", "project/repo"},
+	}
+	for _, tt := range tests {
+		if got := RepoPath(tt.remote); got != tt.want {
+			t.Errorf("RepoPath(%q) = %q, want %q", tt.remote, got, tt.want)
+		}
+	}
+}
+
 func TestCheckBucketHelpers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -17,8 +17,8 @@ func TestEvalDefaultsCollectWithoutSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Eval.CaptureProvenance || !cfg.Eval.AutoCapture || cfg.Eval.MaxCases != DefaultEvalMaxCases {
-		t.Fatalf("eval defaults = %#v, want provenance and auto-capture on with the default cap", cfg.Eval)
+	if !cfg.Eval.CaptureProvenance || !cfg.Eval.AutoCapture || cfg.Eval.MaxCases != DefaultEvalMaxCases || cfg.Eval.DiversifiedSize != DefaultEvalDiversifiedSize {
+		t.Fatalf("eval defaults = %#v, want provenance and auto-capture on with the default caps", cfg.Eval)
 	}
 	merged := Merge(cfg, &RepoConfig{})
 	if merged.Eval != cfg.Eval {
@@ -55,6 +55,23 @@ func TestLoadGlobalRejectsNegativeEvalMaxCases(t *testing.T) {
 	}
 }
 
+func TestLoadGlobalRejectsNegativeEvalDiversifiedSize(t *testing.T) {
+	_, err := LoadGlobalFromBytes([]byte("eval:\n  diversified_size: -1\n"))
+	if err == nil || !strings.Contains(err.Error(), "eval.diversified_size") {
+		t.Fatalf("error = %v, want a rejected negative eval.diversified_size", err)
+	}
+}
+
+func TestEvalDiversifiedSizeZeroMeansNoCap(t *testing.T) {
+	cfg, err := LoadGlobalFromBytes([]byte("eval:\n  diversified_size: 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Eval.DiversifiedSize != 0 {
+		t.Fatalf("eval.diversified_size = %d, want 0 (one gold case per stratum)", cfg.Eval.DiversifiedSize)
+	}
+}
+
 // TestRepoConfigCannotChangeEvalCollection pins eval as an operator-only,
 // machine-level setting. It governs this machine's local disk and what its
 // daemon records, so a pushed branch must not be able to switch collection on,
@@ -64,12 +81,12 @@ func TestRepoConfigCannotChangeEvalCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err := LoadRepoFromBytes([]byte("eval:\n  auto_capture: false\n  capture_provenance: false\n  max_cases: 9999\n"))
+	repo, err := LoadRepoFromBytes([]byte("eval:\n  auto_capture: false\n  capture_provenance: false\n  max_cases: 9999\n  diversified_size: 1\n"))
 	if err != nil {
 		t.Fatalf("repo config with an eval block must load, ignoring the key: %v", err)
 	}
 	merged := Merge(global, repo)
-	if !merged.Eval.AutoCapture || !merged.Eval.CaptureProvenance || merged.Eval.MaxCases != 7 {
+	if !merged.Eval.AutoCapture || !merged.Eval.CaptureProvenance || merged.Eval.MaxCases != 7 || merged.Eval.DiversifiedSize != DefaultEvalDiversifiedSize {
 		t.Fatalf("merged eval = %#v, want the operator's global values untouched by the repository", merged.Eval)
 	}
 }

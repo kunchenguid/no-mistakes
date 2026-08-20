@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -32,20 +33,30 @@ func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	prompt := opts.Prompt
+	if len(opts.JSONSchema) > 0 {
+		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
+	}
 	args := a.buildArgs(opts)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("acpx stdin pipe: %w", err)
+	}
 	started, err := startNativeAgentCommand(cmd)
 	if err != nil {
+		_ = stdin.Close()
 		return nil, fmt.Errorf("acpx start: %w", err)
 	}
 	defer started.closePipes()
 	pid := started.pid()
 	emitAgentStarted(opts, a.Name(), pid)
+
+	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
@@ -60,16 +71,25 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
+		err = errors.Join(err, acpxStdinError(<-stdinErrCh))
 		retErr := fmt.Errorf("acpx parse events: %w", err)
 		emitAgentExited(opts, a.Name(), pid, retErr)
 		return nil, retErr
 	}
 	waitErr := started.wait()
 	stderrWG.Wait()
+	stdinErr := acpxStdinError(<-stdinErrCh)
 	if waitErr != nil {
-		retErr := fmt.Errorf("acpx exited: %w: %s", waitErr, acpxProcessErrorOutput(stderrBuf, stdoutErr))
+		retErr := fmt.Errorf("acpx exited: %w: %s", errors.Join(waitErr, stdinErr), acpxProcessErrorOutput(stderrBuf, stdoutErr))
 		emitAgentExited(opts, a.Name(), pid, retErr)
 		return nil, retErr
+	}
+	if stdinErr != nil {
+		if out := acpxProcessErrorOutput(stderrBuf, stdoutErr); out != "" {
+			stdinErr = fmt.Errorf("%w: %s", stdinErr, out)
+		}
+		emitAgentExited(opts, a.Name(), pid, stdinErr)
+		return nil, stdinErr
 	}
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))
@@ -82,11 +102,6 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 func (a *acpxAgent) Close() error { return nil }
 
 func (a *acpxAgent) buildArgs(opts RunOpts) []string {
-	prompt := opts.Prompt
-	if len(opts.JSONSchema) > 0 {
-		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
-	}
-
 	args := make([]string, 0, 12)
 	if a.rawCommand != "" {
 		args = append(args, "--agent", a.rawCommand)
@@ -104,8 +119,15 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}
-	args = append(args, "exec", prompt)
+	args = append(args, "exec", "--file", "-")
 	return args
+}
+
+func acpxStdinError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("acpx stdin: %w", err)
 }
 
 func acpxProcessErrorOutput(stderr []byte, stdoutErr string) string {

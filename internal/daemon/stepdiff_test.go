@@ -112,3 +112,23 @@ func TestStepDiff_UnknownRunFailsClosed(t *testing.T) {
 		t.Fatal("expected an error for an unknown run")
 	}
 }
+
+// The fix-review gate depends on this RPC, and where the run's worktree is is
+// recorded on the run - so an unrelated fault in the global config must not take
+// the diff down with it. An operator who mistypes YAML while a run is parked
+// would otherwise lose the gate's diff for a reason that has nothing to do with
+// the run.
+func TestStepDiff_ServesTheDiffWhileTheGlobalConfigIsUnreadable(t *testing.T) {
+	m, runID := stepDiffFixture(t, "agent fix\n")
+	if err := os.WriteFile(m.paths.ConfigFile(), []byte("worktree_roots: [not, a, mapping\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff, truncated, err := m.StepDiff(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("step diff with an unreadable global config: %v", err)
+	}
+	if truncated || !strings.Contains(diff, "agent fix") {
+		t.Fatalf("diff = %q (truncated=%v), want the worktree's change", diff, truncated)
+	}
+}

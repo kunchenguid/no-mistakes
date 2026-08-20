@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -43,6 +44,40 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 	}
 	if strings.Contains(md, "Round 1") || strings.Contains(md, "Round 2") {
 		t.Errorf("did not expect round-numbered framing, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_BitbucketCloudKeepsFixNarrativeWithoutHTML(t *testing.T) {
+	t.Parallel()
+	findings1 := `{"findings":[{"id":"lint-1","severity":"error","file":"pkg/foo.go","line":18,"description":"unused import"}],"summary":"1 issue"}`
+	findings2 := `{"findings":[{"id":"lint-2","severity":"warning","file":"pkg/bar.go","line":35,"description":"missing error check"}],"summary":"1 issue"}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &findings2},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings1, DurationMS: 800},
+			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 600},
+		},
+	}
+
+	md, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
+
+	for _, want := range []string{
+		"### ⚠️ **Lint** - 1 warning",
+		"unused import",
+		"🔧 Fix applied.",
+		"1 warning still open:",
+		"missing error check",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected %q in Bitbucket fix narrative, got:\n%s", want, md)
+		}
+	}
+	for _, leak := range []string{"<details>", "<summary>", "<!--", pipelineAttestationCommentPrefix} {
+		if strings.Contains(md, leak) {
+			t.Errorf("Bitbucket fix narrative leaked %q:\n%s", leak, md)
+		}
 	}
 }
 

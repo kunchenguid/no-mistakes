@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// Interval is a two-sided 95% Wilson score interval over cases. Cases are the
-// independent unit; repeats are averaged inside each case so a noisy provider
-// does not inflate apparent sample size.
+// Interval is a finite-sample recall range over cases. Repeats are averaged
+// inside each case so a noisy provider does not inflate apparent sample size.
 type Interval struct {
 	Lower float64
 	Upper float64
@@ -131,33 +130,22 @@ func averageTokens(rows []Evaluation) (float64, bool) {
 }
 
 func confidenceInterval(_ string, rows []Evaluation) *Interval {
-	// First turn each case into a mean over CONCLUSIVE repeats. A pending
-	// unexpected park stays out of this conditional interval and is surfaced
-	// separately in every report as a queue count and a lower-bound accuracy.
+	// Each case becomes a mean recall over labeled repeats. Unlabeled
+	// replays stay out of this interval and are reported as pending.
 	perCase := map[string][]float64{}
 	for _, row := range rows {
-		if row.ExpectedPark == nil {
+		if row.GoldCount == 0 {
 			continue
 		}
 		if row.Status != "completed" {
 			perCase[row.CaseID] = append(perCase[row.CaseID], 0)
 			continue
 		}
-		var score *float64
-		switch {
-		case *row.ExpectedPark && row.CandidateParked:
-			v := 1.0
-			score = &v
-		case *row.ExpectedPark && !row.CandidateParked:
-			v := 0.0
-			score = &v
-		case !*row.ExpectedPark && !row.CandidateParked:
-			v := 1.0
-			score = &v
+		denom := row.TruePositive + row.FalseNegative
+		if denom == 0 {
+			continue
 		}
-		if score != nil {
-			perCase[row.CaseID] = append(perCase[row.CaseID], *score)
-		}
+		perCase[row.CaseID] = append(perCase[row.CaseID], float64(row.TruePositive)/float64(denom))
 	}
 	values := make([]float64, 0, len(perCase))
 	for _, scores := range perCase {
@@ -166,9 +154,6 @@ func confidenceInterval(_ string, rows []Evaluation) *Interval {
 			total += score
 		}
 		values = append(values, total/float64(len(scores)))
-	}
-	if len(values) == 0 {
-		return nil
 	}
 	if len(values) < 2 {
 		return nil
@@ -197,10 +182,10 @@ func markFrontier(reports []CandidateReport) {
 			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 || reports[j].Summary.Failures > 0 {
 				continue
 			}
-			betterAccuracy := reports[j].Summary.LowerBoundAccuracy() >= reports[i].Summary.LowerBoundAccuracy()
+			betterRecall := reports[j].Summary.Recall() >= reports[i].Summary.Recall()
 			cheaper := *reports[j].AverageTokens <= *reports[i].AverageTokens
-			strict := reports[j].Summary.LowerBoundAccuracy() > reports[i].Summary.LowerBoundAccuracy() || *reports[j].AverageTokens < *reports[i].AverageTokens
-			if betterAccuracy && cheaper && strict {
+			strict := reports[j].Summary.Recall() > reports[i].Summary.Recall() || *reports[j].AverageTokens < *reports[i].AverageTokens
+			if betterRecall && cheaper && strict {
 				dominated = true
 				break
 			}
@@ -210,42 +195,182 @@ func markFrontier(reports []CandidateReport) {
 }
 
 // SetSummary lets users inspect corpus coverage before an eval consumes tokens.
+// SelfScore is the recorded source reviews of the set scored against their own
+// gold (see SelfScoreRecordedReviews); it is computed from already-captured
+// local files, never from a fresh replay.
 type SetSummary struct {
 	Name           string
 	Cases          int
-	VerdictLabels  int
-	ShouldPark     int
-	ShouldPass     int
+	GoldCases      int
+	TruePositive   int
+	FalseNegative  int
+	FalsePositive  int
+	Unlabeled      int
 	QueuedFindings int
-	Composition    map[string]int
+	PinCount       int
+	Cap            int
+	Warning        string
+	Composition    []CompositionRow
+	SelfScore      EvaluationSummary
 }
 
-// InspectSets summarizes all logical MVP sets and their diversified mix.
+// CompositionRow is one stratum bucket of a case set: the same axes the
+// diversified holdout stratifies on.
+type CompositionRow struct {
+	// Repo is the repository's display identity: its resolved name when the
+	// store was given one (see Store.SetRepoNames), else the short fingerprint.
+	Repo        string
+	Language    string
+	Size        string
+	Severity    string
+	FindingType string
+	Cases       int
+}
+
+// InspectSets summarizes all logical sets and their diversified mix. It reads
+// only local registry rows and captured case files, so it stays instant no
+// matter how expensive a replay of the same sets would be.
 func InspectSets(store *Store) ([]SetSummary, error) {
-	sets := []string{"all", "labeled", "diversified"}
+	sets := []string{"all", "labeled", "diversified", "tune"}
+	all, err := store.ListCases("all")
+	if err != nil {
+		return nil, err
+	}
+	labeledCount := 0
+	for _, c := range all {
+		if c.Labels.HasGold() {
+			labeledCount++
+		}
+	}
+	queuedByCase, err := store.pendingFindingCounts()
+	if err != nil {
+		return nil, err
+	}
 	result := make([]SetSummary, 0, len(sets))
 	for _, name := range sets {
 		cases, err := store.ListCases(name)
 		if err != nil {
 			return nil, err
 		}
-		summary := SetSummary{Name: name, Cases: len(cases), Composition: map[string]int{}}
-		for _, c := range cases {
-			if c.Labels.Verdict.Known {
-				summary.VerdictLabels++
-				if c.Labels.Verdict.ShouldPark {
-					summary.ShouldPark++
-				} else {
-					summary.ShouldPass++
-				}
+		summary := SetSummary{Name: name, Cases: len(cases), Cap: store.diversifiedSize, SelfScore: SelfScoreRecordedReviews(cases)}
+		if name == "diversified" {
+			if n, err := store.pinCount(); err == nil {
+				summary.PinCount = n
 			}
-			summary.QueuedFindings += c.Labels.QueuedCandidateFindings
-			language, size, severity := caseComposition(c)
-			summary.Composition["repo="+shortFingerprint(c.RepoFingerprint)+", language="+language+", size="+size+", severity="+severity]++
+			if len(cases) == 0 && labeledCount == 0 {
+				summary.Warning = "diversified is empty: no labeled gold (unlabeled cases are not filled)"
+			}
 		}
+		if name == "tune" && len(cases) == 0 && labeledCount > 0 {
+			summary.Warning = "tune is empty; do not fit matcher thresholds on diversified"
+		}
+		type compositionKey struct {
+			repoFingerprint string
+			language        string
+			size            string
+			severity        string
+			findingType     string
+		}
+		composition := map[compositionKey]int{}
+		for _, c := range cases {
+			if c.Labels.HasGold() {
+				summary.GoldCases++
+				for _, finding := range c.Labels.Findings {
+					switch finding.Kind {
+					case GoldTruePositive:
+						summary.TruePositive++
+					case GoldFalseNegative:
+						summary.FalseNegative++
+					case GoldFalsePositive:
+						summary.FalsePositive++
+					}
+				}
+			} else {
+				summary.Unlabeled++
+			}
+			summary.QueuedFindings += queuedByCase[c.ID]
+			language, size, severity := caseComposition(c)
+			composition[compositionKey{
+				repoFingerprint: c.RepoFingerprint,
+				language:        language,
+				size:            size,
+				severity:        severity,
+				findingType:     findingType(c),
+			}]++
+		}
+		rows := make([]CompositionRow, 0, len(composition))
+		for key, n := range composition {
+			rows = append(rows, CompositionRow{
+				Repo:        store.repoDisplay(key.repoFingerprint),
+				Language:    key.language,
+				Size:        key.size,
+				Severity:    key.severity,
+				FindingType: key.findingType,
+				Cases:       n,
+			})
+		}
+		summary.Composition = sortedCompositionRows(rows)
 		result = append(result, summary)
 	}
 	return result, nil
+}
+
+func sortedCompositionRows(rows []CompositionRow) []CompositionRow {
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.Repo != b.Repo {
+			return a.Repo < b.Repo
+		}
+		if a.Language != b.Language {
+			return a.Language < b.Language
+		}
+		if a.Size != b.Size {
+			return a.Size < b.Size
+		}
+		if a.Severity != b.Severity {
+			return a.Severity < b.Severity
+		}
+		if a.FindingType != b.FindingType {
+			return a.FindingType < b.FindingType
+		}
+		return a.Cases < b.Cases
+	})
+	return rows
+}
+
+// SelfScoreRecordedReviews scores each case's recorded source-review findings
+// against that case's own gold, exactly as a replayed candidate would be
+// scored. Everything it reads was captured when the case was frozen, so the
+// result is available instantly without invoking an agent, touching a gate, or
+// re-running anything. It answers "what would eval report for the reviews that
+// produced this set" - the baseline a candidate has to beat.
+func SelfScoreRecordedReviews(cases []Case) EvaluationSummary {
+	evaluations := make([]Evaluation, 0, len(cases))
+	for _, c := range cases {
+		evaluation := Evaluation{
+			CaseID:            c.ID,
+			Candidate:         "recorded-review",
+			Status:            "completed",
+			HasFindingGold:    c.Labels.HasGold(),
+			GoldCount:         c.Labels.TrueIssueCount(),
+			FalsePositiveGold: c.Labels.FalsePositiveCount(),
+		}
+		findings, err := osReadRoundFindings(c)
+		if err != nil {
+			evaluation.Status = "failed"
+		} else {
+			score := ScoreCandidate(c.Labels, findings)
+			evaluation.TruePositive = score.TruePositive
+			evaluation.TruePositiveExact = score.TruePositiveExact
+			evaluation.TruePositiveFuzzy = score.TruePositiveFuzzy
+			evaluation.FalseNegative = score.FalseNegative
+			evaluation.FalsePositive = score.FalsePositive
+			evaluation.FalsePositiveGold = score.FalsePositiveGold
+			evaluation.Pending = score.Pending
+		}
+		evaluations = append(evaluations, evaluation)
+	}
+	return SummarizeEvaluations(evaluations)
 }
 
 func shortFingerprint(value string) string {
@@ -255,28 +380,9 @@ func shortFingerprint(value string) string {
 	return value[:12]
 }
 
-// RenderSets is a stable human-readable preflight. It intentionally contains
-// counts and buckets only, never source paths, URLs, diffs, or findings.
-func RenderSets(summaries []SetSummary) string {
-	var b strings.Builder
-	b.WriteString("LOCAL-ONLY EVAL CASE SETS\n")
-	for _, summary := range summaries {
-		fmt.Fprintf(&b, "\n%s: %d cases, %d verdict labels (park %d, pass %d), %d candidate findings queued\n", summary.Name, summary.Cases, summary.VerdictLabels, summary.ShouldPark, summary.ShouldPass, summary.QueuedFindings)
-		keys := make([]string, 0, len(summary.Composition))
-		for key := range summary.Composition {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Fprintf(&b, "  %d  %s\n", summary.Composition[key], key)
-		}
-	}
-	return b.String()
-}
-
-// RenderReport is a stable human-readable local comparison. Confidence
-// intervals are conditional on conclusive verdicts; the lower-bound metric
-// includes queued unexpected parks so the uncertainty is explicit.
+// RenderReport is a stable human-readable local comparison. Scores are
+// finding-level. Unmatched candidate findings stay pending and are never
+// called false positives. A replay with no gold is unlabeled, not a pass.
 func RenderReport(reports []CandidateReport) string {
 	if len(reports) == 0 {
 		return "LOCAL-ONLY EVAL REPORT\nno candidate replays recorded yet\n"
@@ -288,15 +394,30 @@ func RenderReport(reports []CandidateReport) string {
 		fmt.Fprintf(&b, "\n%s (cohort %s)\n", s.Candidate, report.Cohort)
 		fmt.Fprintf(&b, "  replays: %d across %d repeat(s); labeled: %d; failures: %d\n", s.Total, report.RepeatCount, s.Labeled, s.Failures)
 		if s.Labeled == 0 {
-			b.WriteString("  verdict agreement: no human-confirmed verdict labels yet\n")
+			b.WriteString("  finding scores: unlabeled / pending (no finding-level gold yet)\n")
 		} else {
-			fmt.Fprintf(&b, "  confirmed verdict agreement: %.1f%% (%d/%d); conservative lower bound: %.1f%%\n", 100*s.ConfirmedAccuracy(), s.Correct, s.Conclusive, 100*s.LowerBoundAccuracy())
-			if report.Confidence != nil {
-				fmt.Fprintf(&b, "  95%% Wilson score CI: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+			fmt.Fprintf(&b, "  finding scores: true-positive %d, false-negative %d, false-positive %d, pending %d\n", s.TruePositive, s.FalseNegative, s.FalsePositive, s.Pending)
+			if s.TruePositive+s.FalseNegative == 0 {
+				b.WriteString("  recall: unavailable (no true-issue gold)\n")
+			} else {
+				fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
+				if s.TruePositiveFuzzy > 0 {
+					fmt.Fprintf(&b, "  recall-if-exact-only: %.1f%% (%d/%d)\n", 100*s.ExactRecall(), s.TruePositiveExact, s.TruePositive+s.FalseNegative)
+				}
+				if report.Confidence != nil {
+					fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+				}
 			}
-			if s.UnexpectedParks > 0 {
-				fmt.Fprintf(&b, "  queued unexpected parks: %d (not scored wrong pending finding-level adjudication)\n", s.UnexpectedParks)
+			fmt.Fprintf(&b, "  precision bounds: %.1f%%-%.1f%% (adjudicated %.1f%%; pending treated as FP for the lower bound)\n",
+				100*s.PrecisionLower(), 100*s.Precision(), 100*s.Precision())
+			if s.HasFalsePositiveGold() {
+				fmt.Fprintf(&b, "  F1: %.1f%% (headline; false-positive gold is present)\n", 100*s.F1())
+			} else {
+				fmt.Fprintf(&b, "  F1: withheld (no false-positive gold; precision in [%.1f%%, %.1f%%])\n", 100*s.PrecisionLower(), 100*s.Precision())
 			}
+		}
+		if s.Pending > 0 {
+			fmt.Fprintf(&b, "  queued unmatched candidate findings: %d (not scored as false-positive)\n", s.Pending)
 		}
 		if report.AverageTokens == nil {
 			b.WriteString("  token cost: unknown (token usage was not reported for every replay)\n")
@@ -305,7 +426,11 @@ func RenderReport(reports []CandidateReport) string {
 		}
 		fmt.Fprintf(&b, "  wall time: %.1fs average\n", report.AverageWallMS/1000)
 		if report.AverageTokens != nil {
-			fmt.Fprintf(&b, "  accuracy-vs-cost frontier: %t\n", report.OnFrontier)
+			if s.TruePositive+s.FalseNegative == 0 {
+				b.WriteString("  recall-vs-cost frontier: unavailable (no true-issue gold)\n")
+			} else {
+				fmt.Fprintf(&b, "  recall-vs-cost frontier: %t\n", report.OnFrontier)
+			}
 		}
 	}
 	return b.String()
