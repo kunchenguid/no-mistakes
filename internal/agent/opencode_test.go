@@ -543,7 +543,7 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 			}
 			_, hasFormat := body["format"]
 			nativeFormatSeen.Store(hasFormat)
-			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"tool_choice 'required' is incompatible with thinking enabled"}}}}`)
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"Thinking may not be enabled when tool_choice forces tool use."}}}}`)
 
 		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
 			var body map[string]any
@@ -633,6 +633,7 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		want bool
 	}{
 		{name: "deepseek", text: `tool_choice 'required' is incompatible with thinking enabled`, want: true},
+		{name: "canonical provider wording", text: `Thinking may not be enabled when tool_choice forces tool use.`, want: true},
 		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
 		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
 		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
