@@ -636,6 +636,51 @@ func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testi
 	t.Logf("two attempts completed; invalid fallback rejected: %v", err)
 }
 
+func TestOpencodeAgent_ThinkingToolChoiceConflictFromSSEFallsBackOnce(t *testing.T) {
+	var sessions atomic.Int32
+	var eventStreams atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			if eventStreams.Add(1) == 1 {
+				fmt.Fprint(w, `data: {"payload":{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"APIError","data":{"message":"tool_choice 'required' is incompatible with thinking enabled"}}}}}`+"\n\n")
+				return
+			}
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"}}`)
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":\"sse fallback passed\"}"}]}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(result.Output); got != `{"summary":"sse fallback passed"}` {
+		t.Fatalf("output = %s", got)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want exactly one fallback retry", got)
+	}
+	t.Logf("SSE provider conflict triggered one fallback; validated output=%s", result.Output)
+}
+
 func TestOpencodeAgent_UnrelatedThinkingLimitationDoesNotFallback(t *testing.T) {
 	var sessions atomic.Int32
 
