@@ -481,12 +481,22 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 // there may remove, and a placement the operator has since reconfigured away is
 // still swept because the run recorded it.
 func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Worktree) {
+	ctx := context.Background()
+	wtRoot := p.WorktreesDir()
+	pathByRun := make(map[string]string, len(worktrees))
+	for _, wt := range worktrees {
+		pathByRun[wt.RunID] = wt.Dir
+	}
 	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: p.WorktreesDir(),
+		WorktreesRoot: wtRoot,
 		Worktrees:     worktrees,
 		MinAge:        orphanProcessMinAge,
-		RunActive: func(_, runID string) bool {
-			skip, _ := skipWorktreeCleanup(d, runID)
+		RunActive: func(repoID, runID string) bool {
+			wtPath := pathByRun[runID]
+			if wtPath == "" {
+				wtPath = filepath.Join(wtRoot, repoID, runID)
+			}
+			skip, _ := skipWorktreeCleanup(ctx, d, runID, wtPath)
 			return skip
 		},
 	}, "daemon_startup")
@@ -783,7 +793,7 @@ func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree
 // which is the active-run guard (see skipWorktreeCleanup). A directory it
 // spares is neither swept nor removed.
 func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
-	if skip, reason := skipWorktreeCleanup(d, wt.runID); skip {
+	if skip, reason := skipWorktreeCleanup(context.Background(), d, wt.runID, wt.dir); skip {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
@@ -814,13 +824,33 @@ func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) {
 // run row before creating the worktree directory, so on a single daemon a
 // "no matching run" directory is never one whose insert simply hasn't landed
 // yet - it is safe to remove immediately.
-func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
+//
+// A run marked RunCIMonitorInterrupted (the daemon restarted while monitoring
+// CI for an already-open PR, issue #361) is terminal and would otherwise leak
+// its checkout on every future restart. Such a worktree is reclaimed like any
+// other terminal-run leftover EXCEPT when it may hold unpushed work: a CI
+// auto-fix commits locally before pushing (see steps/ci_fix.go), so a crash in
+// that window leaves the only copy of the fix commit in this checkout. We
+// reclaim only when the worktree HEAD equals the head the run already pushed -
+// run.HeadSHA advances solely after a verified push, so a match proves nothing
+// local is unpushed - and fail safe to preservation on any mismatch or
+// unreadable HEAD so recoverable commits are never discarded.
+func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
 		return true, fmt.Sprintf("failed to look up run %s: %v", runID, err)
 	}
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
+	}
+	if run != nil && run.Status == types.RunCIMonitorInterrupted {
+		head, err := git.HeadSHA(ctx, wtPath)
+		if err != nil {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree head unreadable (%v); preserving", runID, err)
+		}
+		if strings.TrimSpace(head) != run.HeadSHA {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree may hold unpushed commits; preserving", runID)
+		}
 	}
 	return false, ""
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -105,7 +106,7 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 		if run == nil {
 			continue
 		}
-		if skip, reason := skipWorktreeCleanup(d, runID); skip {
+		if skip, reason := skipWorktreeCleanup(context.Background(), d, runID, run.WorktreePath()); skip {
 			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", reason)
 			continue
 		}
