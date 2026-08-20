@@ -246,10 +246,13 @@ func isThinkingToolChoiceConflictText(text string) bool {
 	toolChoice := strings.Contains(lower, "tool_choice") || strings.Contains(lower, "tool choice")
 	thinking := strings.Contains(lower, "thinking") || strings.Contains(lower, "reasoning")
 	forced := strings.Contains(lower, "required") || strings.Contains(lower, "forced")
-	incompatible := strings.Contains(lower, "incompatible") ||
-		strings.Contains(lower, "cannot") ||
-		strings.Contains(lower, "can't") ||
-		strings.Contains(lower, "not support")
+	incompatible := strings.Contains(lower, "incompatible with") ||
+		strings.Contains(lower, "cannot be combined with") ||
+		strings.Contains(lower, "can't be combined with") ||
+		strings.Contains(lower, "cannot be used with") ||
+		strings.Contains(lower, "can't be used with") ||
+		strings.Contains(lower, "not supported with") ||
+		strings.Contains(lower, "not supported when")
 	return toolChoice && forced && thinking && incompatible
 }
 

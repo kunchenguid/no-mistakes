@@ -589,6 +589,43 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	}
 }
 
+func TestOpencodeAgent_CompatibleToolChoiceMessageDoesNotFallback(t *testing.T) {
+	var sessions atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"tool_choice is required and cannot be disabled when thinking is enabled"}}}}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+	_, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if err == nil {
+		t.Fatal("Run unexpectedly succeeded")
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("sessions = %d, want 1", got)
+	}
+}
+
 func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 	tests := []struct {
 		name string
@@ -598,6 +635,7 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		{name: "deepseek", text: `tool_choice 'required' is incompatible with thinking enabled`, want: true},
 		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
 		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
+		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
 		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
 		{name: "unrelated provider failure", text: `provider does not support this model`, want: false},
 	}
