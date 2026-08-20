@@ -25,7 +25,7 @@ You need:
 
 - `git`
 - One supported agent runner (`claude`, `codex`, `grok`, `acli` for Rovo Dev, `opencode`, `pi`, `copilot`, or `agy` for Antigravity), or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
-- For PRs and CI: `gh` (GitHub), `glab` (GitLab), `forgejo-axi` (Forgejo), Bitbucket Cloud credentials, or `az` with the `azure-devops` extension (Azure DevOps)
+- For PRs and CI: `gh` (GitHub), `glab` (GitLab), `forgejo-axi` (Forgejo), Bitbucket Cloud credentials, `az` with the `azure-devops` extension (Azure DevOps), or `tea` (Gitea)
 
 `no-mistakes doctor` reports whether the configured global runner can start a validation gate.
 Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
