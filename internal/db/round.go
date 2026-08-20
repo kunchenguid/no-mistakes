@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 const (
 	RoundSelectionSourceUser    = "user"
@@ -118,7 +121,7 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 		if r.SelectionSource != nil {
 			stats.LatestSelection = *r.SelectionSource
 		}
-		if r.SelectedFindingIDs != nil && *r.SelectedFindingIDs != "" {
+		if hasSelectedFinding(r.SelectedFindingIDs) {
 			stats.SelectedForFix = true
 			stats.AutoSelectedForFix = r.SelectionSource != nil && *r.SelectionSource == RoundSelectionSourceAutoFix
 			latestSelectedRound = r.Round
@@ -134,6 +137,22 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 		stats.PendingFixSource = latestSelectedSource
 	}
 	return stats, nil
+}
+
+func hasSelectedFinding(raw *string) bool {
+	if raw == nil {
+		return false
+	}
+	var ids []string
+	if json.Unmarshal([]byte(*raw), &ids) != nil {
+		return false
+	}
+	for _, id := range ids {
+		if id != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // InsertStepRound creates a new round record for a step result. fixSummary may

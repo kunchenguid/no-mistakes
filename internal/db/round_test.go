@@ -227,6 +227,46 @@ func TestStepRoundStats(t *testing.T) {
 	}
 }
 
+func TestStepRoundStats_DeclinedSelectionIsNotPendingFix(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	t.Run("declined empty selection", func(t *testing.T) {
+		run, _ := d.InsertRun(repo.ID, "declined", "abc", "def")
+		step, _ := d.InsertStepResult(run.ID, types.StepReview)
+		round, _ := d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
+		if err := d.SetStepRoundDeclined(round.ID); err != nil {
+			t.Fatalf("set declined: %v", err)
+		}
+
+		stats, err := d.StepRoundStats(step.ID)
+		if err != nil {
+			t.Fatalf("step round stats: %v", err)
+		}
+		if stats.SelectedForFix || stats.AutoSelectedForFix || stats.PendingFixSource != "" {
+			t.Fatalf("fix state = selected %v auto %v source %q, want no pending fix", stats.SelectedForFix, stats.AutoSelectedForFix, stats.PendingFixSource)
+		}
+	})
+
+	t.Run("real selection", func(t *testing.T) {
+		run, _ := d.InsertRun(repo.ID, "selected", "abc", "def")
+		step, _ := d.InsertStepResult(run.ID, types.StepReview)
+		round, _ := d.InsertStepRound(step.ID, 1, "initial", nil, nil, 100)
+		selected := `["review-1"]`
+		if err := d.SetStepRoundSelection(round.ID, &selected, RoundSelectionSourceUser); err != nil {
+			t.Fatalf("set selection: %v", err)
+		}
+
+		stats, err := d.StepRoundStats(step.ID)
+		if err != nil {
+			t.Fatalf("step round stats: %v", err)
+		}
+		if !stats.SelectedForFix || stats.AutoSelectedForFix || stats.PendingFixSource != RoundSelectionSourceUser {
+			t.Fatalf("fix state = selected %v auto %v source %q, want pending user fix", stats.SelectedForFix, stats.AutoSelectedForFix, stats.PendingFixSource)
+		}
+	})
+}
+
 func TestStepFixSummariesNoFixRounds(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
