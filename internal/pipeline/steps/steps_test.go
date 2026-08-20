@@ -51,6 +51,8 @@ func handleFakeCLI(mode string) {
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":
 		fakeGitMoveHeadPassthroughHandler(args)
+	case "git-reset-after-commit-passthrough":
+		fakeGitResetAfterCommitPassthroughHandler(args)
 	case "git-require-noninteractive-env":
 		fakeGitRequireNonInteractiveEnvHandler(args)
 	case "git-status-error":
@@ -182,6 +184,59 @@ func fakeGitMoveHeadPassthroughHandler(args []string) {
 		}
 	}
 	fakeGitForward(args, realGit)
+}
+
+// fakeGitSubcommand returns the git subcommand in args, skipping the global
+// options (and their values) that may precede it.
+func fakeGitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c" || args[i] == "-C":
+			i++
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			return args[i]
+		}
+	}
+	return ""
+}
+
+// fakeGitResetAfterCommitPassthroughHandler forwards every git invocation to the
+// real binary and, for a commit, resets HEAD afterwards. It models an
+// out-of-band reset landing between the pipeline's own commit and the head
+// continuity check that follows it, without relying on a repository hook.
+func fakeGitResetAfterCommitPassthroughHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if fakeGitSubcommand(args) != "commit" {
+		fakeGitForward(args, realGit)
+		return
+	}
+	replacementHead := os.Getenv("FAKE_CLI_REPLACEMENT_HEAD")
+	if replacementHead == "" {
+		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REPLACEMENT_HEAD")
+		os.Exit(1)
+	}
+	commit := exec.Command(realGit, args...)
+	commit.Stdout = os.Stdout
+	commit.Stderr = os.Stderr
+	if err := commit.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if status := exitErr.ExitCode(); status >= 0 {
+				os.Exit(status)
+			}
+		}
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	reset := exec.Command(realGit, "reset", "--hard", replacementHead)
+	reset.Stdout = io.Discard
+	reset.Stderr = os.Stderr
+	if err := reset.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func fakeGitRequireNonInteractiveEnvHandler(args []string) {

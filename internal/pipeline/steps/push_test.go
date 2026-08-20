@@ -473,9 +473,7 @@ func TestPushStep_CommitsLeftoverChangesWhenLegacyHuskyRuntimeIsMissing(t *testi
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "hook-probe.txt")
-	probe := exec.Command("git", "commit", "-m", "probe")
-	probe.Dir = dir
-	if out, err := probe.CombinedOutput(); err == nil {
+	if out, err := runGitDirect(dir, "commit", "-m", "probe"); err == nil {
 		t.Fatalf("expected the legacy Husky hook to block a verified commit, got success:\n%s", out)
 	}
 	gitCmd(t, dir, "reset", "HEAD", "hook-probe.txt")

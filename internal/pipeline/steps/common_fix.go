@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -124,10 +125,21 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // worktree. That worktree is freshly carved from the bare gate repo, so tracked
 // hooks that depend on generated untracked runtime files cannot run there - the
 // canonical case is a repository whose shared config sets core.hooksPath=.husky
-// while the tracked .husky/pre-commit sources the generated .husky/_/husky.sh
-// that no install step ever created in this worktree. The hook exits nonzero,
-// the correction commit fails, and the whole run dies on setup state that says
+// while a tracked .husky hook sources the generated .husky/_/husky.sh that no
+// install step ever created in this worktree. The hook exits nonzero, the
+// correction commit fails, and the whole run dies on setup state that says
 // nothing about the change under review.
+//
+// --no-verify alone is not enough, because Git gates only pre-commit and
+// commit-msg on it and always runs prepare-commit-msg (builtin/commit.c
+// prepare_to_commit), so a repository carrying a legacy .husky
+// prepare-commit-msg hook - commitizen and ticket-prefix setups are the common
+// ones - still fails the exact commit this helper exists to complete. Pointing
+// core.hooksPath at a freshly created empty directory for this one invocation
+// covers the whole commit hook family; --no-verify is kept so the intent stays
+// explicit at the call. The override lives only in this process argument list
+// and the directory is removed afterwards, so nothing persists in the
+// repository, the user's configuration, or the daemon's environment.
 //
 // Reach is deliberately narrow. Only commitAgentFixes (Review, Lint, Document)
 // and the Push step's leftover-worktree commit route here, because those are the
@@ -136,7 +148,12 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
 // remain the authoritative quality checks for what these commits contain.
 func commitPipelineCorrection(ctx context.Context, workDir, message string) error {
-	_, err := git.Run(ctx, workDir, "commit", "--no-verify", "-m", message)
+	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-correction-hooks-")
+	if err != nil {
+		return fmt.Errorf("prepare hook-free commit environment: %w", err)
+	}
+	defer os.RemoveAll(emptyHooksDir)
+	_, err = git.Run(ctx, workDir, "-c", "core.hooksPath="+emptyHooksDir, "commit", "--no-verify", "-m", message)
 	return err
 }
 

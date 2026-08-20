@@ -3,6 +3,7 @@ package steps
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,28 +138,30 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
 
-	gitDir := gitCmd(t, dir, "rev-parse", "--git-dir")
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(dir, gitDir)
-	}
-	hook := filepath.Join(gitDir, "hooks", "post-commit")
-	hookBody := "#!/bin/sh\ngit reset --hard " + baseSHA + "\n"
-	if err := os.WriteFile(hook, []byte(hookBody), 0o755); err != nil {
+	// The concurrent reset is driven by a git shim rather than a repository
+	// hook, so this regression keeps reproducing the incident for commits the
+	// pipeline deliberately makes hook-free.
+	realGit, err := exec.LookPath("git")
+	if err != nil {
 		t.Fatal(err)
 	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-reset-after-commit-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_REPLACEMENT_HEAD", baseSHA)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("reviewed fix\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := commitAgentFixes(sctx, types.StepDocument, "update docs", "fallback")
-	if err == nil {
+	if err := commitAgentFixes(sctx, types.StepDocument, "update docs", "fallback"); err == nil {
 		t.Fatal("expected refusal when HEAD is reset during commit")
-	}
-	if !strings.Contains(err.Error(), "not a descendant") {
+	} else if !strings.Contains(err.Error(), "not a descendant") {
 		t.Fatalf("expected a head-divergence error, got: %v", err)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != baseSHA {
-		t.Fatalf("expected hook to reset HEAD to %s, got %s", baseSHA, got)
+		t.Fatalf("expected the concurrent reset to move HEAD to %s, got %s", baseSHA, got)
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("recorded head changed to %s; expected %s", sctx.Run.HeadSHA, headSHA)

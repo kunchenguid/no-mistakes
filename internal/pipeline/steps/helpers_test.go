@@ -662,3 +662,12 @@ func fakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
 		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
 	})
 }
+
+// runGitDirect runs git without any of the repository's step helpers, so a test
+// can observe what a plain, hook-verified git invocation does in dir.
+func runGitDirect(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
