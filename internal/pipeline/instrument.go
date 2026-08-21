@@ -80,7 +80,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		Round:       a.round(),
 		Purpose:     purpose,
 		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts),
+		SessionMode: invocationSessionMode(opts, result),
 		SessionKey:  sessionKey,
 		StartedAt:   startedAt.Unix(),
 		CompletedAt: completedAt.Unix(),
@@ -206,13 +206,20 @@ func countOutputFindings(output json.RawMessage) (int, bool) {
 	return len(items), true
 }
 
-func invocationSessionMode(opts agent.RunOpts) string {
+func invocationSessionMode(opts agent.RunOpts, result *agent.Result) string {
 	switch {
 	case opts.SessionFallback:
 		return db.InvocationModeFallback
 	case opts.Session == nil:
 		return db.InvocationModeCold
 	case opts.Session.ID != "":
+		// A session was requested but the adapter reported it did not actually
+		// resume (e.g. agy silently replaced a stale conversation with a fresh
+		// one). Record as fallback so the stale-session path is not mistaken
+		// for a successful resume.
+		if result != nil && !result.Resumed {
+			return db.InvocationModeFallback
+		}
 		return db.InvocationModeResumed
 	default:
 		return db.InvocationModeStarted
