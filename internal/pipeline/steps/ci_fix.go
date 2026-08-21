@@ -108,7 +108,7 @@ CI logs:
 	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
 
 	sctx.Log("running agent to fix CI issues...")
-	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	_, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
@@ -1160,5 +1161,56 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, "user wanted CI autofix to preserve the extracted intent") {
 		t.Errorf("prompt should include extracted user intent, got:\n%s", capturedPrompt)
+	}
+}
+
+func TestCIStep_HangingFixAgentFailsAfterTimeout(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-ci-fix-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+	host := &forgejoLogTestHost{}
+	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
+
+	_, err := (&CIStep{}).autoFixCI(sctx, host, pr, []string{"build"}, false)
+	if err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+		t.Fatalf("hanging CI fix error = %v, want timeout", err)
+	}
+}
+
+func TestCIStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "late-ci-fix-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			<-ctx.Done()
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+	host := &forgejoLogTestHost{}
+	pr := &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}
+
+	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, []string{"build"}, false); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+		t.Fatalf("late successful return error = %v, want timeout", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain", "--", "ci-fix.txt"); got != "?? ci-fix.txt" {
+		t.Fatalf("ci-fix.txt status = %q, want uncommitted", got)
 	}
 }

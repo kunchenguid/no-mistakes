@@ -83,15 +83,13 @@ type StepContext struct {
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
-// running cold when sessions are unavailable. Only the review step's fixer
-// turns use this; every other agent invocation - including every review turn,
-// which must stay independent of the session that prescribed the fixes under
-// review - goes through sctx.Agent.Run directly and stays session-isolated.
+// running cold when sessions are unavailable. The invocation is bounded by
+// RunAgent's deadline. Only the review step's fixer turns use this; every
+// other agent invocation - including every review turn, which must stay
+// independent of the session that prescribed the fixes under review - goes
+// through RunAgent and stays session-isolated.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	if sctx.Sessions == nil {
-		return sctx.Agent.Run(sctx.Ctx, opts)
-	}
-	return sctx.Sessions.Run(sctx.Ctx, sctx.Agent, role, opts, sctx.Log)
+	return sctx.runAgent(sctx.Ctx, opts, role)
 }
 
 // StepOutcome is the result of executing a pipeline step.

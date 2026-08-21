@@ -151,7 +151,7 @@ Previous test findings to address:
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
 		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
-		result, err := sctx.Agent.Run(evidenceCtx, agent.RunOpts{
+		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 

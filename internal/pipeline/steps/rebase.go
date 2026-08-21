@@ -405,7 +405,7 @@ Instructions:
 	prompt += userIntentPromptSection(sctx)
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
-	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
+	_, err = sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,

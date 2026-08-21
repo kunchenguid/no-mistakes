@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -2228,5 +2229,52 @@ func TestPRStep_PromptGuidesScopeToRealModule(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, "fewer than 10 distinct") {
 		t.Errorf("expected PR prompt to convey typical module count heuristic, got:\n%s", capturedPrompt)
+	}
+}
+
+func TestPRStep_HangingAgentFallsBackAfterTimeout(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-pr-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"title":"feat: late title","body":"## What Changed\n\n- late"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatalf("buildPRContent: %v", err)
+	}
+	if content.Title != "chore: update pull request" {
+		t.Fatalf("title = %q, want fallback after timeout", content.Title)
+	}
+	if strings.Contains(content.Body, "late") {
+		t.Fatalf("used late agent body after timeout: %s", content.Body)
+	}
+}
+
+func TestPRStep_LateSuccessAfterTimeoutDoesNotUseAgentTitle(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "late-pr-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"title":"feat: should not ship","body":"## What Changed\n\n- should not ship"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatalf("buildPRContent: %v", err)
+	}
+	if content.Title == "feat: should not ship" {
+		t.Fatal("late successful PR title was used after the deadline")
 	}
 }
