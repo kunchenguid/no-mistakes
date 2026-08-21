@@ -980,13 +980,21 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 		`[{"number":42,"url":"https://github.example.com/org/repo/pull/42#discussion","baseRefName":"main"}]` + "\n",
 		`[{"number":42,"url":"https://github.example.com/org/repo/pull/%34%32","baseRefName":"main"}]` + "\n",
 	} {
-		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		var invokedCommand string
+		factory := githubTestCmdFactory(map[string]githubTestResponse{
 			findPRListCommand: {
 				stdout: output,
 			},
-		}), nil, "", "")
+		})
+		host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			invokedCommand = strings.TrimSpace(name + " " + strings.Join(args, " "))
+			return factory(ctx, name, args...)
+		}, nil, "", "")
 
 		pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+		if invokedCommand != findPRListCommand {
+			t.Fatalf("FindPR() command = %q, want %q", invokedCommand, findPRListCommand)
+		}
 		if err == nil {
 			t.Fatal("FindPR() error = nil, want JSON error")
 		}
