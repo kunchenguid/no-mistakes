@@ -7,6 +7,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -19,7 +20,7 @@ func TestNewPipelineAgent_ThreadsTheAgentProfile(t *testing.T) {
 		Agent:       types.AgentAntigravity,
 		AgentConfig: map[string]agentcfg.Profile{"antigravity": {Model: "some-model"}},
 	}
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath)
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err == nil {
 		t.Fatal("a model on a harness that cannot express one must fail setup")
 	}
@@ -33,7 +34,7 @@ func TestNewPipelineAgent_ProfileIsPerAgent(t *testing.T) {
 		Agents:      []types.AgentName{types.AgentClaude, types.AgentAntigravity},
 		AgentConfig: map[string]agentcfg.Profile{"claude": {Model: "sonnet", Effort: agentcfg.EffortHigh}},
 	}
-	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath)
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("a profile set only for claude must not reach antigravity: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 		Agent:             types.AgentCodex,
 		AgentArgsOverride: map[string][]string{"codex": {"-m", "gpt-5.4"}},
 	}
-	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath)
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("newPipelineAgent = %v", err)
 	}
