@@ -420,3 +420,30 @@ func waitForRunTerminalState(t *testing.T, d *db.DB, runID string) *db.Run {
 	t.Fatalf("run %s did not reach terminal state", runID)
 	return nil
 }
+
+// waitForDaemonReady blocks until the daemon started by RunWithOptions answers a
+// health probe. The singleton lock orders stale-run recovery (which performs
+// startup PR reconciliation) strictly before the socket bind and the first
+// health response, so a healthy daemon has already finished reconciling. Tests
+// that launch RunWithOptions in a goroutine and then wait for a recovered run to
+// go terminal must gate on this first: otherwise their terminal-state deadline
+// has to absorb the entire cold daemon startup, which is far slower on the
+// process-spawn-bound Windows runner and made the wait flaky.
+func waitForDaemonReady(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		client, err := ipc.Dial(p.Socket())
+		if err == nil {
+			var result ipc.HealthResult
+			callErr := client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &result)
+			_ = client.Close()
+			if callErr == nil && result.Status == "ok" {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("daemon at %s never became ready", p.Socket())
+}

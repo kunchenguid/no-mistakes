@@ -152,14 +152,13 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 		inv.DeltaCacheReadTokens = &deltaCache
 	}
 
+	if result.UsageReported && result.Usage.ReasoningReported {
+		reasoning := result.Usage.ReasoningTokens
+		inv.ReasoningTokens = &reasoning
+	}
+
 	if result.Metrics != nil {
 		m := result.Metrics
-		// Reasoning tokens are reported only by adapters that also report
-		// activity metrics (codex); a real zero there is meaningful.
-		if result.UsageReported {
-			reasoning := result.Usage.ReasoningTokens
-			inv.ReasoningTokens = &reasoning
-		}
 		roundtrips := m.ModelRoundtrips
 		inv.ModelRoundtrips = &roundtrips
 		toolCalls := m.ToolCalls

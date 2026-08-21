@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +62,51 @@ func (p *Paths) TelemetryGateFile() string {
 // pools, and their separate registry. EnsureDirs leaves creation to collection
 // and eval commands so disabling provenance and auto-capture creates no state.
 func (p *Paths) EvalDir() string { return filepath.Join(p.root, "eval") }
+
+// EvidenceDir is the default root for test-evidence artifacts, keyed by run ID
+// underneath it.
+//
+// Evidence lives under the app root rather than the system temp directory on
+// purpose. The daemon runs from a service unit that exports only HOME, PATH,
+// and proxy variables, so TMPDIR is unset and os.TempDir() resolves to the
+// shared /tmp - which current Ubuntu mounts as a systemd tmpfs, putting every
+// screenshot and rendered-HTML artifact in RAM. The app root is disk backed on
+// macOS, Linux, and Windows alike, so this needs no per-OS branch, and it is
+// the directory no-mistakes already reaps for itself (see the daemon's
+// evidence reaper) instead of waiting on an OS timer that may never run.
+//
+// EnsureDirs deliberately leaves creation to the test step, so a machine that
+// never gathers evidence never grows the directory.
+func (p *Paths) EvidenceDir() string { return filepath.Join(p.root, "evidence") }
+
+// EvidenceRoot resolves where run evidence is written, honoring a configured
+// test.evidence.local_root. A relative override is ignored rather than
+// resolved: the daemon's working directory is a bare gate repository, so a
+// relative path would land somewhere the operator never named. Config parsing
+// rejects a relative value outright (see config.validateTestRaw); this check
+// is the second layer that keeps a bad value from escaping into the filesystem.
+func (p *Paths) EvidenceRoot(configured string) string {
+	if c := strings.TrimSpace(configured); c != "" && filepath.IsAbs(c) {
+		return filepath.Clean(c)
+	}
+	return p.EvidenceDir()
+}
+
+// ValidateEvidenceRoot rejects configured evidence roots inside managed worktrees.
+func (p *Paths) ValidateEvidenceRoot(configured string) error {
+	root := p.EvidenceRoot(configured)
+	worktrees := filepath.Clean(p.WorktreesDir())
+	rel, err := filepath.Rel(worktrees, root)
+	if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+		return fmt.Errorf("test.evidence.local_root %q must not be inside managed worktrees %q", root, worktrees)
+	}
+	return nil
+}
+
+// RunEvidenceDir is the evidence directory for a single run.
+func (p *Paths) RunEvidenceDir(configured, runID string) string {
+	return filepath.Join(p.EvidenceRoot(configured), runID)
+}
 
 func (p *Paths) ReposDir() string { return filepath.Join(p.root, "repos") }
 func (p *Paths) RepoDir(repoID string) string {

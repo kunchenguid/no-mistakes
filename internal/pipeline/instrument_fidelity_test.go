@@ -42,10 +42,11 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 		Model:         "gpt-5.6-sol",
 		ModelProvider: "openai",
 		Usage: agent.TokenUsage{
-			InputTokens:     a.cumInput,
-			OutputTokens:    a.cumOutput,
-			CacheReadTokens: a.cumCache,
-			ReasoningTokens: 5 * a.round,
+			InputTokens:       a.cumInput,
+			OutputTokens:      a.cumOutput,
+			CacheReadTokens:   a.cumCache,
+			ReasoningTokens:   5 * a.round,
+			ReasoningReported: true,
 		},
 		UsageReported: true,
 		Metrics: &agent.InvocationMetrics{
@@ -133,6 +134,25 @@ func TestPerfRecording_ResumedSessionRecordsPerRoundDeltas(t *testing.T) {
 	// Cache creation is unknown (codex does not report it), not a fabricated 0.
 	if r2.CacheCreationTokens != nil {
 		t.Fatalf("cache creation must be unknown, got %v", *r2.CacheCreationTokens)
+	}
+}
+
+func TestPerfRecording_ReasoningDoesNotRequireActivityMetrics(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	recorder := &perfRecordingAgent{db: database, runID: run.ID, stepName: types.StepReview}
+	inv := &db.AgentInvocation{}
+	recorder.recordResult(inv, "", &agent.Result{
+		Usage: agent.TokenUsage{
+			InputTokens:       21,
+			OutputTokens:      8,
+			ReasoningTokens:   3,
+			ReasoningReported: true,
+		},
+		UsageReported: true,
+	})
+	assertPtr(t, "reasoning without activity metrics", inv.ReasoningTokens, 3)
+	if inv.ModelRoundtrips != nil || inv.ToolCalls != nil || inv.SubprocessWaitMS != nil {
+		t.Fatalf("missing activity metrics must stay unknown: %+v", inv)
 	}
 }
 

@@ -31,7 +31,13 @@ type StepContext struct {
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
-	Env          []string // extra environment variables for subprocesses (used in tests)
+	// EvidenceDir is where this run's test-evidence artifacts belong, always
+	// outside the worktree. The executor resolves it once from the app root
+	// (honoring test.evidence.local_root) so every consumer - the test step's
+	// prompt and the PR step's publisher - names the same directory. Empty only
+	// in embeddings that never gather evidence.
+	EvidenceDir string
+	Env         []string // extra environment variables for subprocesses (used in tests)
 	// UserIntent is a short, possibly-empty summary of what the change author
 	// was trying to accomplish. It's surfaced in step prompts so agents have
 	// context beyond the diff. Its authority depends on IntentSource: an
@@ -45,6 +51,24 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
+	// UncertifiedFromSHA/ToSHA/SourceRunID name a previous run's fixer
+	// commits on this branch whose re-review did not complete. They are set
+	// on a later run's initial review (Fixing==false) so that review still
+	// receives fix-round provenance. Empty when no such range applies.
+	UncertifiedFromSHA     string
+	UncertifiedToSHA       string
+	UncertifiedSourceRunID string
+	// UncertifiedPriorRounds are review rounds from the source run that left
+	// the uncertified range. Nil when none apply.
+	UncertifiedPriorRounds []*db.StepRound
+	// PriorBranchDecisions are rounds from EARLIER runs on this branch that
+	// recorded a human decision about their findings. Unlike the uncertified
+	// range above, nothing clears them when a review completes: a decision the
+	// user made about this branch keeps standing until the branch's run history
+	// ages out of the loader's bound. Nil when none apply. Advisory prompt
+	// context only.
+	PriorBranchDecisions          []*db.BranchDecisionRound
+	PriorBranchDecisionsTruncated bool
 	// Sessions manages the run's durable review-fixer session. The session
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.
@@ -53,6 +77,9 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
+	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
+	OnPRMerged func(ctx context.Context, runID string)
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

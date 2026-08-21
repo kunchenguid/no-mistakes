@@ -50,7 +50,7 @@ That deterministic rerun sits strictly before the agent rounds described above:
 
 [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
 
-Nothing that survives a rerun falls into the agent loop either. A check the provider cancels again is still not a verdict on the code, so it pauses for a decision instead of spending a fix round on a run that never tested anything. A cancellation no rerun is going to replace - the default budget is `0` - reaches that same decision directly: the provider has published its conclusion and will not replace it, so waiting on it would never end. A rerun costs another CI run of that job, so the budget is deliberately small and is spent when the rerun is requested, which bounds the loop by construction. Each rerun is announced in the step log, so a run that is waiting on one says so instead of looking stalled. Reruns never cross a head change: if the published branch head no longer matches the commit the run delivered, the step pauses with the expected and observed commits rather than re-running checks against a revision it never produced.
+Nothing that survives a rerun falls into the agent loop either. A check the provider cancels again is still not a verdict on the code, so it pauses for a decision instead of spending a fix round on a run that never tested anything. A cancellation no rerun is going to replace - the default budget is `0` - reaches that same decision directly: the provider has published its conclusion and will not replace it, so waiting on it would never end. A rerun costs another provider-side workflow run, so the budget is deliberately small and is spent when the rerun is requested, which bounds the loop by construction. Each rerun is announced in the step log, so a run that is waiting on one says so instead of looking stalled. Reruns never cross a head change: if the published branch head no longer matches the commit the run delivered, the step pauses with the expected and observed commits rather than re-running checks against a revision it never produced.
 
 ## Configuration
 
@@ -87,9 +87,8 @@ When the pipeline pauses for approval, you can manually trigger a fix from the T
 3. Optionally press `e` to attach a note to the current finding, or `+` to add your own finding to the fix request
 4. Press `f` to fix the selected findings
 
-The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI or AXI interface, and a sanitized history of previous rounds for that step.
-That history includes which finding IDs were selected for a prior fix attempt, which findings were left unselected by the user, and any one-line summaries from earlier fix commits.
-On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
+The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI or AXI interface, and the shared [finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history).
+The current step's part of that history also includes one-line summaries from earlier fix commits.
 
 After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
 Yolo and AXI `--yes` approve that fix review automatically after their one fix round, so a finding that remains after the fix does not trigger an unbounded fix loop.

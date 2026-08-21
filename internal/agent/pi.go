@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -62,6 +63,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 	started, err := startNativeAgentCommand(cmd)
 	if err != nil {
+		_ = stdin.Close()
 		return nil, fmt.Errorf("pi start: %w", err)
 	}
 	defer started.closePipes()
@@ -69,10 +71,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	emitAgentStarted(opts, "pi", pid)
 
 	prompt := buildPiPrompt(opts.Prompt, opts.JSONSchema)
-	go func() {
-		defer stdin.Close()
-		_, _ = io.WriteString(stdin, prompt)
-	}()
+	stdinErrCh := writeNativeAgentStdin(stdin, prompt)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
@@ -86,6 +85,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
+		err = errors.Join(err, piStdinError(<-stdinErrCh))
 		retErr := fmt.Errorf("pi parse events: %w", err)
 		emitAgentExited(opts, "pi", pid, retErr)
 		return nil, retErr
@@ -93,16 +93,24 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 	waitErr := started.wait()
 	stderrWG.Wait()
+	stdinErr := piStdinError(<-stdinErrCh)
+	stderr := strings.TrimSpace(string(stderrBuf))
 	if waitErr != nil {
-		stderr := strings.TrimSpace(string(stderrBuf))
 		if stderr != "" {
-			retErr := fmt.Errorf("pi exited: %w: %s", waitErr, stderr)
+			retErr := fmt.Errorf("pi exited: %w: %s", errors.Join(waitErr, stdinErr), stderr)
 			emitAgentExited(opts, "pi", pid, retErr)
 			return nil, retErr
 		}
-		retErr := fmt.Errorf("pi exited: %w", waitErr)
+		retErr := fmt.Errorf("pi exited: %w", errors.Join(waitErr, stdinErr))
 		emitAgentExited(opts, "pi", pid, retErr)
 		return nil, retErr
+	}
+	if stdinErr != nil {
+		if stderr != "" {
+			stdinErr = fmt.Errorf("%w: %s", stdinErr, stderr)
+		}
+		emitAgentExited(opts, "pi", pid, stdinErr)
+		return nil, stdinErr
 	}
 
 	if pp.assistantError != "" {
@@ -115,6 +123,13 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
+}
+
+func piStdinError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("pi stdin: %w", err)
 }
 
 // buildArgs returns the Pi argv for one invocation. Under the project-settings

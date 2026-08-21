@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -66,9 +67,9 @@ func stripPort(host string) string {
 }
 
 // ExtractPRNumber returns the trailing numeric segment from a PR/MR URL.
-// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Bitbucket
-// (/pull-requests/N), and Azure DevOps (/pullrequest/N) URLs; all of them
-// end in a digit path segment.
+// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Forgejo
+// (/pulls/N), Bitbucket (/pull-requests/N), and Azure DevOps (/pullrequest/N)
+// URLs; all of them end in a digit path segment.
 func ExtractPRNumber(prURL string) (string, error) {
 	trimmed := strings.TrimRight(prURL, "/")
 	parts := strings.Split(trimmed, "/")
@@ -89,6 +90,14 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// HeadSHA scopes provider check discovery to the exact commit currently
+	// being certified. Providers that expose CI outside the PR check rollup
+	// use it to include those runs.
+	HeadSHA string
+	// BaseBranch is the forge's actual target branch for this PR. It is
+	// authoritative once a PR exists and protects resumed CI repair from a
+	// later configuration change.
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -146,9 +155,9 @@ type Check struct {
 	// provider reported no state.
 	State       string
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
-	// Link is the provider's details URL for this check. It identifies the job
-	// behind the check, so a rerun can target that job instead of the whole PR.
-	// Empty when the provider reported no link.
+	// Link is the provider's details URL for this check. It may identify an
+	// individual job or a provider-side workflow run for targeted reruns. Empty
+	// when the provider reported no link.
 	Link string
 }
 
@@ -163,12 +172,37 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	MergedProof     bool
 }
 
-// ErrUnsupported is returned by optional Host methods that the provider
-// cannot fulfil. Callers should gate calls on Capabilities rather than
-// relying on this error, but implementations return it as a fallback.
-var ErrUnsupported = errors.New("operation not supported by this provider")
+var (
+	// ErrUnsupported is returned by optional Host methods that the provider
+	// cannot fulfil. Callers should gate calls on Capabilities rather than
+	// relying on this error, but implementations return it as a fallback.
+	ErrUnsupported = errors.New("operation not supported by this provider")
+	// ErrHeadChanged rejects results for a different PR head than the run is
+	// monitoring. It prevents a late status or already-merged race from proving
+	// the wrong commit.
+	ErrHeadChanged = errors.New("pull request head changed")
+)
+
+// MergedProof is provider evidence that a specific PR head was merged.
+type MergedProof struct {
+	Merged         bool
+	Number         string
+	URL            string
+	HeadSHA        string
+	MergeCommitSHA string
+	MergedAt       time.Time
+	MergedBy       string
+}
+
+// MergedProofHost is implemented by hosts that can prove which exact PR head
+// was merged. The expected head must be checked even when the PR is already
+// merged, because merge and monitor polling can race.
+type MergedProofHost interface {
+	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+}
 
 // Host is the provider-agnostic interface to a PR-hosting service.
 // Transport (CLI vs HTTP API) is an implementation detail.
@@ -197,7 +231,14 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
-// CheckRerunner re-runs the provider-side job behind a failed check without
+// PRBaseBranchReader is implemented by providers that can read the target
+// branch of an existing PR by its durable identity. CI uses it when a run is
+// resumed after repository configuration changes.
+type PRBaseBranchReader interface {
+	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
+}
+
+// CheckRerunner re-runs the provider-side work behind a failed check without
 // changing the commit under test. It is deliberately a separate interface
 // rather than a Host method: a backend whose provider exposes no rerun
 // primitive simply does not implement it, and callers type-assert
@@ -206,6 +247,58 @@ type Host interface {
 type CheckRerunner interface {
 	// RerunCheck asks the provider to run check again for the same commit. It
 	// returns an error when the request could not be made, including when the
-	// check names no job the provider can re-run.
+	// check names no job or workflow run the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
+}
+
+// RepoPath extracts a repository path from a git remote or web URL. Nested
+// namespaces are preserved. Azure DevOps remotes use project/repository.
+func RepoPath(remoteURL string) string {
+	raw := strings.TrimSpace(remoteURL)
+	if raw == "" {
+		return ""
+	}
+
+	host := ExtractHost(raw)
+	switch {
+	case strings.Contains(raw, "://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+		raw = u.Path
+	case strings.Contains(raw, ":"):
+		colon := strings.IndexByte(raw, ':')
+		if colon <= 0 || strings.Contains(raw[:colon], "/") {
+			return ""
+		}
+		raw = raw[colon+1:]
+	}
+
+	parts := strings.Split(strings.Trim(raw, "/"), "/")
+	clean := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	parts = clean
+	if len(parts) == 0 {
+		return ""
+	}
+
+	isAzureDevOps := host == "dev.azure.com" || host == "ssh.dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	if isAzureDevOps {
+		for i, part := range parts {
+			if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
+				return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+			}
+		}
+	}
+	if (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") && len(parts) >= 4 && strings.EqualFold(parts[0], "v3") {
+		return parts[len(parts)-2] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".git")
+	}
+	parts[len(parts)-1] = strings.TrimSuffix(parts[len(parts)-1], ".git")
+	return strings.Join(parts, "/")
 }

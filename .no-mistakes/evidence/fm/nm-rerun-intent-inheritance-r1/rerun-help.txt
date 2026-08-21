@@ -1,8 +1,0 @@
-Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent.
-
-Usage:
-  no-mistakes rerun [flags]
-
-Flags:
-  -h, --help            help for rerun
-      --intent string   explicit intent for this rerun (overrides inherited intent or fresh inference)

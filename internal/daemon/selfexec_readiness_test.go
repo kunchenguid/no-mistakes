@@ -63,6 +63,15 @@ func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+	}
+	t.Cleanup(stop)
+
 	startedAt, err := daemonProcessStartTime(cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -70,34 +79,15 @@ func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
 	if err := writeDaemonPIDFile(p.PIDFile(), daemonPIDFile{PID: cmd.Process.Pid, StartedAt: startedAt.UTC()}); err != nil {
 		t.Fatal(err)
 	}
-
-	oldStartTime := daemonProcessStartTime
-	managedPIDCaptured := make(chan struct{})
-	var releaseChild sync.Once
-	daemonProcessStartTime = func(pid int) (time.Time, error) {
-		actual, err := oldStartTime(pid)
-		if pid == cmd.Process.Pid && err == nil {
-			releaseChild.Do(func() { close(managedPIDCaptured) })
-		}
-		return actual, err
+	// Kill at the first liveness probe, after the PID identity was accepted.
+	// This avoids a Windows scheduling race where the child exits before the
+	// readiness loop can inspect the published record.
+	oldRunning := daemonProcessRunning
+	daemonProcessRunning = func(pid int) (bool, error) {
+		stop()
+		return oldRunning(pid)
 	}
-	t.Cleanup(func() { daemonProcessStartTime = oldStartTime })
-
-	childDone := make(chan struct{})
-	go func() {
-		<-managedPIDCaptured
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		close(childDone)
-	}()
-	t.Cleanup(func() {
-		releaseChild.Do(func() { close(managedPIDCaptured) })
-		_ = cmd.Process.Kill()
-		select {
-		case <-childDone:
-		case <-time.After(time.Second):
-		}
-	})
+	t.Cleanup(func() { daemonProcessRunning = oldRunning })
 	oldHealth := daemonHealthCheck
 	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
 	t.Cleanup(func() { daemonHealthCheck = oldHealth })

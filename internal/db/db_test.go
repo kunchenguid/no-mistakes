@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -76,7 +78,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
-	for _, column := range []string{"submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at"} {
+	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}
@@ -127,6 +129,152 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
+	}
+	// Placement cannot be recovered for a row written before it was recorded,
+	// so it reads back as unknown rather than as a guessed directory; callers
+	// derive it through worktrees.Layout.RecordedDir.
+	if run.WorktreeDir != nil || run.WorktreePath() != "" {
+		t.Fatalf("legacy run gained a worktree placement: %#v", run)
+	}
+}
+
+// A run's worktree placement is durable because the configuration it comes from
+// can be edited while the run exists (see internal/worktrees).
+func TestSetRunWorktreeDirRecordsPlacementDurably(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.WorktreePath() != "" {
+		t.Fatalf("new run started with a placement: %q", run.WorktreePath())
+	}
+	dir := filepath.Join("/work", "repo-runs", run.ID)
+	if err := d.SetRunWorktreeDir(run.ID, dir); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.WorktreePath() != dir {
+		t.Fatalf("recorded placement = %q, want %q", stored.WorktreePath(), dir)
+	}
+}
+
+// RunWorktreesOutside is how startup recovery finds run worktrees placed
+// outside the tree it walks itself, without asking the configuration where they
+// might be. It answers from the records only: a run in the default tree is
+// found by walking, and a run that never recorded a placement predates the
+// column - and therefore predates any placement but the default one.
+func TestRunWorktreesOutsideReturnsOnlyRecordedPlacementsElsewhere(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRoot := filepath.Join("/nm-home", "worktrees")
+
+	inDefaultTree, err := d.InsertRun(repo.ID, "a", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(inDefaultTree.ID, filepath.Join(defaultRoot, repo.ID, inDefaultTree.ID)); err != nil {
+		t.Fatal(err)
+	}
+	unrecorded, err := d.InsertRun(repo.ID, "b", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := d.InsertRun(repo.ID, "c", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhereDir := filepath.Join("/work", "repo-runs", elsewhere.ID)
+	if err := d.SetRunWorktreeDir(elsewhere.ID, elsewhereDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(elsewhere.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.RunWorktreesOutside(defaultRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range got {
+		if wt.RunID == inDefaultTree.ID {
+			t.Errorf("a placement inside %q was returned: %+v", defaultRoot, wt)
+		}
+		if wt.RunID == unrecorded.ID {
+			t.Errorf("a run with no recorded placement was returned: %+v", wt)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("RunWorktreesOutside() = %+v, want only the placement outside %q", got, defaultRoot)
+	}
+	if got[0].RunID != elsewhere.ID || got[0].RepoID != repo.ID || got[0].Dir != elsewhereDir {
+		t.Errorf("RunWorktreesOutside() = %+v, want run %s of %s at %q", got[0], elsewhere.ID, repo.ID, elsewhereDir)
+	}
+}
+
+// ActiveRunWorktreesOutside is the bounded set the startup process sweep turns
+// into path matchers: it must hold the runs that were still executing when the
+// daemon started - whose worktrees may already be gone - and not the history of
+// every run ever placed outside the default tree.
+func TestActiveRunWorktreesOutsideReturnsOnlyRunsStillActive(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRoot := filepath.Join("/nm-home", "worktrees")
+
+	statuses := map[types.RunStatus]bool{
+		types.RunPending:   true,
+		types.RunRunning:   true,
+		types.RunCompleted: false,
+		types.RunFailed:    false,
+		types.RunCancelled: false,
+	}
+	wantActive := make(map[string]bool)
+	for status, active := range statuses {
+		run, err := d.InsertRun(repo.ID, string(status), "head", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetRunWorktreeDir(run.ID, filepath.Join("/work", "repo-runs", run.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, status); err != nil {
+			t.Fatal(err)
+		}
+		if active {
+			wantActive[run.ID] = true
+		}
+	}
+
+	got, err := d.ActiveRunWorktreesOutside(defaultRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotActive := make(map[string]bool, len(got))
+	for _, wt := range got {
+		gotActive[wt.RunID] = true
+	}
+	for runID := range wantActive {
+		if !gotActive[runID] {
+			t.Errorf("active run %s missing from ActiveRunWorktreesOutside()", runID)
+		}
+	}
+	for runID := range gotActive {
+		if !wantActive[runID] {
+			t.Errorf("terminal run %s returned by ActiveRunWorktreesOutside()", runID)
+		}
 	}
 }
 

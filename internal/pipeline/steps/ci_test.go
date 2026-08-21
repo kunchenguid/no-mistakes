@@ -402,6 +402,54 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	}
 }
 
+func TestCIStep_FailedHeadWorkflowRunPreventsChecksPassed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[
+		{"name":"clippy","state":"SUCCESS","bucket":"pass"},
+		{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
+	]`)
+	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"id":101,
+		"name":"workflow-validation",
+		"status":"completed",
+		"conclusion":"failure",
+		"updated_at":"2026-07-30T12:34:56Z"
+	}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.AutoFix.CI = 0
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := &CIStep{
+		waitForNextPoll: func(context.Context, time.Duration) error {
+			return errors.New("unexpected monitor poll after failed head workflow")
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v; logs: %v", err, logs)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %+v, want failing CI approval gate", outcome)
+	}
+	for _, log := range logs {
+		if strings.Contains(log, ciChecksPassedMsg) {
+			t.Fatalf("failed head workflow was reported as checks-passed; logs: %v", logs)
+		}
+	}
+	if !strings.Contains(outcome.Findings, "workflow-validation") {
+		t.Fatalf("findings = %s, want failed workflow-validation run", outcome.Findings)
+	}
+	t.Logf("green PR rollup plus failed exact-head workflow produced approval gate: %s", outcome.Findings)
+}
+
 func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -418,7 +466,10 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Second
+	// This test owns termination through the cancelled context. Check discovery
+	// shells out several times per poll, so a short wall-clock timeout makes the
+	// assertion depend on runner speed (especially under -race and on Windows).
+	sctx.Config.CITimeout = config.CITimeoutUnlimited
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -1344,12 +1395,13 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 }
 
 // setupCIRerunRepo builds a worktree whose feature branch is published on a
-// local bare upstream, so the CI step can verify the published head with
-// ls-remote exactly as it does in production.
-func setupCIRerunRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
+// local bare origin, so the CI step can verify the published head with
+// ls-remote exactly as it does in production. The returned upstream URL remains
+// a GitHub URL because it is also the SCM provider's repository identity.
+func setupCIRerunRepo(t *testing.T) (dir, upstreamURL, baseSHA, headSHA string) {
 	t.Helper()
 
-	upstream = t.TempDir()
+	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
 	dir = t.TempDir()
@@ -1371,7 +1423,7 @@ func setupCIRerunRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
 	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	return dir, upstream, baseSHA, headSHA
+	return dir, "https://github.com/test/repo", baseSHA, headSHA
 }
 
 func ghLog(t *testing.T, logFile string) string {
