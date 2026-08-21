@@ -178,45 +178,30 @@ func codexConfigArgs(key string) func(string) []string {
 }
 
 // codexConfigPinned reports whether a raw override already sets a codex config
-// key, in either the split `-c key=value` or the single-token form. It
-// deliberately scans every argument rather than tracking `-c` positions, the
-// same way codexUserProjectDocMaxBytes does in the codex adapter.
+// key, in either the split `-c key=value` form or a single token containing the
+// config flag and assignment.
 func codexConfigPinned(key string, flags ...string) func([]string) bool {
 	flagMatch := flagPinned(flags...)
+	assignmentMatches := func(arg string) bool {
+		assignmentKey, _, ok := strings.Cut(strings.TrimSpace(arg), "=")
+		return ok && strings.TrimSpace(assignmentKey) == key
+	}
 	return func(rawArgs []string) bool {
 		if len(flags) > 0 && flagMatch(rawArgs) {
 			return true
 		}
-		for _, arg := range rawArgs {
-			if containsConfigKey(arg, key) {
+		for i, arg := range rawArgs {
+			if (arg == "-c" || arg == "--config") && i+1 < len(rawArgs) && assignmentMatches(rawArgs[i+1]) {
 				return true
+			}
+			for _, prefix := range []string{"-c ", "--config ", "-c=", "--config="} {
+				if strings.HasPrefix(arg, prefix) && assignmentMatches(strings.TrimPrefix(arg, prefix)) {
+					return true
+				}
 			}
 		}
 		return false
 	}
-}
-
-// containsConfigKey reports whether a token assigns exactly this codex config
-// key. The boundary check matters: a plain substring search for "model=" would
-// also fire on an unrelated "fallback_model=…" override and silently suppress
-// the operator's own agent_config model.
-func containsConfigKey(arg, key string) bool {
-	needle := key + "="
-	for offset := 0; ; {
-		i := strings.Index(arg[offset:], needle)
-		if i < 0 {
-			return false
-		}
-		i += offset
-		if i == 0 || !isConfigKeyByte(arg[i-1]) {
-			return true
-		}
-		offset = i + 1
-	}
-}
-
-func isConfigKeyByte(b byte) bool {
-	return b == '_' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 func unsupported() knob { return knob{mechanism: MechanismUnsupported} }

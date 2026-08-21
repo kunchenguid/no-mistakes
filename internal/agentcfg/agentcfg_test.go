@@ -106,6 +106,13 @@ func TestNativeArgsDefersToRawOverride(t *testing.T) {
 			want:    []string{"-m", "gpt-5.4"},
 		},
 		{
+			name:    "codex model unaffected by model assignment text inside another config value",
+			agent:   types.AgentCodex,
+			profile: Profile{Model: "gpt-5.4"},
+			raw:     []string{"-c", `developer_instructions="use model=o3"`},
+			want:    []string{"-m", "gpt-5.4"},
+		},
+		{
 			name:    "codex effort unaffected by a neighbouring model config key",
 			agent:   types.AgentCodex,
 			profile: Profile{Effort: EffortLow},
