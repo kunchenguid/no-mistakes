@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -1247,6 +1248,47 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("racing recover stamped custody")
+	}
+}
+
+func TestRecoverRetryDoesNotOverwriteIndependentGateAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "first.txt"), "first independent head\n")
+	mustRun(t, writer, "add", "first.txt")
+	mustRun(t, writer, "commit", "-m", "first independent head")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	firstGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+	f.service.beforeGateReset = func() {
+		mustWrite(t, filepath.Join(writer, "second.txt"), "second independent head\n")
+		mustRun(t, writer, "add", "second.txt")
+		mustRun(t, writer, "commit", "-m", "second independent head")
+		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	}
+	first := f.service.Recover(f.ctx, true)
+	if first.Recovered || first.Safety != "blocked_recover_gate_race" {
+		t.Fatalf("first recovery = %#v", first)
+	}
+	f.service.beforeGateReset = nil
+	secondGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+	second := f.service.Recover(f.ctx, true)
+	if second.Recovered || second.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("retry recovery = %#v", second)
+	}
+	anchor := custody.RecoveryGateRef(f.run.ID)
+	if got := mustRun(t, f.gate, "rev-parse", anchor); got != firstGate {
+		t.Fatalf("independent gate anchor = %s, want original %s", got, firstGate)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != secondGate {
+		t.Fatalf("retry moved gate branch = %s, want %s", got, secondGate)
 	}
 }
 

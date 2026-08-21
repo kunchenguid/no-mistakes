@@ -783,6 +783,8 @@ func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Ru
 	published := ""
 	if latest.LastPushedSHA != nil {
 		published = *latest.LastPushedSHA
+	} else if latest.SubmittedHeadSHA != nil {
+		published = *latest.SubmittedHeadSHA
 	}
 	if published == latest.HeadSHA || latest.TerminalHeadVerifiedAt == nil {
 		return gateHead, nil

@@ -506,6 +506,43 @@ func TestResolveRerunHeadUsesPreservedTerminalHeadInsteadOfStaleGateBranch(t *te
 	}
 }
 
+func TestResolveRerunHeadUsesAdvancedGateWhenSubmittedHeadWasTerminal(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	gate := filepath.Join(root, "gate.git")
+	gitCmd(t, "", "init", work)
+	gitCmd(t, work, "config", "user.email", "test@test.com")
+	gitCmd(t, work, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("submitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "add", "file.txt")
+	gitCmd(t, work, "commit", "-m", "submitted")
+	submitted := gitOutput(t, work, "rev-parse", "HEAD")
+	gitCmd(t, "", "init", "--bare", gate)
+	gitCmd(t, work, "push", gate, "HEAD:refs/heads/feature/recover")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "commit", "-am", "advanced gate")
+	advanced := gitOutput(t, work, "rev-parse", "HEAD")
+	gitCmd(t, work, "push", gate, "HEAD:refs/heads/feature/recover")
+	now := int64(1)
+	run := &db.Run{ID: "run-1", Branch: "feature/recover", Status: types.RunFailed, HeadSHA: submitted, SubmittedHeadSHA: &submitted, TerminalHeadVerifiedAt: &now}
+
+	head, err := resolveRerunHead(context.Background(), gate, run.Branch, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != advanced {
+		t.Fatalf("rerun head = %s, want advanced gate head %s", head, advanced)
+	}
+	if _, err := git.Run(context.Background(), gate, "rev-parse", "--verify", custody.RecoveryRef(run.ID)); err == nil {
+		t.Fatal("rerun created a recovery ref for the already-published submitted head")
+	}
+}
+
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
