@@ -5,11 +5,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
+	if mode := os.Getenv("NM_TEST_GIT_PROCESS_HELPER"); mode != "" {
+		runGitProcessHelper(mode)
+		return
+	}
 	dir, err := os.MkdirTemp("", "no-mistakes-git-tests-")
 	if err != nil {
 		panic(err)
@@ -29,6 +36,69 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+func runGitProcessHelper(mode string) {
+	if mode == "parent" {
+		exe, err := os.Executable()
+		if err != nil {
+			os.Exit(2)
+		}
+		cmd := exec.Command(exe)
+		cmd.Env = append(os.Environ(), "NM_TEST_GIT_PROCESS_HELPER=child")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			os.Exit(3)
+		}
+		pidFile := os.Getenv("NM_TEST_GIT_CHILD_PID_FILE")
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+			_ = cmd.Process.Kill()
+			os.Exit(4)
+		}
+	}
+	time.Sleep(time.Hour)
+}
+
+func linkGitProcessHelper(t *testing.T, binDir string) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(exe, dst); err == nil {
+		return
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForGitHelperPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if convErr != nil {
+				t.Fatalf("parse helper pid: %v", convErr)
+			}
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("git helper did not publish its child pid")
+	return 0
 }
 
 // helper: create a non-bare git repo with an initial commit
@@ -73,6 +143,41 @@ func TestRun(t *testing.T) {
 	}
 	if out != "" {
 		t.Fatalf("expected clean status, got: %q", out)
+	}
+}
+
+func TestRunCancellationReapsGitDescendantsHoldingOutputOpen(t *testing.T) {
+	binDir := t.TempDir()
+	linkGitProcessHelper(t, binDir)
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("NM_TEST_GIT_PROCESS_HELPER", "parent")
+	t.Setenv("NM_TEST_GIT_CHILD_PID_FILE", pidFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	workDir := t.TempDir()
+	go func() {
+		_, err := Run(ctx, workDir, "fetch")
+		done <- err
+	}()
+
+	childPID := waitForGitHelperPID(t, pidFile)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled git command unexpectedly succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		if child, err := os.FindProcess(childPID); err == nil {
+			_ = child.Kill()
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("cancelled git command stayed blocked on a descendant holding stdout open")
 	}
 }
 
