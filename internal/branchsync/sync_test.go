@@ -967,7 +967,9 @@ func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(
 func TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote(t *testing.T) {
 	f := newSyncFixture(t)
 
-	f.service.RemoteTimeout = 500 * time.Millisecond
+	// Leave enough room for the real local fetch on a loaded Windows runner;
+	// this test varies ls-remote latency, not filesystem or process startup.
+	f.service.RemoteTimeout = 10 * time.Second
 	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		select {
 		case <-time.After(200 * time.Millisecond):

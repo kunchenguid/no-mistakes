@@ -468,12 +468,27 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
-// FetchRemoteRefToPrivateRef fetches one exact ref into a caller-owned private
-// ref without touching FETCH_HEAD or ordinary remote-tracking refs.
-func FetchRemoteRefToPrivateRef(ctx context.Context, dir, remote, remoteRef, localRef string) error {
-	refspec := fmt.Sprintf("+%s:%s", remoteRef, localRef)
-	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
-	return err
+// FetchRemoteRef imports the object named by one exact remote ref without
+// touching FETCH_HEAD or any caller-owned ref. The temporary ref is private to
+// this operation, allowing the caller to publish the verified object with its
+// own create-only or compare-and-swap policy.
+func FetchRemoteRef(ctx context.Context, dir, remote, remoteRef, expectedCommit string) error {
+	temporaryRef := fmt.Sprintf("refs/no-mistakes/fetch/%d-%d", os.Getpid(), time.Now().UnixNano())
+	defer func() {
+		_, _ = Run(context.WithoutCancel(ctx), dir, "update-ref", "--no-deref", "-d", temporaryRef)
+	}()
+	refspec := fmt.Sprintf("+%s:%s", remoteRef, temporaryRef)
+	if _, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec); err != nil {
+		return err
+	}
+	fetched, err := Run(ctx, dir, "rev-parse", "--verify", temporaryRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("fetched ref %s is not a commit: %w", remoteRef, err)
+	}
+	if fetched != strings.TrimSpace(expectedCommit) {
+		return fmt.Errorf("fetched ref %s moved to %s, expected %s", remoteRef, fetched, expectedCommit)
+	}
+	return nil
 }
 
 // Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an

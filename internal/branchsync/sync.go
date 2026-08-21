@@ -667,11 +667,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 	}
 	if !anchored {
-		if fetchErr := git.FetchRemoteRefToPrivateRef(ctx, wd, gateDir, gateAnchor, anchorRef); fetchErr != nil {
+		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
-		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the gate branch changed while the preserved pipeline commits were being anchored; no files or refs were changed")
+		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 		}
 	}
 
@@ -1429,7 +1429,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		if !s.recoverySourceAvailable(ctx, run) {
+		if !s.recoverySourceAvailable(ctx, state, run) {
 			state.Safety = "blocked_recover_preserved_head_missing"
 			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
@@ -1445,8 +1445,21 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 }
 
-func (s *Service) recoverySourceAvailable(ctx context.Context, run *db.Run) bool {
+func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
 	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	localAnchor := custody.RecoveryRef(run.ID)
+	_, localAnchorExists, err := git.ExactRefTarget(ctx, s.workDir(), localAnchor)
+	if err != nil {
+		return false
+	}
+	if localAnchorExists {
+		anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}")
+		if err != nil || anchored != run.HeadSHA {
+			return false
+		}
+	} else if target, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", localAnchor); err == nil && target != "" {
 		return false
 	}
 	gateDir := strings.TrimSpace(s.GateDir)
@@ -1466,7 +1479,8 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, run *db.Run) bool
 			return false
 		}
 	}
-	if objectExists(ctx, s.workDir(), run.HeadSHA) {
+	if state != nil && objectExists(ctx, s.workDir(), run.HeadSHA) &&
+		(state.Local.Head == run.HeadSHA || isAncestor(ctx, s.workDir(), run.HeadSHA, state.Local.Head)) {
 		return true
 	}
 	if gateDir == "" {

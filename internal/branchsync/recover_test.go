@@ -854,6 +854,40 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorIsNotACommit(t *testin
 	}
 }
 
+func TestInspectDoesNotAdvertiseRecoveryFromLooseObjectWithoutUsableGate(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	f.service.GateDir = filepath.Join(t.TempDir(), "missing-gate.git")
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("loose-object-only next action = %#v", state.NextAction)
+	}
+	if state.NextAction.Code == "recover_custody" {
+		t.Fatal("a locally present object advertised recovery even though the behind branch still requires gate evidence")
+	}
+}
+
+func TestRecoverDoesNotOverwriteConflictingCheckoutAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("recover with conflicting checkout anchor = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()+"^{commit}"); got != f.submitted {
+		t.Fatalf("checkout recovery evidence was overwritten: got %s, want %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("conflicting checkout recovery evidence stamped custody")
+	}
+}
+
 func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 	t.Parallel()
 
