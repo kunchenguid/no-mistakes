@@ -1335,6 +1335,9 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--print":                        true,
 		"--json-schema":                  true,
 		"--output-format":                true,
+		"--conversation":                 true,
+		"-c":                             true,
+		"--continue":                     true,
 	},
 	string(types.AgentClaude): {
 		"-p":              true,

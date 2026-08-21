@@ -24,6 +24,18 @@ func (a *antigravityAgent) Name() string { return "antigravity" }
 
 func (a *antigravityAgent) ReportsAgentAttempts() bool { return true }
 
+// SupportsSessionResume reports antigravity's durable-session capability:
+// stream-json events carry the conversation identity, and
+// `--conversation <id>` reopens that conversation headless.
+func (a *antigravityAgent) SupportsSessionResume() bool { return true }
+
+// SupportsSessionProvider accepts sessions minted under either spelling of
+// the provider name, so a session recorded before a config rename still
+// resumes.
+func (a *antigravityAgent) SupportsSessionProvider(provider string) bool {
+	return provider == "antigravity" || provider == "agy"
+}
+
 func (a *antigravityAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "antigravity", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -32,11 +44,14 @@ func (a *antigravityAgent) Run(ctx context.Context, opts RunOpts) (*Result, erro
 
 func (a *antigravityAgent) Close() error { return nil }
 
-func (a *antigravityAgent) buildArgs(prompt, schemaPath string) []string {
+func (a *antigravityAgent) buildArgs(prompt, schemaPath, sessionID string) []string {
 	// Antigravity has strict flag parsing: only --print, --json-schema, --output-format
 	// We append user extraArgs before the strict ones.
-	args := make([]string, 0, len(a.extraArgs)+7)
+	args := make([]string, 0, len(a.extraArgs)+9)
 	args = append(args, a.extraArgs...)
+	if sessionID != "" {
+		args = append(args, "--conversation", sessionID)
+	}
 	args = append(args, "--dangerously-skip-permissions")
 	args = append(args, "--print", prompt)
 	if schemaPath != "" {
@@ -70,7 +85,11 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	if bin == "" {
 		bin = "agy"
 	}
-	args := a.buildArgs(opts.Prompt, schemaPath)
+	requestedSession := ""
+	if opts.Session != nil {
+		requestedSession = opts.Session.ID
+	}
+	args := a.buildArgs(opts.Prompt, schemaPath, requestedSession)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = gitSafeEnv(opts.CWD)
@@ -123,6 +142,11 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 
 	text := pp.finalText()
 	res, err := finalizeTextResult("antigravity", text, opts.JSONSchema, pp.usage)
+	if res != nil && pp.sessionID != "" {
+		res.SessionID = pp.sessionID
+		res.Provider = "antigravity"
+		res.Resumed = requestedSession != "" && requestedSession == pp.sessionID
+	}
 	emitAgentExited(opts, "antigravity", pid, err)
 	return res, err
 }
@@ -131,6 +155,7 @@ type antigravityParser struct {
 	onChunk func(string)
 
 	streamText   string
+	sessionID    string
 	usage        TokenUsage
 	errorMessage string
 }
@@ -158,10 +183,20 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 			continue
 		}
 
+		// init carries the conversation identity at the top level; every
+		// event of the run names the conversation actually serving it.
+		if id, ok := event["conversation_id"].(string); ok && id != "" {
+			p.sessionID = id
+		}
+
 		if evtName, ok := event["event"].(string); ok {
 			if evtName == "step_update" {
 				if step, ok := event["step_update"].(map[string]any); ok {
 					var delta string
+
+					if id, ok := step["conversation_id"].(string); ok && id != "" {
+						p.sessionID = id
+					}
 
 					// Standard text and tool deltas
 					if s, ok := step["text_delta"].(string); ok {
@@ -240,6 +275,9 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 				}
 			} else if evtName == "result" {
 				if result, ok := event["result"].(map[string]any); ok {
+					if id, ok := result["conversation_id"].(string); ok && id != "" {
+						p.sessionID = id
+					}
 					if status, _ := result["status"].(string); status == "ERROR" {
 						if resp, _ := result["error"].(string); resp != "" {
 							p.errorMessage = resp

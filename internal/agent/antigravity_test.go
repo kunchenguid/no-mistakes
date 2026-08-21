@@ -13,7 +13,7 @@ import (
 
 func TestAntigravityAgent_BuildArgs(t *testing.T) {
 	a := &antigravityAgent{bin: "agy"}
-	args := a.buildArgs("test prompt", "")
+	args := a.buildArgs("test prompt", "", "")
 
 	expected := []string{"--dangerously-skip-permissions", "--print", "test prompt", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
@@ -28,7 +28,7 @@ func TestAntigravityAgent_BuildArgs(t *testing.T) {
 
 func TestAntigravityAgent_BuildArgs_WithSchema(t *testing.T) {
 	a := &antigravityAgent{bin: "agy"}
-	args := a.buildArgs("test prompt", "/tmp/schema.json")
+	args := a.buildArgs("test prompt", "/tmp/schema.json", "")
 
 	expected := []string{"--dangerously-skip-permissions", "--print", "test prompt", "--json-schema", "/tmp/schema.json", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
@@ -43,7 +43,7 @@ func TestAntigravityAgent_BuildArgs_WithSchema(t *testing.T) {
 
 func TestAntigravityAgent_BuildArgs_WithExtraArgs(t *testing.T) {
 	a := &antigravityAgent{bin: "agy", extraArgs: []string{"--debug"}}
-	args := a.buildArgs("test prompt", "")
+	args := a.buildArgs("test prompt", "", "")
 
 	expected := []string{"--debug", "--dangerously-skip-permissions", "--print", "test prompt", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
@@ -53,6 +53,31 @@ func TestAntigravityAgent_BuildArgs_WithExtraArgs(t *testing.T) {
 		if args[i] != want {
 			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
 		}
+	}
+}
+
+func TestAntigravityAgent_BuildArgs_ResumesConversation(t *testing.T) {
+	a := &antigravityAgent{bin: "agy"}
+	args := a.buildArgs("test prompt", "", "conv-123")
+
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--conversation conv-123") {
+		t.Errorf("args = %v, want --conversation conv-123 for a resumable session", args)
+	}
+}
+
+func TestAntigravityAgent_SupportsSessionResume(t *testing.T) {
+	a := &antigravityAgent{bin: "agy"}
+	if !SupportsSessionResume(a) {
+		t.Fatal("SupportsSessionResume(antigravity) = false, want true")
+	}
+	for _, provider := range []string{"antigravity", "agy"} {
+		if !SupportsSessionProvider(a, provider) {
+			t.Errorf("SupportsSessionProvider(%q) = false, want true", provider)
+		}
+	}
+	if SupportsSessionProvider(a, "claude") {
+		t.Error("SupportsSessionProvider(claude) = true, want false")
 	}
 }
 
@@ -131,6 +156,24 @@ func TestAntigravityParser_ErrorStatus(t *testing.T) {
 	}
 	if p.errorMessage != "something went wrong" {
 		t.Errorf("expected error message 'something went wrong', got %q", p.errorMessage)
+	}
+}
+
+func TestAntigravityParser_CapturesConversationID(t *testing.T) {
+	stream := `
+{"event": "init", "conversation_id": "conv-init"}
+{"event": "step_update", "step_update": {"conversation_id": "conv-init", "text_delta": "working"}}
+{"event": "result", "result": {"conversation_id": "conv-result", "status": "SUCCESS"}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The terminal result event names the conversation that actually served
+	// the invocation, so it wins.
+	if p.sessionID != "conv-result" {
+		t.Errorf("sessionID = %q, want conv-result from the terminal result event", p.sessionID)
 	}
 }
 
@@ -244,5 +287,128 @@ func TestAntigravityAgent_RunReportsSchemaMiss(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "output parse") {
 		t.Fatalf("error = %v, want schema/parse failure detail", err)
+	}
+}
+
+// writeFakeAgyRecordingArgs writes a fake agy binary that appends its
+// space-joined argv to $AGY_TEST_ARGS_FILE and then emits the given JSONL
+// lines, so tests can assert on the exact flags no-mistakes passed.
+func writeFakeAgyRecordingArgs(t *testing.T, dir string, jsonlLines []string) string {
+	t.Helper()
+
+	name := "agy"
+	if runtime.GOOS == "windows" {
+		name = "agy.cmd"
+	}
+	bin := filepath.Join(dir, name)
+
+	var script string
+	if runtime.GOOS == "windows" {
+		lines := []string{"@echo off"}
+		lines = append(lines, `echo %* >> "%AGY_TEST_ARGS_FILE%"`)
+		for _, l := range jsonlLines {
+			lines = append(lines, "echo "+winEchoEscape(l))
+		}
+		lines = append(lines, "exit /b 0")
+		script = strings.Join(lines, "\r\n")
+	} else {
+		lines := []string{"#!/bin/sh"}
+		lines = append(lines, `printf '%s\n' "$*" >> "$AGY_TEST_ARGS_FILE"`)
+		for _, l := range jsonlLines {
+			lines = append(lines, "printf '%s\\n' "+shellSingleQuote(l))
+		}
+		lines = append(lines, "exit 0")
+		script = strings.Join(lines, "\n") + "\n"
+	}
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+	return bin
+}
+
+func TestAntigravityAgent_RunReportsSessionIdentity(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeAgy(t, dir, []string{
+		`{"event": "init", "conversation_id": "conv-fresh-1"}`,
+		`{"event": "result", "result": {"conversation_id": "conv-fresh-1", "status": "SUCCESS", "response": "done"}}`,
+	}, 0)
+
+	ca := &antigravityAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{Prompt: "do work", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.SessionID != "conv-fresh-1" {
+		t.Errorf("SessionID = %q, want conv-fresh-1", result.SessionID)
+	}
+	if result.Provider != "antigravity" {
+		t.Errorf("Provider = %q, want antigravity", result.Provider)
+	}
+	if result.Resumed {
+		t.Error("Resumed = true, want false for a fresh session")
+	}
+}
+
+func TestAntigravityAgent_RunResumesRecordedConversation(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "argv.jsonl")
+	t.Setenv("AGY_TEST_ARGS_FILE", argsFile)
+	bin := writeFakeAgyRecordingArgs(t, dir, []string{
+		`{"event": "result", "result": {"conversation_id": "conv-123", "status": "SUCCESS", "response": "resumed answer"}}`,
+	})
+
+	ca := &antigravityAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{
+		Prompt: "continue",
+		CWD:    t.TempDir(),
+		Session: &SessionRef{
+			ID:    "conv-123",
+			Agent: "antigravity",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	argv := strings.TrimSpace(string(argsData))
+	if !strings.Contains(argv, "--conversation conv-123") {
+		t.Errorf("argv = %q, want --conversation conv-123", argv)
+	}
+	if result.SessionID != "conv-123" {
+		t.Errorf("SessionID = %q, want conv-123", result.SessionID)
+	}
+	if !result.Resumed {
+		t.Error("Resumed = false, want true when the requested conversation served the turn")
+	}
+}
+
+func TestAntigravityAgent_RunStaleConversationStartsFreshWithoutClaimingResume(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeAgy(t, dir, []string{
+		`{"event": "init", "conversation_id": "conv-new-9"}`,
+		`{"event": "result", "result": {"conversation_id": "conv-new-9", "status": "SUCCESS", "response": "fresh start"}}`,
+	}, 0)
+
+	ca := &antigravityAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{
+		Prompt: "continue",
+		CWD:    t.TempDir(),
+		Session: &SessionRef{
+			ID:    "conv-pruned",
+			Agent: "antigravity",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Resumed {
+		t.Error("Resumed = true, want false when agy silently started a fresh conversation")
+	}
+	if result.SessionID != "conv-new-9" {
+		t.Errorf("SessionID = %q, want conv-new-9 so the new identity is persisted", result.SessionID)
 	}
 }
