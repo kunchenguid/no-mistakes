@@ -131,6 +131,10 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 	text := pp.finalText()
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
+	if err == nil {
+		res.Model = pp.model
+		res.ModelProvider = pp.provider
+	}
 	if err == nil && opts.Session != nil {
 		if pp.sessionID == "" {
 			// A durable invocation without Pi's required JSON-mode session header
@@ -271,6 +275,8 @@ type piParser struct {
 	completeText   map[int]string
 	finalAssistant map[string]any
 	sessionID      string
+	model          string
+	provider       string
 	usage          TokenUsage
 	seenUsage      map[string]struct{}
 	assistantError string
@@ -337,6 +343,14 @@ func (p *piParser) rememberAssistant(raw any) {
 		return
 	}
 	p.finalAssistant = msg
+	// Pi reports the serving model and provider on every assistant message;
+	// keep the latest so local invocation telemetry matches Claude/Codex/Grok.
+	if v, _ := msg["model"].(string); v != "" {
+		p.model = v
+	}
+	if v, _ := msg["provider"].(string); v != "" {
+		p.provider = v
+	}
 
 	if reason, _ := msg["stopReason"].(string); reason == "error" || reason == "aborted" {
 		p.assistantError = piFirstString(msg, "errorMessage", "error", "message")

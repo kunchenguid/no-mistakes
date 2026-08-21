@@ -189,14 +189,14 @@ func TestPiAgent_RunParsesAssistantContentAndUsage(t *testing.T) {
 cat > /dev/null
 printf '%s\n' '{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{\"ok"}}'
 printf '%s\n' '{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"\":true}"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","responseId":"r1","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":11,"output":7,"cacheRead":3,"cacheWrite":1}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","responseId":"r1","provider":"openai-codex","model":"gpt-5.6-luna","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":11,"output":7,"cacheRead":3,"cacheWrite":1}}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
 		"echo {\"type\":\"message_update\",\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"{\\\"ok\"}}",
 		"echo {\"type\":\"message_update\",\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"\\\":true}\"}}",
-		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":11,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\",\"provider\":\"openai-codex\",\"model\":\"gpt-5.6-luna\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":11,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}",
 		"echo {\"type\":\"agent_end\",\"messages\":[]}",
 	}, "\r\n"))
 
@@ -219,6 +219,9 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 	if result.Usage.InputTokens != 11 || result.Usage.OutputTokens != 7 ||
 		result.Usage.CacheReadTokens != 3 || result.Usage.CacheCreationTokens != 1 {
 		t.Fatalf("unexpected usage: %+v", result.Usage)
+	}
+	if result.Model != "gpt-5.6-luna" || result.ModelProvider != "openai-codex" {
+		t.Fatalf("unexpected model telemetry: model=%q provider=%q", result.Model, result.ModelProvider)
 	}
 	if len(chunks) == 0 {
 		t.Fatal("expected onChunk to receive streaming text")
@@ -280,7 +283,7 @@ else
 	printf '%s\n' "$id" > pi-session-id
 	input=11
 fi
-printf '%s\n' "{\"type\":\"session\",\"version\":3,\"id\":\"$id\",\"timestamp\":\"2026-08-21T00:00:00.000Z\",\"cwd\":\"$PWD\"}"
+printf '%s\n' "{\"type\":\"session\",\"version\":3,\"id\":\"$id\",\"timestamp\":\"2026-08-21T00:00:00.000Z\"}"
 printf '%s\n' "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r$input\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":$input,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}"
 printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"fix\"},{\"role\":\"assistant\",\"responseId\":\"r$input\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":$input,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}]}"
 `, strings.Join([]string{
@@ -300,7 +303,7 @@ printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"conten
 		"  echo !id!>pi-session-id",
 		"  set input=11",
 		")",
-		"echo {\"type\":\"session\",\"version\":3,\"id\":\"!id!\",\"timestamp\":\"2026-08-21T00:00:00.000Z\",\"cwd\":\"%CD%\"}",
+		"echo {\"type\":\"session\",\"version\":3,\"id\":\"!id!\",\"timestamp\":\"2026-08-21T00:00:00.000Z\"}",
 		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r!input!\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":!input!,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}",
 		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"fix\"},{\"role\":\"assistant\",\"responseId\":\"r!input!\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":!input!,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}]}",
 	}, "\r\n"))
