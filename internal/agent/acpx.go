@@ -20,6 +20,11 @@ type acpxAgent struct {
 	bin        string
 	target     string
 	rawCommand string
+	// model is the harness-neutral model pin resolved by internal/agentcfg.
+	// no-mistakes never speaks ACP itself, so acpx's own --model is the only
+	// mechanism that reaches the target agent; empty leaves the target on its
+	// configured default, exactly as before the common layer existed.
+	model string
 }
 
 func (a *acpxAgent) Name() string { return "acp:" + a.target }
@@ -116,6 +121,11 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 		"--non-interactive-permissions", "deny",
 		"--suppress-reads",
 	)
+	// --model must stay among acpx's own options, ahead of the bare target and
+	// the exec subcommand, or acpx reads it as an argument to the target.
+	if a.model != "" {
+		args = append(args, "--model", a.model)
+	}
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}

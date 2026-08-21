@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
@@ -98,6 +99,16 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	// AgentConfig is the harness-neutral per-agent tuning map (agent_config):
+	// model and reasoning effort stated once in a common spelling, mapped down
+	// to each harness's own mechanism by internal/agentcfg. It is additive to
+	// agent_args_override, which still wins for any knob it already pins
+	// natively, so every configuration written before this field keeps its exact
+	// previous behavior. Global-only for the same reason as
+	// agent_args_override: it describes this machine's agent setup and decides
+	// which model runs with the operator's credentials, so no pushed branch may
+	// set it.
+	AgentConfig map[string]agentcfg.Profile `yaml:"agent_config"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -136,27 +147,28 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                   agentList           `yaml:"agent"`
-	ACPXPath                string              `yaml:"acpx_path"`
-	ForgejoAXIPath          string              `yaml:"forgejo_axi_path"`
-	ACPRegistryOverrides    map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride       map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride       map[string][]string `yaml:"agent_args_override"`
-	WorktreeRoots           map[string]string   `yaml:"worktree_roots"`
-	CITimeout               string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout    string              `yaml:"daemon_connect_timeout"`
-	BranchSyncRemoteTimeout string              `yaml:"branch_sync_remote_timeout"`
-	BabysitTimeout          string              `yaml:"babysit_timeout"`
-	StepQuietWarning        string              `yaml:"step_quiet_warning"`
-	ReviewAgentTimeout      string              `yaml:"review_agent_timeout"`
-	LogLevel                string              `yaml:"log_level"`
-	SessionReuse            *bool               `yaml:"session_reuse"`
-	AutoFix                 AutoFixRaw          `yaml:"auto_fix"`
-	CI                      CIRaw               `yaml:"ci"`
-	Commit                  CommitRaw           `yaml:"commit"`
-	Intent                  IntentRaw           `yaml:"intent"`
-	Test                    TestRaw             `yaml:"test"`
-	Eval                    EvalRaw             `yaml:"eval"`
+	Agent                   agentList                  `yaml:"agent"`
+	ACPXPath                string                     `yaml:"acpx_path"`
+	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
+	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
+	AgentPathOverride       map[string]string          `yaml:"agent_path_override"`
+	AgentArgsOverride       map[string][]string        `yaml:"agent_args_override"`
+	AgentConfig             map[string]agentProfileRaw `yaml:"agent_config"`
+	WorktreeRoots           map[string]string          `yaml:"worktree_roots"`
+	CITimeout               string                     `yaml:"ci_timeout"`
+	DaemonConnectTimeout    string                     `yaml:"daemon_connect_timeout"`
+	BranchSyncRemoteTimeout string                     `yaml:"branch_sync_remote_timeout"`
+	BabysitTimeout          string                     `yaml:"babysit_timeout"`
+	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
+	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
+	LogLevel                string                     `yaml:"log_level"`
+	SessionReuse            *bool                      `yaml:"session_reuse"`
+	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
+	CI                      CIRaw                      `yaml:"ci"`
+	Commit                  CommitRaw                  `yaml:"commit"`
+	Intent                  IntentRaw                  `yaml:"intent"`
+	Test                    TestRaw                    `yaml:"test"`
+	Eval                    EvalRaw                    `yaml:"eval"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -450,6 +462,7 @@ type Config struct {
 	ACPRegistryOverrides  map[string]string
 	AgentPathOverride     map[string]string
 	AgentArgsOverride     map[string][]string
+	AgentConfig           map[string]agentcfg.Profile
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	ReviewAgentTimeout    time.Duration
@@ -741,8 +754,29 @@ log_level: info
 #   codex: /opt/codex
 #   grok: /Users/you/.grok/bin/grok
 
+# Model and reasoning effort per agent, in one common spelling (optional, global
+# only). no-mistakes maps these down to whatever the harness actually uses:
+# --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
+# codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
+# session-message body for opencode (its model needs the provider/model form),
+# and acpx --model for cursor and acp:<target>. Effort is one of
+# minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
+# implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
+# agent_config is refused for them - use agent_args_override there.
+# agent_config:
+#   codex:
+#     model: gpt-5.4
+#     effort: low
+#   claude:
+#     model: sonnet
+#     effort: high
+#   opencode:
+#     model: openai/gpt-5
+#
 # Extra native agent CLI flags (optional, global only)
 # Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
+# A flag here always wins over the same knob in agent_config, so an existing
+# override keeps its exact behavior.
 # agent_args_override:
 #   codex:
 #     - -m
@@ -827,7 +861,8 @@ intent:
 #     max_runs: 50
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
-# agent+model candidates against review passes your own pipeline already made.
+# agent candidates, pinned to an explicit model and reasoning effort, against
+# review passes your own pipeline already made.
 # capture_provenance records, on every review round, the exact commits and
 # configuration a replay needs; it cannot be added afterwards, so a round
 # recorded without it is never replayable. auto_capture freezes each finished
@@ -1203,6 +1238,66 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 		return nil
 	}
 	return c.AgentArgsOverride[string(name)]
+}
+
+// AgentProfile returns the harness-neutral model/effort selection for the
+// configured agent, as declared in agent_config. The zero Profile means the
+// harness keeps its own defaults.
+func (c *Config) AgentProfile() agentcfg.Profile {
+	return c.AgentProfileFor(c.Agent)
+}
+
+func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
+	if c.AgentConfig == nil {
+		return agentcfg.Profile{}
+	}
+	return c.AgentConfig[string(name)]
+}
+
+// agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
+// is a string here so an invalid level is reported as a config error naming the
+// valid vocabulary rather than decoding into a value no harness accepts.
+type agentProfileRaw struct {
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
+}
+
+// parseAgentConfig validates the agent_config map and resolves it to
+// harness-neutral profiles. Every knob is checked against what the named
+// harness can actually express, so an unmappable request fails at load rather
+// than being silently dropped at run time.
+func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, error) {
+	profiles := make(map[string]agentcfg.Profile, len(raw))
+	for name, entry := range raw {
+		agentName := types.AgentName(name)
+		if !agentcfg.Known(agentName) {
+			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+		}
+		effort, err := agentcfg.ParseEffort(entry.Effort)
+		if err != nil {
+			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+		}
+		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
+		if err := agentcfg.Validate(agentName, profile); err != nil {
+			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+		}
+		if profile.IsZero() {
+			continue
+		}
+		profiles[name] = profile
+	}
+	if len(profiles) == 0 {
+		return nil, nil
+	}
+	return profiles, nil
+}
+
+func agentNamesText(names []types.AgentName) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, string(name))
+	}
+	return out
 }
 
 // agentArgsOverrideAgents lists native agent names accepted as keys in
@@ -1618,6 +1713,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.AgentConfig != nil {
+		profiles, err := parseAgentConfig(raw.AgentConfig)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AgentConfig = profiles
 	}
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
@@ -2265,6 +2367,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		ACPRegistryOverrides: global.ACPRegistryOverrides,
 		AgentPathOverride:    global.AgentPathOverride,
 		AgentArgsOverride:    global.AgentArgsOverride,
+		AgentConfig:          global.AgentConfig,
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
 		ReviewAgentTimeout:   global.ReviewAgentTimeout,

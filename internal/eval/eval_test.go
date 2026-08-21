@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -263,6 +265,89 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	}
 	if reservations != 0 {
 		t.Fatalf("completed replay retained %d case reservations", reservations)
+	}
+}
+
+// TestReplayPinsCandidateModelAndEffortOnTheHarness is the end-to-end half of
+// the unified abstraction on the eval side: a candidate's model and effort reach
+// the harness through the same agentcfg mapping the pipeline uses, so an
+// effort-aware comparison actually runs at the effort it reports.
+func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+
+	fakeDir := t.TempDir()
+	argvPath := filepath.Join(fakeDir, "argv.txt")
+	fake := filepath.Join(fakeDir, "claude")
+	const reply = `{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":1,"output_tokens":1}}
+`
+	var script string
+	if runtime.GOOS == "windows" {
+		fake += ".cmd"
+		script = "@echo off\r\necho %* >> \"" + argvPath + "\"\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+	} else {
+		script = "#!/bin/sh\necho \"$@\" >> \"" + argvPath + "\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+	}
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	candidate := Candidate{Agent: types.AgentClaude, Model: "test", Effort: agentcfg.EffortHigh}
+	session, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: candidate, Repeats: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evaluations) != 1 || evaluations[0].Status != "completed" {
+		t.Fatalf("replay = %#v", evaluations)
+	}
+	if session.Candidate != "claude,model=test,effort=high" {
+		t.Fatalf("session candidate = %q, want the canonical spelling", session.Candidate)
+	}
+	argv, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--model test", "--effort high"} {
+		if !strings.Contains(string(argv), want) {
+			t.Fatalf("candidate harness argv %q does not carry %q", argv, want)
+		}
+	}
+}
+
+// TestCaptureStripsEveryHarnessPinFromThePinnedConfig keeps a replay from
+// inheriting the capturing machine's own model or effort: the candidate is the
+// only thing that may decide what the harness runs as.
+func TestCaptureStripsEveryHarnessPinFromThePinnedConfig(t *testing.T) {
+	pinned := []byte("agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\nagent_config:\n  codex:\n    model: gpt-5.4\n    effort: high\nlog_level: warn\n")
+	neutral, err := agentNeutralGlobalConfig(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"agent:", "agent_args_override", "agent_config"} {
+		if strings.Contains(string(neutral), key) {
+			t.Errorf("pinned config still carries %q: %s", key, neutral)
+		}
+	}
+	if !strings.Contains(string(neutral), "log_level") {
+		t.Errorf("pinned config lost unrelated settings: %s", neutral)
+	}
+	cfg, err := config.LoadGlobalFromBytes(neutral)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentConfig != nil {
+		t.Fatalf("neutral config resolves an agent profile: %#v", cfg.AgentConfig)
 	}
 }
 
@@ -729,17 +814,95 @@ func TestCaptureAndReportLeavesUnmatchedCandidateFindingsPending(t *testing.T) {
 }
 
 func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
-	for _, input := range []string{"claude", "+model", "claude+", "claude+model+extra", "cursor+model", "acp:custom+model"} {
+	for _, input := range []string{
+		"",
+		"claude",
+		"claude,model=",
+		"claude,=sonnet",
+		"claude,model",
+		"claude,model=a,model=b",
+		"claude,model=sonnet,temperature=0",
+		"claude,model=sonnet,effort=turbo",
+		"rovodev,model=x",
+		"antigravity,model=x",
+		"opencode,model=gpt-5",
+		"cursor,model=gpt-5,effort=high",
+		"nope,model=x",
+	} {
 		if _, err := ParseCandidate(input); err == nil {
 			t.Errorf("ParseCandidate(%q) succeeded, want error", input)
 		}
 	}
-	candidate, err := ParseCandidate("codex+gpt-5.4")
+	candidate, err := ParseCandidate(" codex,model=gpt-5.4 ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate.Agent != types.AgentCodex || candidate.Model != "gpt-5.4" {
+	if candidate.Agent != types.AgentCodex || candidate.Model != "gpt-5.4" || candidate.Effort != "" {
 		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+// TestParseCandidateRejectsTheReplacedSpelling keeps the removed agent+model
+// syntax from failing with a generic parse error: the message has to name the
+// replacement, because every older invocation and doc snippet uses it.
+func TestParseCandidateRejectsTheReplacedSpelling(t *testing.T) {
+	_, err := ParseCandidate("codex+gpt-5.4")
+	if err == nil {
+		t.Fatal("ParseCandidate(codex+gpt-5.4) succeeded, want a migration error")
+	}
+	if !strings.Contains(err.Error(), "model=") {
+		t.Fatalf("error %v does not show the replacement spelling", err)
+	}
+	// A model id containing a plus is still a legitimate new-form candidate and
+	// must not be mistaken for the replaced spelling.
+	candidate, err := ParseCandidate("claude,model=some+model")
+	if err != nil {
+		t.Fatalf("ParseCandidate with a plus in the model = %v", err)
+	}
+	if candidate.Model != "some+model" {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+// TestParseCandidateCarriesTheEffortAxis is the eval half of the unified
+// abstraction: effort is expressible for a candidate exactly as it is in
+// agent_config, and it stays part of the candidate identity so two efforts of
+// one model never collapse into a single reported candidate.
+func TestParseCandidateCarriesTheEffortAxis(t *testing.T) {
+	candidate, err := ParseCandidate("codex,model=gpt-5.4,effort=low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Effort != agentcfg.EffortLow {
+		t.Fatalf("candidate effort = %q, want low", candidate.Effort)
+	}
+	if got, want := candidate.Profile(), (agentcfg.Profile{Model: "gpt-5.4", Effort: agentcfg.EffortLow}); got != want {
+		t.Fatalf("candidate profile = %#v, want %#v", got, want)
+	}
+	if got := candidate.String(); got != "codex,model=gpt-5.4,effort=low" {
+		t.Fatalf("candidate string = %q", got)
+	}
+	other, err := ParseCandidate("codex,model=gpt-5.4,effort=high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.String() == candidate.String() {
+		t.Fatal("two efforts of one model share a candidate identity")
+	}
+}
+
+// TestParseCandidatePinsACPModelThroughAcpx records the closed gap: an ACP
+// target used to be refused outright because no-mistakes had no way to enforce
+// its model.
+func TestParseCandidatePinsACPModelThroughAcpx(t *testing.T) {
+	for _, input := range []string{"cursor,model=gpt-5", "acp:custom,model=gpt-5"} {
+		candidate, err := ParseCandidate(input)
+		if err != nil {
+			t.Fatalf("ParseCandidate(%q) = %v, want an accepted candidate", input, err)
+		}
+		if candidate.Model != "gpt-5" {
+			t.Fatalf("candidate = %#v", candidate)
+		}
 	}
 }
 

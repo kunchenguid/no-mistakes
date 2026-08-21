@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 )
 
 func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string, env []string) (string, error) {
@@ -82,19 +84,7 @@ func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) 
 }
 
 func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, prompt string, schema json.RawMessage) (*opencodeMessageResponse, error) {
-	body := map[string]any{
-		"role":  "user",
-		"parts": []map[string]string{{"type": "text", "text": prompt}},
-	}
-	if len(schema) > 0 {
-		body["format"] = map[string]any{
-			"type":       "json_schema",
-			"schema":     json.RawMessage(schema),
-			"retryCount": 2,
-		}
-	}
-
-	respBytes, err := doJSON(ctx, http.MethodPost, baseURL+"/session/"+sessionID+"/message", nil, body)
+	respBytes, err := doJSON(ctx, http.MethodPost, baseURL+"/session/"+sessionID+"/message", nil, a.messageBody(prompt, schema))
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +94,35 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 		return nil, fmt.Errorf("opencode message parse: %w", err)
 	}
 	return &resp, nil
+}
+
+// messageBody builds the POST /session/{id}/message payload.
+//
+// Model and reasoning effort ride the body rather than argv because `opencode
+// serve` has no flag for either: it exits with usage on an unknown option, so an
+// argv-based pin would take the whole server down instead of tuning it. The
+// provider/model split is validated at construction by agentcfg, so a non-empty
+// model always yields the two fields opencode requires; opencode calls reasoning
+// effort a provider-specific "variant".
+func (a *opencodeAgent) messageBody(prompt string, schema json.RawMessage) map[string]any {
+	body := map[string]any{
+		"role":  "user",
+		"parts": []map[string]string{{"type": "text", "text": prompt}},
+	}
+	if provider, modelID, ok := agentcfg.SplitProviderModel(a.profile.Model); ok {
+		body["model"] = map[string]string{"providerID": provider, "modelID": modelID}
+	}
+	if a.profile.Effort != "" {
+		body["variant"] = string(a.profile.Effort)
+	}
+	if len(schema) > 0 {
+		body["format"] = map[string]any{
+			"type":       "json_schema",
+			"schema":     json.RawMessage(schema),
+			"retryCount": 2,
+		}
+	}
+	return body
 }
 
 func (a *opencodeAgent) abortSession(baseURL, sessionID string) {

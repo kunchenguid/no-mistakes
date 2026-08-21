@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 )
 
 var errOpencodeThinkingToolChoiceConflict = errors.New("opencode provider rejects required tool choice while thinking is enabled")
@@ -23,8 +25,13 @@ var thinkingToolChoiceConflictPatterns = []*regexp.Regexp{
 type opencodeAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	// profile is the harness-neutral model/effort selection resolved by
+	// internal/agentcfg. `opencode serve` rejects model and variant flags
+	// outright, so unlike every other native adapter these two knobs cannot ride
+	// argv: they belong to the session-message body (see sendMessage).
+	profile agentcfg.Profile
+	mu      sync.Mutex
+	server  *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }

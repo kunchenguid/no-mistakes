@@ -26,14 +26,15 @@ agent_path_override:
   pi: /usr/local/bin/pi
   copilot: /usr/local/bin/copilot
 
+agent_config:
+  codex:
+    model: gpt-5.4
+    effort: low
+
 agent_args_override:
   codex:
-    - -m
-    - gpt-5.4
     - -c
     - service_tier="priority"
-    - -c
-    - model_reasoning_effort="low"
 
 ci_timeout: "168h"
 
@@ -178,15 +179,74 @@ Default native binary names when no override is set:
 | `pi`       | `pi`       |
 | `copilot`  | `copilot`  |
 
+### agent_config
+
+Model and reasoning effort per agent, in one common spelling. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
+
+|         |                                                                                     |
+| ------- | ----------------------------------------------------------------------------------- |
+| Type    | `map[string]{model, effort}`                                                        |
+| Keys    | `claude`, `codex`, `grok`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`     |
+| Default | Empty (every harness keeps its own defaults)                                        |
+
+```yaml
+agent_config:
+  codex:
+    model: gpt-5.4
+    effort: low
+  claude:
+    model: sonnet
+    effort: high
+  opencode:
+    model: openai/gpt-5
+  cursor:
+    model: gpt-5
+```
+
+`effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
+
+How each field maps:
+
+| Agent             | `model`                                       | `effort`                          | Accepted effort levels                              |
+| ----------------- | --------------------------------------------- | --------------------------------- | --------------------------------------------------- |
+| `claude`          | `--model`                                     | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
+| `codex`           | `-m`                                          | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
+| `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
+| `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
+| `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
+| `rovodev`         | not expressible                               | not expressible                   | -                                                   |
+| `antigravity`     | not expressible                               | not expressible                   | -                                                   |
+
+`opencode` needs the `provider/model` form (for example `openai/gpt-5`) because its session API takes the provider and the model as separate fields; a bare model name is refused at config load rather than dropped. Both of its knobs travel in the session message, not in the launch command, because `opencode serve` exits with usage on an unknown flag.
+
+`rovodev` and `antigravity` have no mechanism no-mistakes can set - `acli rovodev serve` plus its REST session API take no model parameter, and the `agy` CLI parses flags strictly - so `agent_config` for them is a config error rather than a request that quietly does nothing. Reach for [`agent_args_override`](#agent_args_override) there if your build of the CLI accepts a flag. Reasoning effort is likewise unavailable for ACP targets: no-mistakes drives them through `acpx`, which exposes `--model` but no effort surface.
+
+`agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
+
+**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - `-m` or `-c model="…"` for codex, `--model`, `--effort`, `--reasoning-effort`, `--thinking` - then `agent_config` does not emit its value for that knob, and the harness sees exactly the argv it saw before. Any knob the raw flags leave alone still comes from `agent_config`. So adding `agent_config` to an existing configuration never changes what a harness already received:
+
+```yaml
+agent_config:
+  codex:
+    model: gpt-5.4   # ignored: the raw -m below pins it
+    effort: low      # applied: nothing raw pins reasoning depth
+agent_args_override:
+  codex:
+    - -m
+    - o3
+```
+
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this to set model selection, service tier, reasoning effort, permission mode, or any other flag the underlying agent supports.
+Use this for anything [`agent_config`](#agent_config) does not cover - service tier, permission mode, profiles, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
 
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot` |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -200,6 +260,7 @@ User-supplied flags are normally inserted ahead of no-mistakes' managed flags, s
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
 | `pi`       | `--mode`, `--no-session`, `-c`, `--continue`, `-r`, `--resume`, `--session`, `--session-id`, `--fork`     |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
+| `antigravity` | `--dangerously-skip-permissions`, `--print`, `--json-schema`, `--output-format`                        |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude, Codex, Grok, and Pi session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
@@ -235,15 +296,14 @@ agent_args_override:
   rovodev:
     - --profile
     - work
-  opencode:
-    - --model
-    - gpt-5
   pi:
     - --provider
     - google
 ```
 
-For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
+
+For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
 ### ci_timeout
 

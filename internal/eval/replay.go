@@ -65,7 +65,7 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	if opts.Repeats <= 0 {
 		return Session{}, nil, fmt.Errorf("repeats must be at least 1")
 	}
-	if _, err := candidateModelArgs(opts.Candidate); err != nil {
+	if err := opts.Candidate.Validate(); err != nil {
 		return Session{}, nil, err
 	}
 	cases, session, err := store.prepareReplay(ctx, opts)
@@ -258,15 +258,15 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 	cfg.Agent = candidate.Agent
 	cfg.Agents = []types.AgentName{candidate.Agent}
 
-	modelArgs, err := candidateModelArgs(candidate)
-	if err != nil {
-		evaluation.Error = safeurl.RedactText(err.Error())
-		evaluation.CompletedAt = time.Now().Unix()
-		return evaluation
-	}
-	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), modelArgs, agent.Options{
+	// The candidate's tuning goes through the same harness-neutral Profile the
+	// pipeline uses, so eval and a real run reach each harness's model and
+	// effort mechanism by exactly one code path. Raw args stay empty: capture
+	// strips agent_args_override and agent_config from the pinned config so a
+	// replay cannot inherit the capturing machine's own pins.
+	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), nil, agent.Options{
 		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 		DisableProjectSettings: cfg.DisableProjectSettings,
+		Profile:                candidate.Profile(),
 	})
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create candidate agent: %v", err))
@@ -477,16 +477,6 @@ func replayConfig(c Case) (*config.Config, error) {
 		return nil, fmt.Errorf("load captured repo config: %w", err)
 	}
 	return config.Merge(global, repo), nil
-}
-
-func candidateModelArgs(candidate Candidate) ([]string, error) {
-	if _, ok := types.ACPTargetFor(candidate.Agent); ok {
-		return nil, fmt.Errorf("candidate agent %q cannot enforce an explicit model", candidate.Agent)
-	}
-	if candidate.Agent == types.AgentCodex {
-		return []string{"-m", candidate.Model}, nil
-	}
-	return []string{"--model", candidate.Model}, nil
 }
 
 type observedAgent struct {

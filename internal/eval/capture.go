@@ -318,10 +318,12 @@ func agentNeutralGlobalConfig(data []byte) ([]byte, error) {
 	if raw == nil {
 		raw = map[string]any{}
 	}
-	// The candidate selects agent and model explicitly. Do not accidentally
-	// inherit a captured default model or agent list into a comparison.
+	// The candidate selects agent, model, and effort explicitly. Do not
+	// accidentally inherit a captured default model, effort, or agent list into
+	// a comparison: every channel that can pin a harness knob is stripped.
 	delete(raw, "agent")
 	delete(raw, "agent_args_override")
+	delete(raw, "agent_config")
 	out, err := yaml.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("serialize agent-neutral global config: %w", err)

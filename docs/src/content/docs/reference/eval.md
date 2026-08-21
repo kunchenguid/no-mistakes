@@ -110,11 +110,15 @@ Do not fit matcher thresholds or review product prompts against `diversified`. T
 ```sh
 no-mistakes eval run \
   --cases diversified \
-  --candidate codex+gpt-5.4 \
+  --candidate codex,model=gpt-5.4,effort=low \
   --repeats 3
 ```
 
-A candidate is always explicit: `agent+model`. The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
+A candidate is `agent,model=<model>[,effort=<level>]`. The fields are the same harness-neutral knobs [`agent_config`](/no-mistakes/reference/global-config/#agent_config) exposes to the pipeline, and they resolve through the same per-harness mapping, so a candidate can express exactly what a real run can. `model` is mandatory - a comparison that inherited whatever default the harness happened to resolve would not be reproducible - while `effort` is optional and one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+
+Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
+
+The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
 
 Replay scores each candidate finding against that gold:
 
@@ -127,7 +131,11 @@ Matching is a documented cascade of strengths: the same finding ID, the same fil
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
-`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor` and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
+
+The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, and `agent_config` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
+
+The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 
 The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 

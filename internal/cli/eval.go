@@ -17,7 +17,7 @@ func newEvalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "eval",
 		Short: "Inspect and locally replay review evaluation cases",
-		Long:  "Inspect automatically collected review cases, capture runs on demand, ingest confirmed post-PR misses as false-negative gold, and compare agent+model candidates. Eval never starts or uses the shared daemon.",
+		Long:  "Inspect automatically collected review cases, capture runs on demand, ingest confirmed post-PR misses as false-negative gold, and compare agent candidates pinned to an explicit model and reasoning effort. Eval never starts or uses the shared daemon.",
 		Args:  cobra.NoArgs,
 	}
 	cmd.AddCommand(newEvalCaptureCmd())
@@ -161,7 +161,7 @@ func newEvalRunCmd() *cobra.Command {
 	var candidateRaw string
 	var repeats int
 	cmd := &cobra.Command{
-		Use:   "run --cases <all|labeled|diversified|tune> --candidate <agent+model>",
+		Use:   "run --cases <all|labeled|diversified|tune> --candidate <agent,model=...[,effort=...]>",
 		Short: "Replay captured review passes and score findings against gold",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -201,7 +201,7 @@ func newEvalRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cases, "cases", "", "case set: all, labeled (finding-level gold), diversified (official gold-only holdout), or tune")
-	cmd.Flags().StringVar(&candidateRaw, "candidate", "", "candidate as agent+model (for example codex+gpt-5.4)")
+	cmd.Flags().StringVar(&candidateRaw, "candidate", "", eval.CandidateUsage())
 	cmd.Flags().IntVar(&repeats, "repeats", 3, "replays per case (minimum 1)")
 	_ = cmd.MarkFlagRequired("cases")
 	_ = cmd.MarkFlagRequired("candidate")

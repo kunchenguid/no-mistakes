@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -50,34 +51,102 @@ const (
 	goldSourcePostPRMiss     = "recorded-post-pr-miss"
 )
 
-// Candidate identifies one agent and model combination under evaluation. The
-// canonical command-line spelling is agent+model, for example codex+gpt-5.4.
+// Candidate identifies one agent plus the harness-neutral tuning profile it
+// runs under (see internal/agentcfg): the model and, optionally, reasoning
+// effort. The canonical command-line spelling is the same comma-separated
+// key=value form the agent_config YAML block uses, for example
+// codex,model=gpt-5.4,effort=low. Both surfaces resolve to the same Profile, so
+// an eval candidate can express exactly what a pipeline run can.
 type Candidate struct {
-	Agent types.AgentName `json:"agent"`
-	Model string          `json:"model"`
+	Agent  types.AgentName `json:"agent"`
+	Model  string          `json:"model"`
+	Effort agentcfg.Effort `json:"effort,omitempty"`
 }
 
-func (c Candidate) String() string { return string(c.Agent) + "+" + c.Model }
+// Profile is the harness-neutral tuning this candidate asks for.
+func (c Candidate) Profile() agentcfg.Profile {
+	return agentcfg.Profile{Model: c.Model, Effort: c.Effort}
+}
 
-// ParseCandidate accepts exactly agent+model. Keeping the model explicit makes
-// comparison records self-describing rather than silently inheriting a user's
-// current agent default.
+// String renders the canonical spelling. It is the identity persisted with
+// every evaluation, so two runs of the same agent at different efforts never
+// collapse into one reported candidate.
+func (c Candidate) String() string {
+	profile := c.Profile().String()
+	if profile == "" {
+		return string(c.Agent)
+	}
+	return string(c.Agent) + "," + profile
+}
+
+// Validate reports whether this candidate can actually be run as stated. The
+// model stays mandatory - a comparison record that silently inherited whatever
+// default the harness happened to resolve would not be reproducible - while
+// effort is optional because most harnesses have a sensible default depth.
+func (c Candidate) Validate() error {
+	if strings.TrimSpace(string(c.Agent)) == "" {
+		return fmt.Errorf("candidate must name an agent")
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return fmt.Errorf("candidate must set model=<model>; an implicit model is not reproducible")
+	}
+	return agentcfg.Validate(c.Agent, c.Profile())
+}
+
+// candidateUsage is the one-line spelling shown by every candidate error and by
+// the eval CLI help, sourced from internal/agentcfg so the vocabulary never
+// drifts from the mapping layer.
+var candidateUsage = "candidate must be agent,model=<model>[,effort=<" + strings.Join(agentcfg.EffortNames(), "|") + ">] (for example codex,model=gpt-5.4,effort=low)"
+
+// CandidateUsage returns that spelling for CLI help text.
+func CandidateUsage() string { return candidateUsage }
+
+// ParseCandidate accepts agent,key=value[,key=value]... Keys are the common
+// agentcfg knobs, so the eval surface and the agent_config YAML block name the
+// same things. Unmappable requests (a model on a harness no-mistakes cannot pin,
+// an effort on an ACP target) are refused here rather than silently dropped.
 func ParseCandidate(raw string) (Candidate, error) {
 	value := strings.TrimSpace(raw)
-	if strings.Count(value, "+") != 1 {
-		return Candidate{}, fmt.Errorf("candidate must be agent+model (for example codex+gpt-5.4)")
+	if value == "" {
+		return Candidate{}, fmt.Errorf("%s", candidateUsage)
 	}
-	agentName, model, _ := strings.Cut(value, "+")
-	agentName = strings.TrimSpace(agentName)
-	model = strings.TrimSpace(model)
-	if agentName == "" || model == "" {
-		return Candidate{}, fmt.Errorf("candidate must include both an agent and model")
+	// The replaced spelling had no key=value field at all, so requiring one
+	// absent "=" keeps this migration hint from claiming a legitimate model id
+	// that happens to contain a plus.
+	if !strings.Contains(value, "=") && strings.Contains(value, "+") {
+		return Candidate{}, fmt.Errorf("the agent+model candidate spelling was replaced: %s", candidateUsage)
 	}
-	name := types.AgentName(agentName)
-	if _, ok := types.ACPTargetFor(name); ok {
-		return Candidate{}, fmt.Errorf("candidate agent %q cannot enforce an explicit model", name)
+	fields := strings.Split(value, ",")
+	candidate := Candidate{Agent: types.AgentName(strings.TrimSpace(fields[0]))}
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields[1:] {
+		key, val, ok := strings.Cut(field, "=")
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if !ok || key == "" || val == "" {
+			return Candidate{}, fmt.Errorf("invalid candidate field %q: %s", strings.TrimSpace(field), candidateUsage)
+		}
+		if seen[key] {
+			return Candidate{}, fmt.Errorf("candidate sets %s twice", key)
+		}
+		seen[key] = true
+		switch agentcfg.Knob(key) {
+		case agentcfg.KnobModel:
+			candidate.Model = val
+		case agentcfg.KnobEffort:
+			effort, err := agentcfg.ParseEffort(val)
+			if err != nil {
+				return Candidate{}, err
+			}
+			candidate.Effort = effort
+		default:
+			return Candidate{}, fmt.Errorf("unknown candidate field %q: %s", key, candidateUsage)
+		}
 	}
-	return Candidate{Agent: name, Model: model}, nil
+	if err := candidate.Validate(); err != nil {
+		return Candidate{}, err
+	}
+	return candidate, nil
 }
 
 // Manifest pins every input needed to recreate a review pass without storing a

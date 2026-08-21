@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -259,6 +260,14 @@ type Options struct {
 	// from config.Config; adapters without a verified suppression knob ignore it
 	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
+	// Profile is the harness-neutral model/effort selection (see
+	// internal/agentcfg). NewWithOptions maps it down to whatever mechanism the
+	// named harness actually uses - injected argv flags for most CLIs, the
+	// session-message body for opencode, acpx's own --model for ACP targets -
+	// and refuses a knob the harness cannot express. A zero Profile leaves every
+	// harness on its own defaults, which is what every configuration that
+	// predates the common layer resolves to.
+	Profile agentcfg.Profile
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -840,16 +849,33 @@ func (u *TokenUsage) Add(other TokenUsage) {
 // For native agents, extraArgs are user CLI flags from agent_args_override that
 // are injected into the underlying tool's argv ahead of no-mistakes' managed flags.
 // ACP agents and aliases ignore extraArgs; use NewWithOptions to provide
-// registry overrides.
+// registry overrides and the harness-neutral model/effort Profile.
 func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	return NewWithOptions(name, bin, extraArgs, Options{})
 }
 
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
+	// Fail closed on a knob this harness cannot express. Config load performs
+	// the same check, but this is the funnel every caller reaches - including
+	// eval replay and programmatic callers that build a profile directly - so a
+	// run can never report a model or effort it did not actually use.
+	if err := agentcfg.Validate(name, opts.Profile); err != nil {
+		return nil, err
+	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand}, nil
+		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model}, nil
+	}
+	// Mapped flags follow the operator's raw agent_args_override flags, so they
+	// still precede no-mistakes' managed flags in every adapter's argv. A knob
+	// the raw args already pin natively is not emitted at all (see agentcfg),
+	// which is what keeps pre-existing configurations byte-identical.
+	if mapped := agentcfg.NativeArgs(name, opts.Profile, extraArgs); len(mapped) > 0 {
+		merged := make([]string, 0, len(extraArgs)+len(mapped))
+		merged = append(merged, extraArgs...)
+		merged = append(merged, mapped...)
+		extraArgs = merged
 	}
 	switch name {
 	case types.AgentClaude:
@@ -861,7 +887,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile}, nil
 	case types.AgentPi:
 		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCopilot:

@@ -207,11 +207,11 @@ func TestEvalRunRendersProgressAndScoreDashboard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "2")
+	out, err := executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "2")
 	if err != nil {
 		t.Fatalf("eval run: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "replaying 1 case(s) x 2 repeat(s) with claude+test on labeled") {
+	if !strings.Contains(out, "replaying 1 case(s) x 2 repeat(s) with claude,model=test on labeled") {
 		t.Fatalf("run output = %q, want the replay plan header", out)
 	}
 	if !strings.Contains(out, "1/2") || !strings.Contains(out, "2/2") || !strings.Contains(out, "TP 1 · FN 0 · FP 0 · pending 0") {
@@ -228,7 +228,7 @@ func TestEvalRunRendersProgressAndScoreDashboard(t *testing.T) {
 	// but must stay safe: the frozen corpus is untouched, and the identical
 	// input lands in the same cohort so the report aggregates instead of
 	// fragmenting into a new comparison group.
-	if out, err = executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "2"); err != nil {
+	if out, err = executeCmd("eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "2"); err != nil {
 		t.Fatalf("second eval run: %v\n%s", err, out)
 	}
 	setsAfter, err := executeCmd("eval", "sets")
@@ -518,7 +518,7 @@ func TestEvalDisplayCommandsDoNotCreateThePipelineDatabase(t *testing.T) {
 	}{
 		{command: []string{"eval", "sets"}},
 		{command: []string{"eval", "report"}},
-		{command: []string{"eval", "run", "--cases", "labeled", "--candidate", "claude+test", "--repeats", "1"}, allowError: true},
+		{command: []string{"eval", "run", "--cases", "labeled", "--candidate", "claude,model=test", "--repeats", "1"}, allowError: true},
 	}
 	for _, tt := range tests {
 		command := tt.command
