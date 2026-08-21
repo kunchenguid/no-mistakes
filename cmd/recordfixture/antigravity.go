@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // recordAntigravity captures agy CLI's NDJSON stream-json events. The
@@ -52,20 +54,34 @@ func captureAgy(ctx context.Context, bin string, forward []string, prompt, outPa
 	defer os.RemoveAll(tmp)
 	cmd.Dir = tmp
 
-	f, err := os.Create(outPath)
+	// Capture into a temporary sibling so a nonzero exit or cancellation
+	// cannot leave an existing fixture truncated or half-written; the
+	// destination is replaced only after the run and scrub both succeed.
+	staging := outPath + ".recording"
+	f, err := os.Create(staging)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", outPath, err)
+		return fmt.Errorf("create %s: %w", staging, err)
 	}
-	defer f.Close()
+	defer func() {
+		f.Close()
+		os.Remove(staging)
+	}()
 
 	cmd.Stdout = f
 	cmd.Stderr = os.Stderr
+	shellenv.ConfigureShellCommand(cmd)
 	fmt.Fprintf(os.Stderr, "recording agy → %s\n", outPath)
-	if err := cmd.Run(); err != nil {
+	if err := shellenv.RunShellCommand(cmd); err != nil {
 		return fmt.Errorf("run agy: %w", err)
 	}
-	if err := scrubFile(outPath); err != nil {
-		return fmt.Errorf("scrub %s: %w", outPath, err)
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", staging, err)
+	}
+	if err := scrubFile(staging); err != nil {
+		return fmt.Errorf("scrub %s: %w", staging, err)
+	}
+	if err := os.Rename(staging, outPath); err != nil {
+		return fmt.Errorf("publish %s: %w", outPath, err)
 	}
 	return nil
 }
