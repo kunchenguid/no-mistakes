@@ -137,9 +137,14 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	if len(response.Values) == 0 {
 		return nil, nil
 	}
-	for i, candidate := range response.Values {
+	for i := range response.Values {
+		candidate := &response.Values[i]
 		if candidate.ID <= 0 {
 			return nil, fmt.Errorf("decode Bitbucket PR list: entry %d missing positive id", i)
+		}
+		candidate.Links.HTML.Href = prURL(repo, candidate.ID, "")
+		if candidate.Links.HTML.Href == "" {
+			return nil, fmt.Errorf("decode Bitbucket PR list: entry %d missing configured repository identity", i)
 		}
 	}
 	return response.Values[0].toPullRequest(), nil

@@ -225,6 +225,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	prNumbers := make([]string, len(prs))
 	for i, candidate := range prs {
+		if candidate.Number <= 0 {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing positive PR number", i)
+		}
 		url := strings.TrimSpace(candidate.URL)
 		if url == "" {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
@@ -233,14 +236,10 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if err != nil {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d invalid PR URL: %w", i, err)
 		}
-		if candidate.Number != 0 && candidate.Number != number {
+		if candidate.Number != number {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %d", i, candidate.Number, number)
 		}
-		if candidate.Number > 0 {
-			prNumbers[i] = fmt.Sprintf("%d", candidate.Number)
-		} else {
-			prNumbers[i] = strconv.Itoa(number)
-		}
+		prNumbers[i] = strconv.Itoa(candidate.Number)
 		if h.forkOwner != "" {
 			if strings.TrimSpace(candidate.HeadRefName) == "" {
 				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRefName", i)
