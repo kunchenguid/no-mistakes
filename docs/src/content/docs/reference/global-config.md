@@ -296,6 +296,7 @@ Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation 
 ### branch_sync_remote_timeout
 
 Maximum time guarded branch synchronization (`sync`, `axi sync`, and the TUI's sync action) waits for each remote Git operation - `ls-remote` or `fetch` - before remote verification fails closed and synchronization is refused.
+Exceptional unavailable-head release and stale-owner supersession use the same setting for every remote read, staging fetch, and advertised-ref reachability probe; each operation receives a fresh timeout budget.
 
 |         |                        |
 | ------- | ---------------------- |

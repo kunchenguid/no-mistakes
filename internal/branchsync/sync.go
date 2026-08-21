@@ -78,8 +78,9 @@ type State struct {
 	// outcome had already released the branch (user_owned), making recovery an
 	// idempotent no-op.
 	Recovered bool
-	// Released is set only by ReleaseUnavailable after the exact exceptional
-	// transition succeeds or an idempotent retry proves it already succeeded.
+	// Released is set by ReleaseUnavailable and SupersedeStaleCustody after the
+	// exact exceptional transition succeeds or an idempotent retry proves it
+	// already succeeded.
 	Released          bool
 	CustodyTransition *CustodyTransition
 	NextAction        *NextAction
@@ -155,8 +156,8 @@ func CanApply(state State) bool {
 // Service synchronizes only the invoking worktree. Repo is the registered
 // repository record, while WorkDir may be its main or a linked worktree.
 // GateDir is the repo's local bare gate; selection may read its exact branch
-// head and ancestry as provenance evidence, while Recover is the only method
-// that mutates it.
+// head and ancestry as provenance evidence. Recover and the two exceptional
+// custody transitions are the only methods that mutate it.
 type Service struct {
 	DB      *db.DB
 	Repo    *db.Repo
@@ -1256,7 +1257,8 @@ func directAnchorHead(ctx context.Context, dir, ref string) (string, bool) {
 // boundary that can hide an older retained commit.
 //
 // One probe is created per release attempt and reused across its rechecks, so
-// each later recheck only negotiates the delta since the previous fetch.
+// each later recheck only negotiates the delta since the previous fetch. Each
+// fetch still receives a fresh configured per-operation timeout.
 //
 // The probe deliberately does not request a partial (filtered) fetch. A
 // filtered fetch marks the target as a promisor remote, after which the object

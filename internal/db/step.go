@@ -92,6 +92,10 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	return steps, rows.Err()
 }
 
+// GetActiveRunSteps returns active agent-step identities for gate-context
+// preflight. That preflight reads an unmigrated database before control commands
+// can open it read-write, so this query uses only legacy-stable columns and
+// treats a missing worktree_dir as the default recorded placement.
 func (d *DB) GetActiveRunSteps() ([]ActiveRunStep, error) {
 	placement := "''"
 	if d.hasColumn("runs", "worktree_dir") {

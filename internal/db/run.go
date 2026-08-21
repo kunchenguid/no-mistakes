@@ -49,16 +49,16 @@ type Run struct {
 	PushGeneration         *int64
 	PushActive             bool
 	TerminalHeadVerifiedAt *int64
-	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
+	// CustodyReturnedAt is non-nil once a guarded branch-sync transition
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
 	// the last push). It never changes push provenance; it only records that
-	// the operator worktree took the branch back.
+	// the operator regained custody.
 	CustodyReturnedAt *int64
-	// CustodyReturnReason records exceptional release provenance. Ordinary
-	// preserved-head recovery uses CustodyReturnReasonPreservedHeadRecovered;
-	// an unavailable-head release uses its distinct durable reason so retries
-	// and status output never fabricate which transition occurred.
+	// CustodyReturnReason records which guarded transition returned ownership.
+	// Ordinary preserved-head recovery, unavailable-head release, and stale-owner
+	// supersession each use a distinct durable reason so retries and status output
+	// never fabricate which transition occurred.
 	CustodyReturnReason *string
 	Error               *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
@@ -153,19 +153,14 @@ type RunWorktree struct {
 }
 
 // ActiveRunWorktrees returns the identity and recorded placement of every
-// pending or running run, and is the one runs query that must work against a
-// database this binary has not migrated yet.
+// pending or running run. Its projection deliberately remains compatible with
+// a database this binary has not migrated yet.
 //
-// The gate-execution-context preflight runs before any command opens the database
-// read-write, so on the first invocation after an upgrade it reads through
-// OpenReadOnly, which deliberately does not migrate. A query naming a column the
-// schema does not have yet fails there, and because that preflight guards every
-// pipeline-control command - including the ones that would perform the migration -
-// the whole CLI would be unusable until the file was repaired by hand. So the
-// placement column is selected only when the schema has it; a database without it
-// predates worktree_roots entirely, and the empty value resolves to the default
-// placement (see worktrees.RecordedDir), which is the only one such a run can
-// have.
+// Read-only upgrade paths cannot assume migrations have run. The placement
+// column is therefore selected only when the schema has it; a database without
+// it predates worktree_roots entirely, and the empty value resolves to the
+// default placement (see worktrees.RecordedDir), which is the only one such a
+// run can have.
 func (d *DB) ActiveRunWorktrees() ([]RunWorktree, error) {
 	placement := "''"
 	if d.hasColumn("runs", "worktree_dir") {

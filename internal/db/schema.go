@@ -316,7 +316,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN ci_ready_no_ci INTEGER NOT NULL DEFAULT 0`,
 	// Custody return is nullable: NULL means the pipeline still owns any
 	// unpublished head this run produced; a timestamp means an explicit
-	// guarded recovery ended that ownership (internal/branchsync).
+	// guarded custody transition ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
 	// The optional reason makes exceptional release paths durably auditable and
 	// lets an exact retry distinguish its own completed transition from an

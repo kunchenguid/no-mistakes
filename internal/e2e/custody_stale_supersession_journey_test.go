@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -159,12 +160,22 @@ func TestAxiStaleCustodySupersessionJourney(t *testing.T) {
 		"code: supersede_stale_custody",
 		"no-mistakes axi sync --supersede-stale --run " + oldRun.ID + " --later-run " + laterRun.ID,
 		"action: supersede_stale",
-		"preserved_head: " + oldHead,
-		"submitted_head: " + oldHead,
-		"pushed_head: " + laterHead,
 	} {
 		if !strings.Contains(checkOut, want) {
 			t.Errorf("read-only plan missing %q:\n%s", want, checkOut)
+		}
+	}
+	for _, want := range []struct {
+		key, value string
+	}{
+		{key: "preserved_head", value: oldHead},
+		{key: "submitted_head", value: oldHead},
+		{key: "pushed_head", value: laterHead},
+	} {
+		plain := want.key + ": " + want.value
+		quoted := want.key + ": " + strconv.Quote(want.value)
+		if !strings.Contains(checkOut, plain) && !strings.Contains(checkOut, quoted) {
+			t.Errorf("read-only plan missing %s with value %q:\n%s", want.key, want.value, checkOut)
 		}
 	}
 	if refs, _ := h.runGit(context.Background(), operator, "for-each-ref", "--format=%(refname) %(objectname)"); string(refs) != string(localRefsBefore) {

@@ -149,6 +149,10 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 	return r, nil
 }
 
+// IsRepoRegistered checks only the legacy-stable repository identity column.
+// Gate-context preflight calls it through an unmigrated read-only database, so
+// loading a full Repo here would make every control command depend on newer
+// columns before that command has a chance to run migrations.
 func (d *DB) IsRepoRegistered(id string) (bool, error) {
 	var registered int
 	err := d.sql.QueryRow(`SELECT 1 FROM repos WHERE id = ?`, id).Scan(&registered)
