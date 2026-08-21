@@ -1382,7 +1382,7 @@ func (e *Executor) preserveUnpublishedTerminalHead(ctx context.Context, run *db.
 	if head == published {
 		return true
 	}
-	if _, err := git.Run(ctx, e.workDir, "update-ref", custody.RecoveryRef(run.ID), head); err != nil {
+	if err := custody.PreserveRecoveryHead(ctx, e.workDir, run.ID, head); err != nil {
 		slog.Warn("failed to anchor unpublished terminal head", "run", run.ID, "head", head, "error", err)
 		return false
 	}

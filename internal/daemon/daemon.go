@@ -514,7 +514,7 @@ func preserveRunHead(d *db.DB, workDir string, run *db.Run) (string, bool) {
 		published = *run.SubmittedHeadSHA
 	}
 	if head != published {
-		if _, err := git.Run(ctx, workDir, "update-ref", custody.RecoveryRef(run.ID), head); err != nil {
+		if err := custody.PreserveRecoveryHead(ctx, workDir, run.ID, head); err != nil {
 			slog.Warn("failed to anchor managed worktree head before terminalization", "run", run.ID, "head", head, "error", err)
 			return "", false
 		}
