@@ -338,15 +338,15 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
-	if err := os.RemoveAll(f.gate); err != nil {
-		t.Fatal(err)
-	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
 		t.Fatalf("recover equal = %#v", state)
 	}
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("gate anchor ref = %s, want %s", got, f.preserved)
 	}
 	if !f.custodyReturned() {
 		t.Fatal("custody not stamped")
@@ -365,9 +365,6 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 	mustRun(t, f.local, "add", "followup.txt")
 	mustRun(t, f.local, "commit", "-m", "followup")
 	ahead := mustRun(t, f.local, "rev-parse", "HEAD")
-	if err := os.RemoveAll(f.gate); err != nil {
-		t.Fatal(err)
-	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationAhead {
 		t.Fatalf("recover ahead = %#v", state)
@@ -378,6 +375,9 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
 	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("gate anchor ref = %s, want %s", got, f.preserved)
+	}
 }
 
 // TestRecoverDirtyWorktreeRefusesWithoutMutation covers the behind+dirty cell:
@@ -387,6 +387,10 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("dirty behind status advertised recovery = %#v", inspected)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("recover dirty = %#v", state)
@@ -414,6 +418,10 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	mustRun(t, f.local, "add", "rescope.txt")
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
 	divergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code == "recover_custody" {
+		t.Fatalf("uncontained divergence advertised recovery = %#v", inspected)
+	}
 
 	refused := f.service.Recover(f.ctx, false)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {

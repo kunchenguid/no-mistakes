@@ -644,6 +644,19 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 	}
 
+	if !gateAvailable {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be anchored; no files or refs were changed")
+	}
+	if !gateAnchorAvailable {
+		if !objectExists(ctx, gateDir, preserved) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
+		}
+		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
+		}
+		gateAnchorAvailable = true
+	}
+
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
 		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
 			return blocked
@@ -651,20 +664,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return s.finishRecover(ctx, run, false)
 	}
 
-	if !gateAvailable {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be verified; no files or refs were changed")
-	}
 	anchored := false
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
-	}
-	if !gateAnchorAvailable {
-		if !objectExists(ctx, gateDir, preserved) {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from both the worktree and local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
-		}
-		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
-		}
 	}
 	if !anchored {
 		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
@@ -1463,7 +1465,13 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		return false
 	}
 	gateDir := strings.TrimSpace(s.GateDir)
-	if gateDir != "" {
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	{
 		anchorRef := custody.RecoveryRef(run.ID)
 		_, exists, err := git.ExactRefTarget(ctx, gateDir, anchorRef)
 		if err != nil {
@@ -1479,14 +1487,28 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 			return false
 		}
 	}
-	if state != nil && objectExists(ctx, s.workDir(), run.HeadSHA) &&
-		(state.Local.Head == run.HeadSHA || isAncestor(ctx, s.workDir(), run.HeadSHA, state.Local.Head)) {
-		return true
-	}
-	if gateDir == "" {
+	if !objectExists(ctx, gateDir, run.HeadSHA) {
 		return false
 	}
-	return objectExists(ctx, gateDir, run.HeadSHA)
+	if state == nil || !objectExists(ctx, s.workDir(), run.HeadSHA) {
+		return false
+	}
+	local := state.Local.Head
+	preserved := run.HeadSHA
+	if local == preserved || isAncestor(ctx, s.workDir(), preserved, local) {
+		localPreRecovery := custody.RecoveryLocalRef(run.ID)
+		if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localPreRecovery+"^{commit}"); err == nil && anchored != preserved && local == preserved && !state.Local.Clean {
+			return false
+		}
+		return true
+	}
+	if !state.Local.Clean {
+		return false
+	}
+	if isAncestor(ctx, s.workDir(), local, preserved) {
+		return true
+	}
+	return preservedContainsLocalWork(ctx, s.workDir(), local, preserved)
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
