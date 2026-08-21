@@ -64,6 +64,16 @@ type Executor struct {
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
+	onPRMerged            func(context.Context, string)
+}
+
+// SetOnPRMerged registers a best-effort hook invoked after a merged PR state
+// is persisted. The pipeline never fails the run if the hook errors.
+func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
+	if e == nil {
+		return
+	}
+	e.onPRMerged = fn
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -94,6 +104,22 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 		gateReconcileInterval: defaultGateReconcileInterval,
 		gateReconcileTimeout:  defaultGateReconcileTimeout,
 	}
+}
+
+// runEvidenceDir resolves where this run's test evidence is written. The
+// executor is the single owner of that answer for the pipeline: steps read it
+// from StepContext rather than recomputing a path, which is what let the
+// steering preamble and the test step drift apart while both hardcoded the
+// system temp directory.
+func (e *Executor) runEvidenceDir(runID string) string {
+	if e.paths == nil {
+		return ""
+	}
+	configured := ""
+	if e.config != nil {
+		configured = e.config.Test.Evidence.LocalRoot
+	}
+	return e.paths.RunEvidenceDir(configured, runID)
 }
 
 // SetGateReconcileTimings overrides the interval between approval-gate
@@ -280,6 +306,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			}
 			reviewedHead := gate.reviewedHeadSHA
 			run.ReviewApprovedHeadSHA = &reviewedHead
+			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 			return nil
 		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
@@ -304,8 +331,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
-		LogChunk: func(string) {},
-		LogFile:  func(string) {},
+		LogChunk:   func(string) {},
+		LogFile:    func(string) {},
+		OnPRMerged: e.onPRMerged,
 	}
 	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
@@ -370,18 +398,21 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	telemetry.Track("approval", approvalFields)
 	switch response.action {
 	case types.ActionApprove:
+		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	case types.ActionSkip:
+		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	case types.ActionAbort:
+		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as aborted", "step", gate.step.Name(), "error", dbErr)
 		}
@@ -394,13 +425,12 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		if gate.lastRoundID != "" {
 			allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, merged)
 			if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-				if dbErr := e.db.SetStepRoundSelection(gate.lastRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-					slog.Warn("failed to record recovered selected finding ids", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
+				var userFindingsJSON *string
+				if merged != "" && merged != selected {
+					userFindingsJSON = &merged
 				}
-			}
-			if merged != "" && merged != selected {
-				if dbErr := e.db.SetStepRoundUserFindings(gate.lastRoundID, &merged); dbErr != nil {
-					slog.Warn("failed to record recovered user findings", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
+				if dbErr := e.db.SetStepRoundUserDecision(gate.lastRoundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
+					slog.Warn("failed to record recovered user decision", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
 				}
 			}
 		}
@@ -701,6 +731,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
+		EvidenceDir:      e.runEvidenceDir(run.ID),
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,
@@ -710,7 +741,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 		CIReadinessChanged: ciReadinessChanged,
+		OnPRMerged:         e.onPRMerged,
 	}
+	if stepName == types.StepReview {
+		BindUncertifiedPipelineRange(sctx)
+	}
+	// Every step, not just review: the steps that used to re-apply a declined
+	// change were precisely the ones a decision never reached.
+	BindBranchDecisions(sctx)
 
 	nextTrigger := "initial"
 	if sctx.Fixing {
@@ -911,11 +949,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		case types.ActionApprove:
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
+			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
 			phaseStart = time.Now()
 			goto done
 
 		case types.ActionSkip:
 			// Skip - mark step skipped and return (not an error)
+			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
 				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
@@ -923,6 +963,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, nil
 
 		case types.ActionAbort:
+			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
 			if dbErr := e.db.FailStep(sr.ID, "aborted by user", executionMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
@@ -946,14 +987,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if currentRoundID != "" {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)
 				if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
+					var userFindingsJSON *string
+					if mergedFindings != "" && mergedFindings != selectedFindings {
+						userFindingsJSON = &mergedFindings
 					}
-				}
-				if mergedFindings != "" && mergedFindings != selectedFindings {
-					merged := mergedFindings
-					if dbErr := e.db.SetStepRoundUserFindings(currentRoundID, &merged); dbErr != nil {
-						slog.Warn("failed to record user findings", "step", stepName, "round", roundNum, "error", dbErr)
+					if dbErr := e.db.SetStepRoundUserDecision(currentRoundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
+						slog.Warn("failed to record user decision", "step", stepName, "round", roundNum, "error", dbErr)
 					}
 				}
 			}
@@ -983,11 +1022,42 @@ done:
 		}
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
+		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
+}
+
+// recordDeclinedRound persists an approve, skip, or abort resolution as a real
+// decision instead of leaving no trace.
+//
+// Before this existed, those three resolutions wrote no finding-level state at
+// all, so a round where the human read a blocking finding and said "ship it as
+// is" was byte-identical to a round with no findings. Nothing downstream could
+// tell the two apart, and the only durable statement of what the change must do
+// stayed the user-intent prose - which is how a later step could re-derive and
+// re-apply the very change the human had just declined.
+//
+// The decline is stored the way a partial selection already stores one: as the
+// complement of selected_finding_ids. Writing an explicit empty array with the
+// user_declined source is what makes "selected nothing" representable, since a
+// NULL column means "no decision was recorded".
+//
+// Best effort by design. This is advisory prompt context for later steps, so a
+// failed write degrades to today's behavior and must never fail the run.
+func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
+	if e == nil || e.db == nil || roundID == "" {
+		return
+	}
+	if findingsCount(findingsJSON) == 0 {
+		// Nothing was declined, so there is no decision to record.
+		return
+	}
+	if err := e.db.SetStepRoundDeclined(roundID); err != nil {
+		slog.Warn("failed to record declined findings", "step", stepName, "round", roundNum, "error", err)
+	}
 }
 
 func roundInsertID(_ string, inserted *db.StepRound, err error) string {

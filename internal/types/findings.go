@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -12,6 +13,56 @@ const (
 	ActionAutoFix = "auto-fix"
 	ActionAskUser = "ask-user"
 )
+
+// Finding severity constants: the vocabulary the review prompt instructs
+// agents to use, ordered most to least severe.
+const (
+	FindingSeverityError   = "error"
+	FindingSeverityWarning = "warning"
+	FindingSeverityInfo    = "info"
+)
+
+// This package owns the finding severity and action vocabularies. Callers that
+// accept a severity or action from outside a pipeline agent - a hand-written
+// eval miss, an IPC payload - validate against these rather than keeping their
+// own copy of the list.
+var (
+	knownFindingSeverities = []string{FindingSeverityError, FindingSeverityWarning, FindingSeverityInfo}
+	knownFindingActions    = []string{ActionAutoFix, ActionAskUser, ActionNoOp}
+)
+
+// NormalizeFindingSeverity trims and lower-cases one severity so equivalent
+// spellings compare equal. It does not check membership; see
+// IsKnownFindingSeverity.
+func NormalizeFindingSeverity(severity string) string {
+	return strings.ToLower(strings.TrimSpace(severity))
+}
+
+// NormalizeFindingAction trims and lower-cases one action. It does not check
+// membership; see IsKnownFindingAction.
+func NormalizeFindingAction(action string) string {
+	return strings.ToLower(strings.TrimSpace(action))
+}
+
+// IsKnownFindingSeverity reports whether severity, once normalized, is part of
+// the review severity vocabulary.
+func IsKnownFindingSeverity(severity string) bool {
+	return slices.Contains(knownFindingSeverities, NormalizeFindingSeverity(severity))
+}
+
+// IsKnownFindingAction reports whether action, once normalized, is part of the
+// finding action vocabulary.
+func IsKnownFindingAction(action string) bool {
+	return slices.Contains(knownFindingActions, NormalizeFindingAction(action))
+}
+
+// KnownFindingSeverities returns the severity vocabulary, for error messages
+// that have to name what they accept.
+func KnownFindingSeverities() []string { return slices.Clone(knownFindingSeverities) }
+
+// KnownFindingActions returns the action vocabulary, for error messages that
+// have to name what they accept.
+func KnownFindingActions() []string { return slices.Clone(knownFindingActions) }
 
 // Finding source constants. An empty Source is treated as agent-produced.
 const (
@@ -171,7 +222,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 func AutoFixableFindings(findings Findings) Findings {
 	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
-		if item.actionOrDefault() == ActionAutoFix {
+		if item.ActionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
 		}
 	}
@@ -229,13 +280,13 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 }
 
 // HasAskUserFindings returns true if any finding has an effective action of
-// "ask-user". It uses actionOrDefault so an empty/missing action (which now
+// "ask-user". It uses ActionOrDefault so an empty/missing action (which now
 // defaults to ask-user) parks for a human, keeping this in agreement with
 // AutoFixableFindings: an unclassified finding is never auto-fixed and is
 // always caught here as ask-user.
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.actionOrDefault() == ActionAskUser {
+		if item.ActionOrDefault() == ActionAskUser {
 			return true
 		}
 	}
@@ -250,7 +301,7 @@ func HasAskUserFindings(findings Findings) bool {
 // accept the step as-is.
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.actionOrDefault() != ActionNoOp {
+		if item.ActionOrDefault() != ActionNoOp {
 			return true
 		}
 	}
@@ -347,7 +398,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// actionOrDefault resolves a finding's effective action, defaulting an
+// ActionOrDefault resolves a finding's effective action, defaulting an
 // empty/missing action to ask-user (park), not auto-fix. This closes a
 // fail-open hole: an unclassified finding on a non-schema path (a legacy
 // requires_human_review omission, an IPC- or user-supplied finding) must
@@ -355,7 +406,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 // review prompt's own "When in doubt, default to ask-user" instruction.
 // (MergeUserOverrides still stamps user-*added* findings auto-fix explicitly -
 // a user who hand-adds a finding is asking for a fix.)
-func (f Finding) actionOrDefault() string {
+func (f Finding) ActionOrDefault() string {
 	if f.Action == "" {
 		return ActionAskUser
 	}

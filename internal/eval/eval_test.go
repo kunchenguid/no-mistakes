@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,11 +39,22 @@ func TestCaptureCreatesPortableReviewCaseWithoutRecordingRemoteURL(t *testing.T)
 	if captured.SourceRunID != run.ID || captured.SourceRoundID != reviewRound.ID {
 		t.Fatalf("capture provenance = %#v, want run %q round %q", captured, run.ID, reviewRound.ID)
 	}
-	if !captured.Labels.Verdict.Known || !captured.Labels.Verdict.ShouldPark {
-		t.Fatalf("verdict label = %#v, want recorded user-fix park label", captured.Labels.Verdict)
+	if !captured.Labels.HasGold() || len(captured.Labels.Findings) != 1 {
+		t.Fatalf("gold labels = %#v, want one recorded user-fix finding", captured.Labels)
 	}
-	if _, err := os.Stat(filepath.Join(captured.Dir, "branch.bundle")); err != nil {
-		t.Fatalf("case bundle missing: %v", err)
+	gold := captured.Labels.Findings[0]
+	if gold.Kind != GoldTruePositive || gold.Source != goldSourceUserFix || gold.ID != "real-bug" || gold.Description != "bug" {
+		t.Fatalf("true-positive gold = %#v, want recorded user-fix for real-bug", gold)
+	}
+	restored := filepath.Join(t.TempDir(), "restore.git")
+	if err := git.InitBare(ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreCaseObjects(ctx, store.poolDir(captured.RepoFingerprint), restored, captured.ID); err != nil {
+		t.Fatalf("case objects are not restorable: %v", err)
+	}
+	if got := mustGit(t, ctx, restored, "rev-parse", captured.ReviewedHeadSHA+"^{commit}"); got != captured.ReviewedHeadSHA {
+		t.Fatalf("restored reviewed commit = %q, want %q", got, captured.ReviewedHeadSHA)
 	}
 
 	manifestBytes, err := os.ReadFile(filepath.Join(captured.Dir, "manifest.json"))
@@ -98,6 +110,33 @@ func TestCaptureRejectsReviewRoundBeforeGateDecision(t *testing.T) {
 	}
 	if len(cases) != 0 {
 		t.Fatalf("premature capture registered %d cases", len(cases))
+	}
+}
+
+func TestCaptureExplainsMissingConfigurationProvenance(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRound(steps[0].ID, 2, "legacy", &clean, nil, run.HeadSHA, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, err = Capture(ctx, store, p, sourceDB, run.ID)
+	if !errors.Is(err, ErrNoCapturableReview) {
+		t.Fatalf("capture error = %v, want ErrNoCapturableReview", err)
+	}
+	if !strings.Contains(err.Error(), "eval.capture_provenance was off") {
+		t.Fatalf("capture error = %q, want the disabled setting named as the likely cause", err)
 	}
 }
 
@@ -206,8 +245,8 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 		t.Fatalf("replay = session %#v evaluations %#v", session, evaluations)
 	}
 	got := evaluations[0]
-	if got.Status != "completed" || got.CandidateParked {
-		t.Fatalf("replay outcome = %#v, want completed non-parked review", got)
+	if got.Status != "completed" || got.GoldCount != 1 || got.TruePositive != 0 || got.FalseNegative != 1 || got.Pending != 0 {
+		t.Fatalf("replay outcome = %#v, want a completed miss of the true-positive gold", got)
 	}
 	if !got.TokensReported || got.FreshInputTokens != 12 || got.OutputTokens != 3 {
 		t.Fatalf("replay metrics = %#v", got)
@@ -217,6 +256,13 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.Root(), "shared-home-used")); !os.IsNotExist(err) {
 		t.Fatalf("candidate used production NM_HOME: %v", err)
+	}
+	var reservations int
+	if err := store.db.QueryRow(`SELECT count(*) FROM replay_case_reservations WHERE session_id = ?`, session.ID).Scan(&reservations); err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 0 {
+		t.Fatalf("completed replay retained %d case reservations", reservations)
 	}
 }
 
@@ -238,32 +284,77 @@ func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.
 	}
 }
 
-func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
-	summary := SummarizeEvaluations([]Evaluation{
-		{CaseID: "must-park", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
-		{CaseID: "must-park", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: false},
-		{CaseID: "human-passed", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(false), CandidateParked: true},
-		{CaseID: "human-passed", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(false), CandidateParked: false},
-	})
+func TestScoreCandidateMatchesSameFindingID(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{
+		ID:          "error-handling",
+		Kind:        GoldTruePositive,
+		File:        "old.go",
+		Description: "drops an HTTP error",
+	}}}
+	candidate := `{"findings":[{"id":"error-handling","file":"new.go","description":"drops a database error"}]}`
 
-	if summary.Conclusive != 3 || summary.Correct != 2 || summary.UnexpectedParks != 1 {
-		t.Fatalf("summary = %#v, want 3 conclusive, 2 correct, 1 queued unexpected park", summary)
-	}
-	if got := summary.ConfirmedAccuracy(); got != 2.0/3.0 {
-		t.Fatalf("confirmed accuracy = %v, want %v", got, 2.0/3.0)
-	}
-	if got := summary.LowerBoundAccuracy(); got != 0.5 {
-		t.Fatalf("lower-bound accuracy = %v, want 0.5", got)
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {
+		t.Fatalf("score = %#v, want same finding ID matched", score)
 	}
 }
 
-func TestFailedLabeledReplayCountsAgainstAccuracyAndFrontier(t *testing.T) {
+func TestScoreCandidateMatchesNormalizedFileAndDescription(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "review-1", Kind: GoldTruePositive, File: " internal/eval/score.go ", Description: "Drops   an HTTP Error"}}}
+	candidate := `{"findings":[{"id":"different","file":"internal/eval/score.go","description":"drops an http error"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {
+		t.Fatalf("score = %#v, want conservative file-and-description match", score)
+	}
+}
+
+func TestScoreCandidateDoesNotMatchFindingsWithoutFiles(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "gold", Kind: GoldTruePositive, Description: "drops an HTTP error"}}}
+	candidate := `{"findings":[{"id":"candidate","description":"drops an http error"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
+		t.Fatalf("score = %#v, want file-less findings left unmatched", score)
+	}
+}
+
+func TestSummarizeEvaluationsScoresFindingGoldAndLeavesUnmatchedPending(t *testing.T) {
 	summary := SummarizeEvaluations([]Evaluation{
-		{Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
-		{Candidate: "claude+test", Status: "failed", ExpectedPark: boolPtr(true)},
+		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", HasFindingGold: true, GoldCount: 1, TruePositive: 1},
+		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", HasFindingGold: true, GoldCount: 1, FalseNegative: 1},
+		{CaseID: "approve-unlabeled", Candidate: "claude+test", Status: "completed", Pending: 2},
+		{CaseID: "approve-unlabeled", Candidate: "claude+test", Status: "completed"},
 	})
-	if summary.Labeled != 2 || summary.Conclusive != 2 || summary.Correct != 1 || summary.Misses != 1 || summary.ConfirmedAccuracy() != 0.5 {
-		t.Fatalf("summary = %#v, want failed labeled replay scored conservatively", summary)
+
+	if summary.Labeled != 2 || summary.TruePositive != 1 || summary.FalseNegative != 1 || summary.FalsePositive != 0 || summary.Pending != 2 {
+		t.Fatalf("summary = %#v, want TP/FN gold plus queued unmatched findings", summary)
+	}
+	if got := summary.Recall(); got != 0.5 {
+		t.Fatalf("recall = %v, want 0.5", got)
+	}
+}
+
+func TestSummarizeEvaluationsKeepsExplicitInvalidOnlyScoresLabeled(t *testing.T) {
+	summary := SummarizeEvaluations([]Evaluation{{
+		Candidate:      "claude+test",
+		Status:         "completed",
+		HasFindingGold: true,
+		FalsePositive:  1,
+	}})
+
+	if summary.Labeled != 1 || summary.FalsePositive != 1 {
+		t.Fatalf("summary = %#v, want explicit-invalid-only evaluation retained", summary)
+	}
+}
+
+func TestFailedLabeledReplayCountsAsFalseNegativeAndBlocksFrontier(t *testing.T) {
+	summary := SummarizeEvaluations([]Evaluation{
+		{Candidate: "claude+test", Status: "completed", GoldCount: 1, TruePositive: 1},
+		{Candidate: "claude+test", Status: "failed", GoldCount: 1, FalseNegative: 1},
+	})
+	if summary.Labeled != 2 || summary.TruePositive != 1 || summary.FalseNegative != 1 || summary.Recall() != 0.5 {
+		t.Fatalf("summary = %#v, want failed labeled replay counted as a false-negative", summary)
 	}
 	cost := 10.0
 	reports := []CandidateReport{{Cohort: "same", Summary: summary, AverageTokens: &cost}}
@@ -284,7 +375,7 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 	if err := os.MkdirAll(caseDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	labels := Labels{Version: 1, Verdict: VerdictLabel{Known: true}}
+	labels := Labels{Version: labelsVersion}
 	if err := writeJSON(filepath.Join(caseDir, "labels.json"), labels); err != nil {
 		t.Fatal(err)
 	}
@@ -292,25 +383,38 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 	if err := store.registerCase(c); err != nil {
 		t.Fatal(err)
 	}
+	labelsBefore, err := os.ReadFile(filepath.Join(caseDir, "labels.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.persistEvaluation(c, Evaluation{
-		ID:              "evaluation",
-		SessionID:       "session",
-		CaseID:          c.ID,
-		Candidate:       "claude+test",
-		Repeat:          1,
-		Status:          "completed",
-		ExpectedPark:    boolPtr(false),
-		CandidateParked: true,
-		FindingCount:    3,
+		ID:           "evaluation",
+		SessionID:    "session",
+		CaseID:       c.ID,
+		Candidate:    "claude+test",
+		Repeat:       1,
+		Status:       "completed",
+		Pending:      3,
+		FindingCount: 3,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
+	queued, err := store.pendingFindingCounts()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if labels.QueuedCandidateFindings != 3 {
-		t.Fatalf("queued candidate findings = %d, want 3", labels.QueuedCandidateFindings)
+	if queued[c.ID] != 3 {
+		t.Fatalf("queued candidate findings = %d, want 3 derived from the recorded evaluation", queued[c.ID])
+	}
+	// The queue derives from the evaluations table; a replay must never rewrite
+	// the case's labels, or re-running the same eval run double-appends state.
+	labelsAfter, err := os.ReadFile(filepath.Join(caseDir, "labels.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(labelsBefore) != string(labelsAfter) {
+		t.Fatalf("persisting an evaluation rewrote labels.json:\nbefore: %s\nafter: %s", labelsBefore, labelsAfter)
 	}
 }
 
@@ -336,7 +440,7 @@ func TestBaselineForRoundDerivesFreshTokensFromPerRoundDeltas(t *testing.T) {
 }
 
 func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
-	rows := []Evaluation{{CaseID: "only", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true}}
+	rows := []Evaluation{{CaseID: "only", Candidate: "claude+test", Status: "completed", GoldCount: 1, TruePositive: 1}}
 	if got := confidenceInterval("claude+test", rows); got != nil {
 		t.Fatalf("single-case confidence interval = %#v, want unavailable", got)
 	}
@@ -344,8 +448,8 @@ func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
 
 func TestConfidenceIntervalRepresentsUniformSampleUncertainty(t *testing.T) {
 	rows := []Evaluation{
-		{CaseID: "one", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
-		{CaseID: "two", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
+		{CaseID: "one", Status: "completed", GoldCount: 1, TruePositive: 1},
+		{CaseID: "two", Status: "completed", GoldCount: 1, TruePositive: 1},
 	}
 	got := confidenceInterval("claude+test", rows)
 	if got == nil || got.Lower <= 0 || got.Lower >= 1 || got.Upper < 0.999 {
@@ -355,8 +459,8 @@ func TestConfidenceIntervalRepresentsUniformSampleUncertainty(t *testing.T) {
 
 func TestConfidenceIntervalIncludesFailedLabeledReplays(t *testing.T) {
 	rows := []Evaluation{
-		{CaseID: "passed", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
-		{CaseID: "failed", Status: "failed", ExpectedPark: boolPtr(true)},
+		{CaseID: "passed", Status: "completed", GoldCount: 1, TruePositive: 1},
+		{CaseID: "failed", Status: "failed", GoldCount: 1, FalseNegative: 1},
 	}
 	got := confidenceInterval("claude+test", rows)
 	if got == nil || got.Cases != 2 || got.Lower >= 0.5 || got.Upper <= 0.5 {
@@ -364,16 +468,31 @@ func TestConfidenceIntervalIncludesFailedLabeledReplays(t *testing.T) {
 	}
 }
 
-func TestRenderReportNamesWilsonScoreInterval(t *testing.T) {
+func TestRenderReportNamesCaseLevelRecallRange(t *testing.T) {
 	output := RenderReport([]CandidateReport{
 		{
 			Cohort:     "cohort",
-			Summary:    EvaluationSummary{Candidate: "claude+test", Total: 2, Labeled: 2, Conclusive: 2, Correct: 2},
+			Summary:    EvaluationSummary{Candidate: "claude+test", Total: 2, Labeled: 2, TruePositive: 2},
 			Confidence: &Interval{Lower: 0.34, Upper: 1, Cases: 2},
 		},
 	})
-	if !strings.Contains(output, "95% Wilson score CI: 34.0%-100.0% over 2 case(s)") {
-		t.Fatalf("report confidence interval = %q", output)
+	if !strings.Contains(output, "case-level recall range: 34.0%-100.0% over 2 case(s)") {
+		t.Fatalf("report recall range = %q", output)
+	}
+}
+
+func TestRenderReportKeepsInvalidOnlyScoreWithoutClaimingRecall(t *testing.T) {
+	cost := 10.0
+	output := RenderReport([]CandidateReport{{
+		Cohort:        "cohort",
+		Summary:       EvaluationSummary{Candidate: "claude+test", Total: 1, Labeled: 1, FalsePositive: 1},
+		AverageTokens: &cost,
+	}})
+	if !strings.Contains(output, "false-positive 1") || !strings.Contains(output, "recall: unavailable (no true-issue gold)") {
+		t.Fatalf("invalid-only report = %q, want FP score with unavailable recall", output)
+	}
+	if strings.Contains(output, "0/0 gold issues") || strings.Contains(output, "recall-vs-cost frontier: true") {
+		t.Fatalf("invalid-only report claims recall evidence: %q", output)
 	}
 }
 
@@ -391,12 +510,221 @@ func TestFrontierDoesNotCompareDifferentCohorts(t *testing.T) {
 	cheap := 10.0
 	expensive := 100.0
 	reports := []CandidateReport{
-		{Cohort: "a", Summary: EvaluationSummary{Labeled: 1, Correct: 1}, AverageTokens: &expensive},
-		{Cohort: "b", Summary: EvaluationSummary{Labeled: 1, Correct: 1}, AverageTokens: &cheap},
+		{Cohort: "a", Summary: EvaluationSummary{Labeled: 1, TruePositive: 1}, AverageTokens: &expensive},
+		{Cohort: "b", Summary: EvaluationSummary{Labeled: 1, TruePositive: 1}, AverageTokens: &cheap},
 	}
 	markFrontier(reports)
 	if !reports[0].OnFrontier || !reports[1].OnFrontier {
 		t.Fatalf("different cohorts dominated each other: %#v", reports)
+	}
+}
+
+func TestCaptureDoesNotLabelSkipOrApproveAsPass(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status types.StepStatus
+	}{
+		{name: "approve-with-findings", status: types.StepStatusCompleted},
+		{name: "skip", status: types.StepStatusSkipped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+			defer sourceDB.Close()
+			if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+				t.Fatal(err)
+			}
+			steps, err := sourceDB.GetStepsByRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sourceDB.UpdateStepStatus(steps[0].ID, tc.status); err != nil {
+				t.Fatal(err)
+			}
+			store, err := Open(p.EvalDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cases) != 1 || cases[0].Labels.HasGold() {
+				t.Fatalf("captured labels = %#v, want unlabeled pending gold", cases)
+			}
+			all := mustSetSummary(t, store, "all")
+			if all.GoldCases != 0 || all.Unlabeled != 1 {
+				t.Fatalf("all summary = %#v, want unlabeled / pending, not a pass", all)
+			}
+		})
+	}
+}
+
+func TestCaptureWritesFalseNegativeGoldForUserAddedFinding(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	userFindings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"},{"id":"user-1","severity":"warning","file":"main.go","line":1,"description":"missing audit","action":"auto-fix","source":"user"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	if err := sourceDB.SetStepRoundUserFindings(reviewRound.ID, &userFindings); err != nil {
+		t.Fatal(err)
+	}
+	selected := `["real-bug","user-1"]`
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || len(cases[0].Labels.Findings) != 2 {
+		t.Fatalf("captured gold = %#v, want accepted finding plus human-added miss", cases)
+	}
+	byID := map[string]FindingGold{}
+	for _, gold := range cases[0].Labels.Findings {
+		byID[gold.ID] = gold
+	}
+	if got := byID["real-bug"]; got.Kind != GoldTruePositive || got.Source != goldSourceUserFix {
+		t.Fatalf("selected agent finding gold = %#v, want true-positive", got)
+	}
+	if got := byID["user-1"]; got.Kind != GoldFalseNegative || got.Source != goldSourceUserAdded || got.Description != "missing audit" {
+		t.Fatalf("user-added gold = %#v, want false-negative miss", got)
+	}
+}
+
+func TestCaptureWritesUserAddedGoldWithoutSelectionSource(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	userFindings := `{"findings":[{"id":"user-1","severity":"warning","file":"main.go","line":1,"description":"missing audit","action":"auto-fix","source":"user"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	if err := sourceDB.SetStepRoundUserFindings(reviewRound.ID, &userFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || len(cases[0].Labels.Findings) != 1 {
+		t.Fatalf("captured gold = %#v, want independent human-added miss", cases)
+	}
+	if got := cases[0].Labels.Findings[0]; got.ID != "user-1" || got.Kind != GoldFalseNegative || got.Source != goldSourceUserAdded {
+		t.Fatalf("user-added gold = %#v, want false-negative without selection evidence", got)
+	}
+}
+
+func TestCaptureLeavesUnknownSelectedFindingUnlabeled(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	selected := `["user-added-write-was-lost"]`
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].Labels.HasGold() {
+		t.Fatalf("captured labels = %#v, want unknown selection left unlabeled", cases)
+	}
+}
+
+func TestCaptureAndReportScoresMatchingCandidateAsTruePositive(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	installFakeReviewAgent(t, p, `{"findings":[{"id":"other","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "labeled", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1}); err != nil {
+		t.Fatal(err)
+	} else if len(evaluations) != 1 || evaluations[0].TruePositive != 1 || evaluations[0].FalseNegative != 0 || evaluations[0].Pending != 0 {
+		t.Fatalf("replay scores = %#v, want true-positive match on the same issue", evaluations)
+	}
+	reports, err := Report(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := RenderReport(reports)
+	if !strings.Contains(output, "true-positive 1, false-negative 0, false-positive 0, pending 0") || !strings.Contains(output, "recall: 100.0%") {
+		t.Fatalf("report = %q, want true-positive recall", output)
+	}
+	if strings.Contains(output, "park") || strings.Contains(output, "verdict") || strings.Contains(output, "agreement") {
+		t.Fatalf("report still uses park/pass accuracy language: %q", output)
+	}
+}
+
+func TestCaptureAndReportLeavesUnmatchedCandidateFindingsPending(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	installFakeReviewAgent(t, p, `{"findings":[{"id":"new-issue","severity":"error","file":"main.go","line":3,"description":"unexpected later issue","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"new","risk_scope":"source-or-external"}`)
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].Labels.HasGold() {
+		t.Fatalf("approve capture = %#v, want unlabeled gold", cases)
+	}
+	if _, evaluations, err := Replay(ctx, store, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1}); err != nil {
+		t.Fatal(err)
+	} else if len(evaluations) != 1 || evaluations[0].FalsePositive != 0 || evaluations[0].Pending != 1 {
+		t.Fatalf("replay scores = %#v, want unmatched finding queued, not a false-positive", evaluations)
+	}
+	reports, err := Report(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := RenderReport(reports)
+	if !strings.Contains(output, "unlabeled / pending") || !strings.Contains(output, "queued unmatched candidate findings: 1") {
+		t.Fatalf("report = %q, want unlabeled pending, not a pass or false-positive", output)
+	}
+	if strings.Contains(output, "false-positive 1") || strings.Contains(output, "park") || strings.Contains(output, "verdict") {
+		t.Fatalf("report punished or passed an unlabeled approve case: %q", output)
 	}
 }
 
@@ -416,6 +744,25 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 }
 
 func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
+	return setupCapturedRunWithFindings(t, ctx, `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
+}
+
+func setupCapturedRunWithFindings(t *testing.T, ctx context.Context, findings string) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
+	return setupCapturedRunWithHistoryAndFindings(t, ctx, 0, findings)
+}
+
+// setupCapturedRunWithHistory builds the fixture run. padCommits adds that many
+// commits of incompressible content to the default branch BEFORE the reviewed
+// branch is cut, so the padding is real ancestry of every commit a case pins -
+// which is what makes duplicated history measurable.
+func setupCapturedRunWithHistory(t *testing.T, ctx context.Context, padCommits int) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
+	return setupCapturedRunWithHistoryAndFindings(t, ctx, padCommits, `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
+}
+
+func setupCapturedRunWithHistoryAndFindings(t *testing.T, ctx context.Context, padCommits int, findings string) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
 	t.Helper()
 	root := t.TempDir()
 	p := paths.WithRoot(root)
@@ -444,6 +791,7 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	mustGit(t, ctx, workDir, "add", ".")
 	mustGit(t, ctx, workDir, "commit", "-m", "base")
 	mustGit(t, ctx, workDir, "branch", "-M", "main")
+	padHistory(t, ctx, workDir, padCommits)
 	mustGit(t, ctx, workDir, "push", "origin", "main")
 	baseSHA := mustGit(t, ctx, workDir, "rev-parse", "HEAD")
 	mustGit(t, ctx, workDir, "checkout", "-b", "feature/eval")
@@ -467,7 +815,6 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
 	repoConfigYAML, err := os.ReadFile(filepath.Join(workDir, ".no-mistakes.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -492,4 +839,31 @@ func mustGit(t *testing.T, ctx context.Context, dir string, args ...string) stri
 	return out
 }
 
-func boolPtr(v bool) *bool { return &v }
+func mustInspectSets(t *testing.T, store *Store) []SetSummary {
+	t.Helper()
+	summaries, err := InspectSets(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return summaries
+}
+
+func installFakeReviewAgent(t *testing.T, p *paths.Paths, findingsJSON string) {
+	t.Helper()
+	fakeDir := t.TempDir()
+	fake := filepath.Join(fakeDir, "claude")
+	reply := `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"review"}]}}
+{"type":"result","subtype":"success","is_error":false,"structured_output":` + findingsJSON + `,"usage":{"input_tokens":12,"output_tokens":3}}
+`
+	var script string
+	if runtime.GOOS == "windows" {
+		fake += ".cmd"
+		script = "@echo off\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+	} else {
+		script = "#!/bin/sh\n[ \"$NM_HOME\" = \"" + p.Root() + "\" ] && touch \"" + p.Root() + "/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+	}
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
+}

@@ -12,12 +12,15 @@ agent: auto
 
 acpx_path: acpx
 
+forgejo_axi_path: forgejo-axi
+
 acp_registry_overrides:
   local-gemini: node /opt/mock-acp-agent.mjs
 
 agent_path_override:
   claude: /Users/you/bin/claude
   codex: /opt/homebrew/bin/codex
+  grok: /Users/you/.grok/bin/grok
   rovodev: /usr/local/bin/acli
   opencode: /usr/local/bin/opencode
   pi: /usr/local/bin/pi
@@ -38,9 +41,14 @@ step_quiet_warning: "10m"
 
 daemon_connect_timeout: "3s"
 
+branch_sync_remote_timeout: "60s"
+
 log_level: info
 
 session_reuse: true
+
+worktree_roots:
+  /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 
 auto_fix:
   rebase: 3
@@ -67,6 +75,8 @@ test:
     store_in_repo: false
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
+    retention: 336h
+    max_runs: 200
 ```
 
 ## Fields
@@ -78,10 +88,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
 | Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
 `cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
 With default paths, `auto` only selects it when both `cursor-agent` and `acpx` resolve; `acp_registry_overrides.cursor` and `acpx_path` replace those respective defaults during availability checks.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` uses the same default command as `cursor`.
@@ -93,7 +103,7 @@ If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, 
 You can also set an ordered fallback list:
 
 ```yaml
-agent: [codex, claude]
+agent: [codex, grok]
 ```
 
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
@@ -110,6 +120,17 @@ Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP 
 | ------- | -------- |
 | Type    | `string` |
 | Default | `acpx`   |
+
+### forgejo_axi_path
+
+Executable used for Forgejo PR and CI operations.
+
+|         |               |
+| ------- | ------------- |
+| Type    | `string`      |
+| Default | `forgejo-axi` |
+
+A bare name is resolved from the daemon's effective `PATH`; an explicit path is executed directly. See [Provider Integration](/no-mistakes/guides/provider-integration/#forgejo) for setup and the [environment reference](/no-mistakes/reference/environment/#forgejo_base_url) for host and token configuration.
 
 ### acp_registry_overrides
 
@@ -149,6 +170,7 @@ Default native binary names when no override is set:
 | ---------- | ---------- |
 | `claude`   | `claude`   |
 | `codex`    | `codex`    |
+| `grok`     | `grok`     |
 | `rovodev`  | `acli`     |
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
@@ -162,7 +184,7 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -171,18 +193,20 @@ User-supplied flags are normally inserted ahead of no-mistakes' managed flags, s
 | ---------- | ----------------------------------------------------------------------------------------------------------- |
 | `claude`   | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema`, `-r`, `--resume`, `--session-id`, `-c`, `--continue`, `--fork-session` |
 | `codex`    | `exec`, `resume`, `--resume`, `--session`, `--session-id`, `--thread`, `--thread-id`, `--last`, `--json`, `--color` |
+| `grok`     | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--output-format`, `--json-schema`, `-r`, `--resume`, `-c`, `--continue`, `--fork-session`, `--session-id`, `--system-prompt-override`, `--system-prompt`, `--rules`, `--append-system-prompt`, `--agent`, `--agents`, `--verbatim`, `--no-subagents`, `--no-auto-update`, `--cwd`, `--restore-code`, `--worktree`, `--worktree-ref` |
 | `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
 | `pi`       | `--mode`, `--no-session`                                                                                    |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
-The Claude and Codex session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
+The Claude, Codex, and Grok session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
 
 Smart defaults:
 
 - For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
 - For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
+- For `grok`, supplying `--permission-mode` or `--always-approve` suppresses the default `--permission-mode bypassPermissions`. No model flag is added: Grok uses its current configured default unless you explicitly set `-m` or `--model`.
 
 Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
 Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.
@@ -203,6 +227,9 @@ agent_args_override:
     - service_tier="priority"
     - -c
     - model_reasoning_effort="low"
+  grok:
+    - --reasoning-effort
+    - high
   rovodev:
     - --profile
     - work
@@ -218,7 +245,7 @@ For Codex, `service_tier` and `model_reasoning_effort` tune different things: `s
 
 ### ci_timeout
 
-How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, or Azure DevOps PR mergeability, before giving up.
+How long the CI step monitors an open PR, including provider CI status and on GitHub, GitLab, Forgejo, or Azure DevOps PR mergeability, before giving up.
 
 |         |                                                 |
 | ------- | ----------------------------------------------- |
@@ -229,7 +256,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
-If it later develops an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
+If it later develops an actual GitHub, GitLab, Forgejo, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
@@ -266,6 +293,19 @@ Maximum time a CLI client waits for an existing daemon socket to accept a connec
 
 Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation with the `NM_DAEMON_CONNECT_TIMEOUT` environment variable; see [Environment Variables](/no-mistakes/reference/environment/#nm_daemon_connect_timeout).
 
+### branch_sync_remote_timeout
+
+Maximum time guarded branch synchronization (`sync`, `axi sync`, and the TUI's sync action) waits for each remote Git operation - `ls-remote` or `fetch` - before remote verification fails closed and synchronization is refused.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `60s`                  |
+
+Accepts any positive Go `time.ParseDuration` string.
+
+Raise this if your environment's Git credential helper (for example `gh auth git-credential`, invoked by Git as a child process against a private remote) legitimately takes longer than the default - this is a real, non-outage latency characteristic that has been observed taking 19-22s in some environments, not a hang. It is a machine/environment setting, not a per-repository one: it is read only from global config and has no matching field in a repository's `.no-mistakes.yaml`, so a pushed branch cannot widen or narrow how long the local service waits before failing closed. It never changes the fail-closed guarantee itself - a timeout or unknown remote state still always refuses synchronization without changing files or refs, whatever this value is set to.
+
 ### log_level
 
 Daemon log verbosity.
@@ -285,13 +325,44 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the pipeline agent supports native session resume (claude via `--resume`, codex via `exec resume`), each run keeps one durable fixer session across its review-fix turns.
+When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
 When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record.
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
+
+### worktree_roots
+
+Where a repository's pipeline run worktrees are created.
+
+|         |                                                 |
+| ------- | ----------------------------------------------- |
+| Type    | `map[string]string`                             |
+| Keys    | Absolute registered checkout paths (what you ran `no-mistakes init` in) |
+| Values  | Absolute directory paths                        |
+| Default | Empty (`<NM_HOME>/worktrees/<repo id>/<run id>`) |
+
+By default a run worktree is created under `NM_HOME`, outside every checkout, so directory-scoped toolchain configuration (mise, direnv) never reaches it: those tools resolve their settings by path ancestry.
+Point a checkout at a directory of your own and its runs are created at `<value>/<run id>` instead, inheriting whatever that directory configures.
+A relative value is rejected at load time, because the daemon that reads it has an unrelated working directory.
+
+The directory stays yours. no-mistakes never enumerates it: the only directories it touches there are the exact ones its own run records name, which is what startup cleanup, orphan-process reaping, and `no-mistakes eject` all go by. Anything else in it - your files, your scratch checkouts, and a directory that merely looks like a run worktree but no run created - is never read, never swept, never signalled, and never removed.
+
+Each checkout needs its own root: two entries pointing at the same directory, two spellings of one checkout, or a root equal to its checkout are rejected at load time, and `init --worktree-root` refuses a directory another checkout already claims.
+
+Two more values are refused at daemon startup, because they cannot work:
+
+- **Inside `NM_HOME`.** It collides with no-mistakes' own state - under `worktrees` a run worktree is indistinguishable from the per-repository directories the default placement owns, and under `logs` a run's worktree *is* its log directory, so removing the worktree at run end would take the run's logs with it.
+- **Inside any checkout.** The run worktree is then an untracked directory in that checkout while the run executes, so the checkout is dirty and [branch synchronization](/no-mistakes/reference/cli/#no-mistakes-sync) refuses to move it until the run finishes. That holds whether the victim is the checkout whose own runs land there or an unrelated gated one, so the daemon refuses a root inside any repository it has registered. Registering a repository *around* an already configured root is refused by `no-mistakes init` itself, so you can still place that checkout elsewhere or repoint the entry; anything that reaches the configuration another way is caught at the next daemon start.
+
+Changing an entry affects new runs only.
+Each run records the directory it was created in, so editing, adding, or removing an entry never retargets a run that already exists - resuming it after a restart, reading its diff, cleaning it up, reaping processes left standing in it, and ejecting its repository all keep using the directory that run actually has, including after you point the checkout somewhere else.
+
+The key is matched against the checkout path recorded at `init`. After moving a checkout, re-run `no-mistakes init` from the new path and update the key; a key that matches no registered repository is reported in the daemon log at startup and otherwise does nothing.
+
+`no-mistakes init --worktree-root <dir>` prints the exact entry to add for the checkout you are initializing. The global config is hand-maintained, so init never rewrites it for you.
 
 ### auto_fix
 
@@ -310,7 +381,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
-| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, and Azure DevOps merge conflicts |
+| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, Forgejo, and Azure DevOps merge conflicts |
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -392,19 +463,22 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>` and referenced by local path.
 
 |      |          |
 | ---- | -------- |
 | Type | `object` |
 
-| Field                         | Type     | Default                 | Description                                                                 |
-| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Publish test evidence artifacts to the repository's orphan evidence branch  |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Directory prefix inside the evidence branch                                 |
-| `test.evidence.branch`        | `string` | `no-mistakes/evidence`  | Name of the orphan evidence branch                                          |
+| Field                         | Type     | Default                  | Description                                                                |
+| ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
+| `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
+| `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
+| `test.evidence.retention`     | `string` | `336h` (14 days)         | How long a run's evidence survives; `unlimited`/`none`/`off`/`never` or a non-positive duration disables the bound |
+| `test.evidence.max_runs`      | `int`    | `200`                    | How many run directories survive regardless of age; `0` disables the bound |
 
-The test step always collects evidence in a temporary directory outside the worktree, so artifacts never enter the branch under validation.
+The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
 When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
 The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
@@ -414,8 +488,48 @@ Publication is also refused when the remote cannot be read or pushed, an artifac
 Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
 Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
-These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
+#### Local storage and cleanup
+
+Evidence lives under the app root rather than the system temp directory. On Linux the daemon runs from a service unit that does not export `TMPDIR`, so the old temp-directory default resolved to the shared `/tmp`, which current Ubuntu mounts as a RAM-backed `tmpfs`. The app root is disk backed on macOS, Linux, and Windows alike.
+
+no-mistakes reaps its recorded run directories itself rather than relying on an operating-system temp cleaner. Unrecognized directories under a custom `local_root` are left untouched.
+
+- A finished run that produced no artifacts leaves nothing behind.
+- Recorded run directories older than `retention` are removed.
+- Whatever recorded run evidence survives is trimmed to `max_runs`, oldest first.
+- A run that is still pending or running is never touched.
+
+Reaping runs after each finished run and again at daemon startup. An upgraded daemon also drains the pre-relocation directory in the system temp directory under the same rules; nothing is migrated, because absolute paths recorded in older pull request bodies name the old location.
+
+`local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
+
+The publication fields are global defaults. Repo config can override `store_in_repo` and `dir`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
+
+### eval
+
+Local review-evaluation corpus settings for [`no-mistakes eval`](/no-mistakes/reference/eval/).
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+| Field                      | Type   | Default | Description                                                            |
+| -------------------------- | ------ | ------- | ---------------------------------------------------------------------- |
+| `eval.capture_provenance`  | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
+| `eval.auto_capture`        | `bool` | `true`  | Freeze eligible finished runs' review passes into the local corpus     |
+| `eval.max_cases`           | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
+| `eval.diversified_size`    | `int`  | `32`    | Cap on the official gold-only `diversified` set; `0` is one gold case per stratum |
+
+`capture_provenance` is what makes a review pass replayable at all. It is recorded when the round is written and cannot be added afterwards, because the pinned configuration is a point-in-time snapshot, so a run reviewed with it off can never be captured later.
+
+`auto_capture` collects those passes without any command: when an eligible run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else.
+
+`max_cases` sets the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case with a replay in progress or recorded candidate replays is protected, so the corpus can remain above the target rather than invalidate a comparison you have spent tokens on. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
+
+`diversified_size` caps the official gold-only eval set used by `eval run --cases diversified`. Selection is stratified and pinned; unlabeled cases never fill it. `0` keeps one gold case per stratum with no Hamilton bound. Corpus retention (`max_cases`) and this official-set cap are different knobs.
+
+These are operator settings for this machine's local disk, so they are global-only: an `eval` block in a repository's `.no-mistakes.yaml` is ignored. Corpus storage stays under `<NM_HOME>/eval` and no-mistakes never uploads it; replay still sends code to the selected agent's configured model provider as described in the [Evaluation toolkit](/no-mistakes/reference/eval/).
 
 ## Environment variables
 
-See [Environment Variables](/no-mistakes/reference/environment/) for `NM_HOME`, `NM_DAEMON_CONNECT_TIMEOUT`, Bitbucket Cloud credentials, and update-check suppression.
+See [Environment Variables](/no-mistakes/reference/environment/) for `NM_HOME`, `NM_DAEMON_CONNECT_TIMEOUT`, Forgejo host and token settings, Bitbucket Cloud credentials, and update-check suppression.

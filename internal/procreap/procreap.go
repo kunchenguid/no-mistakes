@@ -33,10 +33,11 @@
 //     started moments ago is never mistaken for a leak.
 //   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
 //
-// A process whose cwd is outside <NM_HOME>/worktrees can never match, which is
-// what keeps long-lived unrelated daemons (a user's LaunchAgent worker, an
-// editor, another tool's background job) out of reach by construction rather
-// than by name-based allowlisting.
+// A process whose cwd is outside <NM_HOME>/worktrees and outside the run
+// worktrees the caller names explicitly (Options.Worktrees) can never match,
+// which is what keeps long-lived unrelated daemons (a user's LaunchAgent
+// worker, an editor, another tool's background job) out of reach by
+// construction rather than by name-based allowlisting.
 package procreap
 
 import (
@@ -46,6 +47,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const (
@@ -77,23 +80,53 @@ type Victim struct {
 	Killed   bool // true when SIGTERM was not enough and SIGKILL was needed
 }
 
+// Worktree is one run worktree named by the record of the run that created it.
+type Worktree struct {
+	Dir    string
+	RepoID string
+	RunID  string
+}
+
 // Options configures a sweep.
 type Options struct {
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
 
-	// Scope, when set, restricts the sweep to exactly this worktree directory
-	// and to its subdirectories. The caller that sets it owns that run and has
-	// already observed its execution return, so RunActive and MinAge are not
-	// consulted for a scoped sweep.
-	Scope string
+	// Worktrees are run worktrees that do not live under WorktreesRoot,
+	// because the operator placed that repository's runs in a directory of
+	// their own (worktree_roots in the global config). Each entry must come
+	// from the record of the run that created it, and only that directory and
+	// its subdirectories are then in reach.
+	//
+	// Reach there cannot be a path shape the way it is under WorktreesRoot,
+	// which this process owns outright: the operator keeps their own files,
+	// scratch checkouts, and another tool's leftovers next to our run
+	// worktrees, and a directory whose name merely looks like a run ID is not
+	// evidence that a run created it. Naming the worktrees explicitly is what
+	// makes an unclaimed directory there unmatchable, and therefore
+	// unsignallable, by construction.
+	//
+	// An entry missing its directory, repository, or run is dropped rather
+	// than matched: without a run identity the caller's RunActive check cannot
+	// be applied to it.
+	Worktrees []Worktree
 
-	// MinAge skips processes younger than this. Ignored when Scope is set.
+	// Scopes, when set, restricts the sweep to exactly these worktree
+	// directories and their subdirectories. The caller that sets them owns
+	// those runs and has already observed their execution return, so RunActive
+	// and MinAge are not consulted for a scoped sweep.
+	//
+	// It is a set rather than a single directory because a caller that is about
+	// to remove many of a repository's worktrees at once must still pay for one
+	// process-table snapshot, not one per directory (see SweepRunWorktrees).
+	Scopes []string
+
+	// MinAge skips processes younger than this. Ignored when Scopes is set.
 	MinAge time.Duration
 
 	// RunActive reports whether the run still owns its worktree; its worktree
 	// is then left alone. A nil RunActive means "no run is active", which is
-	// only correct for a scoped sweep. Ignored when Scope is set.
+	// only correct for a scoped sweep. Ignored when Scopes is set.
 	RunActive func(repoID, runID string) bool
 
 	// Grace is how long a signalled process may exit before SIGKILL.
@@ -115,7 +148,7 @@ var (
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
-	if strings.TrimSpace(opts.WorktreesRoot) == "" {
+	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.Worktrees) == 0 {
 		return nil, nil
 	}
 	procs, err := listProcessesFunc()
@@ -137,7 +170,7 @@ func Sweep(opts Options) ([]Victim, error) {
 		if p.PID <= 1 || protected[p.PID] {
 			continue
 		}
-		if opts.Scope == "" && opts.MinAge > 0 && p.Elapsed < opts.MinAge {
+		if len(opts.Scopes) == 0 && opts.MinAge > 0 && p.Elapsed < opts.MinAge {
 			continue
 		}
 		candidates = append(candidates, p.PID)
@@ -147,12 +180,15 @@ func Sweep(opts Options) ([]Victim, error) {
 	}
 
 	cwds := processCWDsFunc(candidates)
-	roots := pathPrefixes(opts.WorktreesRoot)
-	scopes := pathPrefixes(opts.Scope)
+	matchers := worktreeMatchers(opts)
+	var scopes []string
+	for _, scope := range opts.Scopes {
+		scopes = append(scopes, pathPrefixes(scope)...)
+	}
 
 	matched := make(map[int]string)
 	for pid, cwd := range cwds {
-		dir, repoID, runID, ok := worktreeRef(roots, cwd)
+		dir, repoID, runID, ok := worktreeRef(matchers, cwd)
 		if !ok {
 			continue
 		}
@@ -193,6 +229,55 @@ func SweepAndLog(opts Options, reason string) {
 	}
 }
 
+// SweepRunWorktree terminates whatever is still standing in one run's worktree,
+// which every caller that is about to REMOVE that directory must do first.
+//
+// It is one entry point because the removal sites are spread across packages -
+// run cleanup, startup cleanup, and eject - and a directory removed without this
+// leaves a process that escaped its group holding a deleted cwd. Under
+// <NM_HOME>/worktrees that process stays reachable through the surviving root
+// prefix, but a worktree the operator placed elsewhere is named only by the run
+// record, so removing the directory (and, at eject, the record too) is the last
+// moment anything can reach it.
+//
+// The sweep is scoped to dir, so no age floor and no run-active check apply: the
+// caller owns this run and is about to delete its worktree.
+func SweepRunWorktree(worktreesRoot, repoID, runID, dir string, reason string) {
+	SweepRunWorktrees(worktreesRoot, []Worktree{{Dir: dir, RepoID: repoID, RunID: runID}}, reason)
+}
+
+// SweepRunWorktrees is SweepRunWorktree for a caller that is about to remove
+// several of a repository's worktrees at once, such as eject.
+//
+// Reading the process table is the expensive part of a sweep and it is paid per
+// call, not per directory: one pass over `ps` plus one cwd read for every
+// candidate process answers any number of worktrees, while a loop over
+// SweepRunWorktree pays that pass again for each one. A repository's run rows
+// are never pruned, so the loop's cost grows with everything the machine has
+// ever run rather than with what is being removed now.
+//
+// With no worktree to sweep this does nothing at all, deliberately: an empty
+// scope set would turn the sweep into an unscoped one over the whole default
+// worktrees tree, with neither the age floor nor the run-active check an
+// unscoped caller must supply.
+func SweepRunWorktrees(worktreesRoot string, wts []Worktree, reason string) {
+	scopes := make([]string, 0, len(wts))
+	for _, wt := range wts {
+		if strings.TrimSpace(wt.Dir) == "" {
+			continue
+		}
+		scopes = append(scopes, wt.Dir)
+	}
+	if len(scopes) == 0 {
+		return
+	}
+	SweepAndLog(Options{
+		WorktreesRoot: worktreesRoot,
+		Worktrees:     wts,
+		Scopes:        scopes,
+	}, reason)
+}
+
 // protectedPIDs is this process plus its ancestor chain. Signalling any of
 // them would take down the daemon (or whatever launched it) while trying to
 // clean up after it.
@@ -211,38 +296,84 @@ func protectedPIDs(byPID map[int]Process) map[int]bool {
 }
 
 // pathPrefixes returns the comparable forms of dir: the cleaned path and, when
-// it differs, its symlink-resolved form. macOS reports /private/var for a
-// /var path, so a single spelling is not enough to recognise our own tree.
+// it differs, its canonical form. macOS reports /private/var for a /var path,
+// so a single spelling is not enough to recognise our own tree.
+//
+// The canonical form resolves symlinks through the deepest ancestor that still
+// exists (see worktrees.Canonical), which matters because the directory named
+// here is often gone: a run worktree is removed at run end while a process that
+// escaped its process group keeps standing in it, and that deleted cwd is the
+// whole reason this package exists. Resolving only paths that still exist would
+// leave such a process unreachable whenever any component of its path is a
+// symlink - which on macOS includes anything under /tmp.
 func pathPrefixes(dir string) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
 	cleaned := filepath.Clean(dir)
 	out := []string{cleaned}
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil && resolved != cleaned {
-		out = append(out, resolved)
+	if canonical := worktrees.Canonical(cleaned); canonical != cleaned {
+		out = append(out, canonical)
 	}
 	return out
 }
 
-// worktreeRef reports the run worktree that path sits in. It requires at least
-// <root>/<repoID>/<runID>, so a process standing in the worktrees root itself,
-// or in a repo directory with no run below it, never matches.
-func worktreeRef(roots []string, path string) (dir, repoID, runID string, ok bool) {
+// worktreeMatcher is one directory a process's cwd may sit in or under for it
+// to belong to a run worktree. A named matcher is one worktree the caller
+// identified outright (Options.Worktrees); an unnamed one is the default
+// worktrees root, which holds a repository level above the run directories and
+// therefore spells the identity out in the path itself.
+type worktreeMatcher struct {
+	prefix string
+	named  bool
+	repoID string
+	runID  string
+}
+
+// worktreeMatchers returns every comparable directory prefix a cwd may sit
+// under, in both spellings a path can have (see pathPrefixes).
+func worktreeMatchers(opts Options) []worktreeMatcher {
+	var out []worktreeMatcher
+	for _, prefix := range pathPrefixes(opts.WorktreesRoot) {
+		out = append(out, worktreeMatcher{prefix: prefix})
+	}
+	for _, wt := range opts.Worktrees {
+		if strings.TrimSpace(wt.Dir) == "" || strings.TrimSpace(wt.RepoID) == "" || strings.TrimSpace(wt.RunID) == "" {
+			continue
+		}
+		for _, prefix := range pathPrefixes(wt.Dir) {
+			out = append(out, worktreeMatcher{prefix: prefix, named: true, repoID: wt.RepoID, runID: wt.RunID})
+		}
+	}
+	return out
+}
+
+// worktreeRef reports the run worktree that path sits in. A named worktree
+// matches that directory and anything below it, and carries the identity the
+// path no longer spells out. Under the default worktrees root the path must
+// reach at least <root>/<repoID>/<runID>, so a process standing in the root
+// itself, or in a repository directory with no run below it, never matches.
+func worktreeRef(matchers []worktreeMatcher, path string) (dir, repoID, runID string, ok bool) {
 	if path == "" {
 		return "", "", "", false
 	}
 	cleaned := filepath.Clean(path)
-	for _, root := range roots {
-		rel, err := filepath.Rel(root, cleaned)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	for _, matcher := range matchers {
+		rel, err := filepath.Rel(matcher.prefix, cleaned)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if matcher.named {
+			return matcher.prefix, matcher.repoID, matcher.runID, true
+		}
+		if rel == "." {
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 			continue
 		}
-		return filepath.Join(root, parts[0], parts[1]), parts[0], parts[1], true
+		return filepath.Join(matcher.prefix, parts[0], parts[1]), parts[0], parts[1], true
 	}
 	return "", "", "", false
 }

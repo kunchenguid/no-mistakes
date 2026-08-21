@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +19,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -92,6 +91,16 @@ type sourceInvocation struct {
 	FailureCategory      string `json:"failure_category,omitempty"`
 }
 
+// ErrNoCapturableReview marks the outcomes where a run simply holds nothing to
+// freeze - no review step, no finished pass, a decision the human has not made
+// yet, or rounds recorded before this machine started keeping replay
+// provenance. These are ordinary states of a healthy pipeline, not failures, so
+// automatic collection can pass over them silently while still surfacing a real
+// capture fault. Every one of them is a deliberate refusal to invent a case:
+// grading a candidate against a half-recorded review pass would be worse than
+// having no case at all.
+var ErrNoCapturableReview = errors.New("run has no capturable review pass")
+
 // Capture exports every persisted review pass from one real run. It reads the
 // production state only; it never starts the daemon, changes a gate, fetches,
 // or sends data anywhere.
@@ -99,6 +108,16 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if store == nil || p == nil || database == nil {
 		return nil, fmt.Errorf("eval capture requires a store, paths, and database")
 	}
+	unlock, err := lockCorpus(ctx, store.root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	if err := store.cleanupPendingCaseDeletions(ctx); err != nil {
+		return nil, err
+	}
+
 	run, err := database.GetRun(strings.TrimSpace(runID))
 	if err != nil {
 		return nil, fmt.Errorf("read source run: %w", err)
@@ -132,14 +151,14 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		}
 	}
 	if reviewStep == nil {
-		return nil, fmt.Errorf("run %q has no review step to capture", run.ID)
+		return nil, fmt.Errorf("%w: run %q has no review step", ErrNoCapturableReview, run.ID)
 	}
 	reviewRounds, err := database.GetRoundsByStep(reviewStep.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read review rounds: %w", err)
 	}
 	if len(reviewRounds) == 0 {
-		return nil, fmt.Errorf("run %q has no review passes to capture", run.ID)
+		return nil, fmt.Errorf("%w: run %q recorded no review passes", ErrNoCapturableReview, run.ID)
 	}
 
 	gateDir := p.RepoDir(repo.ID)
@@ -152,23 +171,29 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	}
 	captured := make([]Case, 0, len(reviewRounds))
 	for _, round := range reviewRounds {
-		if round.FindingsJSON == nil {
-			// A persisted round with no findings was an interrupted or legacy
-			// partial record, not a replayable review pass. Refuse rather than
-			// silently grade a fabricated clean result.
-			return nil, fmt.Errorf("review round %q has no recorded findings", round.ID)
+		if round.FindingsJSON == nil || strings.TrimSpace(*round.FindingsJSON) == "" {
+			// An interrupted or cancelled later round is not a replayable
+			// pass. Skip it so a completed sibling of the same run can still
+			// be captured rather than failing the whole export.
+			continue
 		}
 		decision := decisionForRound(round, reviewStep)
-		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
-		if !labels.Verdict.Known && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
-			return nil, fmt.Errorf("review round %q has no recorded gate decision", round.ID)
+		labels := goldFromRound(round, decision, runPRState(run))
+		if !labels.HasGold() && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
+			return nil, fmt.Errorf("%w: review round %q has no recorded gate decision", ErrNoCapturableReview, round.ID)
 		}
 		reviewedSHA := run.HeadSHA
 		if round.ReviewedHeadSHA != nil && strings.TrimSpace(*round.ReviewedHeadSHA) != "" {
 			reviewedSHA = strings.TrimSpace(*round.ReviewedHeadSHA)
 		}
 		if round.StartingHeadSHA == nil || strings.TrimSpace(*round.StartingHeadSHA) == "" || round.TrustedConfigSHA == nil || strings.TrimSpace(*round.TrustedConfigSHA) == "" || len(round.GlobalConfigYAML) == 0 || len(round.RepoConfigYAML) == 0 {
-			return nil, fmt.Errorf("review round %q predates exact eval configuration provenance", round.ID)
+			// Provenance is a point-in-time snapshot of configuration that no
+			// longer exists anywhere, so this can never be backfilled - only
+			// later runs are capturable. Name the setting rather than the age:
+			// a round recorded seconds ago with capture_provenance off fails
+			// here too, and calling that "old" sends the reader hunting for a
+			// version problem that is not there.
+			return nil, fmt.Errorf("%w: review round %q was recorded without eval configuration provenance (eval.capture_provenance was off, or the run predates the setting); only runs reviewed after it is enabled can be captured", ErrNoCapturableReview, round.ID)
 		}
 		startingSHA := strings.TrimSpace(*round.StartingHeadSHA)
 		trustedSHA := strings.TrimSpace(*round.TrustedConfigSHA)
@@ -198,12 +223,9 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		caseID := run.ID + "-" + round.ID
 		caseDir := store.caseDir(caseID)
 		if existing, err := os.Stat(caseDir); err == nil && existing.IsDir() {
-			c, err := loadCase(caseDir)
+			c, err := relabelExistingCase(store, caseDir, round, decision, runPRState(run))
 			if err != nil {
-				return nil, fmt.Errorf("read existing case %q: %w", caseID, err)
-			}
-			if err := store.registerCase(c); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("relabel existing case %q: %w", caseID, err)
 			}
 			captured = append(captured, c)
 			continue
@@ -243,6 +265,9 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			return nil, err
 		}
 		captured = append(captured, c)
+	}
+	if len(captured) == 0 {
+		return nil, fmt.Errorf("%w: run %q has no capturable review pass", ErrNoCapturableReview, run.ID)
 	}
 	return captured, nil
 }
@@ -304,7 +329,7 @@ func agentNeutralGlobalConfig(data []byte) ([]byte, error) {
 	return out, nil
 }
 
-func writeCase(ctx context.Context, store *Store, gateDir string, c Case, globalConfig, repoConfig []byte, run sourceRun, steps []sourceStep, rounds []sourceRound, invocations []sourceInvocation, selectedRound sourceRound, changedFiles []string) error {
+func writeCase(ctx context.Context, store *Store, gateDir string, c Case, globalConfig, repoConfig []byte, run sourceRun, steps []sourceStep, rounds []sourceRound, invocations []sourceInvocation, selectedRound sourceRound, changedFiles []string) (err error) {
 	tmp, err := os.MkdirTemp(store.cases, ".capture-")
 	if err != nil {
 		return fmt.Errorf("create temporary case: %w", err)
@@ -315,16 +340,22 @@ func writeCase(ctx context.Context, store *Store, gateDir string, c Case, global
 			return err
 		}
 	}
-	bundlePath := filepath.Join(tmp, "branch.bundle")
-	if err := createBundle(ctx, gateDir, bundlePath, c); err != nil {
+	if err := store.storeCaseObjects(ctx, gateDir, c.RepoFingerprint, c.ID, map[string]string{
+		refHead:          c.ReviewedHeadSHA,
+		refSourceHead:    c.HeadSHA,
+		refBase:          c.BaseSHA,
+		refTrustedConfig: c.TrustedConfigSHA,
+	}); err != nil {
 		return err
 	}
-	bundle, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(bundle)
-	c.BundleSHA256 = hex.EncodeToString(digest[:])
+	// The case directory is published last, so a failure after this point
+	// would leave pool refs pinning objects no case will ever claim. Release
+	// them rather than growing an unreachable, unreclaimable remainder.
+	defer func() {
+		if err != nil {
+			_ = dropCaseObjects(ctx, store.poolDir(c.RepoFingerprint), c.ID)
+		}
+	}()
 	if err := os.WriteFile(filepath.Join(tmp, "config", "global.yaml"), globalConfig, 0o644); err != nil {
 		return err
 	}
@@ -352,41 +383,6 @@ func writeCase(ctx context.Context, store *Store, gateDir string, c Case, global
 	}
 	if err := os.Rename(tmp, c.Dir); err != nil {
 		return fmt.Errorf("publish captured case: %w", err)
-	}
-	return nil
-}
-
-func createBundle(ctx context.Context, gateDir, bundlePath string, c Case) error {
-	tmp, err := os.MkdirTemp("", "nm-eval-bundle-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	clone := filepath.Join(tmp, "source.git")
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", gateDir, clone)
-	shellenv.ConfigureShellCommand(cmd)
-	if err := shellenv.RunShellCommand(cmd); err != nil {
-		return fmt.Errorf("clone source gate for bundle: %w", err)
-	}
-	prefix := "refs/no-mistakes/eval/" + c.ID + "/"
-	refs := []struct {
-		name string
-		sha  string
-	}{
-		{"head", c.ReviewedHeadSHA},
-		{"source-head", c.HeadSHA},
-		{"base", c.BaseSHA},
-		{"trusted-config", c.TrustedConfigSHA},
-	}
-	bundleRefs := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if _, err := git.Run(ctx, clone, "update-ref", prefix+ref.name, ref.sha); err != nil {
-			return fmt.Errorf("pin bundle %s: %w", ref.name, err)
-		}
-		bundleRefs = append(bundleRefs, prefix+ref.name)
-	}
-	if _, err := git.Run(ctx, clone, append([]string{"bundle", "create", bundlePath}, bundleRefs...)...); err != nil {
-		return fmt.Errorf("create review bundle: %w", err)
 	}
 	return nil
 }
@@ -457,8 +453,21 @@ func baselineForRound(invocations []db.AgentInvocation, round int) BaselineMetri
 	return baseline
 }
 
+// Recorded gate actions. These are the persisted spellings in decision.json;
+// decisionUnknown and decisionAbort record no fix-vs-skip choice, so they never
+// support a label.
+const (
+	decisionUnknown = "unknown"
+	decisionFix     = "fix"
+	decisionSkip    = "skip"
+	decisionApprove = "approve"
+	decisionAbort   = "abort"
+
+	prStateMerged = "merged"
+)
+
 func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
-	decision := Decision{Action: "unknown"}
+	decision := Decision{Action: decisionUnknown}
 	if round.SelectionSource != nil {
 		decision.SelectionSource = *round.SelectionSource
 	}
@@ -469,37 +478,360 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 		decision.HasUserFindings = true
 	}
 	if len(decision.SelectedFindingIDs) > 0 {
-		decision.Action = "fix"
+		decision.Action = decisionFix
 		return decision
 	}
 	if step == nil {
 		return decision
 	}
 	if step.Status == types.StepStatusSkipped {
-		decision.Action = "skip"
+		decision.Action = decisionSkip
 		return decision
 	}
 	if step.Status == types.StepStatusFailed && step.Error != nil && strings.Contains(*step.Error, "aborted by user") {
-		decision.Action = "abort"
+		decision.Action = decisionAbort
 		return decision
 	}
 	if round.FindingsJSON != nil {
 		findings, err := types.ParseFindingsJSON(*round.FindingsJSON)
 		if err == nil && types.HasAskUserFindings(findings) && step.Status == types.StepStatusCompleted {
-			decision.Action = "approve"
+			decision.Action = decisionApprove
 		}
 	}
 	return decision
 }
 
-func verdictFromDecision(round *db.StepRound, decision Decision) VerdictLabel {
-	if decision.SelectionSource == db.RoundSelectionSourceUser && (len(decision.SelectedFindingIDs) > 0 || decision.HasUserFindings) {
-		return VerdictLabel{Known: true, ShouldPark: true, Source: "recorded-user-fix"}
+// goldFromRound writes the labels the recorded gate DECISION supports.
+//
+// The key is what the human decided about a finding, never whether some later
+// review round still happens to raise it. Round presence conflated the two
+// decisions that matter: a finding the human chose to fix and a finding they
+// chose to ship both disappear from a later round, and an intermediate re-raise
+// that the final round dropped stayed unlabeled even though the gate recorded
+// exactly what was decided about it.
+//
+//   - Selected for fix with a user source: true-positive gold. Merge is not
+//     required - the human called it a real issue.
+//   - Selected for fix with an auto-fix source on a merged source run:
+//     true-positive gold.
+//   - Not selected for fix on a merged source run: false-positive
+//     "shipped unfixed" gold. This deliberately reverses the earlier principle
+//     that a skip is too ambiguous to auto-label: in this operator's corpus a
+//     finding they approve and ship without fixing IS a false positive. It
+//     still needs the merge - skip or approve without one stays unlabeled - and
+//     informational no-op findings are never labeled this way.
+//   - No recorded decision for the round: unlabeled, whether or not the finding
+//     survives into a later round. Absence of evidence is never a label.
+//
+// A user-added finding is false-negative gold. Confirmed post-PR misses are
+// written later by IngestPostPRMiss, not here.
+func goldFromRound(round *db.StepRound, decision Decision, prState string) Labels {
+	labels := Labels{Version: labelsVersion}
+	byID := findingIndex(round)
+	seen := map[string]bool{}
+	selected := map[string]bool{}
+	for _, id := range decision.SelectedFindingIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			selected[id] = true
+		}
 	}
-	if decision.Action == "approve" || decision.Action == "skip" {
-		return VerdictLabel{Known: true, ShouldPark: false, Source: "recorded-human-pass"}
+	if decision.SelectionSource == db.RoundSelectionSourceUser {
+		for _, id := range decision.SelectedFindingIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			finding, ok := byID[id]
+			if !ok {
+				continue
+			}
+			if finding.Source == types.FindingSourceUser {
+				continue
+			}
+			seen[id] = true
+			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, goldSourceUserFix, GoldTruePositive))
+		}
 	}
-	return VerdictLabel{Source: "unlabeled"}
+	if decision.SelectionSource == db.RoundSelectionSourceAutoFix && prState == prStateMerged {
+		for _, id := range decision.SelectedFindingIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			finding, ok := byID[id]
+			if !ok {
+				continue
+			}
+			seen[id] = true
+			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, goldSourceAutoFixMerged, GoldTruePositive))
+		}
+	}
+	if round.UserFindingsJSON != nil && strings.TrimSpace(*round.UserFindingsJSON) != "" {
+		for _, finding := range parseFindingItems(*round.UserFindingsJSON) {
+			if finding.Source != types.FindingSourceUser {
+				continue
+			}
+			id := strings.TrimSpace(finding.ID)
+			if id != "" && seen[id] {
+				continue
+			}
+			if id != "" {
+				seen[id] = true
+			}
+			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, goldSourceUserAdded, GoldFalseNegative))
+		}
+	}
+	if prState == prStateMerged && hasRecordedDecision(decision) && round.FindingsJSON != nil {
+		for _, finding := range parseFindingItems(*round.FindingsJSON) {
+			id := strings.TrimSpace(finding.ID)
+			if id == "" || seen[id] || selected[id] {
+				continue
+			}
+			if finding.ActionOrDefault() == types.ActionNoOp {
+				continue
+			}
+			seen[id] = true
+			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, goldSourceShippedUnfixed, GoldFalsePositive))
+		}
+	}
+	return labels
+}
+
+func goldForRecordedFinding(finding types.Finding, source, kind string) FindingGold {
+	return FindingGold{
+		ID:          finding.ID,
+		Kind:        kind,
+		Source:      source,
+		File:        finding.File,
+		Line:        finding.Line,
+		Description: finding.Description,
+		Severity:    finding.Severity,
+		Action:      finding.Action,
+	}
+}
+
+// hasRecordedDecision reports whether the gate resolution for this round was
+// actually persisted. Only then can an unselected finding be read as "the human
+// looked at this and chose not to fix it", which is what makes a shipped-unfixed
+// false-positive label evidence rather than a guess. A legacy or unresolved round
+// with no persisted decision records no such choice, so its findings stay unlabeled.
+func hasRecordedDecision(decision Decision) bool {
+	if strings.TrimSpace(decision.SelectionSource) != "" {
+		return true
+	}
+	switch decision.Action {
+	case decisionFix, decisionSkip, decisionApprove:
+		return true
+	}
+	return false
+}
+
+func runPRState(run *db.Run) string {
+	if run == nil || run.PRState == nil || strings.TrimSpace(*run.PRState) == "" {
+		return "none"
+	}
+	return strings.ToLower(strings.TrimSpace(*run.PRState))
+}
+
+func mergeGold(existing, computed Labels) Labels {
+	out := Labels{
+		Version:                 labelsVersion,
+		QueuedCandidateFindings: existing.QueuedCandidateFindings,
+	}
+	keptID := map[string]bool{}
+	keptContent := map[string]bool{}
+	for _, g := range existing.Findings {
+		if isDerivedMergeGold(g.Source) {
+			continue
+		}
+		id := strings.TrimSpace(g.ID)
+		if id != "" {
+			if keptID[id] {
+				continue
+			}
+			keptID[id] = true
+		} else {
+			key := goldContentKey(g)
+			if keptContent[key] {
+				continue
+			}
+			keptContent[key] = true
+		}
+		out.Findings = append(out.Findings, g)
+	}
+	for _, g := range computed.Findings {
+		id := strings.TrimSpace(g.ID)
+		if id != "" && keptID[id] {
+			continue
+		}
+		// A gold finding without an ID can only dedupe by content. Without
+		// this, every recapture or relabel appended another copy of the same
+		// ID-less finding, silently growing the label file.
+		if id == "" && keptContent[goldContentKey(g)] {
+			continue
+		}
+		out.Findings = append(out.Findings, g)
+		if id != "" {
+			keptID[id] = true
+		} else {
+			keptContent[goldContentKey(g)] = true
+		}
+	}
+	return out
+}
+
+func goldContentKey(g FindingGold) string {
+	return strings.Join([]string{g.Kind, g.Source, g.File, strconv.Itoa(g.Line), g.Description}, "\x00")
+}
+
+func isDerivedMergeGold(source string) bool {
+	return source == goldSourceAutoFixMerged || source == goldSourceShippedUnfixed
+}
+
+// RelabelRun recomputes gold for every captured case of a run. It adds new
+// auto-fix-merged / shipped-unfixed labels onto previously unlabeled findings
+// and drops obsolete derived merge labels that the current rounds no longer
+// support. It never overwrites adjudicated, user-fix, or ingested post-PR-miss
+// labels. Missing cases are a no-op so a merge observed before the first
+// capture cannot fail the pipeline.
+func RelabelRun(ctx context.Context, store *Store, p *paths.Paths, database *db.DB, runID string) ([]Case, error) {
+	if store == nil || p == nil || database == nil {
+		return nil, fmt.Errorf("eval relabel requires a store, paths, and database")
+	}
+	unlock, err := lockCorpus(ctx, store.root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return relabelRunLocked(store, database, runID)
+}
+
+func RelabelAll(ctx context.Context, store *Store, p *paths.Paths, database *db.DB) ([]Case, error) {
+	if store == nil || p == nil || database == nil {
+		return nil, fmt.Errorf("eval relabel requires a store, paths, and database")
+	}
+	cases, err := store.ListCases("all")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []Case
+	for _, c := range cases {
+		if seen[c.SourceRunID] {
+			continue
+		}
+		seen[c.SourceRunID] = true
+		relabeled, err := RelabelRun(ctx, store, p, database, c.SourceRunID)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, relabeled...)
+	}
+	return out, nil
+}
+
+func relabelRunLocked(store *Store, database *db.DB, runID string) ([]Case, error) {
+	run, reviewRounds, reviewStep, err := loadReviewRounds(database, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || len(reviewRounds) == 0 {
+		return nil, nil
+	}
+	existing, err := store.casesForRun(run.ID)
+	if err != nil {
+		return nil, err
+	}
+	byRound := map[string]*db.StepRound{}
+	for _, round := range reviewRounds {
+		byRound[round.ID] = round
+	}
+	out := make([]Case, 0, len(existing))
+	for _, c := range existing {
+		round := byRound[c.SourceRoundID]
+		if round == nil {
+			out = append(out, c)
+			continue
+		}
+		decision := decisionForRound(round, reviewStep)
+		updated, err := relabelExistingCase(store, c.Dir, round, decision, runPRState(run))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, updated)
+	}
+	return out, nil
+}
+
+func loadReviewRounds(database *db.DB, runID string) (*db.Run, []*db.StepRound, *db.StepResult, error) {
+	run, err := database.GetRun(strings.TrimSpace(runID))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read source run: %w", err)
+	}
+	if run == nil {
+		return nil, nil, nil, nil
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read source steps: %w", err)
+	}
+	var reviewStep *db.StepResult
+	for _, step := range steps {
+		if step.StepName == types.StepReview {
+			reviewStep = step
+			break
+		}
+	}
+	if reviewStep == nil {
+		return run, nil, nil, nil
+	}
+	rounds, err := database.GetRoundsByStep(reviewStep.ID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read review rounds: %w", err)
+	}
+	return run, rounds, reviewStep, nil
+}
+
+func relabelExistingCase(store *Store, dir string, round *db.StepRound, decision Decision, prState string) (Case, error) {
+	c, err := loadCase(dir)
+	if err != nil {
+		return Case{}, err
+	}
+	computed := goldFromRound(round, decision, prState)
+	c.Labels = mergeGold(c.Labels, computed)
+	if err := writeJSON(filepath.Join(c.Dir, "labels.json"), c.Labels); err != nil {
+		return Case{}, fmt.Errorf("write relabeled gold: %w", err)
+	}
+	if err := store.registerCase(c); err != nil {
+		return Case{}, err
+	}
+	if err := store.updateCaseGoldCount(c.ID, len(c.Labels.Findings)); err != nil {
+		return Case{}, err
+	}
+	return c, nil
+}
+
+func findingIndex(round *db.StepRound) map[string]types.Finding {
+	index := map[string]types.Finding{}
+	if round == nil {
+		return index
+	}
+	if round.FindingsJSON != nil {
+		for _, finding := range parseFindingItems(*round.FindingsJSON) {
+			if id := strings.TrimSpace(finding.ID); id != "" {
+				index[id] = finding
+			}
+		}
+	}
+	if round.UserFindingsJSON != nil {
+		for _, finding := range parseFindingItems(*round.UserFindingsJSON) {
+			if id := strings.TrimSpace(finding.ID); id != "" {
+				index[id] = finding
+			}
+		}
+	}
+	return index
 }
 
 func fingerprint(rawURL string) string {

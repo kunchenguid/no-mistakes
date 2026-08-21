@@ -20,7 +20,7 @@ when you leave prompts blank.
 
 Pipeline agent prompts also include a workspace-boundary preamble.
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
-The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it.
+The only intentional out-of-worktree write it allows is test evidence under the run's managed evidence directory when a testing prompt asks for it.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
 
@@ -35,7 +35,7 @@ That last point matters: the agent helps fill in gaps, but explicit repo
 commands are still the strongest way to make the baseline gate predictable.
 When user intent is available, the test step may still invoke the configured agent after `commands.test` succeeds to gather evidence that demonstrates the change.
 That testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
-That directory is always temporary and outside the worktree; GitHub repos can opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
+That directory is always outside the worktree and is reaped by no-mistakes on a bounded retention schedule; GitHub repos can opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`. See [`test.evidence`](/no-mistakes/reference/global-config/#testevidence) for its location and cleanup.
 
 ## Supported agents
 
@@ -43,6 +43,7 @@ That directory is always temporary and outside the worktree; GitHub repos can op
 | --- | --- | --- |
 | Claude | `claude` | Subprocess per invocation, JSONL streaming |
 | Codex | `codex` | Subprocess per invocation, JSONL events |
+| Grok Build | `grok` | Subprocess per invocation, Messages-compatible JSONL streaming |
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
@@ -111,7 +112,7 @@ Repo config takes precedence over global config.
 
 ```yaml
 # ~/.no-mistakes/config.yaml or .no-mistakes.yaml
-agent: [codex, claude]
+agent: [codex, grok]
 ```
 
 ### Optional ACP target
@@ -140,8 +141,7 @@ Use bare `/no-mistakes` to validate existing committed work.
 Use `/no-mistakes <task>` to have the agent first do the task, commit only that task's changes on a feature branch, then run the pipeline with the task text as `--intent`.
 In both modes, it resolves low-risk findings on its own and stops to relay anything that needs your decision.
 
-`no-mistakes init` installs that skill at user level: `~/.claude/skills/no-mistakes/SKILL.md` for Claude Code and `~/.agents/skills/no-mistakes/SKILL.md` for Codex, OpenCode, Rovo Dev, and Pi.
-One install makes the skill available to every supported agent in every repo, without committing tool-generated files to any repo.
+Grok Build is a pipeline runner, not a driving-skill target. `no-mistakes init` installs the `/no-mistakes` skill for Claude Code and agents that use the vendor-neutral `.agents` convention; the [`init` reference](/no-mistakes/reference/cli/#no-mistakes-init) owns its locations and supported consumers.
 If your home directory consolidates `.claude` and `.agents` with symlinks, `init` follows the links and keeps the skill reachable from both logical paths.
 Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
 Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
@@ -201,7 +201,7 @@ Five global config fields tune resolution and invocation, and the [Global Config
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude and Codex keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
+With the default `session_reuse: true`, Claude, Codex, and Grok keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
 Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
@@ -226,7 +226,7 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -265,13 +265,19 @@ Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priori
 For review-fixer reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
 That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh fixer session rather than skipping the fix turn.
 
+## Grok Build
+
+Spawns a `grok` subprocess for each invocation using a permission-restricted prompt file and `--output-format streaming-messages-json`. Native structured output is requested with `--json-schema`; the terminal `structured_output`, session identity, model, and usage fields are read from the Messages-compatible result event. Review-loop reuse resumes the reported Grok session with `--resume`.
+No Mistakes deliberately emits no `-m` or `--model` flag, so Grok uses its current configured default model. Put an explicit model pin or optional reasoning override under global `agent_args_override.grok` when needed.
+Grok is not available to a repository with `disable_project_settings: true`, because Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces; the gate fails closed before launch. See [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) for the security boundary. System-prompt, alternate-agent, working-directory, worktree, and restore flags are reserved so global overrides cannot redirect the managed invocation.
+
 ## Rovo Dev
 
 Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields.
 
 ## OpenCode
 
-Starts a persistent HTTP server (`opencode serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output, with `retryCount: 2` so the model gets a second chance to emit a structured response. When opencode reports `info.error.name = "StructuredOutputError"` (the model did not call the StructuredOutput tool after those retries), no-mistakes surfaces a clean error including the retry count rather than falling through to text-parsing the streamed reasoning prose. When native structured output is genuinely absent, it falls back to parsing the final text with the same JSON fence and bare-object fallback, validating that fallback result against the requested schema while allowing `null` for optional fields.
+Starts a persistent HTTP server (`opencode serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.opencode` flags are inserted before no-mistakes' managed serve flags. Similar session lifecycle to Rovo Dev: create session, send message, stream SSE events until idle, delete session. Supports `json_schema` format in the message request for structured output, with `retryCount: 2` so the model gets a second chance to emit a structured response. When a provider explicitly rejects the required or forced tool choice used by that format because thinking or reasoning is enabled, no-mistakes retries once without the native format; the schema remains in the prompt, and the returned text must parse and validate against the original schema. Other provider errors do not trigger this retry. When opencode reports `info.error.name = "StructuredOutputError"` (the model did not call the StructuredOutput tool after its internal retries), no-mistakes surfaces a clean error including the retry count rather than falling through to text-parsing the streamed reasoning prose. When native structured output is genuinely absent, it falls back to parsing the final text with the same JSON fence and bare-object fallback, validating that fallback result against the requested schema while allowing `null` for optional fields.
 
 ## Pi
 
@@ -321,6 +327,7 @@ $ no-mistakes doctor
   ✓ daemon running
   ✓ claude
   – codex (not found)
+  – grok (not found)
   – rovodev (not found)
   – opencode (not found)
   – pi (not found)

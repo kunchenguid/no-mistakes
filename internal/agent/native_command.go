@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -21,6 +22,16 @@ type nativeAgentCommand struct {
 	pipeMu         sync.Mutex
 	remainingPipes int
 	pipesDone      chan struct{}
+}
+
+func writeNativeAgentStdin(stdin io.WriteCloser, prompt string) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		_, writeErr := io.WriteString(stdin, prompt)
+		closeErr := stdin.Close()
+		errCh <- errors.Join(writeErr, closeErr)
+	}()
+	return errCh
 }
 
 type nativeAgentPipe struct {

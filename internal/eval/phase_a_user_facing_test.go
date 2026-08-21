@@ -1,0 +1,271 @@
+package eval
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+// TestPhaseAUserFacingTranscripts exercises the same public summaries and
+// renderers the `eval sets` / `eval report` / `eval capture` commands consume,
+// and writes them as reviewer-visible evidence when NM_EVIDENCE_DIR is set.
+// The `eval sets` dashboard itself renders in internal/cli; here the set
+// summaries are recorded structurally.
+func TestPhaseAUserFacingTranscripts(t *testing.T) {
+	evidenceDir := strings.TrimSpace(os.Getenv("NM_EVIDENCE_DIR"))
+	write := func(name, body string) {
+		t.Helper()
+		if evidenceDir == "" {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(evidenceDir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write evidence %s: %v", name, err)
+		}
+	}
+	summariesJSON := func(t *testing.T, store *Store) string {
+		t.Helper()
+		data, err := json.MarshalIndent(mustInspectSets(t, store), "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data) + "\n"
+	}
+
+	t.Run("empty gold warns and does not fill diversified", func(t *testing.T) {
+		store := openEvalStore(t)
+		writeSyntheticCase(t, store, syntheticCaseSpec{
+			id: "unlabeled-only", fingerprint: "repo-a", capturedAt: 1, changedLines: 10,
+			changedFiles:  []string{"main.go"},
+			roundFindings: findingsJSON(findingSpec{ID: "f1", Severity: "error", File: "main.go", Line: 3, Description: "bug", Action: "ask-user"}),
+		})
+		got, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("diversified = %#v, want empty when the corpus has no gold", got)
+		}
+		diversified := mustSetSummary(t, store, "diversified")
+		if diversified.Cases != 0 || !strings.Contains(diversified.Warning, "no labeled gold") {
+			t.Fatalf("diversified summary = %#v, want empty diversified plus a gold-only warning", diversified)
+		}
+		write("eval-sets-empty-gold.json", summariesJSON(t, store))
+	})
+
+	t.Run("official holdout vs tune leftover", func(t *testing.T) {
+		store := openEvalStore(t)
+		store.SetDiversifiedSize(1)
+		pinned := writeSyntheticCase(t, store, syntheticCaseSpec{
+			id: "official-pin", fingerprint: "repo-a", capturedAt: 1, changedLines: 10,
+			changedFiles: []string{"main.go"},
+			gold: []FindingGold{
+				{ID: "a", Kind: GoldTruePositive, Source: goldSourceUserFix, File: "main.go", Line: 1, Description: "a", Severity: "error", Action: "auto-fix"},
+			},
+			roundFindings: findingsJSON(findingSpec{ID: "a", Severity: "error", File: "main.go", Line: 1, Description: "a", Action: "auto-fix"}),
+		})
+		tune := writeSyntheticCase(t, store, syntheticCaseSpec{
+			id: "tune-leftover", fingerprint: "repo-b", capturedAt: 2, changedLines: 10,
+			changedFiles: []string{"other.go"},
+			gold: []FindingGold{
+				{ID: "b", Kind: GoldTruePositive, Source: goldSourceUserFix, File: "other.go", Line: 1, Description: "b", Severity: "error", Action: "auto-fix"},
+			},
+			roundFindings: findingsJSON(findingSpec{ID: "b", Severity: "error", File: "other.go", Line: 1, Description: "b", Action: "auto-fix"}),
+		})
+		writeSyntheticCase(t, store, syntheticCaseSpec{
+			id: "unlabeled", fingerprint: "repo-c", capturedAt: 3, changedLines: 10,
+			changedFiles:  []string{"main.go"},
+			roundFindings: findingsJSON(findingSpec{ID: "c", Severity: "error", File: "main.go", Line: 1, Description: "c", Action: "ask-user"}),
+		})
+		div, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := caseIDs(div); len(ids) != 1 || ids[0] != pinned.ID {
+			t.Fatalf("diversified = %v, want official pin %s", ids, pinned.ID)
+		}
+		leftover, err := store.ListCases("tune")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := caseIDs(leftover); len(ids) != 1 || ids[0] != tune.ID {
+			t.Fatalf("tune = %v, want leftover labeled gold %s", ids, tune.ID)
+		}
+		if warning := mustSetSummary(t, store, "tune").Warning; warning != "" {
+			t.Fatalf("tune warning = %q, unexpectedly warned that tune is empty", warning)
+		}
+		write("eval-sets-official-vs-tune.json", summariesJSON(t, store))
+	})
+
+	t.Run("live cap shrink keeps at most one official case per stratum", func(t *testing.T) {
+		store := openEvalStore(t)
+		store.SetDiversifiedSize(3)
+		writeGoldStratum(t, store, "repo-heavy", "error", 5, 10)
+		writeGoldStratum(t, store, "repo-mid", "warning", 3, 20)
+		writeGoldStratum(t, store, "repo-light", "info", 1, 30)
+		before, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeCounts := map[string]int{}
+		for _, c := range before {
+			beforeCounts[c.RepoFingerprint]++
+		}
+		if beforeCounts["repo-heavy"] != 2 {
+			t.Fatalf("setup diversified = %#v, want Hamilton to pin 2 cases in repo-heavy", beforeCounts)
+		}
+		beforeOut := summariesJSON(t, store)
+
+		store.SetDiversifiedSize(0)
+		after, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		perStratum := map[string]int{}
+		for _, c := range after {
+			perStratum[diversifiedStratum(c)]++
+		}
+		for stratum, n := range perStratum {
+			if n > 1 {
+				t.Fatalf("after cap 0, stratum %q has %d official cases (ids=%v)", stratum, n, caseIDs(after))
+			}
+		}
+		afterOut := summariesJSON(t, store)
+		write("eval-sets-cap-reconcile.json", "BEFORE (cap 3, Hamilton extras in one stratum):\n"+beforeOut+"\nAFTER (cap 0, at most one official case per stratum):\n"+afterOut)
+	})
+
+	t.Run("lower cap fill does not dump leftover seats into one unoccupied stratum", func(t *testing.T) {
+		store := openEvalStore(t)
+		store.SetDiversifiedSize(6)
+		writeGoldStratum(t, store, "repo-a", "error", 10, 10)
+		writeGoldStratum(t, store, "repo-b", "error", 10, 20)
+		writeGoldStratum(t, store, "repo-c", "info", 2, 30)
+		before, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeCounts := map[string]int{}
+		for _, c := range before {
+			beforeCounts[c.RepoFingerprint]++
+		}
+		if beforeCounts["repo-a"] < 2 || beforeCounts["repo-b"] < 2 || beforeCounts["repo-c"] != 0 {
+			t.Fatalf("setup diversified = %#v, want duplicate pins in repo-a/repo-b and repo-c unoccupied", beforeCounts)
+		}
+		beforeOut := summariesJSON(t, store)
+
+		store.SetDiversifiedSize(5)
+		after, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		perStratum := map[string]int{}
+		for _, c := range after {
+			perStratum[diversifiedStratum(c)]++
+		}
+		for stratum, n := range perStratum {
+			if n > 1 {
+				t.Fatalf("after cap 5, stratum %q has %d official cases (ids=%v)", stratum, n, caseIDs(after))
+			}
+		}
+		afterOut := summariesJSON(t, store)
+		write("eval-sets-lower-cap-no-overallocate.json", "BEFORE (cap 6, Hamilton pins duplicates in two strata and leaves a third unoccupied):\n"+beforeOut+"\nAFTER (cap 5, collapse-freed seats must not reallocate multiple official cases into one stratum):\n"+afterOut)
+	})
+
+	t.Run("report withholds F1 without FP gold and headlines it when FP gold exists", func(t *testing.T) {
+		noFP := SummarizeEvaluations([]Evaluation{{
+			Candidate: "codex+test", Status: "completed", HasFindingGold: true, GoldCount: 2,
+			TruePositive: 2, Pending: 1,
+		}})
+		noFPOut := RenderReport([]CandidateReport{{Cohort: "official-holdout", Summary: noFP, RepeatCount: 1}})
+		if !strings.Contains(noFPOut, "recall: 100.0%") || !strings.Contains(noFPOut, "F1: withheld") {
+			t.Fatalf("no-FP report = %q, want recall plus withheld F1", noFPOut)
+		}
+		if strings.Contains(noFPOut, "F1:") && !strings.Contains(noFPOut, "F1: withheld") {
+			t.Fatalf("no-FP report = %q, headline F1 must not appear without FP gold", noFPOut)
+		}
+		write("eval-report-f1-withheld.txt", noFPOut)
+
+		withFP := SummarizeEvaluations([]Evaluation{{
+			Candidate: "codex+test", Status: "completed", HasFindingGold: true, GoldCount: 2,
+			TruePositive: 2, FalsePositive: 1, FalsePositiveGold: 1,
+		}})
+		withFPOut := RenderReport([]CandidateReport{{Cohort: "official-holdout", Summary: withFP, RepeatCount: 1}})
+		if !strings.Contains(withFPOut, "F1:") || strings.Contains(withFPOut, "F1: withheld") {
+			t.Fatalf("FP-gold report = %q, want headline F1", withFPOut)
+		}
+		write("eval-report-f1-headline.txt", withFPOut)
+	})
+
+	t.Run("capture labels shipped-unfixed as FP and leaves an undecided round unlabeled", func(t *testing.T) {
+		ctx := context.Background()
+		p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+		defer sourceDB.Close()
+		if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		steps, err := sourceDB.GetStepsByRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+			t.Fatal(err)
+		}
+		if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+			t.Fatal(err)
+		}
+		store := mustOpenEval(t, p)
+		cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cases) != 1 || len(cases[0].Labels.Findings) != 1 {
+			t.Fatalf("shipped-unfixed capture = %#v, want one FP gold finding", cases)
+		}
+		gold := cases[0].Labels.Findings[0]
+		if gold.Kind != GoldFalsePositive || gold.Source != goldSourceShippedUnfixed {
+			t.Fatalf("shipped-unfixed gold = %#v, want recorded-shipped-unfixed false-positive", gold)
+		}
+		labelsJSON, err := json.MarshalIndent(cases[0].Labels, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		write("labels-shipped-unfixed.json", string(labelsJSON)+"\n")
+
+		// The same merged run, but with no recorded gate decision for the round,
+		// stays unlabeled: shipping unfixed is only evidence of a false positive
+		// when the human actually resolved the gate without selecting the finding.
+		p2, sourceDB2, run2, _, firstRound := setupCapturedRun(t, ctx)
+		defer sourceDB2.Close()
+		if err := sourceDB2.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := sourceDB2.UpdateRunPRState(run2.ID, "merged"); err != nil {
+			t.Fatal(err)
+		}
+		undecided := captureAll(t, ctx, p2, sourceDB2, run2.ID)
+		byRound := map[string]Labels{}
+		for _, c := range undecided {
+			byRound[c.SourceRoundID] = c.Labels
+		}
+		if byRound[firstRound.ID].HasGold() {
+			t.Fatalf("undecided first-round labels = %#v, want unlabeled", byRound[firstRound.ID])
+		}
+		type undecidedRow struct {
+			RoundID string `json:"source_round_id"`
+			Labels  Labels `json:"labels"`
+		}
+		rows := make([]undecidedRow, 0, len(undecided))
+		for _, c := range undecided {
+			rows = append(rows, undecidedRow{RoundID: c.SourceRoundID, Labels: c.Labels})
+		}
+		undecidedJSON, err := json.MarshalIndent(rows, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		write("labels-undecided-round.json", string(undecidedJSON)+"\n")
+	})
+}

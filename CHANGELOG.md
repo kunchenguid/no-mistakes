@@ -1,5 +1,85 @@
 # Changelog
 
+## [1.56.0](https://github.com/kunchenguid/no-mistakes/compare/v1.55.1...v1.56.0) (2026-08-20)
+
+
+### Features
+
+* **agent:** add native Grok Build support ([4c58ac3](https://github.com/kunchenguid/no-mistakes/commit/4c58ac33096e24f75a9f70351c13a095d6237c52))
+* **daemon:** place run worktrees per repository via worktree_roots ([7186c4b](https://github.com/kunchenguid/no-mistakes/commit/7186c4b2aecbbbda05d42dd69ee83d7362449bea))
+* **scm:** add Forgejo provider support ([#718](https://github.com/kunchenguid/no-mistakes/issues/718)) ([5c7f815](https://github.com/kunchenguid/no-mistakes/commit/5c7f815fda370b5027e64f68506a4f7f2cef4b5e))
+
+
+### Bug Fixes
+
+* **agent:** harden stdin prompt delivery ([132fb10](https://github.com/kunchenguid/no-mistakes/commit/132fb1039221daeaa5cd163fe80a9f3c6e596aad))
+* **agent:** prefer closed JSON fences over unclosed pi tails ([6dc07a4](https://github.com/kunchenguid/no-mistakes/commit/6dc07a4a90a7a2ac494cb9011224a8eb4dc37551))
+* **agent:** support structured output with thinking models ([3ed3ca4](https://github.com/kunchenguid/no-mistakes/commit/3ed3ca46039645b3b6afb1648cb6cfdbbc0dda35))
+* **daemon:** preserve open PR when daemon restarts during CI monitoring ([#374](https://github.com/kunchenguid/no-mistakes/issues/374)) ([53849a4](https://github.com/kunchenguid/no-mistakes/commit/53849a4f3cf8f1d36c16bea779219f875f45425c))
+* **github:** include head workflow runs in CI readiness ([#616](https://github.com/kunchenguid/no-mistakes/issues/616)) ([628d688](https://github.com/kunchenguid/no-mistakes/commit/628d68854bef10592162023840790b0e0c33c9d4))
+* **pipeline:** preserve existing PR's forge base branch for CI repair and rebase ([f345f6a](https://github.com/kunchenguid/no-mistakes/commit/f345f6ae81f178a109c35e66071c4a50df2a1916))
+* **pipeline:** render Bitbucket Cloud PR bodies as no-HTML markdown ([abe6da6](https://github.com/kunchenguid/no-mistakes/commit/abe6da6559c9a60ab5796ce2be6e6a42efd1dc56))
+
+## [1.55.1](https://github.com/kunchenguid/no-mistakes/compare/v1.55.0...v1.55.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **eval:** prevent display state mutations and clipped strata ([#787](https://github.com/kunchenguid/no-mistakes/issues/787)) ([a076b87](https://github.com/kunchenguid/no-mistakes/commit/a076b878bf74b7e0a97ae076a370d1665f88700d))
+* **pipeline:** preserve declined finding decisions across runs ([#790](https://github.com/kunchenguid/no-mistakes/issues/790)) ([a4411ed](https://github.com/kunchenguid/no-mistakes/commit/a4411ed85175ff54d348e38f74a9fe1b5743944c))
+
+## [1.55.0](https://github.com/kunchenguid/no-mistakes/compare/v1.54.0...v1.55.0) (2026-08-19)
+
+
+### Features
+
+* **cli:** improve eval sets repository and matrix display ([#784](https://github.com/kunchenguid/no-mistakes/issues/784)) ([3edab07](https://github.com/kunchenguid/no-mistakes/commit/3edab07028a3604b88772cdf9799962c83c5c635))
+
+## [1.54.0](https://github.com/kunchenguid/no-mistakes/compare/v1.53.0...v1.54.0) (2026-08-19)
+
+
+### Features
+
+* **eval:** add dashboards and idempotent eval workflows ([#779](https://github.com/kunchenguid/no-mistakes/issues/779)) ([8facba5](https://github.com/kunchenguid/no-mistakes/commit/8facba5972fcb2a97c135253d8158aed731b4246))
+
+## [1.53.0](https://github.com/kunchenguid/no-mistakes/compare/v1.52.0...v1.53.0) (2026-08-16)
+
+
+### Features
+
+* **eval:** label findings by recorded decision and match gold globally ([#753](https://github.com/kunchenguid/no-mistakes/issues/753)) ([f808d23](https://github.com/kunchenguid/no-mistakes/commit/f808d2389ff76d002d821a6f43999189f95fc102))
+
+## [1.52.0](https://github.com/kunchenguid/no-mistakes/compare/v1.51.1...v1.52.0) (2026-08-15)
+
+
+### Features
+
+* **eval:** ingest confirmed post-PR misses as false-negative gold ([#744](https://github.com/kunchenguid/no-mistakes/issues/744)) ([f92b7bd](https://github.com/kunchenguid/no-mistakes/commit/f92b7bd6da88904d8066ba70181a4491312fe4fe))
+* **eval:** pin gold-only holdout and merge-derived finding gold ([#739](https://github.com/kunchenguid/no-mistakes/issues/739)) ([dac4dc9](https://github.com/kunchenguid/no-mistakes/commit/dac4dc9bb34aea7a6074b5ff508046fa34de1085))
+* **pipeline:** persist uncertified fixer commits for the next initial review ([#745](https://github.com/kunchenguid/no-mistakes/issues/745)) ([a68298e](https://github.com/kunchenguid/no-mistakes/commit/a68298ea66c248d04d0fffec76db3f1d7d18a402))
+* **pipeline:** ungate review counterexample tracing and name silent-wrong-result risks ([#743](https://github.com/kunchenguid/no-mistakes/issues/743)) ([7cd86d4](https://github.com/kunchenguid/no-mistakes/commit/7cd86d4209ac79f4a0923b62c298524183f5d672))
+
+## [1.51.1](https://github.com/kunchenguid/no-mistakes/compare/v1.51.0...v1.51.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **daemon:** move test evidence out of system temp storage ([#735](https://github.com/kunchenguid/no-mistakes/issues/735)) ([2498e75](https://github.com/kunchenguid/no-mistakes/commit/2498e75f6a075efc710b2cda18333a3a69986c7c))
+
+## [1.51.0](https://github.com/kunchenguid/no-mistakes/compare/v1.50.0...v1.51.0) (2026-08-14)
+
+
+### Features
+
+* **eval:** score replay findings against human gold ([#726](https://github.com/kunchenguid/no-mistakes/issues/726)) ([a3954e1](https://github.com/kunchenguid/no-mistakes/commit/a3954e19f232b944bacfb2599faee946045d6671))
+
+## [1.50.0](https://github.com/kunchenguid/no-mistakes/compare/v1.49.0...v1.50.0) (2026-08-12)
+
+
+### Features
+
+* **eval:** automatically collect an affordable local corpus ([#711](https://github.com/kunchenguid/no-mistakes/issues/711)) ([366dfce](https://github.com/kunchenguid/no-mistakes/commit/366dfce2673dbd4bc566c58ea6c6a4edb37c4576))
+
 ## [1.49.0](https://github.com/kunchenguid/no-mistakes/compare/v1.48.0...v1.49.0) (2026-08-11)
 
 

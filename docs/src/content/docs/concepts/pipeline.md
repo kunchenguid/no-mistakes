@@ -52,6 +52,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
+  A later run's initial review also receives fix-round provenance for any uncertified pipeline-authored commits left on the branch when a previous run's re-review did not complete.
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass.

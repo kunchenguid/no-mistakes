@@ -3,7 +3,17 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # Body-bearing events only. The verdict is a pure function of
+    # pull_request.body, so a push carries no new body to judge - but it does
+    # move the head SHA. The pipeline pushes (Push step) before it writes the
+    # deterministic "## Pipeline" section (PR step), so a `synchronize` trigger
+    # pinned a FAILURE check run to the new head for a body the same run was
+    # about to fix. GitHub keeps that failure next to the later `edited` SUCCESS
+    # rather than replacing it, and `gh pr checks` collapses same-named check
+    # runs by startedAt alone, so the pipeline's own CI monitor could read the
+    # stale failure and park the run red forever (PR #773). No ruleset requires
+    # this status check, so no head SHA needs a run of its own.
+    types: [opened, edited, reopened]
     branches:
       - main
     # Never create a run for a release-please PR. The job-level author exemption
@@ -19,7 +29,7 @@ permissions:
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
 # an immutable per-event group so first-time-fork approvals can never collapse
-# opened/edited checks. Keep synchronize/reopened coalescing as before.
+# opened/edited checks. Keep reopened coalescing as before.
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true
@@ -40,26 +50,124 @@ jobs:
       - name: Verify no-mistakes signature in PR body
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
-          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
-            echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
-            exit 0
+          if ! printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
+            {
+              echo "::error::This PR was not raised through no-mistakes."
+              echo
+              echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
+              echo "That pipeline runs the required review/test/lint/CI steps and writes a"
+              echo "deterministic '## Pipeline' section into the PR body containing:"
+              echo
+              echo "    $marker"
+              echo
+              echo "See CONTRIBUTING.md for setup and the full workflow."
+              echo
+              echo "PR author: ${PR_AUTHOR}"
+            } >&2
+            exit 1
           fi
-          {
-            echo "::error::This PR was not raised through no-mistakes."
-            echo
-            echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
-            echo "That pipeline runs the required review/test/lint/CI steps and writes a"
-            echo "deterministic '## Pipeline' section into the PR body containing:"
-            echo
-            echo "    $marker"
-            echo
-            echo "See CONTRIBUTING.md for setup and the full workflow."
-            echo
-            echo "PR author: ${PR_AUTHOR}"
-          } >&2
-          exit 1
+          echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          elif command -v python >/dev/null 2>&1; then
+            PY=python
+          else
+            echo "::error::python interpreter not found; cannot parse pipeline attestation." >&2
+            exit 1
+          fi
+          "$PY" <<'PY'
+          import json
+          import os
+          import sys
+
+          body = os.environ.get("PR_BODY") or ""
+          pr_head_sha = os.environ.get("PR_HEAD_SHA") or ""
+          prefix = "<!-- no-mistakes-pipeline-attestation:v1 "
+          closing = " -->"
+          required_steps = ("review", "test", "document")
+          author = os.environ.get("PR_AUTHOR") or ""
+
+          def fail_missing_attestation() -> None:
+              sys.stderr.write(
+                  "::error::This PR is missing structured pipeline step attestation.\n\n"
+                  "This repository requires no-mistakes >= 1.46.0 "
+                  "(https://github.com/kunchenguid/no-mistakes/pull/670). "
+                  "Older no-mistakes that only writes the signature line is not enough.\n\n"
+                  "The PR body must include a comment of the form:\n"
+                  '    <!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"...","steps":[...]} -->\n\n'
+                  "Contributions to this repository must be submitted via 'git push no-mistakes'.\n"
+                  "See CONTRIBUTING.md for setup and the full workflow.\n\n"
+                  f"PR author: {author}\n"
+              )
+              raise SystemExit(1)
+
+          start = body.find(prefix)
+          if start < 0:
+              fail_missing_attestation()
+          start += len(prefix)
+          end = body.find(closing, start)
+          if end < 0:
+              fail_missing_attestation()
+          raw = body[start:end]
+          try:
+              payload = json.loads(raw)
+          except json.JSONDecodeError:
+              fail_missing_attestation()
+          if not isinstance(payload, dict):
+              fail_missing_attestation()
+          head_sha = payload.get("head_sha")
+          steps = payload.get("steps")
+          if not isinstance(head_sha, str) or not isinstance(steps, list):
+              fail_missing_attestation()
+          if head_sha == "" or pr_head_sha == "" or head_sha != pr_head_sha:
+              sys.stderr.write(
+                  "::error::Pipeline attestation head_sha does not match the current PR head.\n\n"
+                  f"attestation.head_sha: {head_sha or '(missing)'}\n"
+                  f"PR head: {pr_head_sha or '(missing)'}\n\n"
+                  "A later push must not pass on an older attestation. "
+                  "Re-run 'git push no-mistakes' so the PR body attestation binds to the current head.\n\n"
+                  "See CONTRIBUTING.md for setup and the full workflow.\n\n"
+                  f"PR author: {author}\n"
+              )
+              raise SystemExit(1)
+
+          status_by_step = {}
+          for item in steps:
+              if not isinstance(item, dict):
+                  fail_missing_attestation()
+              name = item.get("step")
+              status = item.get("status")
+              if not isinstance(name, str) or name == "" or not isinstance(status, str):
+                  fail_missing_attestation()
+              status_by_step[name] = status
+
+          incomplete = []
+          for name in required_steps:
+              status = status_by_step.get(name)
+              if status == "completed":
+                  continue
+              if status is None:
+                  incomplete.append(f"{name} (missing)")
+              else:
+                  incomplete.append(f"{name} (status={status})")
+
+          if incomplete:
+              listed = ", ".join(incomplete)
+              sys.stderr.write(
+                  f"::error::Required no-mistakes pipeline steps are not completed: {listed}.\n\n"
+                  "This repository requires review, test, and document to have status=completed. "
+                  "Quota skips and agent skips are not compliant.\n\n"
+                  "Contributions to this repository must be submitted via 'git push no-mistakes'.\n"
+                  "See CONTRIBUTING.md for setup and the full workflow.\n\n"
+                  f"PR author: {author}\n"
+              )
+              raise SystemExit(1)
+
+          print("Found compliant pipeline step attestation.")
+          PY

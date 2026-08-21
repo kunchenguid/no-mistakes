@@ -65,9 +65,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	if err := sctx.Ctx.Err(); err != nil {
 		return false, err
 	}
-	provider := scm.DetectProviderContext(sctx.Ctx, sctx.Repo.UpstreamURL)
+	provider := detectProviderForStep(sctx, sctx.Repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
-		provider = scm.DetectProviderContext(sctx.Ctx, *sctx.Run.PRURL)
+		provider = detectProviderForStep(sctx, *sctx.Run.PRURL)
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
@@ -94,9 +94,13 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 	switch state {
 	case scm.PRStateMerged:
+		if err := verifyMergedProof(sctx.Ctx, host, &scm.PR{Number: prNumber, URL: prURL}, sctx.Run.HeadSHA); err != nil {
+			return false, err
+		}
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 			return false, err
 		}
+		notifyPRMerged(sctx)
 		if sctx.Log != nil {
 			sctx.Log("PR has been merged; clearing stale CI approval gate")
 		}
@@ -119,6 +123,30 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 }
 
+func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {
+	if !host.Capabilities().MergedProof {
+		return nil
+	}
+	proofHost, ok := host.(scm.MergedProofHost)
+	if !ok {
+		return fmt.Errorf("SCM provider advertises merged proof but does not implement it")
+	}
+	proof, err := proofHost.GetMergedProof(ctx, pr, expectedHead)
+	if err != nil {
+		return fmt.Errorf("verify merged PR proof: %w", err)
+	}
+	if !proof.Merged {
+		return fmt.Errorf("verify merged PR proof: PR %s is not merged", pr.Number)
+	}
+	if proof.Number != pr.Number || proof.URL != pr.URL {
+		return fmt.Errorf("verify merged PR proof: proof identifies PR %s at %q, want PR %s at %q", proof.Number, proof.URL, pr.Number, pr.URL)
+	}
+	if expectedHead != "" && proof.HeadSHA != expectedHead {
+		return fmt.Errorf("verify merged PR proof: %w: expected %s, got %s", scm.ErrHeadChanged, expectedHead, proof.HeadSHA)
+	}
+	return nil
+}
+
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -131,9 +159,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
+	provider := detectProviderForStep(sctx, sctx.Repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
-		provider = scm.DetectProviderContext(ctx, *sctx.Run.PRURL)
+		provider = detectProviderForStep(sctx, *sctx.Run.PRURL)
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
@@ -168,6 +196,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	baseBranch := effectivePRBaseBranch(sctx)
+	// A resumed run may have a different trusted configuration than the run
+	// that created this PR. Re-read the forge record without a base filter so
+	// conflict repair and tip monitoring follow the PR's actual target.
+	if reader, ok := host.(scm.PRBaseBranchReader); ok {
+		if actual, readErr := reader.GetPRBaseBranch(ctx, pr); readErr == nil {
+			pr.BaseBranch = actual
+		}
+	}
+	if strings.TrimSpace(pr.BaseBranch) != "" {
+		baseBranch = strings.TrimSpace(pr.BaseBranch)
+	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
@@ -190,7 +230,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 		}
 	}
 	started := now()
@@ -257,9 +297,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
 			prStateKnown = false
 		} else if state == scm.PRStateMerged {
+			if err := verifyMergedProof(ctx, host, pr, sctx.Run.HeadSHA); err != nil {
+				return nil, err
+			}
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 				return nil, err
 			}
+			notifyPRMerged(sctx)
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
@@ -298,6 +342,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
+		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			clearCIMonitorReady(sctx)
@@ -336,8 +381,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 			// Before any failure reaches the fix agent, re-run the checks the
 			// provider itself reported as cancelled rather than as a job
-			// failure. A rerun costs another CI run of that job; escalating one
-			// costs an agent round that can edit code which was never broken.
+			// failure. A rerun costs another provider-side workflow run;
+			// escalating one costs an agent round that can edit code which was
+			// never broken.
 			// Genuine failures never take this path, and a merge conflict is
 			// excluded outright: no rerun can ever clear one, so it must reach
 			// the fix agent on its first observation.
@@ -576,4 +622,11 @@ func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool)
 		sctx.CIReadinessChanged(ready, declaredNoCI)
 	}
 	return nil
+}
+
+func notifyPRMerged(sctx *pipeline.StepContext) {
+	if sctx == nil || sctx.OnPRMerged == nil || sctx.Run == nil {
+		return
+	}
+	sctx.OnPRMerged(sctx.Ctx, sctx.Run.ID)
 }

@@ -52,7 +52,7 @@ func newEvidencePublishContext(t *testing.T, branch string) (sctx *pipeline.Step
 
 func writeRunEvidence(t *testing.T, sctx *pipeline.StepContext, files map[string]string) {
 	t.Helper()
-	dir := testEvidenceDir(sctx.Run.ID)
+	dir := testEvidenceDir(sctx)
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	for rel, content := range files {
 		full := filepath.Join(dir, filepath.FromSlash(rel))
@@ -82,7 +82,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 		"checkout.png": "\x89PNG binary",
 		"cli-run.txt":  "it works\n",
 	})
-	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	evidenceDir := testEvidenceDir(sctx)
 	branchHeadBefore := gitCmd(t, remote, "rev-parse", "refs/heads/main")
 
 	links := publishRunEvidence(sctx)
@@ -107,7 +107,7 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 		filepath.Join(evidenceDir, "checkout.png"),
 		filepath.Join(evidenceDir, "cli-run.txt"),
 	))
-	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, links)
+	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), links)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png"
@@ -138,7 +138,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 	sctx.Config.Test.Evidence.Dir = "evidence archive #1 100%"
 	artifact := "capture #1 100%/checkout 100%.png"
 	writeRunEvidence(t, sctx, map[string]string{artifact: "\x89PNG binary"})
-	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	evidenceDir := testEvidenceDir(sctx)
 
 	links := publishRunEvidence(sctx)
 	if links == nil {
@@ -149,7 +149,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 		`{"kind":"screenshot","label":"Encoded screenshot","path":%q}`,
 		filepath.Join(evidenceDir, filepath.FromSlash(artifact)),
 	))
-	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, links)
+	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), links)
 	want := "https://github.com/example/widgets/blob/" + tip + "/evidence%20archive%20%231%20100%25/feature/add-login/capture%20%231%20100%25/checkout%20100%25.png"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected every artifact path segment to be encoded as %q, got:\n%s", want, md)
@@ -178,7 +178,7 @@ func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T)
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Config.Test.Evidence.Branch = "not a branch"
 	writeRunEvidence(t, sctx, map[string]string{"cli-run.txt": "it works\n"})
-	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	evidenceDir := testEvidenceDir(sctx)
 
 	if links := publishRunEvidence(sctx); links != nil {
 		t.Fatalf("expected no publication for an invalid branch name, got %+v", links)
@@ -191,7 +191,7 @@ func TestPublishRunEvidence_InvalidBranchNameFallsBackToLocalPaths(t *testing.T)
 		`{"kind":"screenshot","label":"Checkout screenshot","path":%q}`,
 		filepath.Join(evidenceDir, "checkout.png"),
 	))
-	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, nil)
+	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), nil)
 	if !strings.Contains(md, "local file:") {
 		t.Fatalf("expected unpublished evidence to render as a local path, got:\n%s", md)
 	}

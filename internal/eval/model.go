@@ -1,8 +1,13 @@
-// Package eval implements the opt-in, local-only review evaluation toolkit.
+// Package eval implements the local-only review evaluation toolkit.
 //
-// It deliberately owns a separate registry under <NM_HOME>/eval. The normal
-// pipeline database, daemon, configuration, telemetry, and command output do
-// not observe or depend on this package.
+// It deliberately owns a separate registry under <NM_HOME>/eval, so opening the
+// normal pipeline database never creates an eval table or runs an eval
+// migration, and nothing here emits telemetry or reaches the network.
+//
+// The dependency runs one way: the daemon calls AutoCapture when a run finishes
+// (see RunManager.autoCaptureEvalCase) and RelabelRun when a source PR merges
+// (see RunManager.relabelEvalRun). This package never calls back into the
+// daemon, alters a gate, or influences a pipeline decision.
 package eval
 
 import (
@@ -13,8 +18,36 @@ import (
 )
 
 const (
-	manifestVersion = 1
-	labelsVersion   = 1
+	// manifestVersion is 2 because a case no longer carries its own Git
+	// bundle: its commits live in a shared per-repository object pool (see
+	// Store.poolDir). A version-1 case on disk points at a bundle this code no
+	// longer reads, so it is rejected on load rather than half-restored.
+	manifestVersion = 2
+	// labelsVersion is 2 because the unit of truth is a finding-level
+	// confusion-matrix gold label, not a case-level park/pass verdict.
+	// Version-1 labels.json files are rejected on load.
+	labelsVersion = 2
+)
+
+// Gold kinds are the scientific labels written from the recorded gate decision
+// (see goldFromRound). Capture writes true-positive gold from a user Fix or
+// from an auto-fix selection on a merged run, false-negative gold from a
+// user-added finding, and false-positive gold from a finding the human did not
+// select for fix that shipped in a merged PR. IngestPostPRMiss writes
+// additional false-negative gold after a green review. Adjudicated labels are
+// never inferred from pending unmatched candidate findings.
+const (
+	GoldTruePositive  = "true-positive"
+	GoldFalseNegative = "false-negative"
+	GoldFalsePositive = "false-positive"
+)
+
+const (
+	goldSourceUserFix        = "recorded-user-fix"
+	goldSourceUserAdded      = "recorded-user-added"
+	goldSourceAutoFixMerged  = "recorded-auto-fix-merged"
+	goldSourceShippedUnfixed = "recorded-shipped-unfixed"
+	goldSourcePostPRMiss     = "recorded-post-pr-miss"
 )
 
 // Candidate identifies one agent and model combination under evaluation. The
@@ -48,7 +81,10 @@ func ParseCandidate(raw string) (Candidate, error) {
 }
 
 // Manifest pins every input needed to recreate a review pass without storing a
-// remote URL. Case content stays local in the adjacent bundle and config files.
+// remote URL. The commits it names live in this repository's local object pool
+// and the configuration it replays under sits beside it in the case directory.
+// It carries no digest of those objects: Git object names are content hashes,
+// so the pins are their own integrity check.
 type Manifest struct {
 	Version          int    `json:"version"`
 	ID               string `json:"id"`
@@ -69,12 +105,12 @@ type Manifest struct {
 	BuildSHA         string `json:"no_mistakes_build_sha,omitempty"`
 	ChangedFiles     int    `json:"changed_files"`
 	ChangedLines     int    `json:"changed_lines"`
-	BundleSHA256     string `json:"bundle_sha256"`
 }
 
 // Decision records the human gate evidence available for the exported review
 // pass. Approval actions were not persisted in historical rows, so Action can
-// be "unknown". The original selections themselves are never guessed.
+// be "unknown". The original selections themselves are never guessed, and an
+// unknown action supports no label at all (see hasRecordedDecision).
 type Decision struct {
 	Action             string   `json:"action"`
 	SelectionSource    string   `json:"selection_source,omitempty"`
@@ -82,20 +118,61 @@ type Decision struct {
 	HasUserFindings    bool     `json:"has_user_findings"`
 }
 
-// VerdictLabel is intentionally only verdict-level in the MVP. Finding-level
-// valid/invalid labels and their adjudication UI belong to phase 1.
-type VerdictLabel struct {
-	Known      bool   `json:"known"`
-	ShouldPark bool   `json:"should_park"`
-	Source     string `json:"source,omitempty"`
+// FindingGold is one finding-level gold label for an underlying issue.
+// Capture writes only the labels goldFromRound can support from recorded
+// evidence; unmatched later candidate findings stay unlabeled.
+// IngestPostPRMiss writes additional false-negative gold for a confirmed
+// miss after a green review.
+type FindingGold struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Source      string `json:"source,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Description string `json:"description,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Action      string `json:"action,omitempty"`
 }
 
-// Labels is a local, growing label file. Queued candidate findings are kept as
-// evidence for a future adjudication pass, never scored as false positives.
+// Labels is a local, growing label file. Finding-level gold is the unit of
+// truth. Queued candidate findings are kept as evidence for later
+// adjudication and are never scored as false positives.
+//
+// QueuedCandidateFindings is a legacy stored counter: replays used to
+// increment it in place, which made re-running the same eval run double-append
+// corpus state. The queued count now derives from the evaluations table (see
+// Store.pendingFindingCounts); the field remains only so older labels.json
+// files round-trip unchanged.
 type Labels struct {
-	Version                 int          `json:"version"`
-	Verdict                 VerdictLabel `json:"verdict"`
-	QueuedCandidateFindings int          `json:"queued_candidate_findings"`
+	Version                 int           `json:"version"`
+	Findings                []FindingGold `json:"findings,omitempty"`
+	QueuedCandidateFindings int           `json:"queued_candidate_findings"`
+}
+
+func (l Labels) HasGold() bool { return len(l.Findings) > 0 }
+
+func (l Labels) TrueIssueCount() int {
+	n := 0
+	for _, finding := range l.Findings {
+		if isTrueIssueGold(finding.Kind) {
+			n++
+		}
+	}
+	return n
+}
+
+func (l Labels) FalsePositiveCount() int {
+	n := 0
+	for _, finding := range l.Findings {
+		if finding.Kind == GoldFalsePositive {
+			n++
+		}
+	}
+	return n
+}
+
+func isTrueIssueGold(kind string) bool {
+	return kind == GoldTruePositive || kind == GoldFalseNegative
 }
 
 // BaselineMetrics is the recorded source-review performance baseline. A false
@@ -121,68 +198,114 @@ type Case struct {
 
 // Evaluation is one candidate replay over one case. Status is "completed" or
 // "failed"; failures remain visible in reports and are not silently scored.
+// Confusion-matrix fields are finding-level: unmatched candidate findings stay
+// in Pending and are never treated as false positives.
 type Evaluation struct {
-	ID               string `json:"id"`
-	SessionID        string `json:"session_id"`
-	CaseID           string `json:"case_id"`
-	Candidate        string `json:"candidate"`
-	Cohort           string `json:"cohort"`
-	Repeat           int    `json:"repeat"`
-	StartedAt        int64  `json:"started_at"`
-	CompletedAt      int64  `json:"completed_at"`
-	Status           string `json:"status"`
-	Error            string `json:"error,omitempty"`
-	ExpectedPark     *bool  `json:"expected_park,omitempty"`
-	CandidateParked  bool   `json:"candidate_parked"`
-	FindingsJSON     string `json:"findings_json,omitempty"`
-	FindingCount     int    `json:"finding_count"`
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens"`
-	FreshInputTokens int64  `json:"fresh_input_tokens"`
-	TokensReported   bool   `json:"tokens_reported"`
-	DurationMS       int64  `json:"duration_ms"`
-	Model            string `json:"model,omitempty"`
+	ID                string `json:"id"`
+	SessionID         string `json:"session_id"`
+	CaseID            string `json:"case_id"`
+	Candidate         string `json:"candidate"`
+	Cohort            string `json:"cohort"`
+	Repeat            int    `json:"repeat"`
+	StartedAt         int64  `json:"started_at"`
+	CompletedAt       int64  `json:"completed_at"`
+	Status            string `json:"status"`
+	Error             string `json:"error,omitempty"`
+	HasFindingGold    bool   `json:"has_finding_gold"`
+	GoldCount         int    `json:"gold_count"`
+	TruePositive      int    `json:"true_positive"`
+	TruePositiveExact int    `json:"true_positive_exact,omitempty"`
+	TruePositiveFuzzy int    `json:"true_positive_fuzzy,omitempty"`
+	FalseNegative     int    `json:"false_negative"`
+	FalsePositive     int    `json:"false_positive"`
+	FalsePositiveGold int    `json:"false_positive_gold,omitempty"`
+	Pending           int    `json:"pending"`
+	FindingsJSON      string `json:"findings_json,omitempty"`
+	FindingCount      int    `json:"finding_count"`
+	InputTokens       int64  `json:"input_tokens"`
+	OutputTokens      int64  `json:"output_tokens"`
+	CacheReadTokens   int64  `json:"cache_read_tokens"`
+	FreshInputTokens  int64  `json:"fresh_input_tokens"`
+	TokensReported    bool   `json:"tokens_reported"`
+	DurationMS        int64  `json:"duration_ms"`
+	Model             string `json:"model,omitempty"`
 }
 
-// EvaluationSummary is deliberately three-valued for a human-pass label:
-// an unexpected candidate park is queued rather than declared wrong before
-// finding-level adjudication exists.
+// EvaluationSummary aggregates finding-level scores. A case with no gold is
+// unlabeled / pending, never a pass. Unmatched candidate findings stay in
+// Pending and do not become false positives.
 type EvaluationSummary struct {
-	Candidate        string
-	Total            int
-	Labeled          int
-	Conclusive       int
-	Correct          int
-	Misses           int
-	UnexpectedParks  int
-	Failures         int
-	InputTokens      int64
-	OutputTokens     int64
-	FreshInputTokens int64
-	TokensReported   int
-	DurationMS       int64
+	Candidate         string
+	Total             int
+	Labeled           int
+	TruePositive      int
+	TruePositiveExact int
+	TruePositiveFuzzy int
+	FalseNegative     int
+	FalsePositive     int
+	FalsePositiveGold int
+	Pending           int
+	Failures          int
+	InputTokens       int64
+	OutputTokens      int64
+	FreshInputTokens  int64
+	TokensReported    int
+	DurationMS        int64
 }
 
-func (s EvaluationSummary) ConfirmedAccuracy() float64 {
-	if s.Conclusive == 0 {
+func (s EvaluationSummary) Recall() float64 {
+	denom := s.TruePositive + s.FalseNegative
+	if denom == 0 {
 		return 0
 	}
-	return float64(s.Correct) / float64(s.Conclusive)
+	return float64(s.TruePositive) / float64(denom)
 }
 
-// LowerBoundAccuracy counts a queued unexpected park in the denominator but
-// not the numerator. It is the conservative number suitable for comparing
-// candidates before phase-1 finding adjudication is available.
-func (s EvaluationSummary) LowerBoundAccuracy() float64 {
-	if s.Labeled == 0 {
+func (s EvaluationSummary) ExactRecall() float64 {
+	denom := s.TruePositive + s.FalseNegative
+	if denom == 0 {
 		return 0
 	}
-	return float64(s.Correct) / float64(s.Labeled)
+	return float64(s.TruePositiveExact) / float64(denom)
 }
 
-// SummarizeEvaluations applies the MVP verdict policy without inferring that a
-// new finding is invalid merely because the original human passed the run.
+func (s EvaluationSummary) Precision() float64 {
+	denom := s.TruePositive + s.FalsePositive
+	if denom == 0 {
+		return 0
+	}
+	return float64(s.TruePositive) / float64(denom)
+}
+
+func (s EvaluationSummary) PrecisionLower() float64 {
+	denom := s.TruePositive + s.FalsePositive + s.Pending
+	if denom == 0 {
+		return 0
+	}
+	return float64(s.TruePositive) / float64(denom)
+}
+
+func (s EvaluationSummary) F1() float64 {
+	return harmonicMean(s.Recall(), s.Precision())
+}
+
+func (s EvaluationSummary) F1Conservative() float64 {
+	return harmonicMean(s.Recall(), s.PrecisionLower())
+}
+
+func (s EvaluationSummary) HasFalsePositiveGold() bool {
+	return s.FalsePositiveGold > 0
+}
+
+func harmonicMean(a, b float64) float64 {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	return 2 * a * b / (a + b)
+}
+
+// SummarizeEvaluations scores finding-level gold only. Unmatched candidate
+// findings stay pending. A replay with no gold is unlabeled, not a pass.
 func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 	var summary EvaluationSummary
 	for _, evaluation := range evaluations {
@@ -197,32 +320,28 @@ func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 		if evaluation.TokensReported {
 			summary.TokensReported++
 		}
+		hasFindingGold := evaluation.HasFindingGold || evaluation.GoldCount > 0
 		if evaluation.Status != "completed" {
 			summary.Failures++
-			if evaluation.ExpectedPark != nil {
+			if hasFindingGold {
 				summary.Labeled++
-				summary.Conclusive++
-				summary.Misses++
+				summary.FalseNegative += evaluation.GoldCount
+				summary.FalsePositiveGold += evaluation.FalsePositiveGold
 			}
+			summary.Pending += evaluation.Pending
 			continue
 		}
-		if evaluation.ExpectedPark == nil {
+		summary.Pending += evaluation.Pending
+		if !hasFindingGold {
 			continue
 		}
 		summary.Labeled++
-		switch {
-		case *evaluation.ExpectedPark && evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Correct++
-		case *evaluation.ExpectedPark && !evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Misses++
-		case !*evaluation.ExpectedPark && !evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Correct++
-		case !*evaluation.ExpectedPark && evaluation.CandidateParked:
-			summary.UnexpectedParks++
-		}
+		summary.TruePositive += evaluation.TruePositive
+		summary.TruePositiveExact += evaluation.TruePositiveExact
+		summary.TruePositiveFuzzy += evaluation.TruePositiveFuzzy
+		summary.FalseNegative += evaluation.FalseNegative
+		summary.FalsePositive += evaluation.FalsePositive
+		summary.FalsePositiveGold += evaluation.FalsePositiveGold
 	}
 	return summary
 }

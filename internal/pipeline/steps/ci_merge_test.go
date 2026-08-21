@@ -303,3 +303,44 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 		t.Fatalf("expected prompt to avoid merge-base %s, got:\n%s", baseSHA, capturedPrompt)
 	}
 }
+
+func TestCIStep_AutoFixUsesExistingPRBaseAfterConfigChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(dir, "develop.txt"), []byte("develop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "develop")
+	developTip := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "develop")
+
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.PR.BaseBranch = "main"
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "develop"}
+
+	var prompt string
+	sctx.Agent = &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompt = opts.Prompt
+		return &agent.Result{}, nil
+	}}
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "CONFLICTING")
+	host, skip := buildHost(sctx, scm.ProviderGitHub)
+	if host == nil {
+		t.Fatal(skip)
+	}
+	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "base commit: "+developTip) {
+		t.Fatalf("prompt did not use existing PR base %s:\n%s", developTip, prompt)
+	}
+}

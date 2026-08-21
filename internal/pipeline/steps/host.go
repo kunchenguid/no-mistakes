@@ -3,12 +3,16 @@ package steps
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/azuredevops"
+	"github.com/kunchenguid/no-mistakes/internal/scm/forgejo"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
@@ -18,8 +22,8 @@ import (
 // (unknown provider, missing Bitbucket config, etc) it returns nil and a
 // human-readable skip reason suitable for logging.
 func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
-	cmdFactory := func(_ context.Context, name string, args ...string) *exec.Cmd {
-		return stepCmd(sctx, name, args...)
+	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return stepCmdContext(sctx, ctx, name, args...)
 	}
 	switch provider {
 	case scm.ProviderGitHub:
@@ -91,7 +95,94 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			return nil, "could not resolve Azure DevOps organization, project, and repository from the remote URL"
 		}
 		return azuredevops.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, org, project, repo), ""
+	case scm.ProviderForgejo:
+		if sctx.Repo.ForkURL != "" {
+			return nil, "fork PR routing for Forgejo is not implemented"
+		}
+		baseURL := forgejoBaseURLForStep(sctx)
+		remote := sctx.Repo.UpstreamURL
+		if strings.TrimSpace(remote) == "" && sctx.Run.PRURL != nil {
+			remote = *sctx.Run.PRURL
+		}
+		resolvedBase, repo, err := forgejo.ResolveRemote(remote, baseURL, scm.ResolveHost(sctx.Ctx, remote))
+		if err != nil {
+			return nil, fmt.Sprintf("could not resolve Forgejo host and repository: %v", err)
+		}
+		executable := "forgejo-axi"
+		if sctx.Config != nil && strings.TrimSpace(sctx.Config.ForgejoAXIPath) != "" {
+			executable = strings.TrimSpace(sctx.Config.ForgejoAXIPath)
+		}
+		tokenEnv := forgejoTokenEnvForStep(sctx, resolvedBase)
+		return forgejo.New(forgejo.Options{
+			CommandFactory: cmdFactory,
+			CLIAvailable:   func(name string) bool { return stepExecutableAvailable(sctx, name) },
+			Executable:     executable,
+			BaseURL:        resolvedBase,
+			Repository:     repo,
+			TokenEnv:       tokenEnv,
+			Secrets:        forgejoTokenValuesForStep(sctx),
+		}), ""
 	default:
 		return nil, fmt.Sprintf("provider %s is not supported yet", provider)
 	}
+}
+
+func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {
+	return scm.DetectProviderContextWithForgejoBaseURL(sctx.Ctx, remoteURL, forgejoBaseURLForStep(sctx))
+}
+
+func forgejoBaseURLForStep(sctx *pipeline.StepContext) string {
+	if value, ok := effectiveStepEnvValue(sctx, "FORGEJO_BASE_URL"); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func effectiveStepEnvValue(sctx *pipeline.StepContext, key string) (string, bool) {
+	if sctx != nil {
+		if value, ok := envValue(sctx.Env, key); ok {
+			return value, true
+		}
+	}
+	return os.LookupEnv(key)
+}
+
+// forgejoTokenEnvForStep mirrors forgejo-axi's documented host-key encoding so
+// an explicit --base-url retains host-scoped token precedence.
+func forgejoTokenEnvForStep(sctx *pipeline.StepContext, baseURL string) string {
+	parsed, err := url.Parse(baseURL)
+	if err == nil && parsed.Host != "" {
+		var key strings.Builder
+		key.WriteString("FORGEJO_TOKEN_")
+		for _, char := range strings.ToUpper(parsed.Host) {
+			if char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+				key.WriteRune(char)
+			} else {
+				fmt.Fprintf(&key, "_%X_", char)
+			}
+		}
+		name := key.String()
+		if value, ok := effectiveStepEnvValue(sctx, name); ok && value != "" {
+			return name
+		}
+	}
+	if value, ok := effectiveStepEnvValue(sctx, "FORGEJO_TOKEN"); ok && value != "" {
+		return "FORGEJO_TOKEN"
+	}
+	return ""
+}
+
+func forgejoTokenValuesForStep(sctx *pipeline.StepContext) []string {
+	env := os.Environ()
+	if sctx != nil && len(sctx.Env) > 0 {
+		env = mergeEnv(sctx.Env)
+	}
+	var secrets []string
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && strings.HasPrefix(strings.ToUpper(key), "FORGEJO_TOKEN") && value != "" {
+			secrets = append(secrets, value)
+		}
+	}
+	return secrets
 }

@@ -25,11 +25,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// ReplayOptions controls one isolated candidate comparison.
+// ReplayOptions controls one isolated candidate comparison. The optional
+// callbacks observe progress for interactive rendering: OnPlan fires once the
+// case set is reserved and the session is recorded, OnResult after each
+// replay's evaluation is persisted. Both run synchronously on the replay
+// goroutine and may be nil.
 type ReplayOptions struct {
 	Set       string
 	Candidate Candidate
 	Repeats   int
+	OnPlan    func(session Session, cases []Case)
+	OnResult  func(evaluation Evaluation, completed, total int)
 }
 
 // Session records the immutable local plan used for one replay batch.
@@ -43,6 +49,11 @@ type Session struct {
 	Cohort    string    `json:"cohort"`
 }
 
+const (
+	replayReservationLease   = 5 * time.Minute
+	replayReservationRefresh = time.Minute
+)
+
 // Replay runs exactly the captured review pass. It does not start a daemon or
 // use the production NM_HOME: every case is restored into a fresh temp gate and
 // worktree. Push, PR, CI, and all fix loops are intentionally absent from the
@@ -54,34 +65,30 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	if opts.Repeats <= 0 {
 		return Session{}, nil, fmt.Errorf("repeats must be at least 1")
 	}
-	cases, err := store.ListCases(opts.Set)
-	if err != nil {
-		return Session{}, nil, err
-	}
-	if len(cases) == 0 {
-		return Session{}, nil, fmt.Errorf("case set %q is empty", opts.Set)
-	}
 	if _, err := candidateModelArgs(opts.Candidate); err != nil {
 		return Session{}, nil, err
 	}
-	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
-	for _, c := range cases {
-		session.CaseIDs = append(session.CaseIDs, c.ID)
+	cases, session, err := store.prepareReplay(ctx, opts)
+	if err != nil {
+		return Session{}, nil, err
 	}
-	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
-	sessionsDir := filepath.Join(store.root, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		return Session{}, nil, fmt.Errorf("create eval sessions directory: %w", err)
-	}
-	if err := writeJSON(filepath.Join(sessionsDir, session.ID+".json"), session); err != nil {
-		return Session{}, nil, fmt.Errorf("write eval session: %w", err)
-	}
+	replayCtx, cancelReplay := context.WithCancel(ctx)
+	stopReservation := store.keepReplayReservation(replayCtx, cancelReplay, session.ID)
+	defer func() {
+		cancelReplay()
+		stopReservation()
+		store.releaseReplayReservation(session.ID)
+	}()
 
-	evaluations := make([]Evaluation, 0, len(cases)*opts.Repeats)
+	if opts.OnPlan != nil {
+		opts.OnPlan(session, cases)
+	}
+	total := len(cases) * opts.Repeats
+	evaluations := make([]Evaluation, 0, total)
 	var failed int
 	for repeat := 1; repeat <= opts.Repeats; repeat++ {
 		for _, c := range cases {
-			evaluation := replayOne(ctx, c, session, opts.Candidate, repeat)
+			evaluation := replayOne(replayCtx, store, c, session, opts.Candidate, repeat)
 			if evaluation.Status != "completed" {
 				failed++
 			}
@@ -89,6 +96,9 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 				return session, evaluations, err
 			}
 			evaluations = append(evaluations, evaluation)
+			if opts.OnResult != nil {
+				opts.OnResult(evaluation, len(evaluations), total)
+			}
 		}
 	}
 	if failed > 0 {
@@ -97,9 +107,87 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	return session, evaluations, nil
 }
 
-func replayOne(ctx context.Context, c Case, session Session, candidate Candidate, repeat int) Evaluation {
+func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, Session, error) {
+	unlock, err := lockCorpus(ctx, s.root)
+	if err != nil {
+		return nil, Session{}, err
+	}
+	defer unlock()
+
+	cases, err := s.ListCases(opts.Set)
+	if err != nil {
+		return nil, Session{}, err
+	}
+	if len(cases) == 0 {
+		return nil, Session{}, fmt.Errorf("case set %q is empty", opts.Set)
+	}
+	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
+	for _, c := range cases {
+		session.CaseIDs = append(session.CaseIDs, c.ID)
+	}
+	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
+	sessionsDir := filepath.Join(s.root, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		return nil, Session{}, fmt.Errorf("create eval sessions directory: %w", err)
+	}
+	sessionPath := filepath.Join(sessionsDir, session.ID+".json")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, Session{}, fmt.Errorf("begin eval replay reservation: %w", err)
+	}
+	reservedUntil := time.Now().Add(replayReservationLease).Unix()
+	for _, c := range cases {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_case_reservations (session_id, case_id, reserved_until) VALUES (?, ?, ?)`, session.ID, c.ID, reservedUntil); err != nil {
+			_ = tx.Rollback()
+			return nil, Session{}, fmt.Errorf("reserve eval case %q: %w", c.ID, err)
+		}
+	}
+	if err := writeJSON(sessionPath, session); err != nil {
+		_ = tx.Rollback()
+		return nil, Session{}, fmt.Errorf("write eval session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_ = os.Remove(sessionPath)
+		return nil, Session{}, fmt.Errorf("commit eval replay reservation: %w", err)
+	}
+	return cases, session, nil
+}
+
+func (s *Store) keepReplayReservation(ctx context.Context, cancelReplay context.CancelFunc, sessionID string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(replayReservationRefresh)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				reservedUntil := time.Now().Add(replayReservationLease).Unix()
+				if _, err := s.db.ExecContext(ctx, `UPDATE replay_case_reservations SET reserved_until = ? WHERE session_id = ?`, reservedUntil, sessionID); err != nil {
+					cancelReplay()
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func (s *Store) releaseReplayReservation(sessionID string) {
+	_, _ = s.db.Exec(`DELETE FROM replay_case_reservations WHERE session_id = ?`, sessionID)
+}
+
+func replayOne(ctx context.Context, store *Store, c Case, session Session, candidate Candidate, repeat int) (evaluation Evaluation) {
 	started := time.Now()
-	evaluation := Evaluation{
+	evaluation = Evaluation{
 		ID:        newSessionID(),
 		SessionID: session.ID,
 		CaseID:    c.ID,
@@ -109,11 +197,24 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		StartedAt: started.Unix(),
 		Status:    "failed",
 	}
-	if c.Labels.Verdict.Known {
-		expected := c.Labels.Verdict.ShouldPark
-		evaluation.ExpectedPark = &expected
-	}
+	evaluation.HasFindingGold = c.Labels.HasGold()
+	evaluation.GoldCount = c.Labels.TrueIssueCount()
+	evaluation.FalsePositiveGold = c.Labels.FalsePositiveCount()
+	defer func() {
+		if evaluation.Status != "completed" {
+			evaluation.FalseNegative = evaluation.GoldCount
+			if evaluation.CompletedAt == 0 {
+				evaluation.CompletedAt = time.Now().Unix()
+			}
+		}
+	}()
 
+	// The replay sandbox deliberately stays OUTSIDE the source NM_HOME: it
+	// materializes its own nested NM_HOME and worktree, and the eval store,
+	// object pools, and Store.Prune all live under <NM_HOME>/eval, so a live
+	// sandbox nested there would sit inside the very state it is replaying.
+	// That isolation outranks moving it off the system temp directory; see the
+	// held-scope note in AGENTS.md ("no-mistakes Owns Its Own Scratch").
 	root, err := os.MkdirTemp("", "nm-eval-replay-")
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create isolated replay root: %v", err))
@@ -142,7 +243,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	}
 	defer ownership.Release()
 
-	workDir, err := restoreCase(ctx, c, root)
+	workDir, err := restoreCase(ctx, store, c, root)
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(err.Error())
 		evaluation.CompletedAt = time.Now().Unix()
@@ -173,7 +274,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		return evaluation
 	}
 	defer baseAgent.Close()
-	observed := &observedAgent{inner: agent.WithSteering(baseAgent), ownership: ownership}
+	observed := &observedAgent{inner: agent.WithSteering(baseAgent, isolatedPaths.EvidenceDir()), ownership: ownership}
 
 	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
 	if err != nil {
@@ -223,7 +324,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		IntentSource:          c.IntentSource,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
-	// agent-invocation metric rather than charging bundle restoration setup.
+	// agent-invocation metric rather than charging case restoration setup.
 	evaluation.DurationMS = observed.durationMS
 	if evaluation.DurationMS == 0 && observed.result == nil {
 		evaluation.DurationMS = time.Since(started).Milliseconds()
@@ -254,9 +355,16 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		return evaluation
 	}
 	evaluation.Status = "completed"
-	evaluation.CandidateParked = outcome.NeedsApproval || hasAskUserFindings(outcome.Findings)
 	evaluation.FindingsJSON = outcome.Findings
 	evaluation.FindingCount = findingCount(outcome.Findings)
+	score := ScoreCandidate(c.Labels, outcome.Findings)
+	evaluation.TruePositive = score.TruePositive
+	evaluation.TruePositiveExact = score.TruePositiveExact
+	evaluation.TruePositiveFuzzy = score.TruePositiveFuzzy
+	evaluation.FalseNegative = score.FalseNegative
+	evaluation.FalsePositive = score.FalsePositive
+	evaluation.FalsePositiveGold = score.FalsePositiveGold
+	evaluation.Pending = score.Pending
 	return evaluation
 }
 
@@ -333,15 +441,13 @@ func stringValue(value *string) string {
 	return *value
 }
 
-func restoreCase(ctx context.Context, c Case, root string) (string, error) {
+func restoreCase(ctx context.Context, store *Store, c Case, root string) (string, error) {
 	gateDir := filepath.Join(root, "gate.git")
 	if err := git.InitBare(ctx, gateDir); err != nil {
 		return "", fmt.Errorf("create isolated eval gate: %w", err)
 	}
-	prefix := "refs/no-mistakes/eval/" + c.ID + "/*"
-	bundle := filepath.Join(c.Dir, "branch.bundle")
-	if _, err := git.Run(ctx, gateDir, "fetch", bundle, "+"+prefix+":"+prefix); err != nil {
-		return "", fmt.Errorf("restore case bundle: %w", err)
+	if err := restoreCaseObjects(ctx, store.poolDir(c.RepoFingerprint), gateDir, c.ID); err != nil {
+		return "", err
 	}
 	defaultBranch := c.DefaultBranch
 	if defaultBranch == "" {
@@ -423,11 +529,6 @@ func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Res
 	return result, err
 }
 
-func hasAskUserFindings(raw string) bool {
-	findings, err := types.ParseFindingsJSON(raw)
-	return err == nil && types.HasAskUserFindings(findings)
-}
-
 func findingCount(raw string) int {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
@@ -449,50 +550,19 @@ func (s *Store) persistEvaluation(c Case, evaluation Evaluation) error {
 	if err := writeJSON(path, evaluation); err != nil {
 		return fmt.Errorf("write eval result: %w", err)
 	}
-	var expected any
-	if evaluation.ExpectedPark != nil {
-		if *evaluation.ExpectedPark {
-			expected = 1
-		} else {
-			expected = 0
-		}
-	}
-	parked := 0
-	if evaluation.CandidateParked {
-		parked = 1
-	}
 	reported := 0
 	if evaluation.TokensReported {
 		reported = 1
 	}
 	_, err := s.db.Exec(`INSERT INTO evaluations
-(id, session_id, case_id, candidate, repeat_number, started_at, completed_at, status, expected_park, candidate_parked, tokens_reported, input_tokens, output_tokens, fresh_input_tokens, duration_ms, path)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+(id, session_id, case_id, candidate, repeat_number, started_at, completed_at, status, gold_count, true_positive, false_negative, false_positive, pending, tokens_reported, input_tokens, output_tokens, fresh_input_tokens, duration_ms, path)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		evaluation.ID, evaluation.SessionID, evaluation.CaseID, evaluation.Candidate, evaluation.Repeat,
-		evaluation.StartedAt, evaluation.CompletedAt, evaluation.Status, expected, parked, reported,
+		evaluation.StartedAt, evaluation.CompletedAt, evaluation.Status, evaluation.GoldCount,
+		evaluation.TruePositive, evaluation.FalseNegative, evaluation.FalsePositive, evaluation.Pending, reported,
 		evaluation.InputTokens, evaluation.OutputTokens, evaluation.FreshInputTokens, evaluation.DurationMS, path)
 	if err != nil {
 		return fmt.Errorf("record eval result: %w", err)
-	}
-	if evaluation.Status == "completed" && evaluation.ExpectedPark != nil && !*evaluation.ExpectedPark && evaluation.CandidateParked {
-		if err := incrementQueuedFindings(c.Dir, evaluation.FindingCount); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func incrementQueuedFindings(caseDir string, count int) error {
-	if count <= 0 {
-		return nil
-	}
-	var labels Labels
-	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
-		return fmt.Errorf("read local labels queue: %w", err)
-	}
-	labels.QueuedCandidateFindings += count
-	if err := writeJSON(filepath.Join(caseDir, "labels.json"), labels); err != nil {
-		return fmt.Errorf("update local labels queue: %w", err)
 	}
 	return nil
 }
