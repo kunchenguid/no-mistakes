@@ -701,6 +701,30 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	}
 }
 
+func TestBuildTestingSummaryForPR_SeparatesMixedEvidenceBlocks(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Inline first","content":"first output"},{"kind":"log","label":"Linked first","url":"https://example.com/first.log"},{"kind":"log","label":"Inline second","content":"second output"},{"kind":"log","label":"Linked second","url":"https://example.com/second.log"},{"kind":"log","label":"Linked third","url":"https://example.com/third.log"}]}`
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
+
+	for _, want := range []string{
+		"</details>\n\n- Evidence: [Linked first]",
+		"- Evidence: [Linked first](https://example.com/first.log)\n\n<details>",
+		"</details>\n\n- Evidence: [Linked second]",
+		"- Evidence: [Linked second](https://example.com/second.log)\n- Evidence: [Linked third]",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected mixed evidence boundary %q, got:\n%s", want, md)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_BitbucketCloudOmitsHTMLAndKeepsEvidence(t *testing.T) {
 	t.Parallel()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
