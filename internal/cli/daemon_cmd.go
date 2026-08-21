@@ -106,6 +106,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			base, err := parseBasePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -130,6 +134,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				New:       newSHA,
 				SkipSteps: skipSteps,
 				Intent:    intent,
+				Base:      base,
 			}, &result)
 		},
 	}
@@ -219,6 +224,38 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// basePushOptionPrefix carries a per-run base-branch override through a git
+// push. The value is base64-encoded for the same reason intent is: the
+// push-option transport is line-oriented.
+const basePushOptionPrefix = "no-mistakes.base="
+
+// formatBasePushOption encodes a base-branch override as a single push option,
+// or returns "" when there is no override to carry.
+func formatBasePushOption(base string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return basePushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(base)))
+}
+
+// parseBasePushOptions extracts and decodes the base-branch push option, if
+// any. The last occurrence wins.
+func parseBasePushOptions(options []string) (string, error) {
+	base := ""
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, basePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", fmt.Errorf("decode base push option: %w", err)
+		}
+		base = string(decoded)
+	}
+	return base, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

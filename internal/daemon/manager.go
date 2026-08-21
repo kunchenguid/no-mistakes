@@ -691,13 +691,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.Base)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -763,7 +763,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, baseBranch)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -783,14 +783,14 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, baseBranch)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, baseBranch string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -973,6 +973,22 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			trackStartFailure("eval_provenance")
 			return "", err
 		}
+	}
+
+	// Per-run base-branch override (axi run --base): retarget the pipeline's
+	// base branch for THIS run only. Every pipeline step reads the base branch
+	// from repo.DefaultBranch (rebase target, branch diffs, PR base/target), so
+	// overriding it on this in-memory copy - which GetRepo returns fresh per
+	// call - retargets the whole pipeline without touching the persisted default
+	// branch. It is applied here, AFTER all trusted-config reads above: the
+	// trusted commands/agent anchor stays pinned to the persisted default branch
+	// so a run's base can never redirect which branch we trust maintainer config
+	// from. Validation that the branch exists happens at the CLI before the run
+	// is triggered.
+	if strings.TrimSpace(baseBranch) != "" {
+		override := strings.TrimSpace(baseBranch)
+		slog.Info("base branch overridden for run", "run_id", run.ID, "base", override, "persisted_default", repo.DefaultBranch)
+		repo.DefaultBranch = override
 	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.

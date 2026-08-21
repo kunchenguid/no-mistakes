@@ -35,7 +35,7 @@ func TestRunStartRefreshesCloneURLWithoutMutatingRemotes(t *testing.T) {
 		return []pipeline.Step{&captureRefreshRepoStep{seen: seen}}
 	})
 	t.Cleanup(manager.Shutdown)
-	runID, err := manager.startRun(context.Background(), repo, "main", head, refreshTestZeroSHA, "test", nil, "refresh repository URL")
+	runID, err := manager.startRun(context.Background(), repo, "main", head, refreshTestZeroSHA, "test", nil, "refresh repository URL", "")
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *t
 				return []pipeline.Step{&captureRefreshRepoStep{seen: seen}}
 			})
 			t.Cleanup(manager.Shutdown)
-			runID, err := manager.startRun(context.Background(), before, "main", head, refreshTestZeroSHA, "test", nil, "refresh failure must fail open")
+			runID, err := manager.startRun(context.Background(), before, "main", head, refreshTestZeroSHA, "test", nil, "refresh failure must fail open", "")
 			if err != nil {
 				t.Fatalf("ordinary run did not continue: %v\nlogs: %s", err, logs.String())
 			}
