@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -663,6 +664,45 @@ func TestCommitAgentFixes_BypassesMissingLegacyHuskyRuntime(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(hooksDir, "_", "husky.sh")); !os.IsNotExist(err) {
 		t.Fatalf("legacy Husky runtime unexpectedly exists: %v", err)
+	}
+}
+
+func TestCommitPipelineCorrection_ReportsCleanupFailureWithoutMaskingCommit(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "correction.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "correction.txt")
+
+	cleanupFailure := errors.New("cleanup denied")
+	var cleanedPath, warning string
+	var removeErr error
+	err := commitPipelineCorrectionWithCleanup(
+		context.Background(),
+		dir,
+		"no-mistakes(test): apply correction",
+		func(line string) { warning = line },
+		func(path string) error {
+			cleanedPath = path
+			removeErr = os.RemoveAll(path)
+			return cleanupFailure
+		},
+	)
+	if err != nil {
+		t.Fatalf("successful correction commit was masked by cleanup failure: %v", err)
+	}
+	if removeErr != nil {
+		t.Fatalf("test cleanup failed: %v", removeErr)
+	}
+	if cleanedPath == "" {
+		t.Fatal("cleanup was not attempted")
+	}
+	if !strings.Contains(warning, cleanedPath) || !strings.Contains(warning, cleanupFailure.Error()) {
+		t.Fatalf("cleanup warning = %q, want path %q and error %q", warning, cleanedPath, cleanupFailure)
+	}
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "correction.txt" {
+		t.Fatalf("committed files = %q, want correction.txt", got)
 	}
 }
 
