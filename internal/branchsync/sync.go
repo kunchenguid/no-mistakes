@@ -645,7 +645,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
-		if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
+		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
 			return blocked
 		}
 		return s.finishRecover(ctx, run, false)
@@ -662,7 +662,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if !objectExists(ctx, gateDir, preserved) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from both the worktree and local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
-		if _, err := git.Run(ctx, gateDir, "update-ref", gateAnchor, preserved); err != nil {
+		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
 	}
@@ -968,10 +968,11 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	return s.finishRecover(ctx, run, true)
 }
 
-func (s *Service) anchorReachablePreserved(ctx context.Context, state State, anchorRef, preserved string) (State, bool) {
-	if _, err := git.Run(ctx, s.workDir(), "update-ref", anchorRef, preserved); err != nil {
+func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string) (State, bool) {
+	if err := custody.PreserveRecoveryHead(ctx, s.workDir(), runID, preserved); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}
+	anchorRef := custody.RecoveryRef(runID)
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}

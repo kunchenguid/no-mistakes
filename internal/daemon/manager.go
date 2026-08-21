@@ -805,7 +805,7 @@ func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Ru
 		return preserved, nil
 	}
 	if preserved, objectErr := git.Run(ctx, gateDir, "rev-parse", latest.HeadSHA+"^{commit}"); objectErr == nil && preserved == latest.HeadSHA {
-		if _, anchorErr := git.Run(ctx, gateDir, "update-ref", recoveryRef, preserved); anchorErr != nil {
+		if anchorErr := custody.PreserveRecoveryHead(ctx, gateDir, latest.ID, preserved); anchorErr != nil {
 			return "", fmt.Errorf("preserve terminal head %s before rerun: %w", preserved, anchorErr)
 		}
 		return preserved, nil
