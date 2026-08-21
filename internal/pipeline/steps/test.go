@@ -208,9 +208,10 @@ Rules:
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
 		})
+		runErr := testAgentError(evidenceCtx, evidenceTimeout, "agent run tests", err)
 		cancelEvidence()
-		if err != nil {
-			return nil, testAgentError(evidenceCtx, evidenceTimeout, "agent run tests", err)
+		if runErr != nil {
+			return nil, runErr
 		}
 
 		var findings Findings
@@ -291,7 +292,10 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 
 func testAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(context.Cause(ctx), errTestAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s (test agent silent for %s): %w", prefix, timeout, timeout, err)
+		return fmt.Errorf("%s timed out after %s (test agent silent for %s): %w", prefix, timeout, timeout, context.Cause(ctx))
 	}
-	return fmt.Errorf("%s: %w", prefix, err)
+	if err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	return nil
 }

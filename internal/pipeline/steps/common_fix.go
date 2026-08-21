@@ -283,6 +283,9 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	} else {
 		result, err = sctx.Agent.Run(agentCtx, runOpts)
 	}
+	if cause := context.Cause(agentCtx); cause != nil {
+		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, cause)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
 	}
