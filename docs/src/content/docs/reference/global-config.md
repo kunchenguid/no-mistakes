@@ -286,8 +286,9 @@ For older active runs that do not yet have activity rows, AXI falls back to the 
 
 ### review_agent_timeout
 
-Maximum wall-clock time for one review round, including its optional review-fix and rereview turns.
-When the deadline expires, the review agent is cancelled and the run fails with a diagnostic instead of remaining active indefinitely.
+Maximum wall-clock time for the Review step's agent turns in one review round.
+The budget starts at that round's first agent turn and covers its optional review-fix turn plus the rereview turn together; every later auto-fix round starts a fresh budget.
+When the deadline expires, the review agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -296,6 +297,7 @@ When the deadline expires, the review agent is cancelled and the run fails with 
 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
+Raise it for repositories whose reviews legitimately run long; it bounds only the Review step, and no other step or environment variable overrides it.
 
 ### daemon_connect_timeout
 
