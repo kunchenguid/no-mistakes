@@ -196,8 +196,8 @@ no-mistakes axi sync --recover --keep-local
 | Flag           | Type   | Default | Description                                                                  |
 | -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch) |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree. Custody return only; it is refused for the remote-rewritten binding correction |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -205,7 +205,7 @@ Exit code `0` means an eligible check, applied synchronization or recovery, alre
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
-Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks.
+Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks; the separate remote-rewritten binding correction never touches the worktree at all.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
@@ -232,6 +232,18 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
+
+### Rewritten remote binding correction
+
+A second, unrelated hazard shares `--recover`: something outside this pipeline force-updated the remote branch, so the live remote no longer equals the persisted pipeline push binding.
+Only a live check observes it, so it appears in `axi sync --check`, not in cached `axi status`, as `state: remote_rewritten` with `safety: blocked_remote_rewritten`.
+For a terminal run it offers `next_action.code: recover_remote_rewritten`; while a run is still active it offers `continue_active_run` instead, because the correction rewrites push provenance that run is still using and only unlocks at terminal status.
+When the remote changes again during the refresh itself, the reading is unverified: that reports `safety: blocked_remote_changed_during_refresh` and offers only `retry`, never the correction.
+`--recover` re-verifies the live remote immediately before writing, anchors the superseded pipeline head under `refs/no-mistakes/recover/<run>` so those commits stay reachable, then rewrites only the recorded push binding to the freshly verified live head.
+No worktree, branch ref, or gate is touched, no custody is stamped, and success reports `recovery: push_binding_corrected` rather than a custody return.
+A remote that is unreachable, a binding or run status that moved mid-flight, or a superseded head that cannot be anchored refuses and changes nothing.
+`--keep-local` chooses between a local head and a gate-preserved pipeline head, which this hazard never produces, so it is refused here rather than ignored.
+This is the guarded form of the single-field state correction that otherwise required hand-editing local state; never hand-edit it instead.
 
 ## no-mistakes axi logs
 
@@ -345,12 +357,13 @@ no-mistakes sync --recover --keep-local
 | -------------- | ------ | ------- | --------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch) |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree. Custody return only; it is refused for the remote-rewritten binding correction |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
+Because a rewritten remote is only ever discovered by a live check, `--recover` classifies freshly before prompting, and the confirmation names the binding correction rather than a custody return when that is what would run.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
-The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
+The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance, custody recovery, and rewritten-remote binding correction documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
 ## no-mistakes status
 

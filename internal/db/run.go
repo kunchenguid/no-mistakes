@@ -408,6 +408,23 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	return nil
 }
 
+// UpdateRunPushBindingAndHead advances the push binding and the run head to the
+// same commit in one statement. The two columns must never move independently:
+// a run holding last_pushed_sha != head_sha reads as an unpublished pipeline
+// head, so a partial application would strand the run in a state that routes a
+// retry into the worktree-moving custody recovery instead of back here.
+func (d *DB) UpdateRunPushBindingAndHead(id string, binding PushBinding) error {
+	ts := now()
+	_, err := d.sql.Exec(
+		`UPDATE runs SET last_pushed_sha = ?, head_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
+		binding.HeadSHA, binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update run push binding and head: %w", err)
+	}
+	return nil
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original

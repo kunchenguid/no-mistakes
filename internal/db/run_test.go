@@ -589,6 +589,53 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	}
 }
 
+// TestPushBindingAndHeadCorrectionPersistAtomically pins the invariant that
+// makes the remote-rewritten binding correction safe to retry: a run holding
+// last_pushed_sha != head_sha reads as an unpublished pipeline head, so a
+// half-applied correction would reclassify the run as pipeline-owned and route
+// the retry into the worktree-moving custody recovery instead of back here.
+func TestPushBindingAndHeadCorrectionPersistAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/atomic-binding", "https://github.com/test/atomic-binding", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipelineHead := PushBinding{HeadSHA: "pipeline-head", TargetKind: "upstream", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}
+	if err := d.UpdateRunPushBindingAndHead(run.ID, pipelineHead); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetRun(run.ID); got.HeadSHA != "pipeline-head" || got.LastPushedSHA == nil || *got.LastPushedSHA != "pipeline-head" {
+		t.Fatalf("the correction did not move both columns together: %#v", got)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TRIGGER reject_head_correction
+		BEFORE UPDATE OF head_sha ON runs
+		WHEN NEW.head_sha = 'foreign-head'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected head correction failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	foreign := PushBinding{HeadSHA: "foreign-head", TargetKind: "upstream", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}
+	if err := d.UpdateRunPushBindingAndHead(run.ID, foreign); err == nil {
+		t.Fatal("correction unexpectedly succeeded")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastPushedSHA == nil || *got.LastPushedSHA != "pipeline-head" || got.HeadSHA != "pipeline-head" {
+		t.Fatalf("a failed correction stranded the run at last_pushed_sha %v with head %s", got.LastPushedSHA, got.HeadSHA)
+	}
+	if got.PushGeneration == nil || *got.PushGeneration != 1 {
+		t.Fatalf("a failed correction advanced the push generation: %#v", got.PushGeneration)
+	}
+}
+
 func TestUpdateRunPRURL(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
