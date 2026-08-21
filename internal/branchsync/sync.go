@@ -612,11 +612,28 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	preserved := run.HeadSHA
 	anchorRef := custody.RecoveryRef(run.ID)
 	localAnchor := custody.RecoveryLocalRef(run.ID)
+	gateDir := strings.TrimSpace(s.GateDir)
+	gateAvailable := false
+	if gateDir != "" {
+		_, statErr := os.Stat(gateDir)
+		gateAvailable = statErr == nil
+	}
 
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return blocked
+	}
+
+	gateAnchor := custody.RecoveryRef(run.ID)
+	gateAnchorAvailable := false
+	if gateAvailable {
+		if gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}"); err == nil {
+			if gateAnchored != preserved {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
+			}
+			gateAnchorAvailable = true
+		}
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
@@ -626,24 +643,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return s.finishRecover(ctx, run, false)
 	}
 
-	gateDir := strings.TrimSpace(s.GateDir)
-	if gateDir == "" {
+	if !gateAvailable {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be verified; no files or refs were changed")
-	}
-	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so the preserved pipeline head %s cannot be verified; no files or refs were changed", branch, preserved))
 	}
 	anchored := false
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
 	}
-	gateAnchor := custody.RecoveryRef(run.ID)
-	gateAnchored, gateAnchorErr := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
-	if gateAnchorErr == nil && gateAnchored != preserved {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
-	}
-	if gateAnchorErr != nil {
+	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from both the worktree and local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
@@ -667,6 +674,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return s.finishRecover(ctx, run, false)
 	case isAncestor(ctx, wd, local, preserved):
 		if keepLocal {
+			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+			if err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
 		if !state.Local.Clean {
@@ -678,6 +689,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return s.recoverFastForward(ctx, run, state, preserved)
 	default:
 		if keepLocal {
+			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+			if err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
 		if preservedContainsLocalWork(ctx, wd, local, preserved) {

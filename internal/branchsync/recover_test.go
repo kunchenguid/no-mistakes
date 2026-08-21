@@ -500,12 +500,16 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 			t.Fatalf("recovery rewrote independent gate head = %s, want %s", got, movedGate)
 		}
 	})
-	t.Run("gate branch deleted", func(t *testing.T) {
+	t.Run("gate branch deleted with recovery ref", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
 		state := f.service.Recover(f.ctx, false)
-		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+		if !state.Recovered || !state.Changed {
 			t.Fatalf("recover with deleted gate branch = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+			t.Fatalf("recovered HEAD = %s, want %s", got, f.preserved)
 		}
 	})
 	t.Run("gate missing", func(t *testing.T) {
@@ -521,6 +525,23 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 			t.Fatal("unverifiable preservation stamped custody")
 		}
 	})
+}
+
+func TestRecoverRejectsConflictingGateAnchorBeforeReachableSuccess(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	mustRun(t, f.local, "reset", "--hard", f.preserved)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("recover with conflicting anchor = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("conflicting recovery evidence stamped custody")
+	}
 }
 
 func TestRecoverKeepLocalAnchorsIndependentlyMovedGateHead(t *testing.T) {
