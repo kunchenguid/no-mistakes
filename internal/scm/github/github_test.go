@@ -965,6 +965,7 @@ func TestFindPRRejectsURLForDifferentRepository(t *testing.T) {
 func TestFindPRReturnsJSONError(t *testing.T) {
 	t.Parallel()
 
+	const findPRListCommand = "gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName"
 	valid := `{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"main"}`
 	for _, output := range []string{
 		"[{\n",
@@ -980,7 +981,7 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 		`[{"number":42,"url":"https://github.example.com/org/repo/pull/%34%32","baseRefName":"main"}]` + "\n",
 	} {
 		host := New(githubTestCmdFactory(map[string]githubTestResponse{
-			"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
+			findPRListCommand: {
 				stdout: output,
 			},
 		}), nil, "", "")
