@@ -315,6 +315,14 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 			name:   "later missing identity",
 			output: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"},{}]` + "\n",
 		},
+		{
+			name:   "invalid URL",
+			output: `[{"web_url":"not-a-merge-request-url"}]` + "\n",
+		},
+		{
+			name:   "IID URL mismatch",
+			output: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/43"}]` + "\n",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

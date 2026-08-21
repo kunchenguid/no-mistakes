@@ -190,20 +190,41 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if len(prs) == 0 {
 		return nil, nil
 	}
+	prNumbers := make([]string, len(prs))
 	for i, candidate := range prs {
-		if strings.TrimSpace(candidate.URL) == "" {
+		url := strings.TrimSpace(candidate.URL)
+		if url == "" {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
 		}
+		number, err := scm.ExtractPRNumber(url)
+		if err != nil {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d invalid PR URL: %w", i, err)
+		}
+		if candidate.Number != 0 && fmt.Sprintf("%d", candidate.Number) != number {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %s", i, candidate.Number, number)
+		}
+		if candidate.Number > 0 {
+			prNumbers[i] = fmt.Sprintf("%d", candidate.Number)
+		} else {
+			prNumbers[i] = number
+		}
+		if h.forkOwner != "" {
+			if strings.TrimSpace(candidate.HeadRefName) == "" {
+				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRefName", i)
+			}
+			if candidate.HeadRepositoryOwner == nil || strings.TrimSpace(candidate.HeadRepositoryOwner.Login) == "" {
+				return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing headRepositoryOwner login", i)
+			}
+		}
 	}
-	for _, candidate := range prs {
+	for i, candidate := range prs {
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
 		}
-		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL), BaseBranch: strings.TrimSpace(candidate.BaseRefName)}
-		if candidate.Number > 0 {
-			pr.Number = fmt.Sprintf("%d", candidate.Number)
-		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
-			pr.Number = num
+		pr := &scm.PR{
+			Number:     prNumbers[i],
+			URL:        strings.TrimSpace(candidate.URL),
+			BaseBranch: strings.TrimSpace(candidate.BaseRefName),
 		}
 		return pr, nil
 	}

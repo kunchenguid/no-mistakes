@@ -188,8 +188,19 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		return nil, nil
 	}
 	for i, candidate := range mrs {
-		if strings.TrimSpace(candidate.WebURL) == "" && strings.TrimSpace(candidate.URL) == "" {
+		url := strings.TrimSpace(candidate.WebURL)
+		if url == "" {
+			url = strings.TrimSpace(candidate.URL)
+		}
+		if url == "" {
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d missing merge request URL", i)
+		}
+		number, err := scm.ExtractPRNumber(url)
+		if err != nil {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d invalid merge request URL: %w", i, err)
+		}
+		if candidate.IID != 0 && fmt.Sprintf("%d", candidate.IID) != number {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d IID %d does not match URL number %s", i, candidate.IID, number)
 		}
 	}
 	pr := mrs[0].toPR()
