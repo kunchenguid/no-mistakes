@@ -315,6 +315,34 @@ func TestPlanAndSupersedeStaleCustodyExactRunSuccession(t *testing.T) {
 	f.assertHeads(t, f.laterPushed, f.laterPushed, f.laterPushed)
 }
 
+func TestSupersedeStaleCustodyAcceptsCIMonitorInterruptedLineage(t *testing.T) {
+	t.Parallel()
+	f := newStaleSupersessionFixture(t)
+
+	for _, run := range []struct {
+		id   string
+		head string
+	}{
+		{f.oldRun.ID, f.oldPreserved},
+		{f.lineageRun.ID, f.lineagePushed},
+		{f.laterRun.ID, f.laterPushed},
+	} {
+		if err := f.db.UpdateRunStatusWithVerifiedHead(run.id, types.RunCIMonitorInterrupted, run.head); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plan := f.service.PlanStaleCustody(f.ctx)
+	if plan.Safety != "safe_stale_custody_supersession" {
+		t.Fatalf("CI-monitor-interrupted plan = %#v", plan)
+	}
+	state := f.service.SupersedeStaleCustody(f.ctx, f.oldRun.ID, f.laterRun.ID)
+	if !state.Released || !state.Changed {
+		t.Fatalf("CI-monitor-interrupted transition = %#v", state)
+	}
+	f.assertOldCustody(t, true)
+}
+
 // TestSupersedeStaleCustodyExactTwoRunChain pins the transition's own dogfood
 // shape: the checked-out head is the old run's exact submission, the old
 // preserved head is the later run's exact submission, and the later push is the

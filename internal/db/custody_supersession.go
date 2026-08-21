@@ -65,6 +65,7 @@ func (d *DB) GetStaleCustodySupersession(oldRunID string) (*StaleCustodySuperses
 // still match the caller's independently verified plan.
 func (d *DB) PrepareStaleCustodySupersession(old, later, lineage *Run, repo *Repo, proposed StaleCustodySupersession) (*StaleCustodySupersession, error) {
 	if old == nil || later == nil || lineage == nil || repo == nil ||
+		!old.Status.Terminal() || !later.Status.Terminal() || !lineage.Status.Terminal() ||
 		proposed.OldRunID != old.ID || proposed.LaterRunID != later.ID || proposed.LineageRunID != lineage.ID ||
 		proposed.RepoID != old.RepoID || proposed.RepoID != later.RepoID || proposed.RepoID != lineage.RepoID ||
 		proposed.Branch != old.Branch || proposed.Branch != later.Branch || proposed.Branch != lineage.Branch {
@@ -84,17 +85,17 @@ func (d *DB) PrepareStaleCustodySupersession(old, later, lineage *Run, repo *Rep
 		JOIN branch_ownership_generations AS ownership
 		  ON ownership.repo_id = old.repo_id AND ownership.branch = old.branch
 		WHERE old.id = ? AND old.repo_id = ? AND old.branch = ? AND old.head_sha = ?
-		  AND old.submitted_head_sha IS ? AND old.status = ? AND old.status IN ('completed', 'failed', 'cancelled')
+		  AND old.submitted_head_sha IS ? AND old.status = ?
 		  AND old.last_pushed_sha IS ? AND old.push_target_kind IS ? AND old.push_target_fingerprint IS ?
 		  AND old.push_ref IS ? AND old.push_generation IS ? AND old.push_active = 0
 		  AND old.terminal_head_verified_at IS ? AND old.custody_returned_at IS NULL
 		  AND later.repo_id = ? AND later.branch = ? AND later.head_sha = ?
-		  AND later.submitted_head_sha IS ? AND later.status = ? AND later.status IN ('completed', 'failed', 'cancelled')
+		  AND later.submitted_head_sha IS ? AND later.status = ?
 		  AND later.last_pushed_sha IS ? AND later.push_target_kind IS ? AND later.push_target_fingerprint IS ?
 		  AND later.push_ref IS ? AND later.push_generation IS ? AND later.push_active = 0
 		  AND later.terminal_head_verified_at IS ? AND later.pr_state IS ? AND later.custody_returned_at IS NULL
 		  AND lineage.repo_id = ? AND lineage.branch = ? AND lineage.head_sha = ?
-		  AND lineage.submitted_head_sha IS ? AND lineage.status = ? AND lineage.status IN ('completed', 'failed', 'cancelled')
+		  AND lineage.submitted_head_sha IS ? AND lineage.status = ?
 		  AND lineage.last_pushed_sha IS ? AND lineage.push_target_kind IS ? AND lineage.push_target_fingerprint IS ?
 		  AND lineage.push_ref IS ? AND lineage.push_generation IS ? AND lineage.push_active = 0
 		  AND lineage.terminal_head_verified_at IS ? AND lineage.pr_state IS ? AND lineage.custody_returned_at IS NULL
@@ -233,6 +234,7 @@ func (d *DB) MarkStaleCustodySupersessionLocalMoved(oldRunID string) error {
 // remain exact. The later run's push provenance is evidence, never mutated.
 func (d *DB) CommitStaleCustodySupersession(old, later, lineage *Run, repo *Repo, attempt *StaleCustodySupersession) (bool, error) {
 	if old == nil || later == nil || lineage == nil || repo == nil || attempt == nil ||
+		!old.Status.Terminal() || !later.Status.Terminal() || !lineage.Status.Terminal() ||
 		attempt.OldRunID != old.ID || attempt.LaterRunID != later.ID || attempt.LineageRunID != lineage.ID || attempt.RepoID != repo.ID {
 		return false, ErrRunCustodyChanged
 	}
@@ -240,7 +242,7 @@ func (d *DB) CommitStaleCustodySupersession(old, later, lineage *Run, repo *Repo
 	result, err := d.sql.Exec(`UPDATE runs AS old SET
 		custody_returned_at = ?, custody_return_reason = ?, updated_at = ?
 		WHERE old.id = ? AND old.repo_id = ? AND old.branch = ? AND old.head_sha = ?
-		  AND old.submitted_head_sha IS ? AND old.status = ? AND old.status IN ('completed', 'failed', 'cancelled')
+		  AND old.submitted_head_sha IS ? AND old.status = ?
 		  AND old.last_pushed_sha IS ? AND old.push_target_kind IS ? AND old.push_target_fingerprint IS ?
 		  AND old.push_ref IS ? AND old.push_generation IS ? AND old.push_active = 0
 		  AND old.terminal_head_verified_at IS ? AND old.custody_returned_at IS NULL
@@ -259,7 +261,7 @@ func (d *DB) CommitStaleCustodySupersession(old, later, lineage *Run, repo *Repo
 		  AND EXISTS (
 		      SELECT 1 FROM runs AS later
 		       WHERE later.id = ? AND later.repo_id = ? AND later.branch = ? AND later.head_sha = ?
-		         AND later.submitted_head_sha IS ? AND later.status = ? AND later.status IN ('completed', 'failed', 'cancelled')
+		         AND later.submitted_head_sha IS ? AND later.status = ?
 		         AND later.last_pushed_sha IS ? AND later.push_target_kind IS ? AND later.push_target_fingerprint IS ?
 		         AND later.push_ref IS ? AND later.push_generation IS ? AND later.push_active = 0
 		         AND later.terminal_head_verified_at IS ? AND later.pr_state IS ? AND later.custody_returned_at IS NULL
@@ -267,7 +269,7 @@ func (d *DB) CommitStaleCustodySupersession(old, later, lineage *Run, repo *Repo
 		  AND EXISTS (
 		      SELECT 1 FROM runs AS lineage
 		       WHERE lineage.id = ? AND lineage.repo_id = ? AND lineage.branch = ? AND lineage.head_sha = ?
-		         AND lineage.submitted_head_sha IS ? AND lineage.status = ? AND lineage.status IN ('completed', 'failed', 'cancelled')
+		         AND lineage.submitted_head_sha IS ? AND lineage.status = ?
 		         AND lineage.last_pushed_sha IS ? AND lineage.push_target_kind IS ? AND lineage.push_target_fingerprint IS ?
 		         AND lineage.push_ref IS ? AND lineage.push_generation IS ? AND lineage.push_active = 0
 		         AND lineage.terminal_head_verified_at IS ? AND lineage.pr_state IS ? AND lineage.custody_returned_at IS NULL

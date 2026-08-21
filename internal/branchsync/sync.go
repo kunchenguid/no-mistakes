@@ -21,9 +21,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// remoteProbeTimeout bounds the reachability probe, which transfers objects and
-// must never share the short budget that only covers ref reads.
-const remoteProbeTimeout = 2 * time.Minute
 const (
 	StatePipelineOwned        = "pipeline_owned"
 	StatePushInProgress       = "push_in_progress"
@@ -840,7 +837,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 		return blockedRelease(state, transition, "blocked_release_remote_mismatch", "the clean local branch does not exactly equal its configured remote branch; no files or refs were changed")
 	}
 	remoteAnchorRef := unavailableReleaseAnchorRef(base, "remote", remoteHead)
-	probe, closeProbe, err := newRemoteReachabilityProbe(ctx, wd)
+	probe, closeProbe, err := newRemoteReachabilityProbe(ctx, wd, s.remoteTimeout())
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target refs could not be inspected; no files or refs were changed")
 	}
@@ -1266,13 +1263,14 @@ func directAnchorHead(ctx context.Context, dir, ref string) (string, bool) {
 // lookup that answers this question silently turns into another network round
 // trip against that remote instead of a local read.
 type remoteReachabilityProbe struct {
-	dir string
+	dir           string
+	remoteTimeout time.Duration
 }
 
 // newRemoteReachabilityProbe returns the probe and its cleanup function. A
 // repository that cannot be shared (unreadable, or not yet a repository) still
 // yields a usable, slower probe rather than failing the release closed.
-func newRemoteReachabilityProbe(ctx context.Context, workDir string) (*remoteReachabilityProbe, func(), error) {
+func newRemoteReachabilityProbe(ctx context.Context, workDir string, remoteTimeout time.Duration) (*remoteReachabilityProbe, func(), error) {
 	dir, err := os.MkdirTemp("", "no-mistakes-custody-remote-*")
 	if err != nil {
 		return nil, nil, err
@@ -1282,21 +1280,21 @@ func newRemoteReachabilityProbe(ctx context.Context, workDir string) (*remoteRea
 	shallow, shallowErr := git.Run(ctx, workDir, "rev-parse", "--is-shallow-repository")
 	if shallowErr == nil && shallow == "false" {
 		if _, cloneErr := git.Run(ctx, parent, "clone", "--bare", "--shared", workDir, dir); cloneErr == nil {
-			return &remoteReachabilityProbe{dir: dir}, cleanup, nil
+			return &remoteReachabilityProbe{dir: dir, remoteTimeout: remoteTimeout}, cleanup, nil
 		}
 	}
 	if _, initErr := git.Run(ctx, parent, "init", "--bare", dir); initErr != nil {
 		cleanup()
 		return nil, nil, initErr
 	}
-	return &remoteReachabilityProbe{dir: dir}, cleanup, nil
+	return &remoteReachabilityProbe{dir: dir, remoteTimeout: remoteTimeout}, cleanup, nil
 }
 
 func (p *remoteReachabilityProbe) retains(ctx context.Context, remote, sha string) (bool, error) {
 	if p == nil {
 		return false, fmt.Errorf("no reachability probe was prepared for %s", sha)
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, remoteProbeTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, p.remoteTimeout)
 	defer cancel()
 	if _, err := git.Run(probeCtx, p.dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, "+refs/*:refs/no-mistakes/remote-probe/*"); err != nil {
 		return false, err

@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,17 @@ func TestReleaseUnavailablePreservedHeadReturnsCustodyWithAuditableAnchors(t *te
 	}
 	if retry.CustodyTransition.Reason != db.CustodyReturnReasonPreservedHeadUnavailable || retry.CustodyTransition.LocalAnchor != transition.LocalAnchor || retry.CustodyTransition.RemoteAnchor != transition.RemoteAnchor || retry.CustodyTransition.GateAnchor != transition.GateAnchor || retry.CustodyTransition.LocalHead != f.submitted || retry.CustodyTransition.RemoteHead != f.submitted || retry.CustodyTransition.GateHead != f.submitted {
 		t.Fatalf("retry transition = %#v", retry.CustodyTransition)
+	}
+}
+
+func TestReleaseUnavailableAcceptsCIMonitorInterruptedRun(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCIMonitorInterrupted)
+	makePreservedHeadUnavailable(t, f)
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !state.Released || state.Safety != "custody_returned" || !f.custodyReturned() {
+		t.Fatalf("CI-monitor-interrupted release = %#v", state)
 	}
 }
 
@@ -266,6 +278,72 @@ func TestReleaseUnavailableStagingFetchDoesNotShareTheRefReadBudget(t *testing.T
 	}
 	if got := mustRun(t, f.local, "rev-parse", transition.RemoteAnchor+"^{commit}"); got != f.submitted {
 		t.Fatalf("remote safety anchor = %s, want %s", got, f.submitted)
+	}
+}
+
+func TestRemoteReachabilityProbeUsesConfiguredBudgetPerFetch(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	connections := make(chan net.Conn, 2)
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			connections <- conn
+		}
+	}()
+	t.Cleanup(func() {
+		stopServer()
+		_ = listener.Close()
+		for {
+			select {
+			case conn := <-connections:
+				_ = conn.Close()
+			default:
+				return
+			}
+		}
+	})
+	go func() {
+		for {
+			select {
+			case conn := <-connections:
+				go func() {
+					<-serverCtx.Done()
+					_ = conn.Close()
+				}()
+			case <-serverCtx.Done():
+				return
+			}
+		}
+	}()
+
+	workDir := filepath.Join(t.TempDir(), "work")
+	mustRun(t, filepath.Dir(workDir), "init", workDir)
+	budget := 100 * time.Millisecond
+	probe, closeProbe, err := newRemoteReachabilityProbe(context.Background(), workDir, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeProbe()
+	remote := "git://" + listener.Addr().String() + "/repo"
+	for attempt := 1; attempt <= 2; attempt++ {
+		callCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		started := time.Now()
+		_, retainErr := probe.retains(callCtx, remote, strings.Repeat("0", 40))
+		elapsed := time.Since(started)
+		cancel()
+		if retainErr == nil {
+			t.Fatalf("probe fetch %d unexpectedly succeeded", attempt)
+		}
+		if elapsed < budget/2 || elapsed >= 700*time.Millisecond {
+			t.Fatalf("probe fetch %d duration = %v, want a fresh configured budget near %v", attempt, elapsed, budget)
+		}
 	}
 }
 

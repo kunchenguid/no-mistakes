@@ -87,7 +87,7 @@ func getUnavailableCustodyRelease(q custodyReleaseQuerier, runID string) (*Unava
 // while the caller's run, repository, and authority generations still match.
 // A matching existing row is returned idempotently; a collision fails closed.
 func (d *DB) PrepareUnavailableCustodyRelease(expected *Run, repo *Repo, proposed UnavailableCustodyRelease) (*UnavailableCustodyRelease, error) {
-	if expected == nil || repo == nil || proposed.RunID != expected.ID || proposed.RepoID != expected.RepoID || proposed.Branch != expected.Branch {
+	if expected == nil || repo == nil || !expected.Status.Terminal() || proposed.RunID != expected.ID || proposed.RepoID != expected.RepoID || proposed.Branch != expected.Branch {
 		return nil, ErrRunCustodyChanged
 	}
 	ts := now()
@@ -101,7 +101,7 @@ func (d *DB) PrepareUnavailableCustodyRelease(expected *Run, repo *Repo, propose
 		JOIN branch_ownership_generations AS ownership
 		  ON ownership.repo_id = selected.repo_id AND ownership.branch = selected.branch
 		WHERE selected.id = ? AND selected.repo_id = ? AND selected.branch = ? AND selected.head_sha = ?
-		  AND selected.submitted_head_sha IS ? AND selected.status = ? AND selected.status IN ('completed', 'failed', 'cancelled')
+		  AND selected.submitted_head_sha IS ? AND selected.status = ?
 		  AND selected.last_pushed_sha IS ? AND selected.push_target_kind IS ? AND selected.push_target_fingerprint IS ?
 		  AND selected.push_ref IS ? AND selected.push_generation IS ? AND selected.push_active = 0
 		  AND selected.terminal_head_verified_at IS ? AND selected.custody_returned_at IS NULL
@@ -263,14 +263,14 @@ func (d *DB) MarkUnavailableCustodyReleaseGateMoved(runID string) error {
 // immutable journal, exact run, repository metadata generation, and complete
 // branch ownership generation remain unchanged.
 func (d *DB) CommitUnavailableRunCustody(expected *Run, repo *Repo, attempt *UnavailableCustodyRelease) (bool, error) {
-	if expected == nil || repo == nil || attempt == nil || attempt.RunID != expected.ID || attempt.RepoID != repo.ID {
+	if expected == nil || repo == nil || attempt == nil || !expected.Status.Terminal() || attempt.RunID != expected.ID || attempt.RepoID != repo.ID {
 		return false, ErrRunCustodyChanged
 	}
 	ts := now()
 	result, err := d.sql.Exec(`UPDATE runs AS selected SET
 		custody_returned_at = ?, custody_return_reason = ?, updated_at = ?
 		WHERE selected.id = ? AND selected.repo_id = ? AND selected.branch = ? AND selected.head_sha = ?
-		  AND selected.submitted_head_sha IS ? AND selected.status = ? AND selected.status IN ('completed', 'failed', 'cancelled')
+		  AND selected.submitted_head_sha IS ? AND selected.status = ?
 		  AND selected.last_pushed_sha IS ? AND selected.push_target_kind IS ? AND selected.push_target_fingerprint IS ?
 		  AND selected.push_ref IS ? AND selected.push_generation IS ? AND selected.push_active = 0
 		  AND selected.terminal_head_verified_at IS ? AND selected.custody_returned_at IS NULL
