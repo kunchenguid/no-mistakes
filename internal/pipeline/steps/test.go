@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -72,18 +76,22 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
+		fixCtx, cancelFix, fixTimeout := testAgentContext(sctx)
+		sctx.Ctx = fixCtx
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix tests",
 			FallbackSummary: "fix test failures",
 			AfterAgentRun: func(*agent.Result) error {
-				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
+				newTestsFromFix = detectNewTestFiles(fixCtx, sctx.WorkDir)
 				return nil
 			},
 		})
+		cancelFix()
+		sctx.Ctx = ctx
 		if err != nil {
-			return nil, err
+			return nil, testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
 		}
 		fixSummary = summary
 	}
@@ -143,7 +151,8 @@ Previous test findings to address:
 		if testCmd != "" {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
+		result, err := sctx.Agent.Run(evidenceCtx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 
@@ -200,8 +209,9 @@ Rules:
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
 		})
+		cancelEvidence()
 		if err != nil {
-			return nil, fmt.Errorf("agent run tests: %w", err)
+			return nil, testAgentError(evidenceCtx, evidenceTimeout, "agent run tests", err)
 		}
 
 		var findings Findings
@@ -267,4 +277,22 @@ Rules:
 	sctx.Log("all tests passed")
 	findingsJSON, _ := json.Marshal(Findings{Tested: tested})
 	return &pipeline.StepOutcome{Findings: string(findingsJSON), FixSummary: fixSummary}, nil
+}
+
+func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := config.DefaultTestAgentTimeout
+	if sctx != nil && sctx.Config != nil && sctx.Config.TestAgentTimeout > 0 {
+		timeout = sctx.Config.TestAgentTimeout
+	}
+	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errTestAgentTimeout)
+	return ctx, cancel, timeout
+}
+
+var errTestAgentTimeout = errors.New("test agent timeout")
+
+func testAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
+	if timeout > 0 && errors.Is(context.Cause(ctx), errTestAgentTimeout) {
+		return fmt.Errorf("%s timed out after %s (test agent silent for %s): %w", prefix, timeout, timeout, err)
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }

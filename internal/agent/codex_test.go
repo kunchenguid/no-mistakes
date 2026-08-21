@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
@@ -246,6 +248,37 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	if _, err := os.Stat(schemaPath); !os.IsNotExist(err) {
 		t.Fatalf("expected temporary schema file to be removed, stat err = %v", err)
+	}
+}
+
+// TestCodexAgent_RunCancelsSilentHang pins the 0%-CPU stall the Test step's
+// evidence agent hits: Codex has consumed the prompt, emits no JSONL, and
+// waits. A deadline on the Run context must cancel that wait instead of
+// blocking forever on stdout.
+func TestCodexAgent_RunCancelsSilentHang(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+cat >/dev/null
+sleep 100
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"timeout /t 100 /nobreak > nul",
+	}, "\r\n"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := (&codexAgent{bin: bin}).Run(ctx, RunOpts{Prompt: "gather evidence", CWD: dir})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("expected silent hang to fail")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want context deadline", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("silent hang took %s, want cancellation well under 5s", elapsed)
 	}
 }
 

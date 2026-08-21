@@ -259,7 +259,8 @@ It is only a liveness signal.
 It does not cancel the step, fail the run, or mean the pipeline is safe to bypass.
 
 A quiet Review step still ends on its own: its agent turns are bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout), after which the run fails with a timeout diagnostic in the step log.
-The Test, Document, and Lint steps carry no such bound, so a wedge there stays active until you act.
+A quiet Test step is bounded the same way by [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout), covering the post-test evidence-gathering agent and a Test-repair turn.
+The Document and Lint steps carry no such bound, so a wedge there stays active until you act.
 
 Start by reading the active run and the step log:
 
