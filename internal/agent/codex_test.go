@@ -263,7 +263,7 @@ sleep 100
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
-		"timeout /t 100 /nobreak > nul",
+		"ping -n 101 127.0.0.1 > nul",
 	}, "\r\n"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
