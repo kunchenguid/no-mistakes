@@ -140,7 +140,8 @@ func (h *Host) Available(ctx context.Context) error {
 }
 
 func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return 0, errors.New("expected absolute GitLab merge request URL")
 	}
@@ -168,6 +169,13 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 	number, err := strconv.Atoi(segments[len(segments)-1])
 	if err != nil || number <= 0 {
 		return 0, errors.New("expected positive GitLab merge request number")
+	}
+	escapedSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(escapedSegments) != len(segments) || escapedSegments[len(escapedSegments)-1] != strconv.Itoa(number) {
+		return 0, errors.New("expected canonical GitLab merge request number path")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
+		return 0, errors.New("expected GitLab merge request URL without query or fragment")
 	}
 	return number, nil
 }
@@ -217,6 +225,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	var mrs []mrPayload
 	if err := json.Unmarshal(trimmed, &mrs); err != nil {
 		return nil, fmt.Errorf("parse glab mr list JSON: %w", err)
+	}
+	if mrs == nil {
+		return nil, errors.New("parse glab mr list JSON: expected array")
 	}
 	if len(mrs) == 0 {
 		return nil, nil

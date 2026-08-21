@@ -158,9 +158,9 @@ func (h *Host) validateListedPR(candidate azPR) error {
 	if candidate.PullRequestID <= 0 {
 		return errors.New("missing positive pullRequestId")
 	}
-	org, project, repo, ok := ParseRemote(candidate.Repository.WebURL)
-	if !ok {
-		return errors.New("missing valid repository.webUrl")
+	org, project, repo, err := parseRepositoryWebURL(candidate.Repository.WebURL)
+	if err != nil {
+		return err
 	}
 	if !strings.EqualFold(azureOrganizationName(org), azureOrganizationName(h.org)) {
 		return fmt.Errorf("repository organization %q does not match configured organization %q", org, h.org)
@@ -178,6 +178,36 @@ func (h *Host) validateListedPR(candidate azPR) error {
 		return fmt.Errorf("repository metadata project %q does not match configured project %q", name, h.project)
 	}
 	return nil
+}
+
+func parseRepositoryWebURL(raw string) (string, string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", "", errors.New("missing valid repository.webUrl")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", "", "", errors.New("repository.webUrl must be HTTP")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
+		return "", "", "", errors.New("repository.webUrl must not contain query or fragment")
+	}
+	segments := splitDecodePath(parsed.EscapedPath())
+	gitIndex := -1
+	for i, segment := range segments {
+		if segment == "_git" {
+			gitIndex = i
+			break
+		}
+	}
+	if gitIndex < 1 || gitIndex+2 != len(segments) {
+		return "", "", "", errors.New("repository.webUrl must end at the repository path")
+	}
+	org, project, repo, ok := ParseRemote(trimmed)
+	if !ok {
+		return "", "", "", errors.New("missing valid repository.webUrl")
+	}
+	return org, project, repo, nil
 }
 
 func azureOrganizationName(raw string) string {
@@ -367,7 +397,7 @@ func (h *Host) toPR(raw *azPR) *scm.PR {
 	}
 	return &scm.PR{
 		Number:     id,
-		URL:        webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		URL:        webPRURL(h.org, h.project, h.repo, "", id),
 		BaseBranch: strings.TrimPrefix(strings.TrimSpace(raw.TargetRefName), "refs/heads/"),
 	}
 }

@@ -102,6 +102,9 @@ func TestFindPRAcceptsEquivalentOrganizationURLForms(t *testing.T) {
 	if pr == nil || pr.Number != "42" {
 		t.Fatalf("FindPR() = %+v, want PR 42", pr)
 	}
+	if pr.URL != "https://myorg.visualstudio.com/myproject/_git/myrepo/pullrequest/42" {
+		t.Fatalf("FindPR() URL = %q, want configured canonical URL", pr.URL)
+	}
 }
 
 func TestFindPRNoMatch(t *testing.T) {
@@ -165,6 +168,18 @@ func TestFindPRRejectsInvalidResponse(t *testing.T) {
 		{
 			name:   "foreign repository",
 			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/other"}}]` + "\n",
+		},
+		{
+			name:   "query suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo?view=files"}}]` + "\n",
+		},
+		{
+			name:   "fragment suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo#discussion"}}]` + "\n",
+		},
+		{
+			name:   "pull request suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/99"}}]` + "\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

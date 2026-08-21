@@ -158,7 +158,8 @@ func (h *Host) Available(ctx context.Context) error {
 }
 
 func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return 0, errors.New("expected absolute GitHub pull request URL")
 	}
@@ -185,6 +186,13 @@ func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
 	number, err := strconv.Atoi(segments[3])
 	if err != nil || number <= 0 {
 		return 0, errors.New("expected positive GitHub pull request number")
+	}
+	escapedSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(escapedSegments) != len(segments) || escapedSegments[len(escapedSegments)-1] != strconv.Itoa(number) {
+		return 0, errors.New("expected canonical GitHub pull request number path")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
+		return 0, errors.New("expected GitHub pull request URL without query or fragment")
 	}
 	return number, nil
 }
