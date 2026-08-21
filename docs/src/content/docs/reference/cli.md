@@ -213,7 +213,7 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned`. When the recorded terminal head and its run-specific recovery anchor are consistent and available, status reports `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
 Without positive evidence that the submitted head stayed unchanged, custody is not guessed away. Status offers recovery only when the recorded head is available; missing or conflicting evidence instead requires manual reconciliation.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
@@ -315,7 +315,13 @@ no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
 ```
 
-Starts a new pipeline run using the last-known head SHA on the current branch.
+Starts a new pipeline run from the current gate branch, except when the latest
+terminal run has a verified unpublished head whose custody has not been
+returned: rerun then uses that preserved terminal head even if the gate branch
+is stale. The command refuses instead of falling back to the gate branch when
+the run-specific recovery ref is conflicting, invalid, or the recorded head is
+unavailable. Use `no-mistakes axi status` and reconcile custody first in that
+case.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
 explicit intent in either case. Inherited intent keeps distinct rerun provenance;
