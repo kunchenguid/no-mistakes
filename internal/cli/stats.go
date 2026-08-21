@@ -149,8 +149,9 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 		return err
 	}
 
-	// Table 2: per-round token deltas next to the raw (cumulative for resumed
-	// sessions) counters, so a cumulative counter cannot be misread as per-round.
+	// Table 2: per-round token deltas next to the raw counters (cumulative
+	// across a resumed session for codex; per-invocation for pi), so a
+	// cumulative counter cannot be misread as per-round.
 	fmt.Fprintln(w)
 	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tSESSION\tΔ IN (round)\tΔ OUT\tΔ CACHE RD\tIN (raw)\tOUT (raw)\tCACHE RD (raw)\tCACHE WR\tFRESH IN\tREASON")
