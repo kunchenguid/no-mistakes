@@ -175,6 +175,11 @@ func TestFindOpenPRBySourceBranchRejectsInvalidResponse(t *testing.T) {
 		{name: "null", response: "null"},
 		{name: "missing values", response: `{}`},
 		{name: "trailing data", response: `{"values":[]}garbage`},
+		{name: "missing identity", response: `{"values":[{}]}`},
+		{
+			name:     "later missing identity",
+			response: `{"values":[{"id":42,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}},{}]}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +200,9 @@ func TestFindOpenPRBySourceBranchRejectsInvalidResponse(t *testing.T) {
 			pr, err := client.FindOpenPRBySourceBranch(context.Background(), repo, "feature", "main")
 			if err == nil {
 				t.Fatal("FindOpenPRBySourceBranch() error = nil, want response error")
+			}
+			if !strings.Contains(err.Error(), "Bitbucket") {
+				t.Fatalf("FindOpenPRBySourceBranch() error = %v, want provider parse context", err)
 			}
 			if pr != nil {
 				t.Fatalf("FindOpenPRBySourceBranch() = %#v, want nil", pr)

@@ -310,6 +310,11 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 		{name: "no JSON", output: "not-json\n"},
 		{name: "malformed JSON", output: "[{\n"},
 		{name: "null", output: "null\n"},
+		{name: "missing identity", output: "notice\n[{}]\n"},
+		{
+			name:   "later missing identity",
+			output: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"},{}]` + "\n",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

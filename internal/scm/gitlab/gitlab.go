@@ -187,10 +187,12 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if len(mrs) == 0 {
 		return nil, nil
 	}
-	pr := mrs[0].toPR()
-	if pr.URL == "" {
-		return nil, nil
+	for i, candidate := range mrs {
+		if strings.TrimSpace(candidate.WebURL) == "" && strings.TrimSpace(candidate.URL) == "" {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d missing merge request URL", i)
+		}
 	}
+	pr := mrs[0].toPR()
 	return pr, nil
 }
 

@@ -944,7 +944,13 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 func TestFindPRReturnsJSONError(t *testing.T) {
 	t.Parallel()
 
-	for _, output := range []string{"[{\n", "null\n"} {
+	valid := `{"number":42,"url":"https://github.example.com/org/repo/pull/42","baseRefName":"main"}`
+	for _, output := range []string{
+		"[{\n",
+		"null\n",
+		"[{}]\n",
+		"[" + valid + ",{}]\n",
+	} {
 		host := New(githubTestCmdFactory(map[string]githubTestResponse{
 			"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
 				stdout: output,

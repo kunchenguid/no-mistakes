@@ -145,6 +145,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if len(prs) == 0 {
 		return nil, nil
 	}
+	for i, candidate := range prs {
+		if candidate.PullRequestID <= 0 {
+			return nil, fmt.Errorf("az repos pr list: parse response: entry %d missing positive pullRequestId", i)
+		}
+	}
 	return h.toPR(&prs[0]), nil
 }
 

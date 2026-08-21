@@ -123,9 +123,10 @@ func TestFindPRIgnoresStderrChatter(t *testing.T) {
 	}
 }
 
-func TestFindPRRejectsInvalidJSON(t *testing.T) {
+func TestFindPRRejectsInvalidResponse(t *testing.T) {
 	t.Parallel()
 
+	valid := `{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo"}}`
 	for _, tc := range []struct {
 		name   string
 		output string
@@ -133,6 +134,8 @@ func TestFindPRRejectsInvalidJSON(t *testing.T) {
 		{name: "malformed", output: "not json at all\n"},
 		{name: "missing", output: "\n"},
 		{name: "null", output: "null\n"},
+		{name: "missing identity", output: "[{}]\n"},
+		{name: "later missing identity", output: "[" + valid + ",{}]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTestHost(map[string]azdoTestResponse{
@@ -144,6 +147,9 @@ func TestFindPRRejectsInvalidJSON(t *testing.T) {
 			pr, err := h.FindPR(context.Background(), "feature", "main")
 			if err == nil {
 				t.Fatal("FindPR() error = nil, want parse error")
+			}
+			if !strings.Contains(err.Error(), "az repos pr list: parse response") {
+				t.Fatalf("FindPR() error = %v, want provider parse context", err)
 			}
 			if pr != nil {
 				t.Fatalf("FindPR() = %+v, want nil on parse failure", pr)

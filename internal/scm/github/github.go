@@ -190,6 +190,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if len(prs) == 0 {
 		return nil, nil
 	}
+	for i, candidate := range prs {
+		if strings.TrimSpace(candidate.URL) == "" {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
+		}
+	}
 	for _, candidate := range prs {
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
@@ -199,9 +204,6 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			pr.Number = fmt.Sprintf("%d", candidate.Number)
 		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
 			pr.Number = num
-		}
-		if pr.URL == "" {
-			return nil, nil
 		}
 		return pr, nil
 	}
