@@ -644,6 +644,16 @@ func (d *DB) UpdateRunStatusWithVerifiedHead(id string, status types.RunStatus, 
 	return nil
 }
 
+// RecordRunTerminalHeadEvidence records a managed worktree head that was
+// verified immediately before crash recovery makes the run terminal. The
+// subsequent stale-run status transition deliberately preserves this stamp.
+func (d *DB) RecordRunTerminalHeadEvidence(id, headSHA string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, terminal_head_verified_at = ?, updated_at = ? WHERE id = ? AND status IN (?, ?)`,
+		headSHA, ts, ts, id, types.RunPending, types.RunRunning)
+	return err
+}
+
 // RunIntentSourceAgent is the intent_source value stamped when the driving
 // agent supplied the intent explicitly via `axi run --intent`. It marks an
 // authoritative, author-stated goal (score 1) as opposed to a transcript

@@ -54,9 +54,6 @@ func (s *cancellationRaceStep) Execute(sctx *pipelinepkg.StepContext) (*pipeline
 	if err != nil {
 		return nil, err
 	}
-	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "refs/heads/feature/recover", head); err != nil {
-		return nil, err
-	}
 	s.committed <- head
 	<-sctx.Ctx.Done()
 	return nil, context.Cause(sctx.Ctx)
@@ -475,9 +472,9 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 	}
 }
 
-// TestRecoverGateDivergenceAndUnavailabilityFailClosed: recovery must refuse
-// whenever the preserved head cannot be verified and anchored - a moved gate
-// branch, a deleted gate branch, or a missing gate.
+// TestRecoverGateDivergenceAndUnavailabilityFailClosed: an independently moved
+// gate no longer hides a separately anchored preserved head, while deleted or
+// unavailable preservation still refuses.
 func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	t.Parallel()
 
@@ -491,12 +488,16 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 		mustRun(t, writer, "add", "other.txt")
 		mustRun(t, writer, "commit", "-m", "out of band gate commit")
 		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+		movedGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
 		state := f.service.Recover(f.ctx, false)
-		if state.Recovered || state.Safety != "blocked_recover_gate_diverged" {
+		if !state.Recovered || !state.Changed {
 			t.Fatalf("recover with moved gate = %#v", state)
 		}
-		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
-			t.Fatal("moved-gate refusal mutated HEAD")
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+			t.Fatalf("moved-gate recovery HEAD = %s, want %s", got, f.preserved)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != movedGate {
+			t.Fatalf("recovery rewrote independent gate head = %s, want %s", got, movedGate)
 		}
 	})
 	t.Run("gate branch deleted", func(t *testing.T) {
@@ -520,6 +521,35 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 			t.Fatal("unverifiable preservation stamped custody")
 		}
 	})
+}
+
+func TestRecoverKeepLocalAnchorsIndependentlyMovedGateHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "other.txt"), "independent gate work\n")
+	mustRun(t, writer, "add", "other.txt")
+	mustRun(t, writer, "commit", "-m", "independent gate work")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	movedGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered || recovered.Changed {
+		t.Fatalf("keep-local recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("keep-local moved HEAD = %s, want %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("keep-local gate branch = %s, want %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/no-mistakes/recover-gate/"+f.run.ID); got != movedGate {
+		t.Fatalf("independent gate anchor = %s, want %s", got, movedGate)
+	}
 }
 
 // TestRecoverTerminalPostPushRunWithMovedHead covers the post-push class cell:
@@ -680,6 +710,12 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 	if terminal.Status != types.RunCancelled || terminal.HeadSHA != committed {
 		t.Fatalf("terminal run = status %s head %s, want cancelled head %s", terminal.Status, terminal.HeadSHA, committed)
 	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != committed {
+		t.Fatalf("terminal recovery anchor = %s, want %s", got, committed)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("terminalization moved gate branch = %s, want submitted %s", got, f.submitted)
+	}
 	state := f.service.InspectCached(f.ctx)
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
 		t.Fatalf("cancelled committed state = %#v", state)
@@ -689,6 +725,47 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 	}
 	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
 		t.Fatalf("cancelled committed next action = %#v", state.NextAction)
+	}
+}
+
+func TestRecoverUsesTerminalAnchorWhenGateBranchLags(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("anchored stale-gate state = %#v", state)
+	}
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || !recovered.Changed {
+		t.Fatalf("anchored stale-gate recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("recovered HEAD = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestInspectDoesNotAdvertiseRecoveryWhenRecordedHeadIsMissing(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	missing := strings.Repeat("f", 40)
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, missing); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Safety != "blocked_recover_preserved_head_missing" {
+		t.Fatalf("missing-head safety = %q, want blocked_recover_preserved_head_missing: %#v", state.Safety, state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("missing-head next action = %#v", state.NextAction)
+	}
+	if state.NextAction.Code == "recover_custody" {
+		t.Fatal("missing recorded head advertised an impossible recovery")
 	}
 }
 

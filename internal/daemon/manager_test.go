@@ -450,6 +450,44 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 }
 
+func TestResolveRerunHeadUsesPreservedTerminalHeadInsteadOfStaleGateBranch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	gate := filepath.Join(root, "gate.git")
+	gitCmd(t, "", "init", work)
+	gitCmd(t, work, "config", "user.email", "test@test.com")
+	gitCmd(t, work, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("submitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "add", "file.txt")
+	gitCmd(t, work, "commit", "-m", "submitted")
+	submitted := gitOutput(t, work, "rev-parse", "HEAD")
+	gitCmd(t, "", "init", "--bare", gate)
+	gitCmd(t, work, "push", gate, "HEAD:refs/heads/feature/recover")
+	if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("preserved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, work, "commit", "-am", "pipeline fix")
+	preserved := gitOutput(t, work, "rev-parse", "HEAD")
+	run := &db.Run{ID: "run-1", Branch: "feature/recover", Status: types.RunFailed, HeadSHA: preserved, SubmittedHeadSHA: &submitted}
+	now := int64(1)
+	run.TerminalHeadVerifiedAt = &now
+	gitCmd(t, work, "push", gate, preserved+":refs/no-mistakes/recover/"+run.ID)
+
+	head, err := resolveRerunHead(context.Background(), gate, run.Branch, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head != preserved {
+		t.Fatalf("rerun head = %s, want preserved %s", head, preserved)
+	}
+	if gateHead := gitOutput(t, gate, "rev-parse", "refs/heads/feature/recover"); gateHead != submitted {
+		t.Fatalf("rerun resolution moved gate branch = %s, want %s", gateHead, submitted)
+	}
+}
+
 func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

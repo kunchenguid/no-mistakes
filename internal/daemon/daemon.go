@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -421,6 +422,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// so: recovery below turns them terminal, and they are the ones whose
 	// worktree may already be gone with something still standing in it.
 	activeWorktrees := activeRecordedRunWorktrees(d, p)
+	preserveStaleRunHeads(d, p, preserved)
 
 	staleStarted := time.Now()
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
@@ -465,6 +467,68 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	logStartupPhase("evidence_cleanup", evidenceStarted)
 
 	mgr.resumeRecoveredRuns(plans)
+}
+
+func preserveStaleRunHeads(d *db.DB, p *paths.Paths, excluded map[string]struct{}) {
+	active, err := d.ActiveRunWorktrees()
+	if err != nil {
+		slog.Warn("failed to list active run heads before crash recovery", "error", err)
+		return
+	}
+	for _, wt := range active {
+		if _, skip := excluded[wt.RunID]; skip {
+			continue
+		}
+		run, err := d.GetRun(wt.RunID)
+		if err != nil || run == nil {
+			continue
+		}
+		workDir := worktrees.RecordedDir(p, wt.Dir, wt.RepoID, wt.RunID)
+		if _, err := os.Stat(workDir); err != nil {
+			continue
+		}
+		preserveRunHead(d, workDir, run)
+	}
+}
+
+func preserveRunHead(d *db.DB, workDir string, run *db.Run) (string, bool) {
+	if d == nil || run == nil || strings.TrimSpace(workDir) == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		slog.Warn("failed to read managed worktree head before terminalization", "run", run.ID, "error", err)
+		return "", false
+	}
+	recorded := strings.TrimSpace(run.HeadSHA)
+	if recorded == "" || head != recorded && !isGitAncestor(ctx, workDir, recorded, head) {
+		slog.Warn("managed worktree head is not a verified descendant before terminalization", "run", run.ID, "recorded", recorded, "observed", head)
+		return "", false
+	}
+	published := ""
+	if run.LastPushedSHA != nil {
+		published = *run.LastPushedSHA
+	} else if run.SubmittedHeadSHA != nil {
+		published = *run.SubmittedHeadSHA
+	}
+	if head != published {
+		if _, err := git.Run(ctx, workDir, "update-ref", custody.RecoveryRef(run.ID), head); err != nil {
+			slog.Warn("failed to anchor managed worktree head before terminalization", "run", run.ID, "head", head, "error", err)
+			return "", false
+		}
+	}
+	if err := d.RecordRunTerminalHeadEvidence(run.ID, head); err != nil {
+		slog.Warn("failed to record managed worktree head before terminalization", "run", run.ID, "head", head, "error", err)
+		return "", false
+	}
+	return head, true
+}
+
+func isGitAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
+	_, err := git.Run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
 }
 
 // sweepOrphanRunProcesses terminates processes still standing in a run

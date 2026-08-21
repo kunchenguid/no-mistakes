@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -1350,13 +1351,42 @@ func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
 		return "", false
 	}
 	if observed == recorded {
+		if !e.preserveUnpublishedTerminalHead(ctx, recordedRun, observed) {
+			return "", false
+		}
 		return recorded, true
 	}
 	if _, err := git.Run(ctx, e.workDir, "merge-base", "--is-ancestor", recorded, observed); err != nil {
 		slog.Warn("worktree head is not a verified descendant before terminalization", "run", run.ID, "error", err)
 		return "", false
 	}
+	if !e.preserveUnpublishedTerminalHead(ctx, recordedRun, observed) {
+		return "", false
+	}
 	return observed, true
+}
+
+func (e *Executor) preserveUnpublishedTerminalHead(ctx context.Context, run *db.Run, head string) bool {
+	if run == nil || head == "" {
+		return false
+	}
+	published := ""
+	if run.LastPushedSHA != nil {
+		published = *run.LastPushedSHA
+	}
+	if published == "" {
+		if run.SubmittedHeadSHA != nil {
+			published = *run.SubmittedHeadSHA
+		}
+	}
+	if head == published {
+		return true
+	}
+	if _, err := git.Run(ctx, e.workDir, "update-ref", custody.RecoveryRef(run.ID), head); err != nil {
+		slog.Warn("failed to anchor unpublished terminal head", "run", run.ID, "head", head, "error", err)
+		return false
+	}
+	return true
 }
 
 // --- event helpers ---

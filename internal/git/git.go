@@ -468,6 +468,14 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
+// FetchRemoteRefToPrivateRef fetches one exact ref into a caller-owned private
+// ref without touching FETCH_HEAD or ordinary remote-tracking refs.
+func FetchRemoteRefToPrivateRef(ctx context.Context, dir, remote, remoteRef, localRef string) error {
+	refspec := fmt.Sprintf("+%s:%s", remoteRef, localRef)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
+	return err
+}
+
 // Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an
 // explicit expected remote SHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {

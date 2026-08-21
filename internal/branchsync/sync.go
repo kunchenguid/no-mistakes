@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -502,7 +503,7 @@ func (s *Service) Apply(ctx context.Context) State {
 // Recover treats that user_owned state as an idempotent no-op success.
 //
 // The decision matrix, by worktree relation to the preserved pipeline head P
-// (the gate branch head recorded as the run's head_sha):
+// (the terminally verified run head, pinned by its private recovery ref):
 //
 //	relation   worktree  default                        --keep-local
 //	equal      any       anchor locally; return custody same
@@ -539,19 +540,20 @@ func (s *Service) Apply(ctx context.Context) State {
 //   - The preserved commits must be provably safe before custody moves: when
 //     already reachable from the local branch (equal/ahead), recovery pins the
 //     private anchor ref refs/no-mistakes/recover/<runID> locally without gate
-//     access; otherwise the preserved head is verified at the gate branch head
-//     and fetched into that anchor. The anchor keeps them reachable locally no
-//     matter what later happens to the gate.
+//     access; otherwise the preserved head is verified through the gate's
+//     run-specific recovery ref and fetched into that anchor. Legacy terminal
+//     heads that still exist as unreferenced gate objects are anchored before
+//     recovery continues. The branch ref may independently lag or advance.
 //   - The only possible worktree mutation is a guarded move of a clean checked-out
 //     branch: a strict fast-forward, or an anchored move to a proven-containing
 //     head performed by Git operations that refuse on their own rather than by a
 //     preceding observation (see recoverAdoptPreserved). When the operator explicitly keeps a behind or diverged local
 //     head instead of taking P, --keep-local never touches the worktree and moves
 //     the gate branch to the kept head with an atomic compare-and-swap, so a
-//     concurrent gate push wins and recovery refuses.
-//   - Anything unverifiable (missing gate where required, moved gate branch,
-//     failed anchor write or fetch, changed assumptions) refuses with a reason
-//     and changes nothing.
+//     concurrent gate push wins and recovery refuses. An independently moved
+//     gate head is pinned first so that CAS never discards it.
+//   - Anything unverifiable (missing recorded head, missing gate where required,
+//     failed anchor write or fetch, changed assumptions) refuses with a reason.
 //
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
@@ -608,8 +610,8 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	branch := state.Local.Branch
 	local := state.Local.Head
 	preserved := run.HeadSHA
-	anchorRef := recoverAnchorRef(run.ID)
-	localAnchor := recoverLocalAnchorRef(run.ID)
+	anchorRef := custody.RecoveryRef(run.ID)
+	localAnchor := custody.RecoveryLocalRef(run.ID)
 
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
@@ -636,15 +638,21 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
 	}
-	// A keep-local recovery that reset the gate but crashed before stamping
-	// custody resumes here: the gate already equals the kept local head and
-	// the preserved head is already anchored.
-	resumedKeepLocal := keepLocal && anchored && gateHead == local
-	if gateHead != preserved && !resumedKeepLocal {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
+	gateAnchor := custody.RecoveryRef(run.ID)
+	gateAnchored, gateAnchorErr := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
+	if gateAnchorErr == nil && gateAnchored != preserved {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
+	}
+	if gateAnchorErr != nil {
+		if !objectExists(ctx, gateDir, preserved) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from both the worktree and local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
+		}
+		if _, err := git.Run(ctx, gateDir, "update-ref", gateAnchor, preserved); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
+		}
 	}
 	if !anchored {
-		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
+		if fetchErr := git.FetchRemoteRefToPrivateRef(ctx, wd, gateDir, gateAnchor, anchorRef); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
@@ -699,6 +707,12 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		s.beforeGateReset()
 	}
 	if gateHead != state.Local.Head {
+		if gateHead != run.HeadSHA {
+			gateAnchor := custody.RecoveryGateRef(run.ID)
+			if _, err := git.Run(ctx, s.GateDir, "update-ref", gateAnchor, gateHead); err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
+			}
+		}
 		head, err := git.HeadSHA(ctx, s.workDir())
 		if err != nil || head != state.Local.Head {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
@@ -952,14 +966,14 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 }
 
 func recoverAnchorRef(runID string) string {
-	return "refs/no-mistakes/recover/" + runID
+	return custody.RecoveryRef(runID)
 }
 
 // recoverLocalAnchorRef keeps the exact pre-recovery local commits reachable
 // when custody is returned by adopting an equivalent preserved head, which
 // leaves those SHAs unreferenced by the branch.
 func recoverLocalAnchorRef(runID string) string {
-	return "refs/no-mistakes/recover-local/" + runID
+	return custody.RecoveryLocalRef(runID)
 }
 
 func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
@@ -1384,6 +1398,12 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
+		if !s.recoverySourceAvailable(ctx, run) {
+			state.Safety = "blocked_recover_preserved_head_missing"
+			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
+			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			return
+		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
 		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
 		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
@@ -1392,6 +1412,23 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+}
+
+func (s *Service) recoverySourceAvailable(ctx context.Context, run *db.Run) bool {
+	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	if objectExists(ctx, s.workDir(), run.HeadSHA) {
+		return true
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if anchored, err := git.Run(ctx, gateDir, "rev-parse", custody.RecoveryRef(run.ID)+"^{commit}"); err == nil {
+		return anchored == run.HeadSHA
+	}
+	return objectExists(ctx, gateDir, run.HeadSHA)
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
