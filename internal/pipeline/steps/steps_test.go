@@ -117,10 +117,15 @@ func fakeRecordSuccessHandler() {
 func fakeGHHandler(args []string) {
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
+	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+		if hasPRListJSON {
+			fmt.Print(prListJSON)
+			os.Exit(0)
+		}
 		if prURL == "" {
 			fmt.Println("[]")
 			os.Exit(0)

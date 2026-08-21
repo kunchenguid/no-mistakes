@@ -98,6 +98,46 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_MalformedPRListFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+	env = append(env, "FAKE_CLI_PR_LIST_JSON=[{")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("Execute() error = nil, want malformed PR-list error")
+	}
+	if !strings.Contains(err.Error(), "parse gh pr list JSON") {
+		t.Fatalf("Execute() error = %v, want GitHub parse context", err)
+	}
+
+	logData, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	ghLog := string(logData)
+	if !strings.Contains(ghLog, "pr list --head feature ") || !strings.Contains(ghLog, "--state open --json number,url,baseRefName") {
+		t.Fatalf("expected production PR lookup command, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "pr create") || strings.Contains(ghLog, "pr edit") {
+		t.Fatalf("malformed lookup must stop before PR mutation, got:\n%s", ghLog)
+	}
+
+	run, readErr := sctx.DB.GetRun(sctx.Run.ID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if run.PRURL != nil {
+		t.Fatalf("PR URL = %q, want nil after malformed lookup", *run.PRURL)
+	}
+	t.Logf("gh transcript:\n%sobserved pipeline error: %v\nstored PR URL: <nil>", ghLog, err)
+}
+
 func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
