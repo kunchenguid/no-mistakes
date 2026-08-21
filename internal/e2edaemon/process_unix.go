@@ -97,3 +97,25 @@ func terminateDaemonPID(pid int) error {
 	}
 	return fmt.Errorf("pid %d still alive after SIGKILL", pid)
 }
+
+func terminateProcessTree(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	if waitProcessExit(pid, 2*time.Second) {
+		return nil
+	}
+	if command, err := processCommandLine(pid); err != nil || strings.Contains(command, "<defunct>") {
+		return nil
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	if waitProcessExit(pid, 2*time.Second) {
+		return nil
+	}
+	if command, err := processCommandLine(pid); err != nil || strings.Contains(command, "<defunct>") {
+		return nil
+	}
+	return fmt.Errorf("process group %d still alive after SIGKILL", pid)
+}

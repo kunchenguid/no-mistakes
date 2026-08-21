@@ -28,11 +28,12 @@ type StepResult struct {
 }
 
 type ActiveRunStep struct {
-	RunID    string
-	RepoID   string
-	StepName types.StepName
-	Status   types.StepStatus
-	AgentPID *int
+	RunID       string
+	RepoID      string
+	WorktreeDir string
+	StepName    types.StepName
+	Status      types.StepStatus
+	AgentPID    *int
 }
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
@@ -92,8 +93,12 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 }
 
 func (d *DB) GetActiveRunSteps() ([]ActiveRunStep, error) {
+	placement := "''"
+	if d.hasColumn("runs", "worktree_dir") {
+		placement = "COALESCE(runs.worktree_dir, '')"
+	}
 	rows, err := d.sql.Query(`
-		SELECT runs.id, runs.repo_id, step_results.step_name, step_results.status, step_results.agent_pid
+		SELECT runs.id, runs.repo_id, `+placement+`, step_results.step_name, step_results.status, step_results.agent_pid
 		FROM runs
 		JOIN step_results ON step_results.run_id = runs.id
 		WHERE runs.status IN (?, ?)
@@ -106,7 +111,7 @@ func (d *DB) GetActiveRunSteps() ([]ActiveRunStep, error) {
 	var steps []ActiveRunStep
 	for rows.Next() {
 		var step ActiveRunStep
-		if err := rows.Scan(&step.RunID, &step.RepoID, &step.StepName, &step.Status, &step.AgentPID); err != nil {
+		if err := rows.Scan(&step.RunID, &step.RepoID, &step.WorktreeDir, &step.StepName, &step.Status, &step.AgentPID); err != nil {
 			return nil, fmt.Errorf("scan active run step: %w", err)
 		}
 		steps = append(steps, step)

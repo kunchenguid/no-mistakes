@@ -2,6 +2,8 @@ package e2edaemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,32 +61,40 @@ func (inv *Inventory) reapEntry(e Entry, result *ReapResult) error {
 		result.Stopped++
 	}
 
-	// Kill only PIDs that still match daemon run --root <exact home>.
-	targets := map[int]struct{}{}
-	if e.PID > 0 && MatchesDaemonRoot(e.PID, e.NMHome) {
-		targets[e.PID] = struct{}{}
-	}
-	if found, err := inv.daemonsForRoot(e.NMHome); err == nil {
-		for _, pid := range found {
-			targets[pid] = struct{}{}
+	if e.ProcessHash != "" {
+		if processMatchesHash(e.PID, e.ProcessHash) {
+			if err := terminateProcessTree(e.PID); err != nil {
+				return fmt.Errorf("kill candidate %d: %w", e.PID, err)
+			}
+			result.Killed++
 		}
-	}
-	for pid := range targets {
-		if !MatchesDaemonRoot(pid, e.NMHome) {
-			continue
+	} else {
+		targets := map[int]struct{}{}
+		if e.PID > 0 && MatchesDaemonRoot(e.PID, e.NMHome) {
+			targets[e.PID] = struct{}{}
 		}
-		if err := terminateMatched(pid); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("kill %d: %v", pid, err))
-			continue
+		if found, err := inv.daemonsForRoot(e.NMHome); err == nil {
+			for _, pid := range found {
+				targets[pid] = struct{}{}
+			}
 		}
-		result.Killed++
-	}
-	found, err := inv.daemonsForRoot(e.NMHome)
-	if err != nil {
-		return fmt.Errorf("confirm daemon exit: %w", err)
-	}
-	if len(found) > 0 {
-		return fmt.Errorf("matching daemon processes remain: %v", found)
+		for pid := range targets {
+			if !MatchesDaemonRoot(pid, e.NMHome) {
+				continue
+			}
+			if err := terminateMatched(pid); err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("kill %d: %v", pid, err))
+				continue
+			}
+			result.Killed++
+		}
+		found, err := inv.daemonsForRoot(e.NMHome)
+		if err != nil {
+			return fmt.Errorf("confirm daemon exit: %w", err)
+		}
+		if len(found) > 0 {
+			return fmt.Errorf("matching daemon processes remain: %v", found)
+		}
 	}
 
 	if err := inv.Unregister(e.ID); err != nil {
@@ -115,6 +125,7 @@ func isAllowedTempRoot(nmHome string) bool {
 	// tests use nmh-*; suite labs use nm-e2e-keepalive / private/tmp prefixes.
 	lower := strings.ToLower(nmHome)
 	if strings.Contains(lower, string(filepath.Separator)+"nm-e2e") ||
+		strings.Contains(lower, string(filepath.Separator)+"nm-eval-") ||
 		strings.Contains(lower, string(filepath.Separator)+"nmh-") ||
 		strings.Contains(lower, "/tmp/") ||
 		strings.Contains(lower, "/private/tmp/") ||
@@ -170,6 +181,16 @@ func terminateMatched(pid int) error {
 	return terminateDaemonPID(pid)
 }
 
+func processHash(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return hex.EncodeToString(sum[:])
+}
+
+func processMatchesHash(pid int, expected string) bool {
+	command, err := processCommandLine(pid)
+	return err == nil && expected != "" && processHash(command) == expected
+}
+
 // Ownership tracks one harness's inventory entry and concurrency slot.
 type Ownership struct {
 	Inv    *Inventory
@@ -218,6 +239,41 @@ func (o *Ownership) SyncPID(pid int) error {
 		return nil
 	}
 	return o.Inv.UpdatePID(o.ID, pid)
+}
+
+func (o *Ownership) SyncProcess(pid int) error {
+	if o == nil || o.Inv == nil {
+		return fmt.Errorf("e2edaemon: nil ownership")
+	}
+	if pid <= 0 {
+		return nil
+	}
+	var command string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		command, err = processCommandLine(pid)
+		if err == nil {
+			break
+		}
+		alive, aliveErr := processAlive(pid)
+		if aliveErr == nil && !alive {
+			// A short-lived candidate can exit before its synchronous start
+			// callback inspects it. It no longer needs reaper ownership.
+			return nil
+		}
+		if attempt < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if err != nil {
+		// Never signal a PID whose identity could not be established.
+		return fmt.Errorf("e2edaemon: inspect candidate process: %w", err)
+	}
+	if err := o.Inv.updateProcess(o.ID, pid, processHash(command)); err != nil {
+		_ = terminateProcessTree(pid)
+		return err
+	}
+	return nil
 }
 
 // StopBestEffort runs daemon stop for this home when a binary is known.

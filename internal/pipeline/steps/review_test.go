@@ -316,6 +316,57 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// Counterexample construction is a general review principle for any new or
+// changed logic, not a bug-fix-only reconstruction. Silently wrong values,
+// labels, and sets are named as risks. The principle stays short and general:
+// it must not become a checklist of incident-specific probes.
+func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"For any new or changed logic, construct at least one concrete input or state and trace it",
+		"wrong result without erroring",
+		"wrong value, label, or set without failing",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing general correctness principle %q:\n%s", want, prompt)
+		}
+	}
+
+	// Durable-fix reconstruction remains a paired, still-gated discipline.
+	if !strings.Contains(prompt, "For a claimed durable fix, reconstruct the concrete failing sequence") {
+		t.Errorf("review prompt dropped the durable-fix reconstruction pairing:\n%s", prompt)
+	}
+
+	for _, overfit := range []string{
+		"each read path and each write/refresh path",
+		"configured bound is changed after state already exists",
+		"greedy or order-dependent loop",
+	} {
+		if strings.Contains(prompt, overfit) {
+			t.Errorf("review prompt overfit an incident-specific probe %q:\n%s", overfit, prompt)
+		}
+	}
+}
+
 // The rereview that certifies a fix round examines code the pipeline itself
 // authored, moments earlier, to the previous review turn's prescription. The
 // prompt must reframe that code as unreviewed new work under the same
@@ -400,6 +451,114 @@ func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) 
 			t.Errorf("initial review prompt must not carry the fix-round provenance contract:\n%s", ag.calls[0].Prompt)
 		}
 	})
+}
+
+func TestFixRoundProvenanceClause_EmitsForUncertifiedRangeWhenNotFixing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UncertifiedFromSHA = "from-sha"
+	sctx.UncertifiedToSHA = "to-sha"
+	sctx.UncertifiedSourceRunID = "prior-run"
+	priorFindings := `{"findings":[{"id":"review-1","severity":"error","file":"main.go","line":4,"description":"reachable bug","action":"auto-fix"}]}`
+	sctx.UncertifiedPriorRounds = []*db.StepRound{{
+		Round:        1,
+		Trigger:      "initial",
+		FindingsJSON: &priorFindings,
+	}}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"Fix-round provenance:",
+		"Commits after from-sha through to-sha on this branch were authored by a previous run's fixer and were never certified",
+		"same adversarial standard",
+		"Prior findings and fix summaries are claims, not evidence",
+		"Previous run (uncertified fixer commits)",
+		"reachable bug",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("initial review missing uncertified provenance %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "This is a re-review after this run's automated fix round(s)") {
+		t.Errorf("uncertified initial review must not use the current-run fixer framing:\n%s", prompt)
+	}
+}
+
+func TestUncertifiedRange_PersistsThenFeedsNextInitialReview(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	fixAgent := &mockAgent{name: "test"}
+	fixCtx := newTestContextWithDBRecords(t, fixAgent, dir, baseSHA, headSHA, config.Commands{})
+	fixCtx.ReviewStartingHeadSHA = headSHA
+	if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(fixCtx, types.StepReview, "apply fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := fixCtx.DB.GetUncertifiedPipelineRange(fixCtx.Repo.ID, fixCtx.Run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted == nil || persisted.FromSHA != headSHA || persisted.ToSHA != fixCtx.Run.HeadSHA {
+		t.Fatalf("fixer commit did not persist range: %#v", persisted)
+	}
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	reviewAgent := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	nextRun, err := fixCtx.DB.InsertRun(fixCtx.Repo.ID, fixCtx.Run.Branch, fixCtx.Run.HeadSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContext(t, reviewAgent, dir, baseSHA, fixCtx.Run.HeadSHA, config.Commands{})
+	sctx.DB = fixCtx.DB
+	sctx.Repo = fixCtx.Repo
+	sctx.Run = nextRun
+	sctx.Fixing = false
+	pipeline.BindUncertifiedPipelineRange(sctx)
+	if sctx.UncertifiedFromSHA != persisted.FromSHA || sctx.UncertifiedToSHA != persisted.ToSHA {
+		t.Fatalf("next initial review bound from=%q to=%q, want from=%q to=%q", sctx.UncertifiedFromSHA, sctx.UncertifiedToSHA, persisted.FromSHA, persisted.ToSHA)
+	}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewAgent.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(reviewAgent.calls))
+	}
+	prompt := reviewAgent.calls[0].Prompt
+	want := fmt.Sprintf("Commits after %s through %s on this branch were authored by a previous run's fixer and were never certified", persisted.FromSHA, persisted.ToSHA)
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("next initial review missing persisted provenance %q:\n%s", want, prompt)
+	}
+	if sctx.Fixing {
+		t.Fatal("next initial review ran in fix mode")
+	}
+	if strings.Contains(prompt, "This is a re-review after this run's automated fix round(s)") {
+		t.Fatalf("next initial review used current-run fixer framing:\n%s", prompt)
+	}
 }
 
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
@@ -535,6 +694,11 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 				if !strings.Contains(prompt, `you MUST emit an "ask-user" finding`) {
 					t.Errorf("conformance clause missing the ask-user obligation:\n%s", prompt)
 				}
+				if !strings.Contains(prompt, "Conformance does not replace correctness review") {
+					t.Errorf("conformance clause missing the correctness-is-not-conformance note:\n%s", prompt)
+				}
+			} else if strings.Contains(prompt, "Conformance does not replace correctness review") {
+				t.Errorf("inferred intent must not carry the conformance-vs-correctness note:\n%s", prompt)
 			}
 		})
 	}

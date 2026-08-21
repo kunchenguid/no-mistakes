@@ -2,11 +2,14 @@ package gatecontext_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -158,6 +161,54 @@ func TestInspectorUsesAuthenticatedProcessAncestryAfterCWDChange(t *testing.T) {
 	}
 }
 
+// TestInspectorAttributesRunInConfiguredWorktreeRoot covers a repository whose
+// run worktrees the operator placed in a directory of their own
+// (worktree_roots): the path no longer spells out <NM_HOME>/worktrees, so
+// run/phase attribution comes from the placement the run recorded. Without it
+// the caller is still refused as managed Git, but the refusal cannot name what
+// it is standing in - and reading the record rather than the configuration is
+// what keeps that naming working when the global config cannot be read at all.
+func TestInspectorAttributesRunInConfiguredWorktreeRoot(t *testing.T) {
+	f := newTopologyFixture(t)
+	runRecord, err := f.d.InsertRun(f.repoID, "feature", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := f.d.UpdateRunStatus(runRecord.ID, types.RunRunning); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	step, err := f.d.InsertStepResult(runRecord.ID, types.StepDocument)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := f.d.StartStep(step.ID); err != nil {
+		t.Fatalf("start step: %v", err)
+	}
+
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	managed := filepath.Join(root, runRecord.ID)
+	run(t, f.gate, "git", "worktree", "add", "--detach", managed, "refs/heads/feature")
+	if err := f.d.SetRunWorktreeDir(runRecord.ID, managed); err != nil {
+		t.Fatalf("record placement: %v", err)
+	}
+	// An unreadable global config must not cost the refusal its run metadata.
+	if err := os.WriteFile(f.p.ConfigFile(), []byte("worktree_roots: [not, a, mapping\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	inspector := gatecontext.Inspector{DB: f.d, Paths: f.p}
+	got, err := inspector.Inspect(context.Background(), gatecontext.Request{CWD: managed})
+	if err != nil {
+		t.Fatalf("inspect configured worktree: %v", err)
+	}
+	if !got.Nested || !got.ManagedGit {
+		t.Fatalf("worktree in a configured root not rejected: %+v", got)
+	}
+	if got.RunID != runRecord.ID || got.Phase != types.StepDocument {
+		t.Fatalf("run attribution = (%q, %q), want (%q, %q)", got.RunID, got.Phase, runRecord.ID, types.StepDocument)
+	}
+}
+
 func TestInspectorConcurrentClassificationIsDeterministic(t *testing.T) {
 	f := newTopologyFixture(t)
 	inspector := gatecontext.Inspector{DB: f.d, Paths: f.p}
@@ -197,6 +248,53 @@ func assertAllowed(t *testing.T, inspector gatecontext.Inspector, cwd, label str
 	}
 	if got.Nested {
 		t.Fatalf("%s rejected: %+v", label, got)
+	}
+}
+
+// TestInspectorClassifiesAgainstADatabaseOlderThanTheBinary is the upgrade path.
+// This classifier runs in the CLI preflight of every pipeline-control command,
+// before anything opens the database read-write - so on the first invocation
+// after an upgrade it reads a schema this binary has not migrated, through a
+// read-only handle that deliberately will not migrate it. A query naming a column
+// that schema lacks would fail here, and since the commands it guards include the
+// ones that perform the migration, the whole CLI would be stuck until the file was
+// repaired by hand.
+func TestInspectorClassifiesAgainstADatabaseOlderThanTheBinary(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.sqlite")
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The runs table as an older release wrote it: no worktree_dir, and an
+	// active run in it.
+	if _, err := legacy.Exec(`
+		CREATE TABLE repos (id TEXT PRIMARY KEY, working_path TEXT NOT NULL UNIQUE, upstream_url TEXT NOT NULL, default_branch TEXT NOT NULL DEFAULT 'main', created_at INTEGER NOT NULL);
+		CREATE TABLE runs (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL, branch TEXT NOT NULL, head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', pr_url TEXT, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+		CREATE TABLE step_results (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, step_name TEXT NOT NULL, step_order INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', exit_code INTEGER, duration_ms INTEGER, log_path TEXT, findings_json TEXT, error TEXT, started_at INTEGER, completed_at INTEGER, last_activity_at INTEGER, last_activity TEXT, agent_pid INTEGER, auto_fix_limit INTEGER);
+		INSERT INTO repos VALUES ('repo-1', '/work/repo', 'https://example.com/repo.git', 'main', 1);
+		INSERT INTO runs VALUES ('run-1', 'repo-1', 'feature', 'head', 'base', 'running', NULL, NULL, 1, 1);
+		INSERT INTO step_results VALUES ('step-1', 'run-1', 'review', 1, 'running', NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL);
+	`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readOnly, err := db.OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open the pre-upgrade database read-only: %v", err)
+	}
+	defer readOnly.Close()
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	inspector := gatecontext.Inspector{DB: readOnly, Paths: p}
+	if _, err := inspector.Inspect(context.Background(), gatecontext.Request{CWD: t.TempDir(), PeerPID: os.Getpid()}); err != nil {
+		t.Fatalf("classification failed against a schema older than this binary, which would block every pipeline-control command: %v", err)
 	}
 }
 

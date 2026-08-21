@@ -95,6 +95,9 @@ func TestParseCodexEvents_ExtractsMetricsAndReasoning(t *testing.T) {
 	if usage.ReasoningTokens != 7 {
 		t.Errorf("ReasoningTokens = %d, want 7", usage.ReasoningTokens)
 	}
+	if !usage.ReasoningReported {
+		t.Error("ReasoningReported = false, want true for turn.completed usage")
+	}
 	got := metrics.metrics()
 	if got.ModelRoundtrips != 2 || got.ToolCalls != 1 {
 		t.Errorf("roundtrips/tools = %d/%d, want 2/1", got.ModelRoundtrips, got.ToolCalls)
@@ -114,7 +117,7 @@ func TestParseCodexEvents_MissingUsageLeavesZero(t *testing.T) {
 	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, metrics); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if usage.InputTokens != 0 || usage.ReasoningTokens != 0 {
+	if usage.InputTokens != 0 || usage.ReasoningTokens != 0 || usage.ReasoningReported {
 		t.Fatalf("usage should be zero with no turn.completed: %+v", usage)
 	}
 }

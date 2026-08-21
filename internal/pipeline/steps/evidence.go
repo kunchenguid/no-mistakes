@@ -1,14 +1,10 @@
 package steps
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
-)
 
-func testEvidenceRoot() string {
-	return filepath.Join(os.TempDir(), "no-mistakes-evidence")
-}
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+)
 
 // testEvidenceDir is where the test step writes a run's evidence artifacts.
 //
@@ -18,8 +14,17 @@ func testEvidenceRoot() string {
 // repository's orphan evidence branch instead, which is what keeps screenshots
 // and logs out of the default branch's history while still linking them from
 // the PR.
-func testEvidenceDir(runID string) string {
-	return filepath.Join(testEvidenceRoot(), runID)
+//
+// The path itself is resolved once by the executor (see
+// pipeline.StepContext.EvidenceDir) and read from the step context here. Steps
+// must never rebuild it from os.TempDir(): on Linux the daemon's TMPDIR is
+// unset, so that resolved to the shared /tmp - a fixed name nobody reaped, on
+// a filesystem current Ubuntu backs with RAM.
+func testEvidenceDir(sctx *pipeline.StepContext) string {
+	if sctx == nil {
+		return ""
+	}
+	return sctx.EvidenceDir
 }
 
 // evidenceBranchSlug turns a branch name into readable, filesystem-safe path

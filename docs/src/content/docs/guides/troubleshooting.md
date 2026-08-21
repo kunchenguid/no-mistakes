@@ -69,6 +69,11 @@ no-mistakes daemon start
 
 If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. The error message itself includes a `(run 'no-mistakes daemon start' to recover)` hint - run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
 
+### "configured worktree placement is unusable"
+
+The daemon refuses to start while any [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry names a directory it cannot create run worktrees in, and `~/.no-mistakes/logs/daemon.log` names the offending entry.
+Because every command starts the daemon, that takes the whole CLI down until the entry is fixed: point it at a directory outside `NM_HOME` and outside every gated checkout, or remove it, then run `no-mistakes daemon start`.
+
 ### Managed service logs
 
 - **macOS (launchd):** `launchctl list | grep no-mistakes` and check `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`
@@ -150,7 +155,7 @@ Pipeline prompts steer agents to keep intentional writes inside the disposable w
 This reduces macOS App Management prompts from agent-invoked commands, but it is not an OS sandbox.
 
 If you still see prompts, check the step log for commands that intentionally write outside the worktree and move that setup into your normal development environment or an explicit repo-local command.
-Requested test evidence may still be written under the managed temporary `no-mistakes-evidence` directory. On GitHub, it is published to the push-target repository's orphan evidence branch when `test.evidence.store_in_repo` is enabled; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) lists the cases that leave it local instead.
+Requested test evidence may still be written under the managed evidence directory (`<NM_HOME>/evidence/<run-id>` by default). On GitHub, it is published to the push-target repository's orphan evidence branch when `test.evidence.store_in_repo` is enabled; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) lists the cases that leave it local instead.
 Normal tool temp or cache writes can still happen outside the worktree.
 Testing prompts ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before completion.
 
@@ -222,21 +227,21 @@ Symptom: pipeline completes but the PR step shows `skipped`.
 
 Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requirements. Most common causes:
 
-- `gh` or `glab` not installed
-- `gh auth status` shows not authenticated
+- `gh`, `glab`, or `forgejo-axi` not installed
+- The provider CLI reports that it is not authenticated
 - Bitbucket env vars not set in the daemon's environment
-- Upstream is on a host that isn't supported (GitHub, GitLab, `bitbucket.org`, or Azure DevOps)
+- Upstream is not one of the hosts listed in Provider Integration
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
-- A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- You pushed the default branch (PR step always skips on the default branch)
+- A non-GitHub repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
+- You pushed the PR base branch (PR step always skips there; this is the repository's default branch, or the configured [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when set)
 
 ## CI step stuck or timed out
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
 Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
-Once the CI monitor reports readiness and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears. A trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) can establish readiness for a zero-check repository; an empty forge response without that declaration is not ready.
+Once the CI monitor reports readiness and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears. A trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) can establish readiness for a zero-check repository; an empty forge response without that declaration is not ready. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the exact readiness and signal-clearing rules, including GitHub Actions runs that do not appear in the PR check rollup.
 
 How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
@@ -268,7 +273,7 @@ Start a new run only after abort confirms the terminal state; see the [abort com
 
 ## Worktree won't clean up
 
-Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` sticks around after a run ends.
+Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` - or `<root>/<runID>` when the repository has a [configured worktree root](/no-mistakes/reference/global-config/#worktree_roots) - sticks around after a run ends.
 
 The daemon removes worktrees at run completion, and also on daemon startup (crash recovery). If one is still there:
 
@@ -294,6 +299,8 @@ no-mistakes daemon stop --force
 rm -rf ~/.no-mistakes/worktrees ~/.no-mistakes/servers ~/.no-mistakes/socket ~/.no-mistakes/daemon.pid ~/.no-mistakes/daemon.lock
 no-mistakes daemon start
 ```
+
+If [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) places a repository's runs outside `NM_HOME`, delete the leftover `<root>/<run id>` directories there as well - only those; the root is your own directory and holds nothing else of no-mistakes'.
 
 This keeps your gate repos, database, and config but clears transient state. For a full wipe, see the [Uninstall section](/no-mistakes/start-here/installation/#uninstall).
 Wedged state often means a run is stuck `pending` or `running`, so `daemon stop` refuses without `--force`; only force through once you've confirmed it's fine for the listed runs to fail.

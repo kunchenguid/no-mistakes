@@ -981,7 +981,7 @@ func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
 
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode"} {
 		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
 			t.Fatalf("remove fake %s agent: %v", name, err)
 		}

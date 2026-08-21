@@ -1,0 +1,17 @@
+{
+  "host": {"url":"https://forge.example:3443/git","api_url":"https://forge.example:3443/git/api/v1"},
+  "auth": {"configured":true,"authenticated":true,"source":"FORGEJO_TEST_TOKEN"},
+  "server": {"version":"16.0.1","forgejo":true},
+  "capabilities": {
+    "pull_requests":true,
+    "commit_statuses":true,
+    "branch_protection":true,
+    "expected_head_merge":true,
+    "actions_job_logs":true,
+    "runs":true,
+    "run_jobs":true,
+    "run_cancel":true,
+    "run_artifacts":true,
+    "probe":{"source":"swagger","complete":true}
+  }
+}

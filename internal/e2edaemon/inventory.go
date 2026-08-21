@@ -34,6 +34,7 @@ type Entry struct {
 	NMHome       string    `json:"nm_home"`
 	PID          int       `json:"pid"`
 	NMBin        string    `json:"nm_bin,omitempty"`
+	ProcessHash  string    `json:"process_hash,omitempty"`
 	OwnerPID     int       `json:"owner_pid"`
 	RegisteredAt time.Time `json:"registered_at"`
 }
@@ -149,6 +150,10 @@ func (inv *Inventory) Register(id, nmHome, nmBin string, pid, ownerPID int) erro
 
 // UpdatePID sets the recorded pid for id (or nmHome match).
 func (inv *Inventory) UpdatePID(id string, pid int) error {
+	return inv.updateProcess(id, pid, "")
+}
+
+func (inv *Inventory) updateProcess(id string, pid int, processHash string) error {
 	if inv == nil {
 		return fmt.Errorf("e2edaemon: nil inventory")
 	}
@@ -161,6 +166,7 @@ func (inv *Inventory) UpdatePID(id string, pid int) error {
 		for i := range file.Entries {
 			if file.Entries[i].ID == id {
 				file.Entries[i].PID = pid
+				file.Entries[i].ProcessHash = processHash
 				return nil
 			}
 		}

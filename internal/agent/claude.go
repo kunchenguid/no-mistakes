@@ -77,7 +77,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	// bytes out of argv and lets Cmd own the bounded concurrent copy, including
 	// EOF, early-child-exit, cancellation, and WaitDelay cleanup paths.
 	cmd.Stdin = strings.NewReader(opts.Prompt)
-	cmd.Env = gitSafeEnv(opts.CWD)
+	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
 	var stderrBuf []byte

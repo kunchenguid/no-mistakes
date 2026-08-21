@@ -123,7 +123,7 @@ func (s *Service) SupersedeStaleCustody(ctx context.Context, oldRunID, laterRunI
 
 	remoteStagingRef := base + "/remote-staging"
 	branch := evidence.old.Branch
-	stagingCtx, cancelStaging := context.WithTimeout(ctx, s.networkBudget())
+	stagingCtx, cancelStaging := context.WithTimeout(ctx, s.remoteTimeout())
 	stagingErr := git.FetchRemoteBranchToPrivateRef(stagingCtx, s.workDir(), evidence.targetURL, branch, remoteStagingRef)
 	cancelStaging()
 	if stagingErr != nil {
@@ -226,7 +226,7 @@ func (s *Service) SupersedeStaleCustody(ctx context.Context, oldRunID, laterRunI
 	// Remote refs have no compare-and-swap read primitive. This final fresh read
 	// is their linearization observation; a later remote move is new external
 	// state and cannot make adopting the already anchored exact push lose work.
-	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.remoteTimeout())
 	liveRemote, remoteErr := git.LsRemote(remoteCtx, s.workDir(), evidence.targetURL, evidence.targetRef)
 	cancelRemote()
 	if remoteErr != nil || liveRemote != attempt.RemoteHead {
@@ -304,7 +304,7 @@ func (s *Service) buildStaleSupersessionEvidence(ctx context.Context, state Stat
 	if err != nil {
 		return blocked("blocked_supersede_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
 	}
-	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.remoteTimeout())
 	remoteHead, remoteErr := git.LsRemote(remoteCtx, s.workDir(), targetURL, targetRef)
 	cancelRemote()
 	if remoteErr != nil {
@@ -451,7 +451,7 @@ func (s *Service) recheckStaleSupersession(ctx context.Context, e *staleSuperses
 		blocked := blockedSupersession(e.state, staleSupersessionTransition(e), "blocked_supersede_assumptions_changed", "a different run became the authoritative branch owner while stale custody was being prepared; safety anchors remain intact")
 		return &blocked
 	}
-	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.remoteTimeout())
 	liveRemote, remoteErr := git.LsRemote(remoteCtx, s.workDir(), e.targetURL, e.targetRef)
 	cancelRemote()
 	if remoteErr != nil || liveRemote != attempt.RemoteHead {
@@ -502,7 +502,7 @@ func (s *Service) completedStaleSupersession(ctx context.Context, state State, o
 	if targetErr != nil {
 		return blocked("blocked_supersede_target_ambiguous", "the configured target identity is ambiguous; no files or refs were changed")
 	}
-	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.remoteTimeout())
 	remoteHead, remoteErr := git.LsRemote(remoteCtx, s.workDir(), targetURL, attempt.TargetRef)
 	cancelRemote()
 	gateHead, gateErr := git.Run(ctx, s.GateDir, "rev-parse", attempt.TargetRef+"^{commit}")

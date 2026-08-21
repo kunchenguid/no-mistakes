@@ -1,7 +1,0 @@
-non-repo cwd: /
-resolved repo slug: test/repo
-accepted command: gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt
-accepted command: gh pr view 123 --repo test/repo --json state --jq .state
-GetChecks returned 1 check named "build"
-GetPRState returned "MERGED"
-fake gh accepted both commands only because --repo test/repo was present

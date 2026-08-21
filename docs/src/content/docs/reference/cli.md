@@ -30,14 +30,16 @@ Initialize or refresh the gate for the current repository.
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --worktree-root ~/work/my-repo-runs
 ```
 
-| Flag         | Type     | Default | Description                                                                   |
-| ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
-| `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| Flag              | Type     | Default | Description                                                                                      |
+| ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--worktree-root` | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 
 Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
-`init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
+`init` writes no skill files into the repo; the user-level copies serve Claude Code (`~/.claude/skills`) and agents that use the vendor-neutral `~/.agents/skills` convention (Codex, OpenCode, Rovo Dev, and Pi) across all repos. Grok Build is a pipeline runner and does not consume this installed skill.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
 The gate advertises Git push-option support, so you can skip steps for one push with `git push -o no-mistakes.skip=test,lint no-mistakes <branch>`.
@@ -45,6 +47,16 @@ The gate advertises Git push-option support, so you can skip steps for one push 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
 The push, rebase branch-sync, and CI auto-fix pushes use the fork, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+
+`--worktree-root` is for directory-scoped toolchain configuration (mise, direnv), which resolves by path ancestry and so never reaches a run worktree under `NM_HOME`.
+The flag resolves the directory, then prints the [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry to add to `~/.no-mistakes/config.yaml`; the global config is hand-maintained, so `init` never rewrites it for you.
+When the file already has a `worktree_roots:` block, `init` prints just the entry line to add under it - a second `worktree_roots:` key would make the config unparseable and stop the daemon.
+Runs are created at `<dir>/<run id>` once the entry is in place; no-mistakes only ever touches the directories its own run records name, and everything else in that directory is left alone.
+`init` rejects the directories the daemon would refuse to start on, so the entry it prints is always one you can paste: a directory inside `NM_HOME`, inside the repository being initialized or any other gated checkout, already used by another checkout (it names that checkout), or that exists as a non-directory.
+
+Two refusals apply to every `init`, with or without the flag.
+It refuses to register a checkout that contains a directory an existing [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry points at, naming that entry, because registering it is what would make the placement unusable and stop the daemon; place the checkout elsewhere or repoint the entry first.
+It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
@@ -441,6 +453,12 @@ no-mistakes runs [--limit <n>]
 
 Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
 
+## no-mistakes eval
+
+Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model in isolation, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
+
+See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
+
 ## no-mistakes stats
 
 Show historical usage stats across all repos.
@@ -479,7 +497,7 @@ Checks:
 - Data directory (`~/.no-mistakes/`)
 - SQLite database
 - Daemon status
-- Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
+- Agent runners: native binaries `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
 - ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 
@@ -489,7 +507,7 @@ The standalone runner rows inspect default binary names; the `cursor` row report
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
-`doctor` checks `gh` and `az` availability. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`. For Azure DevOps PR and CI steps, install the `azure-devops` extension and provide a PAT.
+`doctor` checks `gh` and `az` availability. [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, and the Azure DevOps extension and PAT.
 
 ## no-mistakes update
 

@@ -253,7 +253,7 @@ func TestReleaseUnavailableStagingFetchDoesNotShareTheRefReadBudget(t *testing.T
 	f := newRecoverFixture(t, types.RunFailed)
 	makePreservedHeadUnavailable(t, f)
 	budget := 2 * time.Second
-	f.service.refreshBudget = budget
+	f.service.RemoteTimeout = budget
 	f.service.afterUnavailableReleaseProbe = func() { time.Sleep(budget + budget/4) }
 
 	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)

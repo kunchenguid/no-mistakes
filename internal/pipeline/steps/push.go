@@ -39,18 +39,17 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		}
 	}
 
-	// Commit any uncommitted changes from agent fixes. Test evidence is
-	// deliberately not among them: it is collected outside the worktree and
-	// published to the orphan evidence branch (internal/evidence), so no
-	// artifact ever enters the pushed branch or the default branch's history.
+	// Commit any uncommitted changes from pipeline agents or the formatter. Test
+	// evidence is deliberately not among them: it is collected outside the
+	// worktree and published to the orphan evidence branch (internal/evidence),
+	// so no artifact ever enters the pushed branch or the default branch's history.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
+		if err := commitPipelineCorrection(ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {
 			return nil, fmt.Errorf("commit agent changes: %w", err)
 		}
 		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)

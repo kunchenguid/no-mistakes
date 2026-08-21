@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPiAgent_BuildArgs(t *testing.T) {
@@ -358,6 +359,28 @@ exit 2
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected stderr in error message, got: %v", err)
+	}
+}
+
+func TestPiAgent_RunSurfacesStdinWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture relies on a child exiting without reading stdin")
+	}
+	dir := t.TempDir()
+	bin := writeFakePi(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":"early reply"}]}'
+printf 'pi rejected the prompt\n' >&2
+`, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pa := &piAgent{bin: bin}
+	_, err := pa.Run(ctx, RunOpts{Prompt: strings.Repeat("x", 2*1024*1024), CWD: dir})
+	if err == nil || !strings.Contains(err.Error(), "pi stdin") {
+		t.Fatalf("Run error = %v, want pi stdin write failure", err)
+	}
+	if !strings.Contains(err.Error(), "pi rejected the prompt") {
+		t.Fatalf("Run error = %v, want child stderr in stdin write failure", err)
 	}
 }
 

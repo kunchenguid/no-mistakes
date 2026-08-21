@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
 
-func runCodex(args []string, scenario *Scenario) int {
-	prompt := extractCodexPrompt(args)
+func runCodex(args []string, promptReader io.Reader, scenario *Scenario) int {
+	prompt, err := extractCodexPrompt(args, promptReader)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: codex prompt: %v\n", err)
+		return 1
+	}
 	logInvocation("codex", prompt, args)
 
 	action := scenario.Match(prompt)
@@ -172,19 +177,19 @@ func filterStructuredToSchema(structured map[string]any, schemaPath string) (map
 	return filtered, nil
 }
 
-// extractCodexPrompt finds the prompt positional. Real codex argv is
-// `codex exec [user-flags...] <prompt> --json [...]` for a fresh session and
-// `codex exec resume [user-flags...] <session-id> <prompt> --json [...]` for
-// a session-resume turn, so on resume the prompt is the positional after the
-// session id.
-func extractCodexPrompt(args []string) string {
+// extractCodexPrompt mirrors Codex's stdin prompt contract. Real codex argv is
+// `codex exec [user-flags...] - --json [...]` for a fresh session and
+// `codex exec resume [user-flags...] <session-id> - --json [...]` for a
+// resumed session; in both cases the complete prompt is read to EOF from stdin.
+func extractCodexPrompt(args []string, promptReader io.Reader) (string, error) {
 	flagsWithValues := map[string]bool{
 		"-m": true, "--model": true,
 		"--sandbox": true, "--ask-for-approval": true,
 		"--config": true, "--profile": true,
 		"--output-schema":    true,
 		"--reasoning-effort": true, "--reasoning-summary": true,
-		"-c": true, "--cd": true,
+		"--color": true,
+		"-c":      true, "--cd": true,
 	}
 	start := 0
 	for i, a := range args {
@@ -200,19 +205,24 @@ func extractCodexPrompt(args []string) string {
 			i++
 			continue
 		}
-		if len(a) > 0 && a[0] == '-' {
+		if len(a) > 1 && a[0] == '-' {
 			continue
 		}
 		positionals = append(positionals, a)
 	}
 	if len(positionals) == 0 {
-		return ""
+		return "", fmt.Errorf("missing stdin prompt marker")
 	}
 	if positionals[0] == "resume" {
-		if len(positionals) >= 3 {
-			return positionals[2] // resume <session-id> <prompt>
+		if len(positionals) != 3 || positionals[2] != "-" {
+			return "", fmt.Errorf("resume missing stdin prompt marker")
 		}
-		return "" // resume without id+prompt is not a shape no-mistakes emits
+	} else if len(positionals) != 1 || positionals[0] != "-" {
+		return "", fmt.Errorf("missing stdin prompt marker")
 	}
-	return positionals[0]
+	prompt, err := io.ReadAll(promptReader)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	return string(prompt), nil
 }

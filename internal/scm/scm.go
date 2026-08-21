@@ -2,9 +2,15 @@ package scm
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +26,7 @@ const (
 	ProviderGitLab      Provider = "gitlab"
 	ProviderBitbucket   Provider = "bitbucket"
 	ProviderAzureDevOps Provider = "azuredevops"
+	ProviderForgejo     Provider = "forgejo"
 	ProviderUnknown     Provider = "unknown"
 )
 
@@ -28,61 +35,89 @@ type sshHostnameLookup func(context.Context, string) (string, error)
 // DetectProvider identifies the SCM provider for url. SSH host aliases are
 // resolved through the user's SSH configuration before detection falls back to
 // ProviderUnknown.
-func DetectProvider(url string) Provider {
-	return DetectProviderContext(context.Background(), url)
+func DetectProvider(remoteURL string) Provider {
+	return DetectProviderContext(context.Background(), remoteURL)
 }
 
 // DetectProviderContext is DetectProvider with caller-controlled cancellation.
-func DetectProviderContext(ctx context.Context, url string) Provider {
-	return detectProvider(ctx, url, lookupSSHHostname)
+func DetectProviderContext(ctx context.Context, remoteURL string) Provider {
+	return detectProvider(ctx, remoteURL, lookupSSHHostname)
 }
 
-func detectProvider(ctx context.Context, url string, lookup sshHostnameLookup) Provider {
-	if provider := detectProviderWithoutSSH(url); provider != ProviderUnknown {
-		return provider
-	}
+// DetectProviderWithForgejoBaseURL detects a provider while allowing an
+// explicit forgejo-axi base URL to identify an otherwise-unrecognizable
+// self-hosted Forgejo origin. Known hosted providers keep precedence so a
+// stray Forgejo setting cannot reroute GitHub, GitLab, Bitbucket, or Azure.
+func DetectProviderWithForgejoBaseURL(remoteURL, forgejoBaseURL string) Provider {
+	return DetectProviderContextWithForgejoBaseURL(context.Background(), remoteURL, forgejoBaseURL)
+}
 
-	host := resolveHost(ctx, url, lookup)
-	if host == "" || strings.EqualFold(host, ExtractHost(url)) {
+// DetectProviderContextWithForgejoBaseURL is DetectProviderWithForgejoBaseURL
+// with caller-controlled cancellation for SSH host alias resolution.
+func DetectProviderContextWithForgejoBaseURL(ctx context.Context, remoteURL, forgejoBaseURL string) Provider {
+	return detectProviderWithForgejoBaseURL(ctx, remoteURL, forgejoBaseURL, lookupSSHHostname)
+}
+
+func detectProvider(ctx context.Context, remoteURL string, lookup sshHostnameLookup) Provider {
+	return detectProviderWithForgejoBaseURL(ctx, remoteURL, os.Getenv("FORGEJO_BASE_URL"), lookup)
+}
+
+func detectProviderWithForgejoBaseURL(ctx context.Context, remoteURL, forgejoBaseURL string, lookup sshHostnameLookup) Provider {
+	originalHost := ExtractHost(remoteURL)
+	host := resolveHost(ctx, remoteURL, lookup)
+	if host == "" {
 		return ProviderUnknown
 	}
-	return detectProviderWithoutSSH(host)
+	if provider := detectHostedProvider(host); provider != ProviderUnknown {
+		return provider
+	}
+	if glabKnowsHost(host) {
+		return ProviderGitLab
+	}
+	if ghKnowsHost(host) {
+		return ProviderGitHub
+	}
+	if strings.EqualFold(host, originalHost) {
+		if forgejoBaseMatchesRemote(forgejoBaseURL, remoteURL) {
+			return ProviderForgejo
+		}
+	} else if forgejoBaseMatchesResolvedRemote(forgejoBaseURL, remoteURL, host) {
+		return ProviderForgejo
+	}
+	if host == "codeberg.org" || strings.Contains(host, "forgejo") {
+		return ProviderForgejo
+	}
+	return detectLegacyProviderHost(host)
 }
 
-func detectProviderWithoutSSH(url string) Provider {
-	lower := strings.ToLower(url)
+func detectHostedProvider(host string) Provider {
 	switch {
-	case strings.Contains(lower, "github.com"):
+	case host == "github.com" || strings.HasSuffix(host, ".github.com"):
 		return ProviderGitHub
-	case strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "gitlab."):
+	case host == "gitlab.com" || strings.HasSuffix(host, ".gitlab.com"):
 		return ProviderGitLab
-	case strings.Contains(lower, "bitbucket.org"):
+	case host == "bitbucket.org" || strings.HasSuffix(host, ".bitbucket.org"):
 		return ProviderBitbucket
-	case strings.Contains(lower, "dev.azure.com") || strings.Contains(lower, "visualstudio.com"):
-		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
-		// the legacy vs-ssh.visualstudio.com SSH host.
+	case host == "dev.azure.com" || strings.HasSuffix(host, ".dev.azure.com") || strings.HasSuffix(host, ".visualstudio.com"):
 		return ProviderAzureDevOps
+	default:
+		return ProviderUnknown
 	}
+}
 
-	// Fallback for self-hosted GitLab instances whose hostname carries no
-	// "gitlab" marker: consult the glab CLI's configured hosts. If the remote's
-	// host (or a host's api_host) is one glab is configured to talk to, treat it
-	// as GitLab. This reads whatever the user configured at runtime; no host is
-	// hardcoded.
-	//
-	// Fallback for GitHub Enterprise Server instances: consult the gh CLI's
-	// configured hosts (hosts.yml). If the remote's host is one gh is
-	// authenticated with, treat it as GitHub.
-	if host := ExtractHost(url); host != "" {
-		if glabKnowsHost(host) {
-			return ProviderGitLab
-		}
-		if ghKnowsHost(host) {
-			return ProviderGitHub
-		}
+func detectLegacyProviderHost(host string) Provider {
+	switch {
+	case strings.Contains(host, "github.com"):
+		return ProviderGitHub
+	case strings.Contains(host, "gitlab.com") || strings.Contains(host, "gitlab."):
+		return ProviderGitLab
+	case strings.Contains(host, "bitbucket.org"):
+		return ProviderBitbucket
+	case strings.Contains(host, "dev.azure.com") || strings.Contains(host, "visualstudio.com"):
+		return ProviderAzureDevOps
+	default:
+		return ProviderUnknown
 	}
-
-	return ProviderUnknown
 }
 
 // ResolveHost returns the canonical host for a remote. For SSH remotes it
@@ -146,6 +181,149 @@ func lookupSSHHostname(ctx context.Context, alias string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func forgejoBaseMatchesRemote(baseRaw, remoteRaw string) bool {
+	_, base, err := NormalizeForgejoBaseURL(baseRaw)
+	if err != nil {
+		return false
+	}
+	remoteHost, remotePath, remoteScheme, ok := providerRemoteParts(remoteRaw)
+	if !ok {
+		return false
+	}
+	if remoteScheme == "http" || remoteScheme == "https" {
+		if normalizedHTTPAuthority(remoteScheme, remoteHost) != normalizedHTTPAuthority(base.Scheme, base.Host) {
+			return false
+		}
+	} else if !strings.EqualFold(stripPort(remoteHost), base.Hostname()) {
+		// SSH clone ports commonly differ from the Forgejo web port.
+		return false
+	}
+	return forgejoPathsMatch(base.Path, remotePath)
+}
+
+func normalizedHTTPAuthority(scheme, authority string) string {
+	parsed := &url.URL{Host: authority}
+	hostname := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if (strings.EqualFold(scheme, "http") && port == "80") || (strings.EqualFold(scheme, "https") && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	if strings.Contains(hostname, ":") {
+		return "[" + hostname + "]"
+	}
+	return hostname
+}
+
+func forgejoBaseMatchesResolvedRemote(baseRaw, remoteRaw, resolvedHost string) bool {
+	_, base, err := NormalizeForgejoBaseURL(baseRaw)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(stripPort(resolvedHost), base.Hostname()) {
+		return false
+	}
+	_, remotePath, _, ok := providerRemoteParts(remoteRaw)
+	return ok && forgejoPathsMatch(base.Path, remotePath)
+}
+
+func forgejoPathsMatch(basePath, remotePath string) bool {
+	prefix := providerPathParts(basePath)
+	remote := providerPathParts(remotePath)
+	if len(remote) == len(prefix)+4 && remote[len(remote)-2] == "pulls" {
+		number, err := strconv.Atoi(remote[len(remote)-1])
+		if err != nil || number <= 0 {
+			return false
+		}
+		remote = remote[:len(remote)-2]
+	}
+	if len(remote) != len(prefix)+2 {
+		return false
+	}
+	for i := range prefix {
+		if remote[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func providerRemoteParts(raw string) (host, remotePath, scheme string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return "", "", "", false
+		}
+		scheme = strings.ToLower(parsed.Scheme)
+		if !ForgejoRemoteSchemeSupported(scheme) {
+			return "", "", "", false
+		}
+		return parsed.Host, parsed.Path, scheme, true
+	}
+	colon := strings.Index(raw, ":")
+	if colon <= 0 {
+		return "", "", "", false
+	}
+	host = raw[:colon]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	return host, raw[colon+1:], "ssh", host != ""
+}
+
+func providerPathParts(raw string) []string {
+	raw = strings.Trim(strings.TrimSpace(raw), "/")
+	raw = strings.TrimSuffix(raw, ".git")
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, "/")
+}
+
+func NormalizeForgejoBaseURL(raw string) (string, *url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid Forgejo base URL %q", raw)
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	hostname := strings.ToLower(parsed.Hostname())
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || hostname == "" {
+		return "", nil, fmt.Errorf("invalid Forgejo base URL %q", raw)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", nil, errors.New("Forgejo base URL must not contain credentials, a query, or a fragment")
+	}
+	port := parsed.Port()
+	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		parsed.Host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		parsed.Host = "[" + hostname + "]"
+	} else {
+		parsed.Host = hostname
+	}
+	parsed.Path = strings.TrimRight(path.Clean("/"+strings.Trim(parsed.Path, "/")), "/")
+	if parsed.Path == "." || parsed.Path == "/" {
+		parsed.Path = ""
+	}
+	parsed.RawPath = ""
+	return strings.TrimRight(parsed.String(), "/"), parsed, nil
+}
+
+func ForgejoRemoteSchemeSupported(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https", "ssh":
+		return true
+	default:
+		return false
+	}
 }
 
 // glabKnowsHost reports whether host appears in glab's configured hosts map,
@@ -249,6 +427,8 @@ func (p Provider) CLIName() string {
 		return "bb"
 	case ProviderAzureDevOps:
 		return "az"
+	case ProviderForgejo:
+		return "forgejo-axi"
 	default:
 		return ""
 	}
@@ -264,6 +444,8 @@ func (p Provider) AuthCheckCommand() []string {
 		return []string{"bb", "profile", "which"}
 	case ProviderAzureDevOps:
 		return []string{"az", "account", "show"}
+	case ProviderForgejo:
+		return []string{"forgejo-axi", "status", "--json"}
 	default:
 		return nil
 	}
