@@ -787,12 +787,23 @@ func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Ru
 	if published == latest.HeadSHA || latest.TerminalHeadVerifiedAt == nil {
 		return gateHead, nil
 	}
-	preserved, preserveErr := git.Run(ctx, gateDir, "rev-parse", custody.RecoveryRef(latest.ID)+"^{commit}")
-	if preserveErr == nil && preserved == latest.HeadSHA {
+	recoveryRef := custody.RecoveryRef(latest.ID)
+	refTarget, refExists, refErr := git.ExactRefTarget(ctx, gateDir, recoveryRef)
+	if refErr != nil {
+		return "", fmt.Errorf("inspect terminal recovery ref for run %s: %w", latest.ID, refErr)
+	}
+	if refExists {
+		preserved, preserveErr := git.Run(ctx, gateDir, "rev-parse", recoveryRef+"^{commit}")
+		if preserveErr != nil {
+			return "", fmt.Errorf("refusing rerun: terminal recovery ref for run %s points at non-commit object %s; inspect with `no-mistakes axi status` and reconcile custody first", latest.ID, refTarget)
+		}
+		if preserved != latest.HeadSHA {
+			return "", fmt.Errorf("refusing rerun: terminal recovery ref for run %s points at %s, not recorded unpublished head %s; inspect with `no-mistakes axi status` and reconcile custody first", latest.ID, preserved, latest.HeadSHA)
+		}
 		return preserved, nil
 	}
 	if preserved, objectErr := git.Run(ctx, gateDir, "rev-parse", latest.HeadSHA+"^{commit}"); objectErr == nil && preserved == latest.HeadSHA {
-		if _, anchorErr := git.Run(ctx, gateDir, "update-ref", custody.RecoveryRef(latest.ID), preserved); anchorErr != nil {
+		if _, anchorErr := git.Run(ctx, gateDir, "update-ref", recoveryRef, preserved); anchorErr != nil {
 			return "", fmt.Errorf("preserve terminal head %s before rerun: %w", preserved, anchorErr)
 		}
 		return preserved, nil

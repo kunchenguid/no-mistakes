@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -485,6 +486,23 @@ func TestResolveRerunHeadUsesPreservedTerminalHeadInsteadOfStaleGateBranch(t *te
 	}
 	if gateHead := gitOutput(t, gate, "rev-parse", "refs/heads/feature/recover"); gateHead != submitted {
 		t.Fatalf("rerun resolution moved gate branch = %s, want %s", gateHead, submitted)
+	}
+
+	gitCmd(t, gate, "update-ref", custody.RecoveryRef(run.ID), submitted)
+	if _, err := resolveRerunHead(context.Background(), gate, run.Branch, run); err == nil {
+		t.Fatal("rerun accepted a mismatched recovery ref")
+	}
+	if got := gitOutput(t, gate, "rev-parse", custody.RecoveryRef(run.ID)); got != submitted {
+		t.Fatalf("recovery ref = %s, want conflicting commit %s", got, submitted)
+	}
+
+	blob := gitOutput(t, gate, "hash-object", "-w", filepath.Join(work, "file.txt"))
+	gitCmd(t, gate, "update-ref", custody.RecoveryRef(run.ID), blob)
+	if _, err := resolveRerunHead(context.Background(), gate, run.Branch, run); err == nil {
+		t.Fatal("rerun accepted an unpeelable recovery ref")
+	}
+	if got := gitOutput(t, gate, "rev-parse", custody.RecoveryRef(run.ID)); got != blob {
+		t.Fatalf("recovery ref = %s, want original blob %s", got, blob)
 	}
 }
 

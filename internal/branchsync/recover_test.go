@@ -544,6 +544,25 @@ func TestRecoverRejectsConflictingGateAnchorBeforeReachableSuccess(t *testing.T)
 	}
 }
 
+func TestRecoverRejectsUnpeelableGateAnchorWithoutOverwritingIt(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	blob := mustRun(t, f.gate, "hash-object", "-w", filepath.Join(f.local, "file.txt"))
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), blob)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("recover with unpeelable anchor = %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != blob {
+		t.Fatalf("recovery anchor = %s, want original blob %s", got, blob)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unpeelable recovery evidence stamped custody")
+	}
+}
+
 func TestRecoverKeepLocalAnchorsIndependentlyMovedGateHead(t *testing.T) {
 	t.Parallel()
 

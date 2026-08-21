@@ -640,6 +640,20 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 	return out, nil
 }
 
+func ExactRefTarget(ctx context.Context, dir, ref string) (string, bool, error) {
+	out, err := Run(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)", ref)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name, target, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if ok && name == ref {
+			return strings.TrimSpace(target), true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // RefExists reports whether the given ref resolves to a commit. It uses
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
 // result rather than a loud error.
