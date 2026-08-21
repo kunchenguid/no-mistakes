@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -750,5 +751,65 @@ func TestFinalizeTextResult_WithSchemaParsesProseQuotingFenceExampleThenClosedBl
 	}
 	if output.Summary != "one issue" {
 		t.Errorf("expected summary=one issue, got %q", output.Summary)
+	}
+}
+
+func TestFinalizeTextResult_ProseFinalTurnReturnsDedicatedError(t *testing.T) {
+	// Regression (upstream #811): when the model ends its turn with plain
+	// progress narration instead of the required JSON object, no-mistakes fed
+	// that prose to encoding/json and leaked "invalid character 'L' looking
+	// for beginning of value" as the step error, with no retry.
+	schema := json.RawMessage(`{"type":"object"}`)
+	for _, text := range []string{
+		"Let me check something.",
+		"\n\nI've completed a thorough review of the diff. Let me verify a couple more details before finalizing.",
+	} {
+		_, err := finalizeTextResult("opencode", text, schema, TokenUsage{})
+		if err == nil {
+			t.Fatalf("expected error for prose output %q", text)
+		}
+		if !errors.Is(err, errTurnEndedWithoutJSON) {
+			t.Fatalf("expected errTurnEndedWithoutJSON for %q, got %v", text, err)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "agent ended its turn without the required JSON result") {
+			t.Errorf("error should name the missing JSON result, got %v", err)
+		}
+		if strings.Contains(msg, "invalid character") {
+			t.Errorf("raw decoder error must not leak for prose output, got %v", err)
+		}
+		if !strings.Contains(msg, "output snippet:") || !strings.Contains(msg, strings.TrimSpace(text)) {
+			t.Errorf("error should keep the diagnosable output snippet, got %v", err)
+		}
+	}
+}
+
+func TestFinalizeTextResult_AttemptedJSONKeepsRawParseError(t *testing.T) {
+	// Output that shows an attempt at JSON - a leading '{', a ```json fence,
+	// or an embedded bare object - keeps today's precise parse/validation
+	// error instead of the dedicated prose-final-turn error (#811).
+	reviewSchema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"findings":{"type":"array"},"summary":{"type":"string"}},
+		"required":["findings","summary"]
+	}`)
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"malformed leading object", `{"findings": [} truncated`},
+		{"malformed fenced object", "```json\nnot json\n```"},
+		{"bare object missing required keys", `I inspected the diff and found no issues. {"foo":"bar"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := finalizeTextResult("codex", tc.text, reviewSchema, TokenUsage{})
+			if err == nil {
+				t.Fatal("expected parse failure")
+			}
+			if errors.Is(err, errTurnEndedWithoutJSON) {
+				t.Fatalf("attempted-JSON failure must keep the raw parse error, got %v", err)
+			}
+		})
 	}
 }

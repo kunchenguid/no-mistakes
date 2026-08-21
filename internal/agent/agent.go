@@ -270,6 +270,17 @@ type Options struct {
 	Profile agentcfg.Profile
 }
 
+// errTurnEndedWithoutJSON is returned when every structured-output candidate
+// fails AND the final text shows no attempt at JSON at all: it neither opens
+// a JSON object nor carries a ```json fence. That shape means the model ended
+// its turn with plain prose - progress narration after an early stop, or a
+// turn aborted mid-task by provider stream errors - so leaking the raw
+// encoding/json decoder error ("invalid character 'L' looking for beginning
+// of value", #811) would only misdirect diagnosis toward format problems.
+// Malformed output that DOES attempt JSON keeps the precise decoder error.
+// This failure is retryable with a JSON reminder (see runWithRetry).
+var errTurnEndedWithoutJSON = errors.New("agent ended its turn without the required JSON result")
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
 		return nil, fmt.Errorf("%s returned no text output", agentName)
@@ -352,7 +363,38 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	if candidateErr != nil {
 		return nil, candidateErr
 	}
+	// No candidate anywhere parsed and the text never attempted JSON: report
+	// the prose-final-turn condition instead of the whole-text decoder error,
+	// which only ever named the first character of the narration (#811).
+	if !outputAttemptsJSON(text) {
+		return nil, errTurnEndedWithoutJSON
+	}
 	return nil, rawErr
+}
+
+// outputAttemptsJSON reports whether the final text shows the model tried to
+// produce JSON at all: either it opens a JSON object (possibly after leading
+// whitespace) or it contains a ```json fence opener anywhere. When neither
+// holds, no candidate in parseStructuredTextOutput could ever have parsed,
+// so the failure is a prose final turn rather than malformed JSON. The scan
+// deliberately mirrors fencedJSONCandidates' opener detection (case-insensitive
+// info token) and errs on the side of "attempted JSON" so only genuinely
+// prose-shaped output is reclassified away from the decoder error.
+func outputAttemptsJSON(text string) bool {
+	if strings.HasPrefix(strings.TrimLeft(text, " \t\r\n"), "{") {
+		return true
+	}
+	rest := text
+	for {
+		marker := strings.Index(rest, "```")
+		if marker < 0 {
+			return false
+		}
+		if _, info := fenceContentStart(rest, marker); strings.EqualFold(strings.TrimSpace(info), "json") {
+			return true
+		}
+		rest = rest[marker+3:]
+	}
 }
 
 func textValidationSchema(schema json.RawMessage) (json.RawMessage, error) {

@@ -25,8 +25,8 @@ func (a *antigravityAgent) Name() string { return "antigravity" }
 func (a *antigravityAgent) ReportsAgentAttempts() bool { return true }
 
 func (a *antigravityAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "antigravity", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+	return runWithRetry(ctx, "antigravity", opts, claudeMaxRetries, classifyTransient, nil, func(o RunOpts) (*Result, error) {
+		return a.runOnce(ctx, o)
 	})
 }
 
