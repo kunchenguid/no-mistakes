@@ -221,15 +221,20 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			}
 		}
 		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
+		previousArtifact := ""
 		for _, artifact := range artifacts {
 			rendered := renderTestingArtifact(artifact, opts, &renderState)
 			if rendered == "" {
 				continue
 			}
+			if needsArtifactBlockSeparator(previousArtifact, rendered) {
+				b.WriteString("\n")
+			}
 			b.WriteString(rendered)
 			if !strings.HasSuffix(rendered, "\n") {
 				b.WriteString("\n")
 			}
+			previousArtifact = rendered
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
 			b.WriteString("- ")
@@ -241,6 +246,16 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	}
 
 	return ""
+}
+
+func needsArtifactBlockSeparator(previous, current string) bool {
+	previous = strings.TrimSpace(previous)
+	current = strings.TrimSpace(current)
+	previousIsDetails := strings.HasPrefix(previous, "<details>")
+	currentIsDetails := strings.HasPrefix(current, "<details>")
+	previousIsBullet := strings.HasPrefix(previous, "- Evidence:")
+	currentIsBullet := strings.HasPrefix(current, "- Evidence:")
+	return previousIsDetails && currentIsBullet || previousIsBullet && currentIsDetails
 }
 
 func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
