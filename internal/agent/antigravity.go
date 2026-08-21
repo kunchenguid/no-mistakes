@@ -271,6 +271,10 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 						if v, ok := usageMap["cache_read_tokens"].(float64); ok {
 							p.usage.CacheReadTokens = int(v)
 						}
+						if v, ok := usageMap["thinking_tokens"].(float64); ok {
+							p.usage.ReasoningTokens = int(v)
+							p.usage.ReasoningReported = true
+						}
 					}
 				}
 			} else if evtName == "result" {
@@ -307,6 +311,10 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 						if v, ok := usageMap["cache_creation_tokens"].(float64); ok {
 							p.usage.CacheCreationTokens = int(v)
 							p.usage.CacheCreationReported = true
+						}
+						if v, ok := usageMap["thinking_tokens"].(float64); ok {
+							p.usage.ReasoningTokens = int(v)
+							p.usage.ReasoningReported = true
 						}
 					}
 

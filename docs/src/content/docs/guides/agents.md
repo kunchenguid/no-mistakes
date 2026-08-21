@@ -275,7 +275,7 @@ Grok is not available to a repository with `disable_project_settings: true`, bec
 
 ## Antigravity
 
-Spawns an `agy` subprocess for each invocation with `--print <prompt> --output-format stream-json`, plus `--dangerously-skip-permissions` unless you already set your own permission flag through `agent_args_override`. Reads NDJSON events from stdout, streaming `step_update` text deltas to the TUI. Structured output is requested with `--json-schema` and read from the terminal result's `structured_output`; the result `response` outranks stream deltas, and structured output outranks both.
+Spawns an `agy` subprocess for each invocation with `--print <prompt> --output-format stream-json`, plus `--dangerously-skip-permissions` (always present; `agent_args_override` cannot suppress it). Reads NDJSON events from stdout, streaming `step_update` text deltas to the TUI. Structured output is requested with `--json-schema` and read from the terminal result's `structured_output`; stream deltas outrank the terminal `result.response`, and structured output outranks both.
 For review-fixer reuse, Antigravity resumes the reported conversation with `--conversation <id>`. A pruned or unknown conversation id starts a fresh conversation instead of failing the turn.
 Usage accounting includes agy's reported `thinking_tokens` as reasoning tokens.
 `--conversation`, `-c`/`--continue`, the print/output flags, and the permission flag are reserved so global overrides cannot redirect the managed invocation.
