@@ -42,7 +42,7 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string // claude / codex / grok / opencode
+	agentName         string // claude / codex / grok / opencode / antigravity
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
 	daemonOwn         *e2edaemon.Ownership
 }
@@ -50,9 +50,9 @@ type Harness struct {
 // SetupOpts controls per-test setup.
 type SetupOpts struct {
 	// Agent picks which fake the harness wires up: "claude", "codex", "grok",
-	// or "opencode". The other binaries are still on PATH (so `auto`
-	// detection finds the requested one first via config), but only the
-	// chosen one is exercised.
+	// "opencode", or "antigravity". The other binaries are still on PATH (so
+	// `auto` detection finds the requested one first via config), but only
+	// the chosen one is exercised.
 	Agent string
 
 	// Scenario is an optional path to a YAML scenario file. If empty the
@@ -117,7 +117,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
 	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
 	// the fakeagent stub instead of a real, authenticated system gh.
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "gh"} {
+	// antigravity gets a second link under its probed binary name "agy"
+	// (internal/cli/doctor.go searches that name, not the agent name).
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)

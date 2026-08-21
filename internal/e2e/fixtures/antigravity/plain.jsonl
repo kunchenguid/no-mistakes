@@ -1,0 +1,5 @@
+{"event":"init","conversation_id":"00000000-0000-4000-8000-000000000001","init":{"cwd":"/tmp/agy-e2e","tools":["run_command","read_url_content","replace_file_content","search_web","write_to_file"],"permission_mode":"always-proceed"}}
+{"event":"step_update","step_update":{"conversation_id":"00000000-0000-4000-8000-000000000001","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"00000000-0000-4000-8000-000000000001","step_index":1,"state":"DONE","step_type":"checkpoint","duration_seconds":1.34918}}
+{"event":"step_update","step_update":{"conversation_id":"00000000-0000-4000-8000-000000000001","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"ok\n","duration_seconds":1.458246,"usage":{"input_tokens":17571,"output_tokens":49,"thinking_tokens":48,"cache_read_tokens":0,"total_tokens":17620}}}
+{"event":"result","result":{"conversation_id":"00000000-0000-4000-8000-000000000001","status":"SUCCESS","response":"ok\n","duration_seconds":2.890906,"num_turns":1,"usage":{"input_tokens":17571,"output_tokens":49,"thinking_tokens":48,"cache_read_tokens":0,"total_tokens":17620}}}

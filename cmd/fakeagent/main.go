@@ -42,6 +42,8 @@ func run(argv []string) int {
 		return runCodex(args, os.Stdin, scenario)
 	case "grok":
 		return runGrok(args, scenario)
+	case "antigravity", "agy":
+		return runAgy(args, scenario)
 	case "opencode":
 		return runOpencode(args, scenario)
 	case "gh":
