@@ -139,7 +139,7 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
-func parseMergeRequestURL(raw, expectedHost string) (int, error) {
+func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return 0, errors.New("expected absolute GitLab merge request URL")
@@ -153,6 +153,17 @@ func parseMergeRequestURL(raw, expectedHost string) (int, error) {
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
 		return 0, errors.New("expected GitLab /group/project/-/merge_requests/number URL")
+	}
+	projectSegments := segments[:len(segments)-3]
+	for _, segment := range projectSegments {
+		if segment == "" || segment == "." || segment == ".." {
+			return 0, errors.New("expected unambiguous GitLab project path")
+		}
+	}
+	actualProject := strings.Join(projectSegments, "/")
+	expectedProject = strings.Trim(strings.TrimSpace(expectedProject), "/")
+	if expectedProject != "" && !strings.EqualFold(actualProject, expectedProject) {
+		return 0, fmt.Errorf("URL project %q does not match GitLab project %q", actualProject, expectedProject)
 	}
 	number, err := strconv.Atoi(segments[len(segments)-1])
 	if err != nil || number <= 0 {
@@ -218,7 +229,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if url == "" {
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d missing merge request URL", i)
 		}
-		number, err := parseMergeRequestURL(url, h.host)
+		number, err := parseMergeRequestURL(url, h.host, h.projectPath)
 		if err != nil {
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d invalid merge request URL: %w", i, err)
 		}

@@ -261,7 +261,7 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --output json": {
 			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n",
 		},
-	}), nil, "", "")
+	}), nil, "gitlab.example.com", "group/project")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
 	if err != nil {
@@ -294,6 +294,27 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "glab mr list") {
 		t.Fatalf("FindPR() error = %v, want glab mr list context", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestFindPRRejectsURLForDifferentProject(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature/refactor --target-branch main --output json": {
+			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/other/-/merge_requests/42"}]` + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err == nil {
+		t.Fatal("FindPR() error = nil, want project mismatch error")
+	}
+	if !strings.Contains(err.Error(), "parse glab mr list") {
+		t.Fatalf("FindPR() error = %v, want parse context", err)
 	}
 	if pr != nil {
 		t.Fatalf("FindPR() PR = %+v, want nil", pr)

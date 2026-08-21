@@ -157,7 +157,7 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
-func parsePullRequestURL(raw, expectedHost string) (int, error) {
+func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return 0, errors.New("expected absolute GitHub pull request URL")
@@ -169,10 +169,20 @@ func parsePullRequestURL(raw, expectedHost string) (int, error) {
 		return 0, fmt.Errorf("URL host %q does not match GitHub host %q", parsed.Hostname(), expectedHost)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) < 4 || segments[len(segments)-2] != "pull" {
+	if len(segments) != 4 || segments[2] != "pull" {
 		return 0, errors.New("expected GitHub /owner/repo/pull/number URL")
 	}
-	number, err := strconv.Atoi(segments[len(segments)-1])
+	for _, segment := range segments[:2] {
+		if segment == "" || segment == "." || segment == ".." {
+			return 0, errors.New("expected unambiguous GitHub owner/repository path")
+		}
+	}
+	actualRepo := segments[0] + "/" + segments[1]
+	expectedRepo = strings.Trim(strings.TrimSpace(expectedRepo), "/")
+	if expectedRepo != "" && !strings.EqualFold(actualRepo, expectedRepo) {
+		return 0, fmt.Errorf("URL repository %q does not match GitHub repository %q", actualRepo, expectedRepo)
+	}
+	number, err := strconv.Atoi(segments[3])
 	if err != nil || number <= 0 {
 		return 0, errors.New("expected positive GitHub pull request number")
 	}
@@ -219,7 +229,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if url == "" {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
 		}
-		number, err := parsePullRequestURL(url, h.host)
+		number, err := parsePullRequestURL(url, h.host, h.repoSlug())
 		if err != nil {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d invalid PR URL: %w", i, err)
 		}
