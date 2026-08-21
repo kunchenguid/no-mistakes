@@ -278,16 +278,20 @@ func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
 	defer sourceDB.Close()
 
 	fakeDir := t.TempDir()
-	argvPath := filepath.Join(fakeDir, "argv.txt")
+	tuningArgsPath := filepath.Join(fakeDir, "tuning-args.txt")
 	fake := filepath.Join(fakeDir, "claude")
 	const reply = `{"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":1,"output_tokens":1}}
 `
 	var script string
 	if runtime.GOOS == "windows" {
 		fake += ".cmd"
-		script = "@echo off\r\necho %* >> \"" + argvPath + "\"\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+		// Do not expand %* through cmd.exe: the later JSON-schema argument
+		// contains quoting and metacharacters that make echoing the complete
+		// command line unreliable. The profile args are deliberately first, so
+		// record only those four scalar arguments.
+		script = "@echo off\r\n>\"" + tuningArgsPath + "\" echo %~1 %~2\r\n>>\"" + tuningArgsPath + "\" echo %~3 %~4\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
 	} else {
-		script = "#!/bin/sh\necho \"$@\" >> \"" + argvPath + "\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+		script = "#!/bin/sh\nprintf '%s %s\\n%s %s\\n' \"$1\" \"$2\" \"$3\" \"$4\" > \"" + tuningArgsPath + "\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
 	}
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -314,13 +318,13 @@ func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
 	if session.Candidate != "claude,model=test,effort=high" {
 		t.Fatalf("session candidate = %q, want the canonical spelling", session.Candidate)
 	}
-	argv, err := os.ReadFile(argvPath)
+	tuningArgs, err := os.ReadFile(tuningArgsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"--model test", "--effort high"} {
-		if !strings.Contains(string(argv), want) {
-			t.Fatalf("candidate harness argv %q does not carry %q", argv, want)
+		if !strings.Contains(string(tuningArgs), want) {
+			t.Fatalf("candidate harness tuning args %q do not carry %q", tuningArgs, want)
 		}
 	}
 }
