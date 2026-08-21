@@ -19,9 +19,18 @@ func RecoveryRef(runID string) string {
 // or non-commit ref fails closed so reconciliation can inspect the original
 // object.
 func PreserveRecoveryHead(ctx context.Context, dir, runID, head string) error {
-	ref := RecoveryRef(runID)
-	if _, err := git.Run(ctx, dir, "update-ref", ref, head, ""); err == nil {
+	return PreserveRecoveryAnchor(ctx, dir, RecoveryRef(runID), head)
+}
+
+func PreserveRecoveryAnchor(ctx context.Context, dir, ref, head string) error {
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil {
+		return fmt.Errorf("recovery anchor %s is symbolic to %s instead of the verified commit %s", ref, symbolic, head)
+	}
+	if _, err := git.Run(ctx, dir, "update-ref", "--no-deref", ref, head, strings.Repeat("0", len(head))); err == nil {
 		return nil
+	}
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil {
+		return fmt.Errorf("recovery anchor %s is symbolic to %s instead of the verified commit %s", ref, symbolic, head)
 	}
 	existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {

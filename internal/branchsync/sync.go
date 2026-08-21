@@ -737,7 +737,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
 			}
 			if !exists {
-				_, err = git.Run(ctx, s.GateDir, "update-ref", gateAnchor, gateHead, strings.Repeat("0", len(gateHead)))
+				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)
 			}
 			if err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
@@ -894,7 +894,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
 	}
 	if existingErr != nil {
-		if _, err := git.Run(ctx, wd, "update-ref", localAnchor, head, ""); err != nil {
+		if err := custody.PreserveRecoveryAnchor(ctx, wd, localAnchor, head); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
 		}
 	}

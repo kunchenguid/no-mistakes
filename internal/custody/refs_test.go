@@ -56,6 +56,40 @@ func TestPreserveRecoveryHeadRejectsNonCommitAnchorWithoutOverwriting(t *testing
 	}
 }
 
+func TestPreserveRecoveryAnchorRejectsDanglingSymbolicRefWithoutCreatingTarget(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	ref := RecoveryLocalRef("run-1")
+	target := "refs/no-mistakes/evidence/run-1"
+	gitRun(t, repo, "symbolic-ref", ref, target)
+
+	if err := PreserveRecoveryAnchor(context.Background(), repo, ref, head); err == nil {
+		t.Fatal("dangling symbolic recovery anchor was accepted")
+	}
+	if got := gitOutput(t, repo, "symbolic-ref", ref); got != target {
+		t.Fatalf("symbolic anchor changed: got %s, want %s", got, target)
+	}
+	cmd := exec.Command("git", "rev-parse", "--verify", target)
+	cmd.Dir = repo
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("dangling symbolic target %s was created", target)
+	}
+}
+
+func TestPreserveRecoveryAnchorRejectsMatchingSymbolicRef(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	ref := RecoveryGateRef("run-1")
+	target := "refs/heads/main"
+	gitRun(t, repo, "branch", "main", head)
+	gitRun(t, repo, "symbolic-ref", ref, target)
+
+	if err := PreserveRecoveryAnchor(context.Background(), repo, ref, head); err == nil {
+		t.Fatal("matching symbolic recovery anchor was accepted")
+	}
+	if got := gitOutput(t, repo, "symbolic-ref", ref); got != target {
+		t.Fatalf("symbolic anchor changed: got %s, want %s", got, target)
+	}
+}
+
 func recoveryTestRepo(t *testing.T) (string, string) {
 	t.Helper()
 	repo := t.TempDir()
