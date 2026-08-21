@@ -809,6 +809,28 @@ func TestInspectDoesNotAdvertiseRecoveryWhenRecordedHeadIsMissing(t *testing.T) 
 	}
 }
 
+func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	// The recorded preserved commit remains available in the gate, but the
+	// run-specific evidence points elsewhere. Status must honor that conflict
+	// instead of advertising a recovery command that Recover will refuse.
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Safety != "blocked_recover_preserved_head_missing" {
+		t.Fatalf("conflicting-anchor safety = %q, want blocked_recover_preserved_head_missing: %#v", state.Safety, state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("conflicting-anchor next action = %#v", state.NextAction)
+	}
+	if state.NextAction.Code == "recover_custody" {
+		t.Fatal("conflicting terminal anchor advertised a recovery that must fail")
+	}
+}
+
 func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 	t.Parallel()
 

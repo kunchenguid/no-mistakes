@@ -1441,15 +1441,19 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, run *db.Run) bool
 	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
 		return false
 	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir != "" {
+		anchorRef := custody.RecoveryRef(run.ID)
+		if _, err := git.Run(ctx, gateDir, "rev-parse", "--verify", anchorRef); err == nil {
+			anchored, err := git.Run(ctx, gateDir, "rev-parse", anchorRef+"^{commit}")
+			return err == nil && anchored == run.HeadSHA
+		}
+	}
 	if objectExists(ctx, s.workDir(), run.HeadSHA) {
 		return true
 	}
-	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
 		return false
-	}
-	if anchored, err := git.Run(ctx, gateDir, "rev-parse", custody.RecoveryRef(run.ID)+"^{commit}"); err == nil {
-		return anchored == run.HeadSHA
 	}
 	return objectExists(ctx, gateDir, run.HeadSHA)
 }
