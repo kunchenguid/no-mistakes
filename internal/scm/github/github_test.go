@@ -923,7 +923,7 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr list --head feature/refactor --base main --state open --json number,url": {
+		"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
 			stderr: "api unavailable\n",
 			code:   1,
 		},
@@ -946,7 +946,7 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 
 	for _, output := range []string{"[{\n", "null\n"} {
 		host := New(githubTestCmdFactory(map[string]githubTestResponse{
-			"gh pr list --head feature/refactor --base main --state open --json number,url": {
+			"gh pr list --head feature/refactor --base main --state open --json number,url,baseRefName": {
 				stdout: output,
 			},
 		}), nil, "", "")
