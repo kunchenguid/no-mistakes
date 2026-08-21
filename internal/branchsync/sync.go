@@ -1452,9 +1452,18 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, run *db.Run) bool
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir != "" {
 		anchorRef := custody.RecoveryRef(run.ID)
-		if _, err := git.Run(ctx, gateDir, "rev-parse", "--verify", anchorRef); err == nil {
+		_, exists, err := git.ExactRefTarget(ctx, gateDir, anchorRef)
+		if err != nil {
+			return false
+		}
+		if exists {
 			anchored, err := git.Run(ctx, gateDir, "rev-parse", anchorRef+"^{commit}")
 			return err == nil && anchored == run.HeadSHA
+		}
+		// A dangling symbolic ref is still conflicting evidence even though it
+		// has no object target for for-each-ref to report.
+		if target, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", anchorRef); err == nil && target != "" {
+			return false
 		}
 	}
 	if objectExists(ctx, s.workDir(), run.HeadSHA) {

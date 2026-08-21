@@ -832,6 +832,28 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T
 	}
 }
 
+func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorIsNotACommit(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	blobPath := filepath.Join(f.local, "anchor-evidence.txt")
+	mustWrite(t, blobPath, "conflicting evidence\n")
+	blob := mustRun(t, f.gate, "hash-object", "-w", blobPath)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), blob)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("non-commit-anchor next action = %#v", state.NextAction)
+	}
+	if state.NextAction.Code == "recover_custody" {
+		t.Fatal("non-commit terminal anchor advertised a recovery that must fail")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != blob {
+		t.Fatalf("status inspection changed conflicting anchor: got %s, want %s", got, blob)
+	}
+}
+
 func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 	t.Parallel()
 

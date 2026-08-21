@@ -260,7 +260,7 @@ func TestCodexAgent_RunCancelsSilentHang(t *testing.T) {
 	bin := writeFakeCodex(t, dir, `#!/bin/sh
 cat >/dev/null
 sleep 100
-`, strings.Join([]string{
+	`, strings.Join([]string{
 		"@echo off",
 		"more > nul",
 		"ping -n 101 127.0.0.1 > nul",
