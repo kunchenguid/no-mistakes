@@ -156,6 +156,8 @@ type antigravityParser struct {
 
 	streamText   string
 	sessionID    string
+	structured   string
+	response     string
 	usage        TokenUsage
 	errorMessage string
 }
@@ -271,10 +273,7 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 						if v, ok := usageMap["cache_read_tokens"].(float64); ok {
 							p.usage.CacheReadTokens = int(v)
 						}
-						if v, ok := usageMap["thinking_tokens"].(float64); ok {
-							p.usage.ReasoningTokens = int(v)
-							p.usage.ReasoningReported = true
-						}
+						applyAgyReasoningUsage(&p.usage, usageMap)
 					}
 				}
 			} else if evtName == "result" {
@@ -289,12 +288,11 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 							p.errorMessage = "unknown error"
 						}
 					}
-					// If the agent dropped the final answer directly into
-					// result["response"] instead of streaming it via deltas,
-					// capture it so we don't finalize an empty string.
-					// structured_output still wins: it resets sb below.
-					if resp, _ := result["response"].(string); resp != "" && sb.Len() == 0 {
-						sb.WriteString(resp)
+					// The terminal answer is authoritative wherever agy puts it:
+					// result.response outranks stream deltas even when some were
+					// collected, and structured_output outranks both (finalText).
+					if resp, _ := result["response"].(string); resp != "" {
+						p.response = resp
 					}
 
 					if usageMap, ok := result["usage"].(map[string]any); ok {
@@ -312,17 +310,12 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 							p.usage.CacheCreationTokens = int(v)
 							p.usage.CacheCreationReported = true
 						}
-						if v, ok := usageMap["thinking_tokens"].(float64); ok {
-							p.usage.ReasoningTokens = int(v)
-							p.usage.ReasoningReported = true
-						}
+						applyAgyReasoningUsage(&p.usage, usageMap)
 					}
 
 					if output, ok := result["structured_output"]; ok && output != nil {
 						if outBytes, err := json.Marshal(output); err == nil {
-							// If we received structured_output, it supersedes the stream.
-							sb.Reset()
-							sb.Write(outBytes)
+							p.structured = string(outBytes)
 						}
 					}
 				}
@@ -335,5 +328,26 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 }
 
 func (p *antigravityParser) finalText() string {
-	return strings.TrimSpace(p.streamText)
+	switch {
+	case p.structured != "":
+		return strings.TrimSpace(p.structured)
+	case p.response != "":
+		return strings.TrimSpace(p.response)
+	default:
+		return strings.TrimSpace(p.streamText)
+	}
+}
+
+// applyAgyReasoningUsage records agy's thinking_tokens as reasoning output so
+// reasoning-model invocations are not undercounted. Presence, not the value,
+// sets ReasoningReported so a genuine zero stays distinguishable from an
+// adapter that never exposes the field.
+func applyAgyReasoningUsage(usage *TokenUsage, usageMap map[string]any) {
+	if _, ok := usageMap["thinking_tokens"]; !ok {
+		return
+	}
+	usage.ReasoningReported = true
+	if v, ok := usageMap["thinking_tokens"].(float64); ok {
+		usage.ReasoningTokens = int(v)
+	}
 }

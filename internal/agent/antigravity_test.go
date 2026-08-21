@@ -177,6 +177,83 @@ func TestAntigravityParser_CapturesConversationID(t *testing.T) {
 	}
 }
 
+func TestAntigravityParser_MapsThinkingTokensToReasoning(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "output_tokens": 5, "thinking_tokens": 42}}}
+{"event": "result", "result": {"status": "SUCCESS", "usage": {"input_tokens": 12, "output_tokens": 7, "thinking_tokens": 50}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The terminal result event's usage is authoritative for the invocation.
+	if p.usage.ReasoningTokens != 50 {
+		t.Errorf("ReasoningTokens = %d, want 50", p.usage.ReasoningTokens)
+	}
+	if !p.usage.ReasoningReported {
+		t.Error("ReasoningReported = false, want true when thinking_tokens is present")
+	}
+	if p.usage.OutputTokens != 7 {
+		t.Errorf("OutputTokens = %d, want 7 from result usage", p.usage.OutputTokens)
+	}
+}
+
+func TestAntigravityParser_ThinkingTokensAbsentLeavesReasoningUnreported(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "output_tokens": 5}}}
+{"event": "result", "result": {"status": "SUCCESS"}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.usage.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0 when unreported", p.usage.ReasoningTokens)
+	}
+	if p.usage.ReasoningReported {
+		t.Error("ReasoningReported = true, want false so a genuine zero stays distinguishable")
+	}
+}
+
+func TestAntigravityParser_ResponseWinsOverStreamDeltas(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"text_delta": "partial thought "}}
+{"event": "step_update", "step_update": {"text_delta": "streamed aloud"}}
+{"event": "result", "result": {"status": "SUCCESS", "response": "the final answer"}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	if text != "the final answer" {
+		t.Errorf("finalText() = %q, want the authoritative result.response", text)
+	}
+}
+
+func TestAntigravityParser_StructuredOutputWinsOverResponse(t *testing.T) {
+	stream := `
+{"event": "result", "result": {"status": "SUCCESS", "response": "{\"from\":\"response\"}", "structured_output": {"success": true}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	expected := `{"success":true}`
+	if text != expected {
+		t.Errorf("finalText() = %q, want structured_output %q", text, expected)
+	}
+}
+
 // writeFakeAgy writes a fake agy binary that emits the given JSONL
 // lines on stdout (one echo per line) and exits with exitCode. It returns the
 // path to the fake binary.
@@ -369,7 +446,6 @@ func TestAntigravityAgent_RunResumesRecordedConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-
 	argsData, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatalf("read args log: %v", err)
@@ -410,5 +486,37 @@ func TestAntigravityAgent_RunStaleConversationStartsFreshWithoutClaimingResume(t
 	}
 	if result.SessionID != "conv-new-9" {
 		t.Errorf("SessionID = %q, want conv-new-9 so the new identity is persisted", result.SessionID)
+	}
+}
+
+func TestAntigravityAgent_RunCarriesUsageAndResponsePrecedence(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeAgy(t, dir, []string{
+		`{"event": "step_update", "step_update": {"text_delta": "streamed prose"}}`,
+		`{"event": "step_update", "step_update": {"usage": {"input_tokens": 100, "output_tokens": 20, "thinking_tokens": 8}}}`,
+		`{"event": "result", "result": {"status": "SUCCESS", "response": "final verdict", "usage": {"input_tokens": 110, "output_tokens": 25, "thinking_tokens": 9}}}`,
+	}, 0)
+
+	var chunks []string
+	ca := &antigravityAgent{bin: bin}
+	result, err := ca.Run(context.Background(), RunOpts{
+		Prompt:  "do work",
+		CWD:     t.TempDir(),
+		OnChunk: func(text string) { chunks = append(chunks, text) },
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Text != "final verdict" {
+		t.Errorf("Text = %q, want the authoritative result.response", result.Text)
+	}
+	if !result.UsageReported {
+		t.Error("UsageReported = false, want true")
+	}
+	if result.Usage.ReasoningTokens != 9 || !result.Usage.ReasoningReported {
+		t.Errorf("Usage.ReasoningTokens/ReasoningReported = %d/%v, want 9/true", result.Usage.ReasoningTokens, result.Usage.ReasoningReported)
+	}
+	if len(chunks) == 0 || chunks[0] != "streamed prose" {
+		t.Errorf("chunks = %q, want streamed deltas still delivered", chunks)
 	}
 }
