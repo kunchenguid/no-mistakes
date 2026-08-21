@@ -342,6 +342,7 @@ $ no-mistakes doctor
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – antigravity (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))
   ✓ gate validation claude is runnable
