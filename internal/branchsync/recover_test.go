@@ -20,6 +20,10 @@ type cancellationRaceStep struct {
 	committed chan string
 }
 
+type unreferencedCancellationStep struct {
+	committed chan string
+}
+
 type unreachedCancellationStep struct{}
 
 type skippedDeliveryStep struct {
@@ -55,6 +59,27 @@ func (s *cancellationRaceStep) Execute(sctx *pipelinepkg.StepContext) (*pipeline
 		return nil, err
 	}
 	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "refs/heads/feature/recover", head); err != nil {
+		return nil, err
+	}
+	s.committed <- head
+	<-sctx.Ctx.Done()
+	return nil, context.Cause(sctx.Ctx)
+}
+
+func (s *unreferencedCancellationStep) Name() types.StepName { return types.StepReview }
+
+func (s *unreferencedCancellationStep) Execute(sctx *pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	if err := os.WriteFile(filepath.Join(sctx.WorkDir, "fix.txt"), []byte("pipeline fix\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "add", "fix.txt"); err != nil {
+		return nil, err
+	}
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "commit", "-m", "no-mistakes(review): fix"); err != nil {
+		return nil, err
+	}
+	head, err := gitpkg.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
 		return nil, err
 	}
 	s.committed <- head
@@ -689,6 +714,76 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 	}
 	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
 		t.Fatalf("cancelled committed next action = %#v", state.NextAction)
+	}
+}
+
+// TestCancellationMakesCommittedDetachedHeadReachableBeforeTerminalRecord
+// reproduces the abort custody gap: a review agent can commit in the detached
+// run worktree without moving the gate branch ref, then abort can terminalize
+// the run after reading that worktree HEAD. The recorded preserved head must be
+// reachable from the gate before branch-sync advertises custody recovery.
+func TestCancellationMakesCommittedDetachedHeadReachableBeforeTerminalRecord(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
+		t.Fatal(err)
+	}
+	f.run.Status = types.RunPending
+
+	managed := filepath.Join(t.TempDir(), "managed")
+	if err := gitpkg.WorktreeAdd(f.ctx, f.gate, managed, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	configureIdentity(t, managed)
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	step := &unreferencedCancellationStep{committed: make(chan string, 1)}
+	executor := pipelinepkg.NewExecutor(f.db, p, nil, nil, []pipelinepkg.Step{step}, nil)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- executor.Execute(ctx, f.run, f.repo, managed)
+	}()
+
+	committed := <-step.committed
+	cancel(errors.New(types.RunCancelReasonAbortedByUser))
+	if err := <-done; err == nil {
+		t.Fatal("cancelled executor returned nil")
+	}
+
+	terminal, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.HeadSHA != committed {
+		t.Fatalf("terminal run head = %s, want committed detached head %s", terminal.HeadSHA, committed)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != committed {
+		t.Fatalf("gate branch = %s, want committed detached head %s", got, committed)
+	}
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("cancelled committed state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("cancelled committed next action = %#v", state.NextAction)
+	}
+}
+
+func TestInspectRefusesCustodyRecoveryForUnreachableVerifiedHead(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	if _, err := gitpkg.Run(f.ctx, f.gate, "update-ref", "-d", "refs/heads/feature/recover"); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_unreachable" {
+		t.Fatalf("unreachable verified head state = %#v", state)
+	}
+	if state.NextAction != nil {
+		t.Fatalf("unreachable verified head advertised next action = %#v", state.NextAction)
 	}
 }
 
