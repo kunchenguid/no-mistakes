@@ -118,7 +118,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
 	// the fakeagent stub instead of a real, authenticated system gh.
 	for _, name := range []string{"claude", "codex", "grok", "opencode", "gh"} {
-		linkPath := filepath.Join(h.BinDir, name)
+		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)
 		}
