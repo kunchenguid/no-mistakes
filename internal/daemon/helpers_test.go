@@ -230,10 +230,13 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
 			client.Close()
 		}
+		// A run reaches its terminal DB state before its goroutine finishes git
+		// worktree cleanup. On process-spawn-bound Windows that cleanup can take
+		// longer than three seconds, so give graceful shutdown its own budget.
 		select {
 		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
+		case <-time.After(15 * time.Second):
+			t.Error("daemon did not stop within 15s")
 		}
 	})
 
