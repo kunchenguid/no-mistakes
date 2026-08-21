@@ -165,3 +165,53 @@ func TestCaptureCodexPlacesForwardedFlagsBeforePrompt(t *testing.T) {
 		t.Fatalf("expected output file: %v", err)
 	}
 }
+
+func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	argsPath := filepath.Join(tmp, "args.txt")
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '%s\n' \"$@\" > \"$ARGS_FILE\"",
+		"printf '{\"event\":\"result\"}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = strings.Join([]string{
+			"@echo off",
+			"setlocal",
+			"if exist \"%ARGS_FILE%\" del \"%ARGS_FILE%\"",
+			":loop",
+			"if \"%~1\"==\"\" goto done",
+			">> \"%ARGS_FILE%\" echo(%~1",
+			"shift",
+			"goto loop",
+			":done",
+			"echo {\"event\":\"result\"}",
+		}, "\r\n")
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	t.Setenv("ARGS_FILE", argsPath)
+	err := captureAgy(t.Context(), binPath,
+		[]string{"--model", "gemini-flash"},
+		"prompt text",
+		outPath,
+		[]string{"--json-schema", `{"type":"object"}`},
+	)
+	if err != nil {
+		t.Fatalf("captureAgy: %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read captured output: %v", err)
+	}
+	if !strings.Contains(string(data), `"event":"result"`) {
+		t.Fatalf("captured output missing stdout: %q", data)
+	}
+}

@@ -7,6 +7,7 @@
 //	go run ./cmd/recordfixture claude   --out internal/e2e/fixtures/claude
 //	go run ./cmd/recordfixture codex    --out internal/e2e/fixtures/codex
 //	go run ./cmd/recordfixture opencode --out internal/e2e/fixtures/opencode
+//	go run ./cmd/recordfixture antigravity --out internal/e2e/fixtures/antigravity
 //
 // Each agent gets a small set of fixture files (one per pipeline-step
 // flavour: review with structured output, plain text, etc). The fake
@@ -59,15 +60,17 @@ func run() int {
 		return recordCodex(ctx, out, args)
 	case "opencode":
 		return recordOpencode(ctx, out, args)
+	case "antigravity":
+		return recordAntigravity(ctx, out, args)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown agent %q (want claude|codex|opencode)\n", agent)
+		fmt.Fprintf(os.Stderr, "unknown agent %q (want claude|codex|opencode|antigravity)\n", agent)
 		usage()
 		return 2
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: recordfixture <claude|codex|opencode> --out <dir> [--bin <path>]")
+	fmt.Fprintln(os.Stderr, "usage: recordfixture <claude|codex|opencode|antigravity> --out <dir> [--bin <path>]")
 	fmt.Fprintln(os.Stderr, "captures real agent output as e2e fixture files. burns real API quota.")
 }
 

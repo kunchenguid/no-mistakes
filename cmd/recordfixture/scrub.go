@@ -34,7 +34,20 @@ func scrubBytes(data []byte) []byte {
 	out = scrubTempDir(out)
 	out = scrubHomeDir(out)
 	out = scrubClaudeHookEvents(out)
+	out = scrubAgyConversationIDs(out)
 	return out
+}
+
+// scrubAgyConversationIDs replaces agy's per-run conversation UUIDs with a
+// stable placeholder. Nothing downstream reads the value - the fakeagent
+// patcher rewrites content and the no-mistakes parser only needs the field
+// present - but a recorded UUID identifies the recording session.
+var agyConversationPattern = regexp.MustCompile(`("conversation_id"\s*:\s*")[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(")`)
+
+const agyConversationPlaceholder = `${1}00000000-0000-4000-8000-000000000000${2}`
+
+func scrubAgyConversationIDs(data []byte) []byte {
+	return agyConversationPattern.ReplaceAll(data, []byte(agyConversationPlaceholder))
 }
 
 func scrubHomeDir(data []byte) []byte {
