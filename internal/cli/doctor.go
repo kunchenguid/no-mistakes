@@ -166,6 +166,7 @@ func doctorAgentChecks() []doctorAgentCheck {
 		{"opencode", []string{"opencode"}},
 		{"pi", []string{"pi"}},
 		{"copilot", []string{"copilot"}},
+		{"antigravity", []string{"agy"}},
 		{"acpx", []string{"acpx"}},
 	}
 	for _, alias := range types.ACPAliases() {

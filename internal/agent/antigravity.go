@@ -246,8 +246,13 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 						} else {
 							p.errorMessage = "unknown error"
 						}
-					} else if status == "SUCCESS" {
-						// explicit check for SUCCESS as requested
+					}
+					// If the agent dropped the final answer directly into
+					// result["response"] instead of streaming it via deltas,
+					// capture it so we don't finalize an empty string.
+					// structured_output still wins: it resets sb below.
+					if resp, _ := result["response"].(string); resp != "" && sb.Len() == 0 {
+						sb.WriteString(resp)
 					}
 
 					if usageMap, ok := result["usage"].(map[string]any); ok {

@@ -216,3 +216,33 @@ func TestAntigravityAgent_RunReportsErrorOnNonZeroExit(t *testing.T) {
 		t.Fatalf("error = %v, want antigravity error detail", err)
 	}
 }
+
+func TestAntigravityAgent_RunReportsSchemaMiss(t *testing.T) {
+	dir := t.TempDir()
+	// The fake agent returns a SUCCESS result with plain prose that will
+	// never satisfy a strict JSON schema requiring {"summary": string}.
+	bin := writeFakeAgy(t, dir, []string{
+		`{"event": "step_update", "step_update": {"text_delta": "Here is my analysis of the changes."}}`,
+		`{"event": "result", "result": {"status": "SUCCESS"}}`,
+	}, 0)
+
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {"summary": {"type": "string"}},
+		"required": ["summary"],
+		"additionalProperties": false
+	}`)
+
+	ca := &antigravityAgent{bin: bin}
+	_, err := ca.Run(context.Background(), RunOpts{
+		Prompt:     "summarize",
+		CWD:        t.TempDir(),
+		JSONSchema: schema,
+	})
+	if err == nil {
+		t.Fatal("expected schema-miss error when agent returns plain prose")
+	}
+	if !strings.Contains(err.Error(), "output parse") {
+		t.Fatalf("error = %v, want schema/parse failure detail", err)
+	}
+}
