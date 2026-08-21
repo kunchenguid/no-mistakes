@@ -127,8 +127,11 @@ func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *test
 	if _, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
 		t.Fatalf("late successful return error = %v, want timeout", err)
 	}
-	if got := gitCmd(t, dir, "log", "-1", "--format=%s"); got == "fix tests" {
-		t.Fatal("late agent changes were committed")
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
+		t.Fatalf("fix.txt status = %q, want uncommitted", got)
 	}
 }
 
