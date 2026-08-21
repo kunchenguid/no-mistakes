@@ -118,7 +118,9 @@ type GetActiveRunParams struct {
 	Branch string `json:"branch,omitempty"`
 }
 
-// RerunParams requests a new run for the latest gate head on a branch.
+// RerunParams requests a new run for the latest recoverable head on a branch.
+// The daemon resolves whether that is the gate branch or a verified unpublished
+// terminal head whose custody remains outstanding.
 // Intent, when set, overrides inherited intent and fresh inference. When empty,
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.

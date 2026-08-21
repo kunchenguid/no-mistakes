@@ -696,9 +696,11 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
 }
 
-// HandleRerun creates a new run for the latest gate head on a branch. An
-// explicit intent overrides the selected run. Otherwise an authoritative
-// intent is inherited byte-for-byte; runs without one infer intent afresh.
+// HandleRerun creates a new run for the latest recoverable head on a branch:
+// normally the gate branch, or the latest terminal run's verified unpublished
+// head while custody remains outstanding. An explicit intent overrides the
+// selected run. Otherwise an authoritative intent is inherited byte-for-byte;
+// runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
