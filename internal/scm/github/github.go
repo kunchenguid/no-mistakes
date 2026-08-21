@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,6 +157,28 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
+func parsePullRequestURL(raw, expectedHost string) (int, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return 0, errors.New("expected absolute GitHub pull request URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return 0, errors.New("expected HTTP GitHub pull request URL")
+	}
+	if expectedHost != "" && !strings.EqualFold(parsed.Hostname(), expectedHost) {
+		return 0, fmt.Errorf("URL host %q does not match GitHub host %q", parsed.Hostname(), expectedHost)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 4 || segments[len(segments)-2] != "pull" {
+		return 0, errors.New("expected GitHub /owner/repo/pull/number URL")
+	}
+	number, err := strconv.Atoi(segments[len(segments)-1])
+	if err != nil || number <= 0 {
+		return 0, errors.New("expected positive GitHub pull request number")
+	}
+	return number, nil
+}
+
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
 	args := []string{"pr", "list", "--head", branch}
 	if strings.TrimSpace(base) != "" {
@@ -196,17 +219,17 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if url == "" {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
 		}
-		number, err := scm.ExtractPRNumber(url)
+		number, err := parsePullRequestURL(url, h.host)
 		if err != nil {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d invalid PR URL: %w", i, err)
 		}
-		if candidate.Number != 0 && fmt.Sprintf("%d", candidate.Number) != number {
-			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %s", i, candidate.Number, number)
+		if candidate.Number != 0 && candidate.Number != number {
+			return nil, fmt.Errorf("parse gh pr list JSON: entry %d PR number %d does not match URL number %d", i, candidate.Number, number)
 		}
 		if candidate.Number > 0 {
 			prNumbers[i] = fmt.Sprintf("%d", candidate.Number)
 		} else {
-			prNumbers[i] = number
+			prNumbers[i] = strconv.Itoa(number)
 		}
 		if h.forkOwner != "" {
 			if strings.TrimSpace(candidate.HeadRefName) == "" {
