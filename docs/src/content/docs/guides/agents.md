@@ -191,7 +191,7 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-Five global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
+Six global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
 - [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table and the precedence rule against raw flags.
@@ -269,12 +269,12 @@ That resume command has a narrower flag surface than `codex exec`, so a resume t
 ## Grok Build
 
 Spawns a `grok` subprocess for each invocation using a permission-restricted prompt file and `--output-format streaming-messages-json`. Native structured output is requested with `--json-schema`; the terminal `structured_output`, session identity, model, and usage fields are read from the Messages-compatible result event. Review-loop reuse resumes the reported Grok session with `--resume`.
-No Mistakes emits no model flag of its own, so Grok uses its current configured default model unless you pin one. Set `model` and `effort` under global [`agent_config.grok`](/no-mistakes/reference/global-config/#agent_config); they render as `--model` and `--reasoning-effort`.
+Without an explicit pin, Grok uses its current configured default model. See [`agent_config`](/no-mistakes/reference/global-config/#agent_config) for model and effort configuration and native mapping.
 Grok is not available to a repository with `disable_project_settings: true`, because Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces; the gate fails closed before launch. See [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) for the security boundary. System-prompt, alternate-agent, working-directory, worktree, and restore flags are reserved so global overrides cannot redirect the managed invocation.
 
 ## Rovo Dev
 
-Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Neither the serve command nor the REST session API takes a model or reasoning parameter, so `agent_config` is refused for Rovo Dev; use a profile flag here instead. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields.
+Starts a persistent HTTP server (`acli rovodev serve`) on first use and reuses it across invocations. If a reused server refuses a connection, no-mistakes discards it and retries with a fresh server. Any `agent_args_override.rovodev` flags are inserted before no-mistakes' managed serve flags. Neither the serve command nor the REST session API takes a model or reasoning parameter, so no-mistakes cannot map those knobs for Rovo Dev; the [`agent_config`](/no-mistakes/reference/global-config/#agent_config) reference owns the refusal and escape-hatch semantics. Communicates via REST API and SSE streaming. Each invocation creates a session, sends the prompt, streams results, then deletes the session. Structured output is handled by injecting schema instructions into a system prompt, then parsing the final text with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, and validates the result against the requested schema while allowing `null` for optional fields.
 
 ## OpenCode
 

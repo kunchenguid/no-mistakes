@@ -762,7 +762,8 @@ log_level: info
 # and acpx --model for cursor and acp:<target>. Effort is one of
 # minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
-# agent_config is refused for them - use agent_args_override there.
+# agent_config is refused for them; agent_args_override remains an escape hatch
+# only if your installed CLI build accepts a suitable flag.
 # agent_config:
 #   codex:
 #     model: gpt-5.4

@@ -186,7 +186,7 @@ Model and reasoning effort per agent, in one common spelling. no-mistakes maps e
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort}`                                                        |
-| Keys    | `claude`, `codex`, `grok`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>`     |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | Empty (every harness keeps its own defaults)                                        |
 
 ```yaml
@@ -225,7 +225,7 @@ How each field maps:
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
 
-**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - `-m` or `-c model="…"` for codex, `--model`, `--effort`, `--reasoning-effort`, `--thinking` - then `agent_config` does not emit its value for that knob, and the harness sees exactly the argv it saw before. Any knob the raw flags leave alone still comes from `agent_config`. So adding `agent_config` to an existing configuration never changes what a harness already received:
+**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
 agent_config:
