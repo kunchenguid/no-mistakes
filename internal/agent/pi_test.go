@@ -290,7 +290,10 @@ printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"conten
 		"@echo off",
 		"setlocal EnableDelayedExpansion",
 		"more > nul",
-		"echo %*>> pi-argv.txt",
+		// The space before >> matters: %* ends in a hex digit, and cmd.exe
+		// parses a digit immediately preceding a redirect as a file-descriptor
+		// number (6>> would append handle 6, leaving the file empty).
+		"echo %* >> pi-argv.txt",
 		"if exist pi-session-id (",
 		"  set /p id=<pi-session-id",
 		"  echo %*| findstr /x /c:\"--mode json --session !id!\" >nul",
