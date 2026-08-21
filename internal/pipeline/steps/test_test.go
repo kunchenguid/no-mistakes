@@ -8,11 +8,132 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-evidence-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected hanging evidence agent to fail the run")
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "test agent silent for 20ms") {
+		var got string
+		if run.Error != nil {
+			got = *run.Error
+		}
+		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	}
+}
+
+func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var sawDeadline bool
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			_, sawDeadline = ctx.Deadline()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawDeadline {
+		t.Fatal("evidence agent ran without a deadline")
+	}
+	if outcome == nil || outcome.NeedsApproval {
+		t.Fatalf("successful evidence gathering should still complete, got %+v", outcome)
+	}
+}
+
+func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = time.Second
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("post-agent processing used agent context: %v", err)
+	}
+	if outcome == nil || outcome.NeedsApproval {
+		t.Fatalf("successful fix should complete, got %+v", outcome)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("fix was not committed: %s", got)
+	}
+	if got := gitCmd(t, dir, "show", "HEAD:fix.txt"); got != "fixed" {
+		t.Fatalf("committed fix = %q, want fixed", got)
+	}
+}
+
+func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	if _, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+		t.Fatalf("late successful return error = %v, want timeout", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
+		t.Fatalf("fix.txt status = %q, want uncommitted", got)
+	}
+}
 
 func TestTestStep_FixMode(t *testing.T) {
 	t.Parallel()

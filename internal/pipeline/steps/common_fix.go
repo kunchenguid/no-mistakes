@@ -25,6 +25,7 @@ type fixExecutionOptions struct {
 	ErrorPrefix             string
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
+	AgentContext            context.Context
 	// SessionRole, when set, runs the fix turn in that durable review-loop
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
@@ -271,12 +272,19 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Purpose:    purpose,
 		Workload:   opts.Workload,
 	}
+	agentCtx := sctx.Ctx
+	if opts.AgentContext != nil {
+		agentCtx = opts.AgentContext
+	}
 	var result *agent.Result
 	var err error
-	if opts.SessionRole != "" {
-		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
+	if opts.SessionRole != "" && sctx.Sessions != nil {
+		result, err = sctx.Sessions.Run(agentCtx, sctx.Agent, opts.SessionRole, runOpts, sctx.Log)
 	} else {
-		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)
+		result, err = sctx.Agent.Run(agentCtx, runOpts)
+	}
+	if cause := context.Cause(agentCtx); cause != nil {
+		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, cause)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)

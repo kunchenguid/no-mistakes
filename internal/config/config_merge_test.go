@@ -12,6 +12,7 @@ func TestMerge_GlobalOnly(t *testing.T) {
 		Agent:              types.AgentClaude,
 		CITimeout:          4 * time.Hour,
 		ReviewAgentTimeout: 2 * time.Hour,
+		TestAgentTimeout:   45 * time.Minute,
 		LogLevel:           "info",
 	}
 	repo := &RepoConfig{}
@@ -25,6 +26,9 @@ func TestMerge_GlobalOnly(t *testing.T) {
 	}
 	if cfg.ReviewAgentTimeout != 2*time.Hour {
 		t.Errorf("review_agent_timeout = %v", cfg.ReviewAgentTimeout)
+	}
+	if cfg.TestAgentTimeout != 45*time.Minute {
+		t.Errorf("test_agent_timeout = %v", cfg.TestAgentTimeout)
 	}
 }
 

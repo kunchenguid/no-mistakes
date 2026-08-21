@@ -44,6 +44,10 @@ const (
 	// review-fix and rereview turns, so a stalled agent cannot leave a run
 	// active forever.
 	DefaultReviewAgentTimeout = 30 * time.Minute
+	// DefaultTestAgentTimeout bounds one Test-step agent invocation, including
+	// the post-test evidence-gathering turn and a Test-repair turn, so a stalled
+	// agent cannot leave a run active forever.
+	DefaultTestAgentTimeout = 30 * time.Minute
 	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
 	// daemon socket that exists but is not accepting connections.
 	DefaultDaemonConnectTimeout = 3 * time.Second
@@ -120,6 +124,7 @@ type GlobalConfig struct {
 	CITimeout               time.Duration     `yaml:"-"`
 	StepQuietWarning        time.Duration     `yaml:"-"`
 	ReviewAgentTimeout      time.Duration     `yaml:"-"`
+	TestAgentTimeout        time.Duration     `yaml:"-"`
 	DaemonConnectTimeout    time.Duration     `yaml:"-"`
 	BranchSyncRemoteTimeout time.Duration     `yaml:"-"`
 	LogLevel                string            `yaml:"log_level"`
@@ -162,6 +167,7 @@ type globalConfigRaw struct {
 	BabysitTimeout          string                     `yaml:"babysit_timeout"`
 	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
 	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
+	TestAgentTimeout        string                     `yaml:"test_agent_timeout"`
 	LogLevel                string                     `yaml:"log_level"`
 	SessionReuse            *bool                      `yaml:"session_reuse"`
 	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
@@ -477,6 +483,7 @@ type Config struct {
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	ReviewAgentTimeout    time.Duration
+	TestAgentTimeout      time.Duration
 	LogLevel              string
 	SessionReuse          bool
 	Eval                  Eval
@@ -741,6 +748,11 @@ step_quiet_warning: "10m"
 # review-fix and rereview turns. A stalled review agent fails the run instead
 # of leaving it active.
 review_agent_timeout: "30m"
+
+# Maximum wall-clock time for one Test-step agent invocation, including the
+# post-test evidence-gathering turn. A stalled test agent fails the run instead
+# of leaving it active.
+test_agent_timeout: "30m"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
@@ -1530,6 +1542,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
 		ReviewAgentTimeout:      DefaultReviewAgentTimeout,
+		TestAgentTimeout:        DefaultTestAgentTimeout,
 		DaemonConnectTimeout:    DefaultDaemonConnectTimeout,
 		BranchSyncRemoteTimeout: DefaultBranchSyncRemoteTimeout,
 		LogLevel:                "info",
@@ -1766,6 +1779,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.ReviewAgentTimeout = d
+	}
+	if raw.TestAgentTimeout != "" {
+		d, err := parsePositiveDuration("test_agent_timeout", raw.TestAgentTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.TestAgentTimeout = d
 	}
 	if raw.DaemonConnectTimeout != "" {
 		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
@@ -2443,6 +2463,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
 		ReviewAgentTimeout:   global.ReviewAgentTimeout,
+		TestAgentTimeout:     global.TestAgentTimeout,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is

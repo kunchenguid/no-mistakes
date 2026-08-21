@@ -29,6 +29,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.ReviewAgentTimeout != DefaultReviewAgentTimeout {
 		t.Errorf("review_agent_timeout = %v, want %v", cfg.ReviewAgentTimeout, DefaultReviewAgentTimeout)
 	}
+	if cfg.TestAgentTimeout != DefaultTestAgentTimeout {
+		t.Errorf("test_agent_timeout = %v, want %v", cfg.TestAgentTimeout, DefaultTestAgentTimeout)
+	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
@@ -62,6 +65,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"ci_timeout:",
 		"step_quiet_warning:",
 		"review_agent_timeout:",
+		"test_agent_timeout:",
 		"daemon_connect_timeout:",
 		"branch_sync_remote_timeout:",
 		"log_level: info",
@@ -96,6 +100,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.ReviewAgentTimeout != DefaultReviewAgentTimeout {
 		t.Errorf("review_agent_timeout = %v, want %v", cfg.ReviewAgentTimeout, DefaultReviewAgentTimeout)
+	}
+	if cfg.TestAgentTimeout != DefaultTestAgentTimeout {
+		t.Errorf("test_agent_timeout = %v, want %v", cfg.TestAgentTimeout, DefaultTestAgentTimeout)
 	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
@@ -160,6 +167,44 @@ func TestLoadGlobal_ReviewAgentTimeout(t *testing.T) {
 	}
 	if cfg.ReviewAgentTimeout != 90*time.Second {
 		t.Fatalf("review_agent_timeout = %v, want 90s", cfg.ReviewAgentTimeout)
+	}
+}
+
+func TestLoadGlobal_TestAgentTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("test_agent_timeout: 90s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.TestAgentTimeout != 90*time.Second {
+		t.Fatalf("test_agent_timeout = %v, want 90s", cfg.TestAgentTimeout)
+	}
+}
+
+func TestLoadGlobal_InvalidTestAgentTimeout(t *testing.T) {
+	cases := []string{
+		`test_agent_timeout: "not-a-duration"`,
+		`test_agent_timeout: "0s"`,
+		`test_agent_timeout: "-1s"`,
+	}
+	for _, data := range cases {
+		t.Run(data, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadGlobal(path)
+			if err == nil {
+				t.Fatal("expected error for invalid test_agent_timeout")
+			}
+		})
 	}
 }
 
@@ -513,6 +558,20 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if d != DefaultBranchSyncRemoteTimeout {
 		t.Errorf("YAML branch_sync_remote_timeout = %v, Go default = %v", d, DefaultBranchSyncRemoteTimeout)
+	}
+	d, err = time.ParseDuration(raw.ReviewAgentTimeout)
+	if err != nil {
+		t.Fatalf("YAML review_agent_timeout %q is not a valid duration: %v", raw.ReviewAgentTimeout, err)
+	}
+	if d != DefaultReviewAgentTimeout {
+		t.Errorf("YAML review_agent_timeout = %v, Go default = %v", d, DefaultReviewAgentTimeout)
+	}
+	d, err = time.ParseDuration(raw.TestAgentTimeout)
+	if err != nil {
+		t.Fatalf("YAML test_agent_timeout %q is not a valid duration: %v", raw.TestAgentTimeout, err)
+	}
+	if d != DefaultTestAgentTimeout {
+		t.Errorf("YAML test_agent_timeout = %v, Go default = %v", d, DefaultTestAgentTimeout)
 	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")

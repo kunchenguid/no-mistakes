@@ -42,6 +42,8 @@ step_quiet_warning: "10m"
 
 review_agent_timeout: "30m"
 
+test_agent_timeout: "30m"
+
 daemon_connect_timeout: "3s"
 
 branch_sync_remote_timeout: "60s"
@@ -390,6 +392,21 @@ When the deadline expires, the review agent is cancelled and the run fails with 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
 Raise it for repositories whose reviews legitimately run long; it bounds only the Review step, and no other step or environment variable overrides it.
+
+### test_agent_timeout
+
+Maximum wall-clock time for one Test-step agent invocation.
+The budget covers the post-test evidence-gathering turn, and a Test-repair turn gets its own budget of the same length.
+When the deadline expires, the test agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `30m`                  |
+
+Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
+Non-positive values are rejected when loading the global config.
+Raise it for repositories whose targeted tests or evidence gathering legitimately run long; it bounds only the Test step, and no other step or environment variable overrides it.
 
 ### daemon_connect_timeout
 
