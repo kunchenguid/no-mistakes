@@ -207,6 +207,22 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 		t.Fatalf("captureAgy: %v", err)
 	}
 
+	argvRaw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(argvRaw)), "\n")
+	for i := range argv {
+		argv[i] = strings.TrimSuffix(argv[i], "\r")
+	}
+	want := []string{
+		"--model", "gemini-flash", "--dangerously-skip-permissions", "--print",
+		"prompt text", "--json-schema", `{"type":"object"}`, "--output-format", "stream-json",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+
 	data, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("read captured output: %v", err)
