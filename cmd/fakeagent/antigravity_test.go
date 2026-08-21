@@ -103,33 +103,57 @@ func TestRunAgyReplaysRecordedFixture(t *testing.T) {
 	if err := os.MkdirAll(fixture, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	structured := `{"event":"result","result":{"conversation_id":"real","status":"SUCCESS","response":"recorded","structured_output":{"ok":true}}}` + "\n"
+	fixtureContent := `{"event":"result","result":{"conversation_id":"real","status":"SUCCESS","response":"recorded","structured_output":{"ok":true}}}` + "\n"
 	for _, name := range []string{"plain.jsonl", "structured.jsonl"} {
-		if err := os.WriteFile(filepath.Join(fixture, name), []byte(structured), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(fixture, name), []byte(fixtureContent), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("FAKEAGENT_FIXTURE", dir)
 
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
+	t.Run("structured", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		status := runAgy([]string{"--print", "work", "--json-schema", "{}", "--output-format", "stream-json"}, defaultScenario())
+		_ = w.Close()
+		os.Stdout = oldStdout
+		var out bytes.Buffer
+		_, _ = out.ReadFrom(r)
+		if status != 0 {
+			t.Fatalf("runAgy() status = %d", status)
+		}
+		if !strings.Contains(out.String(), `"conversation_id":"real"`) {
+			t.Fatalf("fixture replay should carry the recorded envelope:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), `"summary"`) {
+			t.Fatalf("fixture replay should splice scenario structured output:\n%s", out.String())
+		}
+	})
 
-	status := runAgy([]string{"--print", "work", "--json-schema", "{}", "--output-format", "stream-json"}, defaultScenario())
-	_ = w.Close()
-	os.Stdout = oldStdout
-	var out bytes.Buffer
-	_, _ = out.ReadFrom(r)
-	if status != 0 {
-		t.Fatalf("runAgy() status = %d", status)
-	}
-	if !strings.Contains(out.String(), `"conversation_id":"real"`) {
-		t.Fatalf("fixture replay should carry the recorded envelope:\n%s", out.String())
-	}
-	if !strings.Contains(out.String(), `"summary"`) {
-		t.Fatalf("fixture replay should splice scenario structured output:\n%s", out.String())
-	}
+	t.Run("plain", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		status := runAgy([]string{"--print", "work", "--output-format", "stream-json"}, defaultScenario())
+		_ = w.Close()
+		os.Stdout = oldStdout
+		var out bytes.Buffer
+		_, _ = out.ReadFrom(r)
+		if status != 0 {
+			t.Fatalf("runAgy() status = %d", status)
+		}
+		if !strings.Contains(out.String(), `"conversation_id":"real"`) {
+			t.Fatalf("plain fixture replay should carry the recorded envelope:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), `"summary"`) {
+			t.Fatalf("plain fixture replay should splice scenario structured output:\n%s", out.String())
+		}
+	})
 }
