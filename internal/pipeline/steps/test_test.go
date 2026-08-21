@@ -74,6 +74,39 @@ func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 	}
 }
 
+func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("post-agent processing used expired agent context: %v", err)
+	}
+	if outcome == nil || outcome.NeedsApproval {
+		t.Fatalf("successful fix should complete, got %+v", outcome)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain"); got != "" {
+		t.Fatalf("fix was not committed: %s", got)
+	}
+	if got := gitCmd(t, dir, "show", "HEAD:fix.txt"); got != "fixed" {
+		t.Fatalf("committed fix = %q, want fixed", got)
+	}
+}
+
 func TestTestStep_FixMode(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

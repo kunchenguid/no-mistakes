@@ -77,19 +77,18 @@ Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		fixCtx, cancelFix, fixTimeout := testAgentContext(sctx)
-		sctx.Ctx = fixCtx
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix tests",
 			FallbackSummary: "fix test failures",
+			AgentContext:    fixCtx,
 			AfterAgentRun: func(*agent.Result) error {
-				newTestsFromFix = detectNewTestFiles(fixCtx, sctx.WorkDir)
+				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
 				return nil
 			},
 		})
 		cancelFix()
-		sctx.Ctx = ctx
 		if err != nil {
 			return nil, testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
 		}
