@@ -217,6 +217,31 @@ func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
 	}
 }
 
+// ciEvidenceUnavailableOutcome parks the run when consecutive polls produced no
+// CI evidence at all. It is deliberately not a failure verdict on the code: the
+// step never learned whether the checks passed, so the finding says exactly
+// that and asks for a decision, instead of leaving the run to expire against
+// its idle timeout with nothing but repeated warnings in the log.
+func ciEvidenceUnavailableOutcome(err error, attempts int) *pipeline.StepOutcome {
+	reason := "the provider reported no reason"
+	if err != nil {
+		reason = err.Error()
+	}
+	findings := Findings{
+		Summary: fmt.Sprintf("CI evidence could not be read on %d consecutive attempts", attempts),
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: fmt.Sprintf("CI check evidence is unavailable, so this run cannot tell whether the checks passed: %s", reason),
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 	findings := Findings{
 		Summary: "CI monitoring timed out before PR was merged or closed",

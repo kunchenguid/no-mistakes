@@ -370,7 +370,21 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		checks, err = h.getPRChecks(ctx, selector)
 	}
 	if err != nil {
-		return nil, err
+		// The rollup stays the only primary source. Actions evidence is
+		// derived only when the rollup itself is unreadable with this
+		// credential, and only for a commit-scoped read, which is the one
+		// shape that can be bound to an exact head. See actions_fallback.go.
+		if headSHA == "" || !errors.Is(err, ErrRollupUnavailable) {
+			return nil, err
+		}
+		fallback, fallbackErr := h.getActionsFallbackChecks(ctx, pr, headSHA)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("%w; GitHub Actions fallback: %w", err, fallbackErr)
+		}
+		if err := h.assertHeadUnchanged(ctx, selector, headSHA); err != nil {
+			return nil, err
+		}
+		return fallback, nil
 	}
 	if headSHA != "" {
 		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
@@ -378,15 +392,25 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			return nil, err
 		}
 		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
-		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
-		if err != nil {
+		if err := h.assertHeadUnchanged(ctx, selector, headSHA); err != nil {
 			return nil, err
-		}
-		if currentHeadSHA != headSHA {
-			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
 		}
 	}
 	return checks, nil
+}
+
+// assertHeadUnchanged re-reads the PR head after check discovery, so evidence
+// gathered for one commit can never be attributed to a head that moved while it
+// was being read.
+func (h *Host) assertHeadUnchanged(ctx context.Context, selector, headSHA string) error {
+	currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
+	if err != nil {
+		return err
+	}
+	if currentHeadSHA != headSHA {
+		return fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+	}
+	return nil
 }
 
 func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, error) {
@@ -398,7 +422,7 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 		if strings.Contains(string(out), "no checks reported") {
 			out = []byte("[]")
 		} else {
-			return nil, fmt.Errorf("gh pr checks: %w", err)
+			return nil, rollupReadError("gh pr checks", string(out), err)
 		}
 	}
 	var raw []struct {
@@ -452,7 +476,7 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 		}
 		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
 		if err != nil {
-			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+			return nil, rollupReadError("gh api checks for head commit", string(out), err)
 		}
 		var response struct {
 			Data struct {
@@ -573,7 +597,28 @@ func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error
 	return headSHA, nil
 }
 
-func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+// workflowRun is the subset of an Actions run listing entry this backend
+// reads. head_sha and run_attempt are read only by the rollup-unavailable
+// fallback (actions_fallback.go), which must bind every result to the exact
+// commit and attempt under test.
+type workflowRun struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_title"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	UpdatedAt   string `json:"updated_at"`
+	HTMLURL     string `json:"html_url"`
+	HeadSHA     string `json:"head_sha"`
+	RunAttempt  int    `json:"run_attempt"`
+}
+
+// listWorkflowRunsForHead returns every Actions workflow run GitHub reports
+// for headSHA. The listing is validated rather than trusted: a page without a
+// coherent total_count, a run without an id, a duplicated run, or a unique-run
+// count that disagrees with total_count all mean the pagination was
+// incomplete, and an incomplete listing must never become evidence.
+func (h *Host) listWorkflowRunsForHead(ctx context.Context, headSHA string) ([]workflowRun, error) {
 	repo := h.repoSlug()
 	endpoint := "repos/{owner}/{repo}/actions/runs"
 	if repo != "" {
@@ -591,15 +636,6 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	type workflowRun struct {
-		ID          int64  `json:"id"`
-		Name        string `json:"name"`
-		DisplayName string `json:"display_title"`
-		Status      string `json:"status"`
-		Conclusion  string `json:"conclusion"`
-		UpdatedAt   string `json:"updated_at"`
-		HTMLURL     string `json:"html_url"`
 	}
 	var pages []struct {
 		TotalCount   *int          `json:"total_count"`
@@ -637,21 +673,17 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 	if len(runIDs) != totalCount {
 		return nil, fmt.Errorf("workflow run discovery returned %d unique runs, want %d", len(runIDs), totalCount)
 	}
+	return raw, nil
+}
+
+func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+	raw, err := h.listWorkflowRunsForHead(ctx, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	repo := h.repoSlug()
 	checks := make([]scm.Check, 0, len(raw))
 	for _, run := range raw {
-		name := strings.TrimSpace(run.Name)
-		if name == "" {
-			name = strings.TrimSpace(run.DisplayName)
-		}
-		if name == "" {
-			name = "GitHub Actions workflow"
-		}
-		var completedAt time.Time
-		if run.UpdatedAt != "" {
-			if parsed, parseErr := time.Parse(time.RFC3339, run.UpdatedAt); parseErr == nil {
-				completedAt = parsed
-			}
-		}
 		bucket := normalizeCheckBucket("", run.Conclusion)
 		if bucket == "" {
 			bucket = normalizeCheckBucket("", run.Status)
@@ -662,19 +694,13 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			// state that can be classified.
 			bucket = scm.CheckBucketPending
 		}
-		state := strings.ToUpper(strings.TrimSpace(run.Conclusion))
-		if state == "" {
-			state = strings.ToUpper(strings.TrimSpace(run.Status))
-		}
-		link := strings.TrimSpace(run.HTMLURL)
-		if link == "" {
-			host := strings.TrimSpace(h.host)
-			if host == "" {
-				host = "github.com"
-			}
-			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
-		}
-		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, Link: link})
+		checks = append(checks, scm.Check{
+			Name:        runCheckName(run),
+			Bucket:      bucket,
+			State:       runState(run),
+			CompletedAt: parseActionsTime(run.UpdatedAt),
+			Link:        h.runLink(run, repo),
+		})
 	}
 	return checks, nil
 }

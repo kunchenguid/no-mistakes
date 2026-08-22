@@ -2672,3 +2672,108 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }
+
+// A check read that keeps failing produces no evidence at all, so the step must
+// stop at a bounded, actionable outcome instead of repeating the same warning
+// until the idle timeout expires.
+func TestCIStep_RepeatedEvidenceFailuresParkForADecision(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHChecksError(t, "OPEN", "MERGEABLE", "gh: Resource not accessible by personal access token (HTTP 403)")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 24 * time.Hour
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	polls := 0
+	step := &CIStep{
+		pollIntervalOverride: 30 * time.Second,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > maxConsecutiveCheckReadFailures {
+				t.Fatalf("step polled %d times without parking, logs: %v", polls, logs)
+			}
+			current = current.Add(interval)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, want a parked decision", outcome)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if !strings.Contains(findings.Summary, "could not be read") {
+		t.Fatalf("findings.Summary = %q, want the unavailable evidence named", findings.Summary)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("findings.Items = %+v, want one ask-user finding", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "unavailable") {
+		t.Fatalf("finding = %q, want it to say the evidence was unavailable", findings.Items[0].Description)
+	}
+}
+
+// A poll that succeeds resets the budget, so intermittent read failures never
+// accumulate into a park while CI is still reporting.
+func TestCIStep_SuccessfulReadResetsTheEvidenceFailureBudget(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Alternate: a failed read, then a pending check, repeatedly.
+	checks := []string{}
+	for i := 0; i < maxConsecutiveCheckReadFailures*3; i++ {
+		if i%2 == 0 {
+			checks = append(checks, fakeChecksReadFailure)
+		} else {
+			checks = append(checks, `[{"name":"build","state":"IN_PROGRESS","bucket":"pending"}]`)
+		}
+	}
+	env := fakeCIGHSequence(t, "OPEN", checks)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 24 * time.Hour
+
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		pollIntervalOverride: 30 * time.Second,
+		now:                  func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			current = current.Add(interval)
+			if polls >= maxConsecutiveCheckReadFailures*2 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want the monitor still polling", err)
+	}
+}

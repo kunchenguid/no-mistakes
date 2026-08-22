@@ -17,6 +17,16 @@ import (
 const (
 	defaultBaseBranchTipResolveWindow = 30 * time.Second
 	defaultPublishedHeadResolveWindow = 30 * time.Second
+	// maxConsecutiveCheckReadFailures bounds how many polls in a row may end
+	// with no CI evidence at all before the step parks for a decision.
+	// A read that keeps failing is not the same as CI that keeps running: it
+	// produces nothing the user or an agent can act on, and letting it repeat
+	// until the idle timeout turns a credential or provider problem into an
+	// hours-long silent stall whose only artifact is a repeated warning. The
+	// budget is generous enough that an ordinary transient failure - a rate
+	// limit, a dropped connection, a provider blip - is absorbed by the next
+	// successful poll, which resets it.
+	maxConsecutiveCheckReadFailures = 5
 )
 
 // CI monitoring status messages. These are surfaced to the user and parsed by
@@ -244,6 +254,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
+	// checkReadFailures counts consecutive polls that produced no CI evidence.
+	// A successful read resets it, so only an uninterrupted run of failures can
+	// reach the bound.
+	checkReadFailures := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		sctx.Log("CI timeout reached")
 		if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
@@ -347,8 +361,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err != nil {
 			clearCIMonitorReady(sctx)
 			lastMonitorLog = ""
-			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
+			checkReadFailures++
+			sctx.Log(fmt.Sprintf("warning: could not check CI (attempt %d/%d): %v", checkReadFailures, maxConsecutiveCheckReadFailures, err))
+			if checkReadFailures >= maxConsecutiveCheckReadFailures {
+				return ciEvidenceUnavailableOutcome(err, checkReadFailures), nil
+			}
 		} else {
+			checkReadFailures = 0
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient
