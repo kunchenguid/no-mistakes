@@ -211,15 +211,6 @@ func TestRequireActionEnforcesTheGate(t *testing.T) {
 			wantOut: []string{"Found no-mistakes signature in PR #549 body.", "Found compliant pipeline step attestation."},
 		},
 		{
-			name: "documentation example before generated attestation does not shadow it",
-			run: actionRun{
-				body:    "Example: <!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"...\",\"steps\":[...]} -->\n\n" + compliant,
-				headSHA: requiredWorkflowTestHeadSHA,
-			},
-			want:    "success",
-			wantOut: []string{"Found compliant pipeline step attestation."},
-		},
-		{
 			name:       "missing signature fails without naming the version floor",
 			run:        actionRun{body: "a regular pull request", headSHA: requiredWorkflowTestHeadSHA},
 			want:       "failure",

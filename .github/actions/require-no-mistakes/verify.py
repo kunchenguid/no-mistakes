@@ -160,11 +160,7 @@ def fail_missing_attestation(facts: Facts) -> "NoReturn":  # type: ignore[name-d
 
 
 def parse_attestation(facts: Facts) -> dict:
-    # The generated Pipeline section is appended after the human-authored PR
-    # description, which may itself quote the documented comment shape. Judge
-    # the generated (last) comment rather than letting an earlier example
-    # shadow it.
-    start = facts.body.rfind(ATTESTATION_PREFIX)
+    start = facts.body.find(ATTESTATION_PREFIX)
     if start < 0:
         fail_missing_attestation(facts)
     start += len(ATTESTATION_PREFIX)

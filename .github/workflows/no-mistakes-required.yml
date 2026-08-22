@@ -107,9 +107,7 @@ jobs:
               )
               raise SystemExit(1)
 
-          # The generated Pipeline section is appended after the human-authored
-          # description, which may quote the documented attestation shape.
-          start = body.rfind(prefix)
+          start = body.find(prefix)
           if start < 0:
               fail_missing_attestation()
           start += len(prefix)
