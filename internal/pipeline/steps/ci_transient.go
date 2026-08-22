@@ -690,24 +690,18 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 // bucket so the approval result does not describe a setup failure as a
 // cancellation. reruns reports how many reruns this run spent on each check.
 func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns func(string) int) *pipeline.StepOutcome {
-	preRunFailures := make(map[string]bool, len(names))
-	for _, check := range checks {
-		if check.PreRunFailure {
-			preRunFailures[check.Name] = true
-		}
-	}
-
+	unresolved := unresolvedTransientChecks(names, checks)
 	preRunCount := 0
-	for _, name := range names {
-		if preRunFailures[name] {
+	for _, check := range unresolved {
+		if check.PreRunFailure {
 			preRunCount++
 		}
 	}
-	findings := Findings{Summary: unresolvedTransientSummary(len(names), preRunCount)}
-	for _, name := range names {
+	findings := Findings{Summary: unresolvedTransientSummary(len(unresolved), preRunCount)}
+	for _, check := range unresolved {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
-			Description: unresolvedTransientDescription(name, reruns(name), preRunFailures[name]),
+			Description: unresolvedTransientDescription(check.Name, reruns(check.Name), check.PreRunFailure),
 			Action:      types.ActionAskUser,
 		})
 	}
@@ -716,6 +710,29 @@ func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns fun
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 	}
+}
+
+// unresolvedTransientChecks keeps the cause attached to each provider check.
+// Names identify the unresolved budget entries, but they are not unique check
+// identities: separate workflows can publish same-named checks with different
+// causes. A missing check has no current positional evidence, so it retains the
+// historical cancellation diagnosis.
+func unresolvedTransientChecks(names []string, checks []scm.Check) []scm.Check {
+	var unresolved []scm.Check
+	for _, name := range names {
+		matched := false
+		for _, check := range checks {
+			if check.Name != name || check.Bucket != scm.CheckBucketCancel {
+				continue
+			}
+			matched = true
+			unresolved = append(unresolved, check)
+		}
+		if !matched {
+			unresolved = append(unresolved, scm.Check{Name: name, Bucket: scm.CheckBucketCancel})
+		}
+	}
+	return unresolved
 }
 
 func unresolvedTransientSummary(total, preRun int) string {

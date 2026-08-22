@@ -211,6 +211,39 @@ func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 	}
 }
 
+// Names identify shared rerun budgets, not unique checks. If two workflows use
+// the same job name, the approval result must retain each check's own cause
+// instead of letting a setup failure relabel its cancelled sibling.
+func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T) {
+	t.Parallel()
+
+	outcome := ciUnresolvedCancelledOutcome(
+		[]string{"build"},
+		[]scm.Check{
+			{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
+			{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+		},
+		func(string) int { return 1 },
+	)
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI checks ended without reporting a code verdict" {
+		t.Fatalf("summary = %q, want mixed-cause diagnosis", findings.Summary)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("findings = %+v, want one finding per same-named check", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "failed during setup") {
+		t.Fatalf("first description = %q, want setup-failure diagnosis", findings.Items[0].Description)
+	}
+	if !strings.Contains(findings.Items[1].Description, "provider cancelled") {
+		t.Fatalf("second description = %q, want cancellation diagnosis", findings.Items[1].Description)
+	}
+}
+
 // A stale check must also stay non-terminal, so the classifier's verdict for it
 // cannot be reached through a path that counts it as a failure.
 func TestCheckFailedTerminallyMatchesTheBucketMapping(t *testing.T) {
