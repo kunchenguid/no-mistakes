@@ -504,7 +504,8 @@ These are global defaults. Per-repo config can override individual steps.
 
 ### ci.rerun_transient
 
-How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
+How many times the CI step may re-run a single provider-attributed check before that check reaches an approval gate.
+This covers cancellations on supported providers and, when the value is positive, opts GitHub into detecting jobs that failed before any repository step ran.
 
 | | |
 |---|---|

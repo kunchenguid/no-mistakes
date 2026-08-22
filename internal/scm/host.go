@@ -159,6 +159,14 @@ type Check struct {
 	// individual job or a provider-side workflow run for targeted reruns. Empty
 	// when the provider reported no link.
 	Link string
+	// PreRunFailure marks a check the provider failed before the repository's own
+	// steps ran - its setup/action-resolution phase failed (e.g. a GitHub Actions
+	// action-download outage), so no repository step executed. It is an
+	// infrastructure outcome, not a verdict on the code, and the CI step treats it
+	// as re-runnable rather than a code failure. A PreRunFailureDetector sets it;
+	// it can never be true for a genuine test or lint failure, whose job cleared
+	// setup and failed a later step.
+	PreRunFailure bool
 }
 
 // Failing reports whether the check is in a failed bucket.
@@ -240,6 +248,29 @@ type Host interface {
 // resumed after repository configuration changes.
 type PRBaseBranchReader interface {
 	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
+}
+
+// PreRunFailureDetector reports which failed checks the provider failed before
+// the repository's own steps ran - a setup/action-resolution outcome (for GitHub
+// Actions, an action-download outage) rather than a verdict on the code. It
+// reads the provider's own step-level conclusions, never log text, so a flagged
+// check is one whose job never executed a repository step. A genuine test or
+// lint failure can never be flagged, because that job cleared setup and failed a
+// later step: this is what keeps the transient-rerun path from masking real
+// failures.
+//
+// Like CheckRerunner it is optional: a backend whose provider exposes no
+// step-level phase simply does not implement it, and the CI step consults it
+// only when transient reruns are enabled.
+type PreRunFailureDetector interface {
+	// PreRunFailures returns a slice parallel to checks: entry i is true when
+	// checks[i] failed before any repository step ran. Check names are not unique
+	// on a PR, so the result is positional rather than name-keyed - a same-named
+	// genuine failure must never inherit another check's infrastructure flag. It
+	// must fail closed - leaving false any check whose phase it cannot determine -
+	// so an unreadable job stays a genuine failure rather than being masked as
+	// infrastructure.
+	PreRunFailures(ctx context.Context, checks []Check) ([]bool, error)
 }
 
 // CheckRerunner re-runs the provider-side work behind a failed check without

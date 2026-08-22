@@ -1,7 +1,10 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,7 +12,113 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// fakePreRunHost is a scm.Host that also reports pre-run infrastructure
+// failures from a fixed set, so markPreRunInfraFailures can be exercised without
+// a live provider. The embedded nil scm.Host is never called: the CI step only
+// invokes the detector method here.
+type fakePreRunHost struct {
+	scm.Host
+	flagged map[string]bool
+	byLink  map[string]bool
+	calls   int
+}
+
+func (h *fakePreRunHost) PreRunFailures(_ context.Context, checks []scm.Check) ([]bool, error) {
+	h.calls++
+	out := make([]bool, len(checks))
+	for i, c := range checks {
+		out[i] = h.flagged[c.Name] || h.byLink[c.Link]
+	}
+	return out, nil
+}
+
+func markContext(t *testing.T, rerunBudget int) *pipeline.StepContext {
+	t.Helper()
+	return &pipeline.StepContext{
+		Ctx:    context.Background(),
+		Config: &config.Config{CI: config.CI{RerunTransient: rerunBudget}},
+		Log:    func(string) {},
+	}
+}
+
+// A GitHub Actions action-download outage fails a job in setup, before any
+// repository step runs. markPreRunInfraFailures must route that into the
+// transient path (re-run, do not fail the run), while a genuine test failure
+// that cleared setup stays a real failure. Proving both directions here is the
+// masking-safety contract: infra retried, real failure still fails.
+func TestMarkPreRunInfraFailures_RetriesInfraButNotGenuine(t *testing.T) {
+	t.Parallel()
+
+	infra := scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/1/job/2"}
+	genuine := scm.Check{Name: "unit-tests", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/1/job/3"}
+	checks := []scm.Check{infra, genuine}
+
+	host := &fakePreRunHost{flagged: map[string]bool{"build": true}}
+	markPreRunInfraFailures(markContext(t, 1), host, checks)
+
+	// The infra failure is re-bucketed out of the failing set and classifies as
+	// transient (re-runnable), so it never reaches the fix agent as a failure.
+	if !checks[0].PreRunFailure || checks[0].Bucket != scm.CheckBucketCancel {
+		t.Fatalf("infra check = %+v, want PreRunFailure with cancel bucket", checks[0])
+	}
+	if got := classifyCheckFailure(checks[0]); got != classTransient {
+		t.Fatalf("infra classifyCheckFailure = %q, want %q", got, classTransient)
+	}
+	// The genuine failure is untouched: still a fail-bucket, genuine failure that
+	// fails the run. This is the no-masking guarantee.
+	if checks[1].PreRunFailure || checks[1].Bucket != scm.CheckBucketFail {
+		t.Fatalf("genuine check = %+v, want untouched fail bucket", checks[1])
+	}
+	if got := classifyCheckFailure(checks[1]); got != classGenuine {
+		t.Fatalf("genuine classifyCheckFailure = %q, want %q", got, classGenuine)
+	}
+	if names := failingCheckNames(checks); len(names) != 1 || names[0] != "unit-tests" {
+		t.Fatalf("failingCheckNames = %v, want only the genuine failure", names)
+	}
+}
+
+// The detection is opt-in: with the default rerun budget of 0 the provider is
+// never consulted and an action-download outage fails the run exactly as before.
+func TestMarkPreRunInfraFailures_OptInGated(t *testing.T) {
+	t.Parallel()
+
+	checks := []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/1/job/2"}}
+	host := &fakePreRunHost{flagged: map[string]bool{"build": true}}
+
+	markPreRunInfraFailures(markContext(t, 0), host, checks)
+
+	if host.calls != 0 {
+		t.Fatalf("detector called %d times with reruns disabled, want 0", host.calls)
+	}
+	if checks[0].PreRunFailure || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("check = %+v, want untouched when opted out", checks[0])
+	}
+}
+
+// Check names are not unique on a PR: two workflows can both name a job
+// "build". If one fails at setup (infra) and the other fails a real repository
+// step, only the infra one may be re-bucketed. A positional detector result
+// keeps them apart; a name-keyed one would flag both and mask the real failure.
+func TestMarkPreRunInfraFailures_SameNameGenuineNotMasked(t *testing.T) {
+	t.Parallel()
+
+	infra := scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/1/job/2"}
+	genuine := scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/9/job/3"}
+	checks := []scm.Check{infra, genuine}
+
+	host := &fakePreRunHost{flagged: map[string]bool{}, byLink: map[string]bool{infra.Link: true}}
+	markPreRunInfraFailures(markContext(t, 1), host, checks)
+
+	if !checks[0].PreRunFailure || checks[0].Bucket != scm.CheckBucketCancel {
+		t.Fatalf("infra check = %+v, want re-bucketed transient", checks[0])
+	}
+	if checks[1].PreRunFailure || checks[1].Bucket != scm.CheckBucketFail {
+		t.Fatalf("same-named genuine check = %+v, want untouched fail bucket (no masking)", checks[1])
+	}
+}
 
 func TestClassifyCheckFailure(t *testing.T) {
 	t.Parallel()
@@ -25,6 +134,14 @@ func TestClassifyCheckFailure(t *testing.T) {
 		{"lowercase state", scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "cancelled"}, classTransient},
 
 		{"job failure", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE"}, classGenuine},
+		// A failure the provider produced before any repository step ran (a
+		// setup/action-download outage) is infrastructure, not a code verdict: it
+		// is re-runnable even though its state is still FAILURE.
+		{"pre-run infrastructure failure", scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}, classTransient},
+		// The same FAILURE state without the pre-run mark is a genuine failure and
+		// must never be re-run: this is what keeps a real test failure from being
+		// masked as infrastructure.
+		{"failure that cleared setup stays genuine", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE", PreRunFailure: false}, classGenuine},
 		{"job error", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ERROR"}, classGenuine},
 		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ACTION_REQUIRED"}, classGenuine},
 		// A workflow that cannot start is reproducible (bad workflow file), not
@@ -53,6 +170,77 @@ func TestClassifyCheckFailure(t *testing.T) {
 				t.Fatalf("classifyCheckFailure(%+v) = %q, want %q", tc.check, got, tc.want)
 			}
 		})
+	}
+}
+
+// A setup failure uses the cancel-shaped policy path, but it is still a failed
+// setup rather than a provider cancellation. The approval result must preserve
+// that cause after the rerun budget is spent so the user can make the decision
+// with an accurate diagnosis.
+func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
+	t.Parallel()
+
+	outcome := ciUnresolvedCancelledOutcome(
+		[]string{"build"},
+		[]scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}},
+		func(string) int { return 1 },
+	)
+	if !outcome.NeedsApproval {
+		t.Fatal("pre-run failure after its rerun must require approval")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI checks failed before repository steps ran" {
+		t.Fatalf("summary = %q, want setup-failure diagnosis", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want one setup-failure finding", findings.Items)
+	}
+	description := findings.Items[0].Description
+	if !strings.Contains(description, "failed during setup again after its rerun") {
+		t.Fatalf("description = %q, want setup-failure diagnosis", description)
+	}
+	if strings.Contains(description, "provider cancelled") {
+		t.Fatalf("description = %q, must not claim the provider cancelled a failed setup", description)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("action = %q, want ask-user parking", findings.Items[0].Action)
+	}
+}
+
+// Names identify shared rerun budgets, not unique checks. If two workflows use
+// the same job name, the approval result must retain each check's own cause
+// instead of letting a setup failure relabel its cancelled sibling.
+func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T) {
+	t.Parallel()
+
+	outcome := ciUnresolvedCancelledOutcome(
+		[]string{"build"},
+		[]scm.Check{
+			{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
+			{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+		},
+		func(string) int { return 1 },
+	)
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI checks ended without reporting a code verdict" {
+		t.Fatalf("summary = %q, want mixed-cause diagnosis", findings.Summary)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("findings = %+v, want one finding per same-named check", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "failed during setup") {
+		t.Fatalf("first description = %q, want setup-failure diagnosis", findings.Items[0].Description)
+	}
+	if !strings.Contains(findings.Items[1].Description, "provider cancelled") {
+		t.Fatalf("second description = %q, want cancellation diagnosis", findings.Items[1].Description)
 	}
 }
 
