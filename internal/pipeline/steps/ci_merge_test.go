@@ -27,7 +27,10 @@ func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 5 * time.Second
+	// The timeout is an idle production budget, not the mechanism under test.
+	// Leave enough room for race-enabled, process-saturated CI to start the fake
+	// gh subprocesses before the mergeability response is observed.
+	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0} // disabled
 
 	var logs []string
@@ -224,6 +227,9 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
+	// A receive into a bare repository may otherwise launch detached automatic
+	// maintenance that races t.TempDir cleanup after the synchronous push exits.
+	gitCmd(t, upstream, "config", "gc.auto", "0")
 
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")

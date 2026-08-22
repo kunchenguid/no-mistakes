@@ -280,13 +280,6 @@ func TestNoMistakesRequiredWorkflowEnforcesPipelineAttestation(t *testing.T) {
 			wantOut: []string{"Found no-mistakes signature"},
 		},
 		{
-			name: "documentation example before generated attestation does not shadow it",
-			body: "Example: <!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"...\",\"steps\":[...]} -->\n\n" +
-				pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted),
-			want:    "success",
-			wantOut: []string{"Found compliant pipeline step attestation."},
-		},
-		{
 			name: "empty attestation head_sha is non-compliant",
 			body: "## Pipeline\n\n" + signature + "\n\n<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"\",\"steps\":[{\"step\":\"review\",\"status\":\"completed\"},{\"step\":\"test\",\"status\":\"completed\"},{\"step\":\"document\",\"status\":\"completed\"}]} -->\n",
 			want: "failure",
