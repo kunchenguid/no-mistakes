@@ -124,6 +124,67 @@ func TestAntigravityParser(t *testing.T) {
 	}
 }
 
+func TestAntigravityParser_ToolCallArrayDeltas(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"tool_calls": [{"delta": "partial-"}, {"input_json_delta": "json-"}, {"arguments_delta": "args-"}, {"function": {"arguments": "{\"fn\":true}"}}]}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	for _, want := range []string{"partial-", "json-", "args-", `{"fn":true}`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected text to contain %q, got %q", want, text)
+		}
+	}
+}
+
+func TestAntigravityParser_StringToolInfoParametersUsedVerbatim(t *testing.T) {
+	stream := `{"event": "step_update", "step_update": {"tool_info": {"parameters": "--flag value"}}}` + "\n"
+	var chunks []string
+	p := &antigravityParser{onChunk: func(text string) { chunks = append(chunks, text) }}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(chunks) != 1 || chunks[0] != "\n--flag value\n" {
+		t.Errorf("chunks = %q, want verbatim string parameters with newline padding", chunks)
+	}
+}
+
+func TestAntigravityParser_StructuredSubagentInfoCompacted(t *testing.T) {
+	stream := `{"event": "step_update", "step_update": {"subagent_info": {"task": "review", "depth": 2}}}` + "\n"
+	var chunks []string
+	p := &antigravityParser{onChunk: func(text string) { chunks = append(chunks, text) }}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "\n{\"task\":\"review\",\"depth\":2}\n"
+	if len(chunks) != 1 || chunks[0] != want {
+		t.Errorf("chunks = %q, want compacted subagent payload %q preserving field order", chunks, want)
+	}
+}
+
+func TestAntigravityParser_MalformedAndUnknownLinesAreIgnored(t *testing.T) {
+	stream := `
+not json at all
+{"event": "mystery_event", "payload": {"ignored": true}}
+{"event": "step_update", "step_update": {"text_delta": "kept"}}
+`
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if text := p.finalText(); text != "kept" {
+		t.Errorf("finalText() = %q, want only the well-formed delta", text)
+	}
+}
+
 func TestAntigravityParser_StructuredOutputOverride(t *testing.T) {
 	stream := `
 {"event": "step_update", "step_update": {"text_delta": "hello"}}
