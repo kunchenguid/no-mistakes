@@ -170,12 +170,24 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	// db.ActiveRunWorktrees).
 	runs, err := i.DB.ActiveRunWorktrees()
 	if err != nil {
+		// A DB created before the migrations that introduced columns read by this
+		// advisory query fails with "no such column". This metadata is advisory
+		// (the refusal does not depend on it), and with the daemon down there is
+		// no live agent-step ancestry to detect. Degrade to empty so the daemon
+		// can start and its authoritative open can run the migration; still
+		// propagate genuine DB errors.
+		if preMigrationSchemaError(err, "runs") {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
 	}
 	var out []activeAgentStep
 	for _, run := range runs {
 		steps, err := i.DB.GetStepsByRun(run.RunID)
 		if err != nil {
+			if preMigrationSchemaError(err, "step_results") {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
 		}
 		for _, step := range steps {
@@ -190,6 +202,21 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 		}
 	}
 	return out, nil
+}
+
+func preMigrationSchemaError(err error, tables ...string) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "no such column: ") {
+		return false
+	}
+	for _, table := range tables {
+		for _, col := range db.MigrationColumns(table) {
+			if strings.Contains(msg, "no such column: "+col) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func activeStepStatus(status types.StepStatus) bool {
