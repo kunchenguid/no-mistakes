@@ -287,19 +287,28 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The property under test is that cancellation short-circuits the 5s
+	// waitForActiveRun poll, so the clock starts at the moment the stub
+	// cancels: everything before it (repo discovery, IPC dial) spawns
+	// subprocesses that are slow enough on Windows CI to eat a budget
+	// measured from before Execute.
 	prevAuto := runWizardAuto
+	var canceledAt time.Time
 	runWizardAuto = func(got context.Context, p *paths.Paths, state *repoState, _ []types.StepName, _ waitForRunFunc) (wizard.Result, error) {
+		canceledAt = time.Now()
 		cancel()
 		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/missing"}, nil
 	}
 	defer func() { runWizardAuto = prevAuto }()
 
-	start := time.Now()
 	_, err = executeCmdWithContext(ctx, "-y")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("executeCmdWithContext(-y) error = %v, want %v", err, context.Canceled)
 	}
-	if elapsed := time.Since(start); elapsed >= time.Second {
-		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
+	if canceledAt.IsZero() {
+		t.Fatal("wizard stub never ran, so cancellation was never exercised")
+	}
+	if elapsed := time.Since(canceledAt); elapsed >= time.Second {
+		t.Fatalf("command returned %v after cancellation, want under %v (must not wait out the run-registration timeout)", elapsed, time.Second)
 	}
 }

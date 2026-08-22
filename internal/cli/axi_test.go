@@ -326,6 +326,73 @@ func TestGateSummaryUsesBoundedDisclosure(t *testing.T) {
 	}
 }
 
+// TestGateFindingDescriptionRendersInFull is the regression test for issue
+// #600: finding descriptions must never be truncated, however long, because
+// the skill's documented contract requires relaying an ask-user finding
+// verbatim to a human. It exercises text well past the old ~600-char cap.
+func TestGateFindingDescriptionRendersInFull(t *testing.T) {
+	long := strings.Repeat("finding detail. ", 200) // 3200 chars, well past the old 600-char cap
+	gate := stepView{
+		Name:   "review",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: "review-1", Severity: "warning", File: "main.go", Action: types.ActionAskUser, Description: long},
+		}, "1 blocking issue"),
+	}
+	out := axiDoc(gateFields(gate)...)
+
+	if !strings.Contains(out, long) {
+		t.Fatalf("gate output should contain the complete %d-char finding description, got:\n%s", len(long), out)
+	}
+	if strings.Contains(out, "truncated,") {
+		t.Fatalf("gate output should carry no truncation disclosure for finding text:\n%s", out)
+	}
+}
+
+// TestGateFindingDescriptionBoundaryExactlyAtOldCap covers the exact old
+// truncation boundary (600 runes, including multi-byte ones) to prove no
+// off-by-one silently reintroduces a cut at that length.
+func TestGateFindingDescriptionBoundaryExactlyAtOldCap(t *testing.T) {
+	const oldCap = 600
+	// Mix in multi-byte runes so this also exercises the rune-vs-byte counting
+	// the old truncate() helper used.
+	desc := strings.Repeat("é", oldCap) + strings.Repeat("x", 50)
+	gate := stepView{
+		Name:   "review",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: "review-1", Severity: "warning", File: "main.go", Action: types.ActionAskUser, Description: desc},
+		}, "summary"),
+	}
+	out := axiDoc(gateFields(gate)...)
+
+	if !strings.Contains(out, desc) {
+		t.Fatalf("gate output should contain the full description spanning the old truncation boundary, got:\n%s", out)
+	}
+}
+
+// TestGateFindingRowShapeUnchanged locks the findingRow TOON shape (columns
+// and their order) so existing consumers parsing the `description` field are
+// unaffected by issue #600's fix - only the field's content grew less lossy,
+// the shape stayed identical.
+func TestGateFindingRowShapeUnchanged(t *testing.T) {
+	gate := stepView{
+		Name:   "review",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: "review-1", Severity: "warning", File: "main.go", Action: types.ActionAskUser, Description: "short"},
+		}, "1 blocking issue"),
+	}
+	out := axiDoc(gateFields(gate)...)
+
+	if !strings.Contains(out, "findings[1]{id,severity,file,action,description}:") {
+		t.Fatalf("finding row shape changed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "review-1,warning,main.go,ask-user,short") {
+		t.Fatalf("finding row rendering changed for a short description, got:\n%s", out)
+	}
+}
+
 func TestEscapeUnsupportedTOONControlsPreservesSupportedBytesAndUnicode(t *testing.T) {
 	input := "π\tline\r\n😀\x00\x07\x1f\x7f"
 	want := "π\tline\r\n😀\\x00\\x07\\x1F\x7f"
