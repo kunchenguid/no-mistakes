@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.1](https://github.com/kunchenguid/no-mistakes/compare/v1.57.0...v1.57.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* make git fetch cancellation converge ([#752](https://github.com/kunchenguid/no-mistakes/issues/752)) ([22a32b2](https://github.com/kunchenguid/no-mistakes/commit/22a32b298ca1cb27436a046285dd2325a07f2ef2))
+
 ## [1.57.0](https://github.com/kunchenguid/no-mistakes/compare/v1.56.0...v1.57.0) (2026-08-22)
 
 
