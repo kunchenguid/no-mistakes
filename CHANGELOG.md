@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.57.0](https://github.com/kunchenguid/no-mistakes/compare/v1.56.0...v1.57.0) (2026-08-22)
+
+
+### Features
+
+* **agent:** add Antigravity (agy) support ([#673](https://github.com/kunchenguid/no-mistakes/issues/673)) ([b00db34](https://github.com/kunchenguid/no-mistakes/commit/b00db34745732a8d478336839b89038ecaf0d820))
+* **agent:** resume antigravity conversations for review-fixer sessions ([#812](https://github.com/kunchenguid/no-mistakes/issues/812)) ([9e6400c](https://github.com/kunchenguid/no-mistakes/commit/9e6400c80e9e87b8d46f7bcd3e30b4f9fdf6bc6a))
+* **agent:** unify model and effort configuration ([#806](https://github.com/kunchenguid/no-mistakes/issues/806)) ([f2e9289](https://github.com/kunchenguid/no-mistakes/commit/f2e928949448f639371773ffdbea59b05c897a50))
+
+
+### Bug Fixes
+
+* **agent:** map agy thinking tokens and honor the terminal result response ([#808](https://github.com/kunchenguid/no-mistakes/issues/808)) ([287e8dc](https://github.com/kunchenguid/no-mistakes/commit/287e8dc94425da3ff4655c8ab3394a4efec6bbd7))
+* **branchsync:** correct custody recovery eligibility ([#814](https://github.com/kunchenguid/no-mistakes/issues/814)) ([8685603](https://github.com/kunchenguid/no-mistakes/commit/868560348d3031c6ded6a7b122202cbae09317a9))
+* **branchsync:** isolate and configure remote operation timeouts ([#684](https://github.com/kunchenguid/no-mistakes/issues/684)) ([8d6ebbf](https://github.com/kunchenguid/no-mistakes/commit/8d6ebbf9f338da98a9826366c9da3e6b817a5f98))
+* **branchsync:** preserve recoverable pipeline custody ([#803](https://github.com/kunchenguid/no-mistakes/issues/803)) ([5b89741](https://github.com/kunchenguid/no-mistakes/commit/5b89741938fe956052d609360de42137011c4694))
+* **pipeline:** bound every agent invocation by a timeout ([#810](https://github.com/kunchenguid/no-mistakes/issues/810)) ([4a5cec6](https://github.com/kunchenguid/no-mistakes/commit/4a5cec653861a0efa34b9efabda88d08bc22d68c))
+* **pipeline:** bypass hooks for correction commits ([#796](https://github.com/kunchenguid/no-mistakes/issues/796)) ([595a32a](https://github.com/kunchenguid/no-mistakes/commit/595a32aacf8b999af56c13972f3152d6458e97c6))
+* **pipeline:** prevent test agents from hanging runs ([#807](https://github.com/kunchenguid/no-mistakes/issues/807)) ([21f3793](https://github.com/kunchenguid/no-mistakes/commit/21f3793b910b631cdab309f60a1153895c77845e))
+* **pr:** separate mixed evidence blocks ([#800](https://github.com/kunchenguid/no-mistakes/issues/800)) ([1217415](https://github.com/kunchenguid/no-mistakes/commit/12174153fea45d411644bbf57ef240ebba33fd73))
+* **review:** bound stalled review agents ([#708](https://github.com/kunchenguid/no-mistakes/issues/708)) ([70d7d8c](https://github.com/kunchenguid/no-mistakes/commit/70d7d8cc160fafdb18eb78babecce26d7309c10a))
+* **scm:** fail closed on invalid PR listings ([#470](https://github.com/kunchenguid/no-mistakes/issues/470)) ([88b322f](https://github.com/kunchenguid/no-mistakes/commit/88b322fe89123cb8c5c59df39cf7f1d9416ccb91))
+
 ## [1.56.0](https://github.com/kunchenguid/no-mistakes/compare/v1.55.1...v1.56.0) (2026-08-20)
 
 
