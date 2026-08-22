@@ -223,15 +223,16 @@ type agyResultData struct {
 	Usage            *agyUsageData   `json:"usage,omitempty"`
 }
 
+// Every counter is a pointer so absence of a key stays distinguishable
+// from a provider-reported zero; only keys actually present in a payload
+// overwrite the accumulated usage.
 type agyUsageData struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	// ThinkingTokens is a pointer so absence of the field stays
-	// distinguishable from a reported zero reasoning spend.
-	ThinkingTokens      *int `json:"thinking_tokens,omitempty"`
-	CacheReadTokens     int  `json:"cache_read_tokens"`
-	CacheCreationTokens int  `json:"cache_creation_tokens"`
-	TotalTokens         int  `json:"total_tokens"`
+	InputTokens         *int `json:"input_tokens"`
+	OutputTokens        *int `json:"output_tokens"`
+	ThinkingTokens      *int `json:"thinking_tokens"`
+	CacheReadTokens     *int `json:"cache_read_tokens"`
+	CacheCreationTokens *int `json:"cache_creation_tokens"`
+	TotalTokens         *int `json:"total_tokens"`
 }
 
 // agyPayloadText renders a raw JSON payload for the stream: a JSON string is
@@ -331,7 +332,7 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 			}
 
 			if step.Usage != nil {
-				applyAgyUsage(&p.usage, step.Usage)
+				applyAgyUsage(&p.usage, step.Usage, false)
 			}
 		case "result":
 			res := event.Result
@@ -361,7 +362,7 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 				}
 			}
 			if res.Usage != nil {
-				applyAgyUsage(&p.usage, res.Usage)
+				applyAgyUsage(&p.usage, res.Usage, true)
 			}
 		}
 	}
@@ -381,19 +382,30 @@ func (p *antigravityParser) finalText() string {
 	}
 }
 
-// applyAgyUsage copies an agy usage payload into TokenUsage. Presence of
-// thinking_tokens, not its value, sets ReasoningReported so a genuine zero
-// stays distinguishable from an adapter that never exposes the field.
-func applyAgyUsage(target *TokenUsage, src *agyUsageData) {
+// applyAgyUsage merges an agy usage payload into TokenUsage: each counter
+// overwrites only when this payload reports it, so the last reported value
+// wins per field and absent keys never regress earlier values to zero.
+// Presence of thinking_tokens or cache_creation_tokens, not their values,
+// sets the matching Reported flag so genuine zeros stay distinguishable
+// from an adapter that never exposes the field. cache_creation_tokens is
+// honored only on the terminal result payload, matching the historical
+// step_update handling.
+func applyAgyUsage(target *TokenUsage, src *agyUsageData, includeCacheCreation bool) {
 	if src == nil {
 		return
 	}
 	target.Reported = true
-	target.InputTokens = src.InputTokens
-	target.OutputTokens = src.OutputTokens
-	target.CacheReadTokens = src.CacheReadTokens
-	if src.CacheCreationTokens > 0 {
-		target.CacheCreationTokens = src.CacheCreationTokens
+	if src.InputTokens != nil {
+		target.InputTokens = *src.InputTokens
+	}
+	if src.OutputTokens != nil {
+		target.OutputTokens = *src.OutputTokens
+	}
+	if src.CacheReadTokens != nil {
+		target.CacheReadTokens = *src.CacheReadTokens
+	}
+	if includeCacheCreation && src.CacheCreationTokens != nil {
+		target.CacheCreationTokens = *src.CacheCreationTokens
 		target.CacheCreationReported = true
 	}
 	if src.ThinkingTokens != nil {

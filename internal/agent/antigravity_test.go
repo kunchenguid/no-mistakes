@@ -280,6 +280,52 @@ func TestAntigravityParser_ThinkingTokensAbsentLeavesReasoningUnreported(t *test
 	}
 }
 
+func TestAntigravityParser_PartialUsagePayloadDoesNotZeroEarlierFields(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "output_tokens": 5}}}
+{"event": "result", "result": {"status": "SUCCESS", "usage": {"output_tokens": 9}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The result payload omits input_tokens, so the last reported value
+	// from the step payload must survive instead of regressing to zero.
+	if p.usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10 preserved from the step payload", p.usage.InputTokens)
+	}
+	if p.usage.OutputTokens != 9 {
+		t.Errorf("OutputTokens = %d, want 9 from the later reported value", p.usage.OutputTokens)
+	}
+}
+
+func TestAntigravityParser_CacheCreationPresenceAndStepPath(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "cache_creation_tokens": 4}}}
+{"event": "result", "result": {"status": "SUCCESS", "usage": {"cache_creation_tokens": 0}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A step_update usage payload never touches cache_creation accounting.
+	if p.usage.CacheCreationReported && p.usage.CacheCreationTokens == 4 {
+		t.Errorf("CacheCreationTokens = %d with Reported=true, want the step payload ignored for cache_creation_tokens", p.usage.CacheCreationTokens)
+	}
+	// Presence of cache_creation_tokens on the result sets Reported even
+	// when the provider genuinely reports zero.
+	if !p.usage.CacheCreationReported {
+		t.Error("CacheCreationReported = false, want true when the result reports cache_creation_tokens: 0")
+	}
+	if p.usage.CacheCreationTokens != 0 {
+		t.Errorf("CacheCreationTokens = %d, want the reported 0", p.usage.CacheCreationTokens)
+	}
+}
+
 func TestAntigravityParser_ResponseWinsOverStreamDeltas(t *testing.T) {
 	stream := `
 {"event": "step_update", "step_update": {"text_delta": "partial thought "}}
