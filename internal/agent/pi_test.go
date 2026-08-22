@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestPiAgent_BuildArgs(t *testing.T) {
@@ -106,6 +109,36 @@ func TestPiAgent_NeutralizesGateInstructions(t *testing.T) {
 	}
 	if !NeutralizesGateInstructions(&piAgent{bin: "pi", disableProjectSettings: true}) {
 		t.Error("pi must report neutralized under the opt-out")
+	}
+}
+
+func TestNewWithOptions_PiCombinesNeutralizationAndRunEnvironment(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ambient-token")
+
+	created, err := NewWithOptions(types.AgentPi, "pi", nil, Options{
+		DisableProjectSettings: true,
+		Environment: runenv.Overlay{
+			Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
+			Unset: []string{"GH_TOKEN"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	pa, ok := created.(*piAgent)
+	if !ok {
+		t.Fatalf("agent type = %T, want *piAgent", created)
+	}
+	if !pa.NeutralizesGateInstructions() {
+		t.Fatal("Pi lost project-instruction neutralization")
+	}
+
+	resolved := resolveAgentEnv(pa.gitSafeEnv("/work/dir"))
+	if got := resolved["GH_CONFIG_DIR"]; got != "/profiles/personal" {
+		t.Fatalf("GH_CONFIG_DIR = %q, want /profiles/personal", got)
+	}
+	if _, ok := resolved["GH_TOKEN"]; ok {
+		t.Fatal("GH_TOKEN remained in Pi environment")
 	}
 }
 

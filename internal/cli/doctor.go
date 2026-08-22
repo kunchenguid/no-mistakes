@@ -1,15 +1,21 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
@@ -136,6 +142,9 @@ func newDoctorCmd() *cobra.Command {
 						fail("gate validation", fmt.Sprintf("unavailable: load config (%v)", err))
 						allOK = false
 					} else {
+						if !doctorForgeProfiles(cmd.Context(), w, globalCfg.ForgeProfiles, ok, fail) {
+							allOK = false
+						}
 						cfg := config.Merge(globalCfg, &config.RepoConfig{})
 						if err := cfg.ResolveAgent(cmd.Context(), exec.LookPath); err != nil {
 							fail("gate validation", err.Error())
@@ -156,6 +165,75 @@ func newDoctorCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func doctorForgeProfiles(
+	ctx context.Context,
+	w io.Writer,
+	profiles config.ForgeProfiles,
+	ok func(string, string),
+	fail func(string, string),
+) bool {
+	if len(profiles) == 0 {
+		return true
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s\n", sCyan.Render("Forge profiles"))
+	hosts := make([]string, 0, len(profiles))
+	for host := range profiles {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	allOK := true
+	for _, profileHost := range hosts {
+		remote := "git@" + profileHost + ":no-mistakes/doctor.git"
+		resolved, err := forgecontext.Resolve(ctx, config.ForgeProfiles{profileHost: profiles[profileHost]}, remote, "")
+		label := fmt.Sprintf("%-14s", "forge "+profileHost)
+		if err != nil {
+			fail(label, err.Error())
+			allOK = false
+			continue
+		}
+		if resolved == nil {
+			fail(label, "profile did not resolve")
+			allOK = false
+			continue
+		}
+
+		var name string
+		var args []string
+		switch resolved.Provider {
+		case scm.ProviderGitHub:
+			name = "gh"
+			args = []string{"auth", "status", "--active", "--hostname", resolved.Host}
+		case scm.ProviderGitLab:
+			name = "glab"
+			args = []string{"auth", "status", "--hostname", resolved.Host}
+		default:
+			fail(label, fmt.Sprintf("unsupported provider %s", resolved.Provider))
+			allOK = false
+			continue
+		}
+		if _, err := exec.LookPath(name); err != nil {
+			fail(label, fmt.Sprintf("%s not found", name))
+			allOK = false
+			continue
+		}
+		check := exec.CommandContext(ctx, name, args...)
+		check.Env = resolved.Environment.Apply(nil)
+		shellenv.ConfigureShellCommand(check)
+		if output, err := shellenv.CombinedOutputShellCommand(check); err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			}
+			fail(label, fmt.Sprintf("authentication failed (%s)", detail))
+			allOK = false
+			continue
+		}
+		ok(label, fmt.Sprintf("%s authenticated for %s", resolved.Provider, resolved.Host))
+	}
+	return allOK
 }
 
 func doctorAgentChecks() []doctorAgentCheck {

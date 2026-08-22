@@ -32,6 +32,7 @@ var errGrokNoStructuredOutput = errors.New("grok returned no structured output")
 
 // grokAgent spawns Grok Build in headless streaming mode for each invocation.
 type grokAgent struct {
+	subprocessContext
 	bin       string
 	extraArgs []string
 	// disableProjectSettings requests defense-in-depth prompt replacement. Grok
@@ -82,7 +83,7 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	args := a.buildArgs(promptPath, opts.JSONSchema, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = append(gitSafeEnv(opts.CWD, opts.Env),
+	cmd.Env = append(a.gitSafeEnv(opts.CWD, opts.Env),
 		"GROK_MEMORY=0",
 		"GROK_DISABLE_AUTOUPDATER=1",
 		"GROK_CLAUDE_SKILLS_ENABLED=false",

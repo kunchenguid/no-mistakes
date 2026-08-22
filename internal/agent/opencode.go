@@ -30,8 +30,9 @@ type opencodeAgent struct {
 	// outright, so unlike every other native adapter these two knobs cannot ride
 	// argv: they belong to the session-message body (see sendMessage).
 	profile agentcfg.Profile
-	mu      sync.Mutex
-	server  *managedServer
+	subprocessContext
+	mu     sync.Mutex
+	server *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }
