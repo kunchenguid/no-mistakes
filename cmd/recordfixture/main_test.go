@@ -242,6 +242,45 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 	}
 }
 
+func TestCaptureAgyRejectsErrorThenSuccessResult(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	if err := os.WriteFile(outPath, []byte("existing fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\n'",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = strings.Join([]string{
+			"@echo off",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}",
+		}, "\r\n")
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	err := captureAgy(t.Context(), binPath, nil, "prompt text", outPath, nil)
+	if err == nil {
+		t.Fatal("captureAgy() error = nil, want trailing-success capture with an ERROR result rejected")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing fixture\n" {
+		t.Fatalf("destination = %q, want existing fixture preserved", data)
+	}
+}
+
 func TestCaptureAgyRejectsErrorResultWithoutReplacingFixture(t *testing.T) {
 	tmp := t.TempDir()
 	outPath := filepath.Join(tmp, "out.jsonl")

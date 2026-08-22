@@ -98,8 +98,7 @@ func validateAgyCapture(path string) error {
 	}
 	defer f.Close()
 
-	var lastStatus string
-	resultCount := 0
+	var resultCount int
 	decoder := json.NewDecoder(f)
 	for {
 		var envelope struct {
@@ -121,14 +120,13 @@ func validateAgyCapture(path string) error {
 		if envelope.Result == nil {
 			return fmt.Errorf("result event is missing result envelope")
 		}
-		lastStatus = envelope.Result.Status
+		if status := envelope.Result.Status; status != "SUCCESS" {
+			return fmt.Errorf("result status %q is not SUCCESS", status)
+		}
 		resultCount++
 	}
 	if resultCount == 0 {
 		return fmt.Errorf("capture has no result event")
-	}
-	if lastStatus != "SUCCESS" {
-		return fmt.Errorf("result status %q is not SUCCESS", lastStatus)
 	}
 	return nil
 }
