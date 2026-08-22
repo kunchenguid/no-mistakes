@@ -160,7 +160,11 @@ def fail_missing_attestation(facts: Facts) -> "NoReturn":  # type: ignore[name-d
 
 
 def parse_attestation(facts: Facts) -> dict:
-    start = facts.body.find(ATTESTATION_PREFIX)
+    # The generated Pipeline section is appended after the human-authored PR
+    # description, which may itself quote the documented comment shape. Judge
+    # the generated (last) comment rather than letting an earlier example
+    # shadow it.
+    start = facts.body.rfind(ATTESTATION_PREFIX)
     if start < 0:
         fail_missing_attestation(facts)
     start += len(ATTESTATION_PREFIX)
@@ -241,7 +245,10 @@ def main() -> int:
         print(f"Skipping no-mistakes enforcement: {reason}.")
         emit_output("exempt", "true")
         emit_output("exempt-reason", reason)
-        emit_output("compliant", "true")
+        # Exemption is an explicit caller policy, not evidence that the PR ran
+        # and satisfied the pipeline. Keep the successful bypass distinct from
+        # a validated compliant verdict for downstream consumers.
+        emit_output("compliant", "false")
         return 0
     emit_output("exempt", "false")
 

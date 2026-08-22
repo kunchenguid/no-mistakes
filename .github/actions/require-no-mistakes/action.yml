@@ -59,7 +59,7 @@ inputs:
 
 outputs:
   compliant:
-    description: "true when the PR satisfies the gate or is exempt."
+    description: "true only when the PR satisfies the pipeline gate; false for exemptions."
     value: ${{ steps.verify.outputs.compliant }}
   exempt:
     description: "true when the PR bypassed the gate through a configured exemption."
