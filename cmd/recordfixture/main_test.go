@@ -188,7 +188,7 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 			"shift",
 			"goto loop",
 			":done",
-			"echo {\"event\":\"result\"}",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}",
 		}, "\r\n")
 	}
 	binPath := filepath.Join(tmp, binName)
