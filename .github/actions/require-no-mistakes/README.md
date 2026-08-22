@@ -1,9 +1,9 @@
 # `require-no-mistakes`
 
 Composite action that enforces "this pull request was raised through the
-no-mistakes pipeline". It is the single shared implementation of the check named
-**`PR must be raised via no-mistakes`**; enforcing repositories call it instead
-of copying the shell into their own workflow.
+no-mistakes pipeline". It is the reusable shared implementation of the check
+named **`PR must be raised via no-mistakes`**; enforcing repositories can call it
+instead of copying the shell into their own workflow.
 
 It verifies, in order:
 
@@ -45,8 +45,8 @@ jobs:
             dependabot[bot]
 ```
 
-Replace `<release-tag-or-sha>` with the first no-mistakes release tag that
-contains this action, or the commit SHA of that release.
+Replace `<release-tag-or-sha>` with a no-mistakes release tag or commit SHA
+that contains this action.
 
 The job name must stay exactly `PR must be raised via no-mistakes` so branch
 rulesets keep matching the same check across the fleet.
