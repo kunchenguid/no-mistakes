@@ -17,48 +17,76 @@ var InstallBases = []string{
 	filepath.Join(".agents", "skills"),
 }
 
+// InstallResult reports which logical user-level paths Install refreshed and
+// which it left to an external manager because the per-skill directory is a
+// symlink.
+type InstallResult struct {
+	Written []string
+	Managed []string
+}
+
 // InstallUser installs the skill into the agent skill directories under the
-// current user's home directory. It returns the home-relative paths written.
-func InstallUser() ([]string, error) {
+// current user's home directory.
+func InstallUser() (InstallResult, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve home directory: %w", err)
+		return InstallResult{}, fmt.Errorf("resolve home directory: %w", err)
 	}
 	return Install(home)
 }
 
 // Install writes SKILL.md into each agent skills directory under root
 // (normally the user's home directory), creating directories as needed. It
-// returns the root-relative paths written so the caller can report them.
+// reports both refreshed paths and externally managed per-skill symlinks.
 // Writing is idempotent: re-running overwrites with identical content
 // (refreshing a stale SKILL.md from an older version).
 //
 // Users may consolidate the two bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
-// follows such links transparently, including when the symlinked target dir does
-// not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
-// symlink). Both logical bases stay readable afterward via the link.
-func Install(root string) ([]string, error) {
+// follows such parent links transparently, including when the symlinked target
+// dir does not exist yet (a plain os.MkdirAll would fail with "file exists" on
+// a dangling symlink). A symlink at the individual `no-mistakes` directory is
+// externally managed: Install verifies it is readable but never changes its
+// target.
+func Install(root string) (InstallResult, error) {
 	content := []byte(Markdown())
-	written := make([]string, 0, len(InstallBases))
+	result := InstallResult{
+		Written: make([]string, 0, len(InstallBases)),
+		Managed: make([]string, 0, len(InstallBases)),
+	}
 	for _, base := range InstallBases {
 		rel := filepath.Join(base, Name, "SKILL.md")
-		path := filepath.Join(root, rel)
-		// Resolve any symlink components to a real directory before creating
-		// it, so a dangling symlink in the path does not collide with MkdirAll.
-		realDir, err := resolveThroughSymlinks(filepath.Dir(path))
+		// Resolve only the parent skill base. The final per-skill component is
+		// inspected separately so an external-manager symlink is not followed
+		// and overwritten.
+		realBase, err := resolveThroughSymlinks(filepath.Join(root, base))
 		if err != nil {
-			return written, err
+			return result, err
 		}
-		if err := os.MkdirAll(realDir, 0o755); err != nil {
-			return written, err
+		if err := os.MkdirAll(realBase, 0o755); err != nil {
+			return result, err
 		}
-		if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), content, 0o644); err != nil {
-			return written, err
+		skillDir := filepath.Join(realBase, Name)
+		info, err := os.Lstat(skillDir)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			if _, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md")); err != nil {
+				return result, fmt.Errorf("externally managed skill %s is not readable: %w", filepath.Join(base, Name), err)
+			}
+			result.Managed = append(result.Managed, filepath.Join(base, Name))
+			continue
 		}
-		written = append(written, rel)
+		if err != nil && !os.IsNotExist(err) {
+			return result, err
+		}
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return result, err
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), content, 0o644); err != nil {
+			return result, err
+		}
+		result.Written = append(result.Written, rel)
 	}
-	return written, nil
+	return result, nil
 }
 
 // Vendored reports the repo-relative paths of legacy vendored skill copies

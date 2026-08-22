@@ -104,6 +104,66 @@ func TestInitLegacyNotice(t *testing.T) {
 	}
 }
 
+// TestInitPreservesExternallyManagedSkill proves init does not follow an
+// individual no-mistakes skill symlink into a canonical dotfiles checkout.
+func TestInitPreservesExternallyManagedSkill(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	ctx := context.Background()
+	external := filepath.Join(t.TempDir(), "canonical-no-mistakes")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("---\nname: no-mistakes\n---\nexternally managed\n")
+	if err := os.WriteFile(filepath.Join(external, "SKILL.md"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, external, "init", "--initial-branch=main"); err != nil {
+		t.Fatalf("init external git repo: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, external, "add", "SKILL.md"); err != nil {
+		t.Fatalf("stage external skill: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, external, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"); err != nil {
+		t.Fatalf("commit external skill: %v\n%s", err, out)
+	}
+
+	logicalDir := filepath.Join(h.HomeDir, ".claude", "skills", "no-mistakes")
+	if err := os.MkdirAll(filepath.Dir(logicalDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, logicalDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	out, err := h.RunInDir(h.WorkDir, "init")
+	if err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	wantPath := filepath.Join(".claude", "skills", "no-mistakes")
+	if !strings.Contains(out, "externally managed skill path left unchanged") || !strings.Contains(out, wantPath) {
+		t.Fatalf("init did not report managed path %s:\n%s", wantPath, out)
+	}
+	if data, err := os.ReadFile(filepath.Join(external, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	} else if string(data) != string(original) {
+		t.Fatalf("external SKILL.md changed: %q", data)
+	}
+	if status, err := h.runGit(ctx, external, "status", "--porcelain"); err != nil {
+		t.Fatalf("external git status: %v\n%s", err, status)
+	} else if strings.TrimSpace(string(status)) != "" {
+		t.Fatalf("init dirtied external git worktree:\n%s", status)
+	}
+	if _, err := os.ReadFile(filepath.Join(logicalDir, "SKILL.md")); err != nil {
+		t.Fatalf("managed skill is not readable through logical path: %v", err)
+	}
+	regular := filepath.Join(h.HomeDir, ".agents", "skills", "no-mistakes", "SKILL.md")
+	if data, err := os.ReadFile(regular); err != nil {
+		t.Fatalf("regular skill install missing: %v", err)
+	} else if !strings.Contains(string(data), "name: no-mistakes") {
+		t.Fatalf("regular skill install has invalid content")
+	}
+}
+
 // TestInitRepoRename proves that a user who renames or moves their repo
 // directory can re-run `init` from the new location and get their existing
 // gate back, instead of the historical failure:
