@@ -45,6 +45,12 @@ Safest local verification sequence after non-trivial changes:
 - `tea actions runs list`'s array order is not documented as newest-first, and a branch can have more than one run sharing the same head SHA (e.g. a manual UI re-run), so `GetChecks`/`FetchFailedCheckLogs` select the run via `mostRecentRun` (highest numeric run ID) rather than trusting list order or index `[0]`.
 - The comments in `internal/scm/gitea/gitea.go` own the full rationale for each trap.
 
+**Shared PR-Enforcement Action (`.github/actions/require-no-mistakes`)**
+
+- The `PR must be raised via no-mistakes` gate is a composite action, not inline workflow shell, so the ~15 enforcing repositories stop copying (and drifting from) the same script: it verifies the signature line, parses the v1 pipeline-step attestation, binds `head_sha` to the PR head, and requires `review`, `test`, and `document` to be `completed`. Callers pin a release tag or commit SHA, never `@main`, which the judged PR can edit. Per-repo configuration is exemptions only (`exempt-authors`, `exempt-bot-authors`, `exempt-head-branches`); which steps are required is deliberately not an input, so no caller can weaken the gate while still reporting the same check name. The action README owns usage; `CONTRIBUTING.md` owns the contributor-facing contract.
+- This repository's own gate (`.github/workflows/no-mistakes-required.yml`) still runs the inline copy. GitHub downloads `uses:` at job setup, so a caller pinned to a tag that predates the action fails closed on every PR; the flip to the shared action waits for the first release that contains it and must pin exactly that tag, so a PR editing the action cannot certify itself.
+- Regressions: `require_no_mistakes_action_test.go` executes `verify.py` the way a runner does (verdicts, exemption surface, event-payload binding); `workflow_no_mistakes_required_test.go` pins the inline caller until it is flipped.
+
 **Documentation**
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
