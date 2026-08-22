@@ -22,6 +22,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+var testGitExecutable, _ = exec.LookPath("git")
+
 type mockAgent struct {
 	name  string
 	runFn func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
@@ -138,6 +140,21 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 // newTestContext creates a StepContext for testing with optional config overrides.
 func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
+
+	// Most step tests do not exercise remote transport. Give repositories that
+	// lack an explicitly configured origin a local one so incidental upstream
+	// refreshes stay hermetic. Without this, CI monitor tests fetch the
+	// placeholder github.com/test/repo URL; under process-saturated macOS CI the
+	// fetch can consume their entire idle timeout before the fake provider is
+	// queried.
+	if gitDir, err := os.Stat(filepath.Join(workDir, ".git")); err == nil && gitDir.IsDir() && testGitExecutable != "" {
+		if cmd := exec.Command(testGitExecutable, "-C", workDir, "remote", "get-url", "origin"); cmd.Run() != nil {
+			cmd = exec.Command(testGitExecutable, "-C", workDir, "remote", "add", "origin", workDir)
+			if output, addErr := cmd.CombinedOutput(); addErr != nil {
+				t.Fatalf("add hermetic test origin: %v: %s", addErr, output)
+			}
+		}
+	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	database, err := db.Open(dbPath)
