@@ -51,6 +51,19 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "connection reset",
 		},
 		{
+			// Claude Code writes this to stdout as assistant text, so the
+			// error carries it only once runOnce stops composing from stderr
+			// alone.
+			name:    "connection closed mid-response on stdout",
+			errMsg:  `claude exited: exit status 1: API Error: Connection closed mid-response. The response above may be incomplete.`,
+			wantSub: "connection closed",
+		},
+		{
+			name:    "unable to connect ENOTIMP",
+			errMsg:  `claude exited: exit status 1: API Error: Unable to connect to API (ENOTIMP)`,
+			wantSub: "enotimp",
+		},
+		{
 			name:    "io timeout",
 			errMsg:  `Post "https://api.anthropic.com/v1/messages": context deadline exceeded (i/o timeout)`,
 			wantSub: "i/o timeout",
