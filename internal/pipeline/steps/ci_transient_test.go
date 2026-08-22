@@ -2,7 +2,9 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // fakePreRunHost is a scm.Host that also reports pre-run infrastructure
@@ -167,6 +170,44 @@ func TestClassifyCheckFailure(t *testing.T) {
 				t.Fatalf("classifyCheckFailure(%+v) = %q, want %q", tc.check, got, tc.want)
 			}
 		})
+	}
+}
+
+// A setup failure uses the cancel-shaped policy path, but it is still a failed
+// setup rather than a provider cancellation. The approval result must preserve
+// that cause after the rerun budget is spent so the user can make the decision
+// with an accurate diagnosis.
+func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
+	t.Parallel()
+
+	outcome := ciUnresolvedCancelledOutcome(
+		[]string{"build"},
+		[]scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}},
+		func(string) int { return 1 },
+	)
+	if !outcome.NeedsApproval {
+		t.Fatal("pre-run failure after its rerun must require approval")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI checks failed before repository steps ran" {
+		t.Fatalf("summary = %q, want setup-failure diagnosis", findings.Summary)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want one setup-failure finding", findings.Items)
+	}
+	description := findings.Items[0].Description
+	if !strings.Contains(description, "failed during setup again after its rerun") {
+		t.Fatalf("description = %q, want setup-failure diagnosis", description)
+	}
+	if strings.Contains(description, "provider cancelled") {
+		t.Fatalf("description = %q, must not claim the provider cancelled a failed setup", description)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("action = %q, want ask-user parking", findings.Items[0].Action)
 	}
 }
 

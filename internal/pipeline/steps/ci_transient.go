@@ -676,9 +676,9 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 	}
 }
 
-// ciUnresolvedCancelledOutcome parks the run for checks the provider cancelled
-// and will not resolve on their own: either the run already spent their rerun
-// budget and they came back cancelled, or no rerun was ever authorized for them.
+// ciUnresolvedCancelledOutcome parks the run for transient checks that will not
+// resolve on their own: either the run already spent their rerun budget and they
+// came back cancelled or failed during setup again, or no rerun is outstanding.
 //
 // A cancellation is never a verdict on the code, so there is nothing for the fix
 // agent to repair: routing it into the auto_fix.ci loop would spend an agent
@@ -686,16 +686,28 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 // outcome only the provider can clear. The findings are ask-user for the same
 // reason, so a fix loop cannot pick them up later either.
 //
-// reruns reports how many reruns this run spent on a check, so each finding can
-// state which of the two it is: whether the cancellation survived a retry or
-// was never retried at all is the difference between a provider that keeps
-// cancelling and one that cancelled once and was believed.
-func ciUnresolvedCancelledOutcome(names []string, reruns func(string) int) *pipeline.StepOutcome {
-	findings := Findings{Summary: "CI checks were cancelled without reporting a verdict"}
+// checks preserves the provider-attributed cause through the shared cancel
+// bucket so the approval result does not describe a setup failure as a
+// cancellation. reruns reports how many reruns this run spent on each check.
+func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns func(string) int) *pipeline.StepOutcome {
+	preRunFailures := make(map[string]bool, len(names))
+	for _, check := range checks {
+		if check.PreRunFailure {
+			preRunFailures[check.Name] = true
+		}
+	}
+
+	preRunCount := 0
+	for _, name := range names {
+		if preRunFailures[name] {
+			preRunCount++
+		}
+	}
+	findings := Findings{Summary: unresolvedTransientSummary(len(names), preRunCount)}
 	for _, name := range names {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
-			Description: unresolvedCancelledDescription(name, reruns(name)),
+			Description: unresolvedTransientDescription(name, reruns(name), preRunFailures[name]),
 			Action:      types.ActionAskUser,
 		})
 	}
@@ -706,7 +718,24 @@ func ciUnresolvedCancelledOutcome(names []string, reruns func(string) int) *pipe
 	}
 }
 
-func unresolvedCancelledDescription(name string, reruns int) string {
+func unresolvedTransientSummary(total, preRun int) string {
+	switch {
+	case total > 0 && preRun == total:
+		return "CI checks failed before repository steps ran"
+	case preRun > 0:
+		return "CI checks ended without reporting a code verdict"
+	default:
+		return "CI checks were cancelled without reporting a verdict"
+	}
+}
+
+func unresolvedTransientDescription(name string, reruns int, preRunFailure bool) string {
+	if preRunFailure {
+		if reruns > 0 {
+			return fmt.Sprintf("CI check failed during setup again after its rerun: %s - repository steps never ran, so it needs a decision rather than a code fix", name)
+		}
+		return fmt.Sprintf("CI check failed during setup before repository steps ran: %s - no rerun is outstanding to replace that result, so it needs a decision rather than a code fix", name)
+	}
 	if reruns > 0 {
 		return fmt.Sprintf("CI check cancelled again after its rerun: %s - the provider cancelled it rather than reporting a job failure, so it needs a decision rather than a code fix", name)
 	}

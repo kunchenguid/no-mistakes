@@ -480,14 +480,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			} else if hasIssues {
 				lastMonitorLog = ""
 				if !hasFailures && !mergeConflict && !sctx.Fixing {
-					// Every remaining issue is a check the provider cancelled
-					// rather than a verdict on the code. No fix can clear one,
+					// Every remaining issue is a transient check rather than a
+					// verdict on the code. No fix can clear one,
 					// so this parks for a decision instead of spending a
 					// fix-agent round on a run that never tested anything. The
 					// CI step's outcomes are never auto-fixable, so sctx.Fixing
 					// here means the user answered that gate with "fix": that
 					// deliberate override is honored rather than re-parked.
-					return ciUnresolvedCancelledOutcome(unresolvedCancelled, s.transientReruns.used), nil
+					return ciUnresolvedCancelledOutcome(unresolvedCancelled, checks, s.transientReruns.used), nil
 				}
 				// All checks done, issues present - fix or report.
 				// The fix agent is asked to repair job failures; a check the
