@@ -131,6 +131,86 @@ func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
 	}
 }
 
+// TestInstallShellIsDegraded locks in the signal reinstallManagedServiceIfChanged
+// uses to tell a real resolveInstallShell() result (a set $SHELL, or a
+// getent/dscl lookup - always an absolute path) apart from
+// shellenv.LoginShell's last-resort literal "bash" fallback, so drift
+// detection knows when it must not overwrite an already-installed shell (see
+// service_shell_inherit_test.go).
+func TestInstallShellIsDegraded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		shell string
+		want  bool
+	}{
+		{"/bin/bash", false},
+		{"/run/current-system/sw/bin/bash", false},
+		{"/usr/bin/zsh", false},
+		{"bash", true},
+		{"", true},
+	} {
+		if got := installShellIsDegraded(tc.shell); got != tc.want {
+			t.Errorf("installShellIsDegraded(%q) = %v, want %v", tc.shell, got, tc.want)
+		}
+	}
+}
+
+// TestInstallShellIsDegraded_PlatformIndependent is the Windows CI
+// regression guard: installShellIsDegraded used to delegate to
+// filepath.IsAbs, which is platform-semantic (a POSIX path like /bin/bash
+// has no Windows drive letter or UNC prefix, so filepath.IsAbs returns false
+// for it under GOOS=windows). That misclassified every valid Unix shell path
+// as degraded and broke the Windows CI leg, even though this package's
+// Windows build never actually renders the Unix-only systemd/launchd
+// definitions installShellIsDegraded protects. The check must depend only on
+// the resolved value, not the host's path-parsing rules, so it must return
+// the same answer regardless of runtimeGOOS.
+func TestInstallShellIsDegraded_PlatformIndependent(t *testing.T) {
+	oldGOOS := runtimeGOOS
+	defer func() { runtimeGOOS = oldGOOS }()
+
+	for _, shell := range []string{"/bin/bash", "/run/current-system/sw/bin/bash", "/usr/bin/zsh", "bash", ""} {
+		var results []bool
+		for _, goos := range []string{"linux", "darwin", "windows"} {
+			runtimeGOOS = goos
+			results = append(results, installShellIsDegraded(shell))
+		}
+		for i := 1; i < len(results); i++ {
+			if results[i] != results[0] {
+				t.Fatalf("installShellIsDegraded(%q) depends on runtimeGOOS: %v", shell, results)
+			}
+		}
+	}
+}
+
+// TestRenderSystemdUnitBakesInInstallTimeShell and
+// TestRenderLaunchAgentBakesInInstallTimeShell are the NixOS root-cause
+// regression: a daemon started by systemd/launchd inherits only HOME, a
+// curated PATH, and proxy vars - never SHELL - so
+// internal/shellenv.LoginShell() inside the running daemon falls back to
+// shelling out to getent/dscl using that same minimal PATH, which on a
+// non-FHS distro like NixOS can't even find getent. Baking the value the
+// installing process resolved (via resolveInstallShell, which has a normal
+// environment) directly into the generated unit/plist as SHELL gives
+// LoginShell()'s fast path a real value to return immediately, without ever
+// shelling out from inside the restricted daemon process.
+func TestRenderSystemdUnitBakesInInstallTimeShell(t *testing.T) {
+	t.Parallel()
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/run/current-system/sw/bin/bash", nil)
+	want := `Environment="SHELL=/run/current-system/sw/bin/bash"`
+	if !strings.Contains(unit, want) {
+		t.Fatalf("systemd unit should bake in the install-time shell, want %q, got:\n%s", want, unit)
+	}
+}
+
+func TestRenderLaunchAgentBakesInInstallTimeShell(t *testing.T) {
+	t.Parallel()
+	plist := renderLaunchAgentWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/run/current-system/sw/bin/bash", nil)
+	if got := extractPlistValue(t, plist, "SHELL"); got != "/run/current-system/sw/bin/bash" {
+		t.Fatalf("launchd plist SHELL = %q, want %q", got, "/run/current-system/sw/bin/bash")
+	}
+}
+
 // extractPlistValue pulls the <string> value that follows a given <key> in
 // an Apple plist. Keeps the rendering assertions readable and independent
 // of byte-for-byte formatting.

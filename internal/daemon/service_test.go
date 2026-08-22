@@ -1705,6 +1705,7 @@ func stubServiceRuntime(t *testing.T) func() {
 	oldInspectManagedDaemonService := inspectManagedDaemonService
 	oldHealthCheck := daemonHealthCheck
 	oldServiceBypass := serviceManagerBypassed
+	oldResolveInstallShell := resolveInstallShell
 	serviceManagerBypassed = func() bool { return false }
 	prepareManagedDaemonLaunch = func(*paths.Paths) (managedServiceLaunch, error) {
 		return managedServiceLaunch{}, nil
@@ -1712,6 +1713,9 @@ func stubServiceRuntime(t *testing.T) func() {
 	inspectManagedDaemonService = func(*paths.Paths, managedServiceLaunch) (managedServiceState, error) {
 		return managedServiceUnknown, nil
 	}
+	// Stubbed to a fixed value so render assertions are deterministic and
+	// independent of the SHELL env var of the process running `go test`.
+	resolveInstallShell = func() string { return "/bin/bash" }
 	return func() {
 		runtimeGOOS = oldGOOS
 		serviceUserHomeDir = oldUserHomeDir
@@ -1722,5 +1726,6 @@ func stubServiceRuntime(t *testing.T) func() {
 		inspectManagedDaemonService = oldInspectManagedDaemonService
 		daemonHealthCheck = oldHealthCheck
 		serviceManagerBypassed = oldServiceBypass
+		resolveInstallShell = oldResolveInstallShell
 	}
 }

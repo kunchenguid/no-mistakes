@@ -56,6 +56,7 @@ func TestStartInstallsLaunchAgentAndBootstrapsManagedDaemon(t *testing.T) {
 		"<key>EnvironmentVariables</key>",
 		"<key>HOME</key>",
 		"<string>" + home + "</string>",
+		"<key>SHELL</key>\n    <string>/bin/bash</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
 	} {
@@ -302,7 +303,7 @@ func TestRenderLaunchAgentForwardsEveryProxyEnvKey(t *testing.T) {
 		proxyEnv = append(proxyEnv, [2]string{key, "val-" + key})
 	}
 
-	plist := renderLaunchAgentWithProxyEnv("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
+	plist := renderLaunchAgentWithProxyEnv("/opt/no-mistakes/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/bin/bash", proxyEnv)
 	for _, key := range proxyEnvKeys {
 		fragment := "<key>" + key + "</key>\n    <string>val-" + key + "</string>"
 		if !strings.Contains(plist, fragment) {

@@ -487,3 +487,88 @@ func TestShellCommandTimeout_IsRelaxed(t *testing.T) {
 		t.Fatalf("shell resolution timeout %v is too aggressive; interactive shells under load need headroom (#143)", shellCommandTimeout)
 	}
 }
+
+// TestLoginShell_SHELLSetSkipsGetentProbe is the NixOS root-cause regression.
+// A daemon started by systemd/launchd only exports HOME, PATH, and proxy vars
+// - SHELL is not among them. On NixOS, LoginShell() unset-SHELL fallback
+// shells out to `getent passwd $USER` using the daemon's own minimal starting
+// PATH, but NixOS keeps /bin and /usr/bin nearly empty (real binaries live
+// under /run/current-system/sw/bin and /nix/store/...), so getent itself
+// cannot be found either: LoginShell() falls all the way through to its
+// hardcoded "bash" default, and the shell probe in resolveUncached then also
+// cannot find bash on that same minimal PATH. Baking the install-time SHELL
+// value into the generated service unit (internal/daemon/service_systemd.go /
+// service_launchd.go) fixes this by giving LoginShell()'s fast path a real,
+// already-resolved absolute path, so it never needs to shell out to getent at
+// all. This test locks in that no subprocess is invoked once SHELL is set.
+func TestLoginShell_SHELLSetSkipsGetentProbe(t *testing.T) {
+	resetForTests()
+	t.Setenv("SHELL", "/run/current-system/sw/bin/bash")
+
+	oldOutput := shellCommandOutput
+	defer func() {
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+	shellCommandOutput = func(name string, args ...string) ([]byte, error) {
+		t.Fatalf("LoginShell should not shell out when $SHELL is already set, got %s %v", name, args)
+		return nil, nil
+	}
+
+	if got := LoginShell(); got != "/run/current-system/sw/bin/bash" {
+		t.Fatalf("LoginShell() = %q, want the SHELL env var value", got)
+	}
+}
+
+// TestResolve_NixOSDegradedFallbackIncludesNixSystemProfile reproduces the
+// diagnosed NixOS bug end-to-end at the shellenv layer, for a daemon that
+// somehow still starts without a usable SHELL (e.g. an older installed
+// service unit before the install-time SHELL fix takes effect on next
+// `daemon start`): SHELL is unset, and the getent probe LoginShell() would
+// use on Linux also fails (simulating the daemon's minimal starting PATH
+// being unable to find getent). LoginShell() ends up at its final "bash"
+// default, the login-shell probe itself then fails to find bash too, and
+// resolveUncached falls back to WellKnownBinDirsForHome. That fallback list
+// must include the NixOS system and user profile directories so daemon
+// subprocess calls like `git`/`ps` can still resolve real binaries instead of
+// failing with "executable file not found in $PATH".
+func TestResolve_NixOSDegradedFallbackIncludesNixSystemProfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	oldGOOS := runtimeGOOS
+	runtimeGOOS = "linux"
+	t.Setenv("SHELL", "")
+	t.Setenv("HOME", "/home/nixuser")
+	t.Setenv("USER", "nixuser")
+
+	oldOutput := shellCommandOutput
+	defer func() {
+		shellCommandOutput = oldOutput
+		runtimeGOOS = oldGOOS
+		resetForTests()
+	}()
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		// Simulates both `getent` (LoginShell's Linux fallback) and `bash` (the
+		// probe shell itself) being unreachable on the daemon's minimal PATH.
+		return nil, &noSuchFileError{}
+	}
+
+	env, err := Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, ok := envValue(env, "PATH")
+	if !ok {
+		t.Fatalf("expected PATH in resolved env, got %v", env)
+	}
+	for _, want := range []string{
+		"/run/current-system/sw/bin",
+		"/home/nixuser/.nix-profile/bin",
+	} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("expected degraded fallback PATH to include %q, got %q", want, path)
+		}
+	}
+}

@@ -167,6 +167,7 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	// with "403 Request not allowed". This mirrors the executable inheritance
 	// below: prefer the current environment, fall back to what is on disk.
 	var inheritedProxyEnv [][2]string
+	var inheritedShell string
 	if readErr == nil {
 		switch runtimeGOOS {
 		case "darwin":
@@ -174,22 +175,38 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 				renderedExecutable = existingExe
 			}
 			inheritedProxyEnv = launchAgentProxyEnv(existing)
+			if existingShell, ok := launchAgentShell(existing); ok {
+				inheritedShell = existingShell
+			}
 		case "linux":
 			if existingExe, ok := systemdUnitExecutable(existing); ok {
 				renderedExecutable = existingExe
 			}
 			inheritedProxyEnv = systemdUnitProxyEnv(existing)
+			if existingShell, ok := systemdUnitShell(existing); ok {
+				inheritedShell = existingShell
+			}
 		}
 	}
 	proxyEnv := serviceProxyEnv()
 	if len(proxyEnv) == 0 {
 		proxyEnv = inheritedProxyEnv
 	}
+	// Prefer the freshly resolved shell, but never let a degraded resolution
+	// (this call itself running in a restricted environment - see
+	// installShellIsDegraded) overwrite an already-installed, previously
+	// working absolute SHELL: that would falsely detect drift and
+	// reinstall+restart the daemon back onto a broken PATH. See
+	// resolveInstallShell.
+	shell := resolveInstallShell()
+	if installShellIsDegraded(shell) && inheritedShell != "" {
+		shell = inheritedShell
+	}
 	switch runtimeGOOS {
 	case "darwin":
-		wanted = renderLaunchAgentWithProxyEnv(renderedExecutable, p, home, proxyEnv)
+		wanted = renderLaunchAgentWithProxyEnv(renderedExecutable, p, home, shell, proxyEnv)
 	case "linux":
-		wanted = renderSystemdUnitWithProxyEnv(renderedExecutable, p, home, proxyEnv)
+		wanted = renderSystemdUnitWithProxyEnv(renderedExecutable, p, home, shell, proxyEnv)
 	}
 	switch {
 	case readErr == nil && string(existing) == wanted:

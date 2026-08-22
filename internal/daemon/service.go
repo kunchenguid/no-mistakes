@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // Base identifiers for the managed-service artifacts. The live identifiers
@@ -41,6 +42,41 @@ var serviceCommandRunner = runServiceCommand
 var serviceManagerBypassed = defaultServiceManagerBypassed
 var prepareManagedDaemonLaunch = managedDaemonLaunch
 var inspectManagedDaemonService = managedDaemonServiceState
+
+// resolveInstallShell resolves the login shell to bake into a generated
+// service unit's environment as SHELL, at install/render time - never inside
+// the running managed daemon itself. A daemon started by systemd/launchd
+// inherits only a minimal environment (HOME, a curated PATH, proxy vars; see
+// proxyEnvKeys above) with no SHELL, so internal/shellenv's LoginShell() falls
+// through to shelling out to getent/dscl using that same minimal PATH - which
+// on a non-FHS distro like NixOS can't even find getent, and the whole probe
+// degrades to WellKnownBinDirs. The process rendering the service definition
+// (`daemon install`/`daemon start`, run interactively or from the user's own
+// shell) has a normal, complete environment, so resolving SHELL here and
+// exporting it fixes the chicken-and-egg problem at its root: the daemon's own
+// LoginShell() fast path (a plain env lookup) then succeeds immediately.
+var resolveInstallShell = shellenv.LoginShell
+
+// installShellIsDegraded reports whether a resolveInstallShell() result is
+// shellenv.LoginShell's last-resort literal "bash" sentinel (or empty)
+// rather than a real, resolved shell. This must key off the value itself,
+// not path shape: filepath.IsAbs is platform-semantic (a POSIX path like
+// /bin/bash is not "absolute" under Windows' drive-letter/UNC rules), so it
+// misclassified every valid Unix shell path as degraded on the Windows CI
+// leg, which never actually renders these Unix-only service definitions but
+// does compile and run this package's tests.
+//
+// Drift detection (reinstallManagedServiceIfChanged) uses this to avoid
+// overwriting an already-installed, previously-resolved SHELL with a
+// degraded one: without this check, a later `daemon start` that happens to
+// run in a restricted environment (no SHELL, no working getent/bash on PATH
+// - the exact NixOS chicken-and-egg problem this baked-in SHELL fixes) would
+// re-resolve the degraded fallback, treat the currently good SHELL as drift,
+// and reinstall+restart the service onto a broken one.
+func installShellIsDegraded(shell string) bool {
+	shell = strings.TrimSpace(shell)
+	return shell == "" || shell == "bash"
+}
 
 type managedServiceState int
 

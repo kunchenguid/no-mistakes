@@ -151,6 +151,35 @@ func systemdUnitProxyEnv(data []byte) [][2]string {
 	return out
 }
 
+// systemdUnitShell extracts the baked-in SHELL Environment= entry from a
+// rendered systemd unit, mirroring systemdUnitProxyEnv. Drift detection uses
+// this to preserve an already-installed SHELL when the current render
+// resolution has degraded (see resolveInstallShell / shellenv.LoginShell's
+// literal "bash" fallback) instead of overwriting a previously-resolved,
+// working absolute path with an unresolvable one - which would falsely
+// detect drift on every subsequent `daemon start` in a restricted
+// environment and reinstall+restart the daemon back into the NixOS PATH bug
+// this mechanism exists to fix.
+func systemdUnitShell(data []byte) (string, bool) {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Environment=") {
+			continue
+		}
+		assignment, err := strconv.Unquote(strings.TrimPrefix(line, "Environment="))
+		if err != nil {
+			continue
+		}
+		assignment = strings.ReplaceAll(assignment, "%%", "%")
+		key, value, ok := strings.Cut(assignment, "=")
+		if !ok || key != "SHELL" {
+			continue
+		}
+		return value, true
+	}
+	return "", false
+}
+
 // launchAgentProxyEnv extracts the forwarded proxy entries from the
 // EnvironmentVariables <dict> of a rendered launchd plist, mirroring
 // launchAgentExecutable. Pairs are returned in file order with XML escaping
@@ -205,6 +234,62 @@ func launchAgentProxyEnv(data []byte) [][2]string {
 		case xml.EndElement:
 			if inEnvDict && t.Name.Local == "dict" {
 				return out
+			}
+		}
+	}
+}
+
+// launchAgentShell extracts the baked-in SHELL value from the
+// EnvironmentVariables <dict> of a rendered launchd plist, mirroring
+// launchAgentProxyEnv. See systemdUnitShell for why drift detection needs
+// this.
+func launchAgentShell(data []byte) (string, bool) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	var sawEnvVarsKey bool
+	var inEnvDict bool
+	var pendingKey string
+	var havePendingKey bool
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		switch t := token.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "key":
+				var key string
+				if err := decoder.DecodeElement(&key, &t); err != nil {
+					return "", false
+				}
+				key = strings.TrimSpace(key)
+				if inEnvDict {
+					pendingKey = key
+					havePendingKey = true
+				} else {
+					sawEnvVarsKey = key == "EnvironmentVariables"
+				}
+			case "dict":
+				if sawEnvVarsKey {
+					inEnvDict = true
+					sawEnvVarsKey = false
+				}
+			case "string":
+				if !inEnvDict || !havePendingKey {
+					continue
+				}
+				var value string
+				if err := decoder.DecodeElement(&value, &t); err != nil {
+					return "", false
+				}
+				if pendingKey == "SHELL" {
+					return value, true
+				}
+				havePendingKey = false
+			}
+		case xml.EndElement:
+			if inEnvDict && t.Name.Local == "dict" {
+				return "", false
 			}
 		}
 	}
