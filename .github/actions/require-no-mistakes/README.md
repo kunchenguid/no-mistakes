@@ -82,6 +82,17 @@ The action never checks out or executes repository code, so it is safe on
 `pull_request` runs from forks. Callers should keep `permissions: contents: read`
 and stay on `pull_request` rather than `pull_request_target`.
 
+An exemption is trusted outer-repository policy supplied by the caller's pinned
+workflow. It does not claim that no-mistakes ran: exempt PRs report
+`compliant=false` and `exempt=true`. This is separate from the invariant that no
+standing configuration may skip a step inside a no-mistakes run.
+
+Like the inline gate this action extracts, the attestation is deterministic,
+commit-bound evidence published in the PR body, not a cryptographic signature.
+The action detects a missing, malformed, incomplete, or stale attestation. It
+does not protect a repository where an untrusted contributor can freely replace
+the protected check or otherwise control the base branch's enforcement policy.
+
 ## Rollout
 
 This repository's own gate (`.github/workflows/no-mistakes-required.yml`) still
