@@ -302,8 +302,28 @@ func TestAntigravityParser_PartialUsagePayloadDoesNotZeroEarlierFields(t *testin
 }
 
 func TestAntigravityParser_CacheCreationPresenceAndStepPath(t *testing.T) {
-	stream := `
+	// A step_update usage payload never touches cache_creation accounting:
+	// the stream contains only the step line, so any wrongly-applied value
+	// would be observable in the final usage.
+	stepStream := `
 {"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "cache_creation_tokens": 4}}}
+`
+	buf := bytes.NewBufferString(stepStream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.usage.CacheCreationReported {
+		t.Error("CacheCreationReported = true, want false when only a step payload reports cache_creation_tokens")
+	}
+	if p.usage.CacheCreationTokens != 0 {
+		t.Errorf("CacheCreationTokens = %d, want 0 when only a step payload reports cache_creation_tokens", p.usage.CacheCreationTokens)
+	}
+}
+
+func TestAntigravityParser_CacheCreationGenuineZeroOnResultIsReported(t *testing.T) {
+	stream := `
 {"event": "result", "result": {"status": "SUCCESS", "usage": {"cache_creation_tokens": 0}}}
 `
 	buf := bytes.NewBufferString(stream)
@@ -312,10 +332,6 @@ func TestAntigravityParser_CacheCreationPresenceAndStepPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// A step_update usage payload never touches cache_creation accounting.
-	if p.usage.CacheCreationReported && p.usage.CacheCreationTokens == 4 {
-		t.Errorf("CacheCreationTokens = %d with Reported=true, want the step payload ignored for cache_creation_tokens", p.usage.CacheCreationTokens)
-	}
 	// Presence of cache_creation_tokens on the result sets Reported even
 	// when the provider genuinely reports zero.
 	if !p.usage.CacheCreationReported {
@@ -358,6 +374,22 @@ func TestAntigravityParser_StructuredOutputWinsOverResponse(t *testing.T) {
 	expected := `{"success":true}`
 	if text != expected {
 		t.Errorf("finalText() = %q, want structured_output %q", text, expected)
+	}
+}
+
+func TestAntigravityParser_ExplicitNullStructuredOutputFallsThroughToResponse(t *testing.T) {
+	stream := `
+{"event": "result", "result": {"status": "SUCCESS", "response": "the final answer", "structured_output": null}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	if text != "the final answer" {
+		t.Errorf("finalText() = %q, want the authoritative result.response when structured_output is explicitly null", text)
 	}
 }
 

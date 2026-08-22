@@ -355,7 +355,7 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 			if res.Response != "" {
 				p.response = res.Response
 			}
-			if len(res.StructuredOutput) > 0 {
+			if trimmed := strings.TrimSpace(string(res.StructuredOutput)); trimmed != "" && trimmed != "null" {
 				var buf bytes.Buffer
 				if json.Compact(&buf, res.StructuredOutput) == nil {
 					p.structured = buf.String()
