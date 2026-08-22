@@ -477,6 +477,10 @@ func fakeCIGHRerun() {
 	os.Exit(0)
 }
 
+// fakeChecksReadFailure is the sequence entry that makes the fake gh answer a
+// check read with a provider failure instead of a check list.
+const fakeChecksReadFailure = "ERROR"
+
 func fakeCIGHSequenceHandler(args []string) {
 	state := os.Getenv("FAKE_CLI_STATE")
 	checksPath := os.Getenv("FAKE_CLI_CHECKS_PATH")
@@ -532,6 +536,10 @@ func fakeCIGHSequenceHandler(args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		if entry := entries[index]; entry == fakeChecksReadFailure {
+			fmt.Fprintln(os.Stderr, "gh: Resource not accessible by personal access token (HTTP 403)")
+			os.Exit(1)
+		}
 		fmt.Println(entries[index])
 		os.Exit(0)
 	}
@@ -557,6 +565,12 @@ func fakeCIGHSequenceHandler(args []string) {
 		}
 		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if entry := entries[index]; entry == fakeChecksReadFailure {
+			// A sequence entry can ask for a failed read, so a test can drive
+			// the monitor's bounded no-evidence handling.
+			fmt.Fprintln(os.Stderr, "gh: Resource not accessible by personal access token (HTTP 403)")
 			os.Exit(1)
 		}
 		printFakeCommitChecks(entries[index], args)

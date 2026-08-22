@@ -184,6 +184,15 @@ var (
 	// monitoring. It prevents a late status or already-merged race from proving
 	// the wrong commit.
 	ErrHeadChanged = errors.New("pull request head changed")
+	// ErrChecksUnavailable marks a check read that produced no usable evidence
+	// for the commit under test, as opposed to one that produced evidence the
+	// caller dislikes. Providers wrap it around every "the answer could not be
+	// established" failure - an unreadable rollup, an unreadable fallback, a
+	// mapping that cannot be pinned to the current head - so callers can bound
+	// repeated evidence-free polls and end with an actionable outcome instead
+	// of waiting for a global timeout. It never means "not green": a caller
+	// must keep failing closed on it.
+	ErrChecksUnavailable = errors.New("CI check evidence is unavailable")
 )
 
 // MergedProof is provider evidence that a specific PR head was merged.
