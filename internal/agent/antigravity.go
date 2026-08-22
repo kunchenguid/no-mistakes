@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -162,6 +164,95 @@ type antigravityParser struct {
 	errorMessage string
 }
 
+// Typed view of `agy --output-format stream-json`. One JSON object per line;
+// every event names the conversation serving it.
+type agyStreamEvent struct {
+	Event          string         `json:"event"`
+	ConversationID string         `json:"conversation_id"`
+	Init           *agyInitData   `json:"init,omitempty"`
+	StepUpdate     *agyStepUpdate `json:"step_update,omitempty"`
+	Result         *agyResultData `json:"result,omitempty"`
+}
+
+type agyInitData struct {
+	CWD   string   `json:"cwd"`
+	Tools []string `json:"tools"`
+}
+
+type agyStepUpdate struct {
+	ConversationID string          `json:"conversation_id"`
+	StepIndex      int             `json:"step_index"`
+	State          string          `json:"state"`
+	StepType       string          `json:"step_type"`
+	TextDelta      string          `json:"text_delta"`
+	ToolCallDelta  string          `json:"tool_call_delta"`
+	InputJSONDelta string          `json:"input_json_delta"`
+	ArgumentsDelta string          `json:"arguments_delta"`
+	ToolCalls      []agyToolCall   `json:"tool_calls,omitempty"`
+	ToolInfo       *agyToolInfo    `json:"tool_info,omitempty"`
+	SubagentInfo   json.RawMessage `json:"subagent_info,omitempty"`
+	DurationSecs   float64         `json:"duration_seconds"`
+	Usage          *agyUsageData   `json:"usage,omitempty"`
+}
+
+type agyToolCall struct {
+	Delta          string          `json:"delta,omitempty"`
+	InputJSONDelta string          `json:"input_json_delta,omitempty"`
+	ArgumentsDelta string          `json:"arguments_delta,omitempty"`
+	Function       *agyFunctionArg `json:"function,omitempty"`
+}
+
+type agyFunctionArg struct {
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// agyToolInfo carries the invoked tool's parameters either as a pre-rendered
+// JSON string or as a structured value, so Parameters stays raw until render.
+type agyToolInfo struct {
+	Parameters json.RawMessage `json:"parameters,omitempty"`
+}
+
+type agyResultData struct {
+	ConversationID   string          `json:"conversation_id"`
+	Status           string          `json:"status"`
+	Response         string          `json:"response"`
+	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
+	Error            string          `json:"error,omitempty"`
+	DurationSecs     float64         `json:"duration_seconds"`
+	NumTurns         int             `json:"num_turns"`
+	Usage            *agyUsageData   `json:"usage,omitempty"`
+}
+
+// Every counter is a pointer so absence of a key stays distinguishable
+// from a provider-reported zero; only keys actually present in a payload
+// overwrite the accumulated usage.
+type agyUsageData struct {
+	InputTokens         *int `json:"input_tokens"`
+	OutputTokens        *int `json:"output_tokens"`
+	ThinkingTokens      *int `json:"thinking_tokens"`
+	CacheReadTokens     *int `json:"cache_read_tokens"`
+	CacheCreationTokens *int `json:"cache_creation_tokens"`
+	TotalTokens         *int `json:"total_tokens"`
+}
+
+// agyPayloadText renders a raw JSON payload for the stream: a JSON string is
+// unwrapped verbatim; any other value is compacted in place, preserving the
+// field order agy emitted.
+func agyPayloadText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, true
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return "", false
+	}
+	return buf.String(), true
+}
+
 func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
@@ -180,145 +271,98 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 			continue
 		}
 
-		var event map[string]any
+		var event agyStreamEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			continue
+			var typeErr *json.UnmarshalTypeError
+			if !errors.As(err, &typeErr) {
+				continue
+			}
+			// A field whose shape drifted still leaves the rest of the
+			// event populated (encoding/json decodes past type
+			// mismatches), so degrade per-field instead of dropping the
+			// whole line.
 		}
 
 		// init carries the conversation identity at the top level; every
 		// event of the run names the conversation actually serving it.
-		if id, ok := event["conversation_id"].(string); ok && id != "" {
-			p.sessionID = id
+		if event.ConversationID != "" {
+			p.sessionID = event.ConversationID
 		}
 
-		if evtName, ok := event["event"].(string); ok {
-			if evtName == "step_update" {
-				if step, ok := event["step_update"].(map[string]any); ok {
-					var delta string
+		switch event.Event {
+		case "init":
+			// Nothing beyond the top-level conversation identity.
+		case "step_update":
+			step := event.StepUpdate
+			if step == nil {
+				continue
+			}
+			if step.ConversationID != "" {
+				p.sessionID = step.ConversationID
+			}
 
-					if id, ok := step["conversation_id"].(string); ok && id != "" {
-						p.sessionID = id
-					}
-
-					// Standard text and tool deltas
-					if s, ok := step["text_delta"].(string); ok {
-						delta += s
-					}
-					if s, ok := step["tool_call_delta"].(string); ok {
-						delta += s
-					}
-					if s, ok := step["input_json_delta"].(string); ok {
-						delta += s
-					}
-					if s, ok := step["arguments_delta"].(string); ok {
-						delta += s
-					}
-
-					// Array-based tool calls
-					if toolCalls, ok := step["tool_calls"].([]any); ok {
-						for _, tcRaw := range toolCalls {
-							if tc, ok := tcRaw.(map[string]any); ok {
-								if s, ok := tc["delta"].(string); ok {
-									delta += s
-								}
-								if s, ok := tc["input_json_delta"].(string); ok {
-									delta += s
-								}
-								if s, ok := tc["arguments_delta"].(string); ok {
-									delta += s
-								}
-								if fn, ok := tc["function"].(map[string]any); ok {
-									if s, ok := fn["arguments"].(string); ok {
-										delta += s
-									}
-								}
-							}
-						}
-					}
-
-					// Specialized payloads with newline padding
-					if toolInfo, ok := step["tool_info"].(map[string]any); ok {
-						if params, ok := toolInfo["parameters"]; ok {
-							if paramStr, ok := params.(string); ok {
-								delta += "\n" + paramStr + "\n"
-							} else if paramBytes, err := json.Marshal(params); err == nil {
-								delta += "\n" + string(paramBytes) + "\n"
-							}
-						}
-					}
-
-					if subagentInfo, ok := step["subagent_info"]; ok {
-						if subagentStr, ok := subagentInfo.(string); ok {
-							delta += "\n" + subagentStr + "\n"
-						} else if subagentBytes, err := json.Marshal(subagentInfo); err == nil {
-							delta += "\n" + string(subagentBytes) + "\n"
-						}
-					}
-
-					if delta != "" {
-						sb.WriteString(delta)
-						if p.onChunk != nil {
-							p.onChunk(delta)
-						}
-					}
-
-					if usageMap, ok := step["usage"].(map[string]any); ok {
-						p.usage.Reported = true
-						if v, ok := usageMap["input_tokens"].(float64); ok {
-							p.usage.InputTokens = int(v)
-						}
-						if v, ok := usageMap["output_tokens"].(float64); ok {
-							p.usage.OutputTokens = int(v)
-						}
-						if v, ok := usageMap["cache_read_tokens"].(float64); ok {
-							p.usage.CacheReadTokens = int(v)
-						}
-						applyAgyReasoningUsage(&p.usage, usageMap)
-					}
+			var delta strings.Builder
+			delta.WriteString(step.TextDelta)
+			delta.WriteString(step.ToolCallDelta)
+			delta.WriteString(step.InputJSONDelta)
+			delta.WriteString(step.ArgumentsDelta)
+			for _, tc := range step.ToolCalls {
+				delta.WriteString(tc.Delta)
+				delta.WriteString(tc.InputJSONDelta)
+				delta.WriteString(tc.ArgumentsDelta)
+				if tc.Function != nil {
+					delta.WriteString(tc.Function.Arguments)
 				}
-			} else if evtName == "result" {
-				if result, ok := event["result"].(map[string]any); ok {
-					if id, ok := result["conversation_id"].(string); ok && id != "" {
-						p.sessionID = id
-					}
-					if status, _ := result["status"].(string); status == "ERROR" {
-						if resp, _ := result["error"].(string); resp != "" {
-							p.errorMessage = resp
-						} else {
-							p.errorMessage = "unknown error"
-						}
-					}
-					// The terminal answer is authoritative wherever agy puts it:
-					// result.response outranks stream deltas even when some were
-					// collected, and structured_output outranks both (finalText).
-					if resp, _ := result["response"].(string); resp != "" {
-						p.response = resp
-					}
-
-					if usageMap, ok := result["usage"].(map[string]any); ok {
-						p.usage.Reported = true
-						if v, ok := usageMap["input_tokens"].(float64); ok {
-							p.usage.InputTokens = int(v)
-						}
-						if v, ok := usageMap["output_tokens"].(float64); ok {
-							p.usage.OutputTokens = int(v)
-						}
-						if v, ok := usageMap["cache_read_tokens"].(float64); ok {
-							p.usage.CacheReadTokens = int(v)
-						}
-						if v, ok := usageMap["cache_creation_tokens"].(float64); ok {
-							p.usage.CacheCreationTokens = int(v)
-							p.usage.CacheCreationReported = true
-						}
-						applyAgyReasoningUsage(&p.usage, usageMap)
-					}
-
-					if output, ok := result["structured_output"]; ok && output != nil {
-						if outBytes, err := json.Marshal(output); err == nil {
-							p.structured = string(outBytes)
-						}
-					}
+			}
+			// Specialized payloads with newline padding.
+			if step.ToolInfo != nil {
+				if params, ok := agyPayloadText(step.ToolInfo.Parameters); ok {
+					delta.WriteString("\n" + params + "\n")
 				}
+			}
+			if sub, ok := agyPayloadText(step.SubagentInfo); ok {
+				delta.WriteString("\n" + sub + "\n")
+			}
+
+			if d := delta.String(); d != "" {
+				sb.WriteString(d)
+				if p.onChunk != nil {
+					p.onChunk(d)
+				}
+			}
+
+			if step.Usage != nil {
+				applyAgyUsage(&p.usage, step.Usage, false)
+			}
+		case "result":
+			res := event.Result
+			if res == nil {
+				continue
+			}
+			if res.ConversationID != "" {
+				p.sessionID = res.ConversationID
+			}
+			if res.Status == "ERROR" {
+				if res.Error != "" {
+					p.errorMessage = res.Error
+				} else {
+					p.errorMessage = "unknown error"
+				}
+			}
+			// The terminal answer is authoritative wherever agy puts it:
+			// result.response outranks stream deltas even when some were
+			// collected, and structured_output outranks both (finalText).
+			if res.Response != "" {
+				p.response = res.Response
+			}
+			if trimmed := strings.TrimSpace(string(res.StructuredOutput)); trimmed != "" && trimmed != "null" {
+				var buf bytes.Buffer
+				if json.Compact(&buf, res.StructuredOutput) == nil {
+					p.structured = buf.String()
+				}
+			}
+			if res.Usage != nil {
+				applyAgyUsage(&p.usage, res.Usage, true)
 			}
 		}
 	}
@@ -338,16 +382,34 @@ func (p *antigravityParser) finalText() string {
 	}
 }
 
-// applyAgyReasoningUsage records agy's thinking_tokens as reasoning output so
-// reasoning-model invocations are not undercounted. Presence, not the value,
-// sets ReasoningReported so a genuine zero stays distinguishable from an
-// adapter that never exposes the field.
-func applyAgyReasoningUsage(usage *TokenUsage, usageMap map[string]any) {
-	if _, ok := usageMap["thinking_tokens"]; !ok {
+// applyAgyUsage merges an agy usage payload into TokenUsage: each counter
+// overwrites only when this payload reports it, so the last reported value
+// wins per field and absent keys never regress earlier values to zero.
+// Presence of thinking_tokens or cache_creation_tokens, not their values,
+// sets the matching Reported flag so genuine zeros stay distinguishable
+// from an adapter that never exposes the field. cache_creation_tokens is
+// honored only on the terminal result payload, matching the historical
+// step_update handling.
+func applyAgyUsage(target *TokenUsage, src *agyUsageData, includeCacheCreation bool) {
+	if src == nil {
 		return
 	}
-	usage.ReasoningReported = true
-	if v, ok := usageMap["thinking_tokens"].(float64); ok {
-		usage.ReasoningTokens = int(v)
+	target.Reported = true
+	if src.InputTokens != nil {
+		target.InputTokens = *src.InputTokens
+	}
+	if src.OutputTokens != nil {
+		target.OutputTokens = *src.OutputTokens
+	}
+	if src.CacheReadTokens != nil {
+		target.CacheReadTokens = *src.CacheReadTokens
+	}
+	if includeCacheCreation && src.CacheCreationTokens != nil {
+		target.CacheCreationTokens = *src.CacheCreationTokens
+		target.CacheCreationReported = true
+	}
+	if src.ThinkingTokens != nil {
+		target.ReasoningReported = true
+		target.ReasoningTokens = *src.ThinkingTokens
 	}
 }

@@ -298,6 +298,9 @@ func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testin
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
+	// Pin hooks to the repo's own dir: an ambient global core.hooksPath
+	// would silently hijack the hook installed below.
+	mustRun(t, f.local, "config", "core.hooksPath", ".git/hooks")
 	hooks := filepath.Join(f.local, ".git", "hooks")
 	hook := filepath.Join(hooks, "post-merge")
 	mustWrite(t, hook, "#!/bin/sh\nprintf hook > hook-output.txt\nexit 1\n")

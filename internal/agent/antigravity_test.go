@@ -124,6 +124,67 @@ func TestAntigravityParser(t *testing.T) {
 	}
 }
 
+func TestAntigravityParser_ToolCallArrayDeltas(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"tool_calls": [{"delta": "partial-"}, {"input_json_delta": "json-"}, {"arguments_delta": "args-"}, {"function": {"arguments": "{\"fn\":true}"}}]}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	for _, want := range []string{"partial-", "json-", "args-", `{"fn":true}`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected text to contain %q, got %q", want, text)
+		}
+	}
+}
+
+func TestAntigravityParser_StringToolInfoParametersUsedVerbatim(t *testing.T) {
+	stream := `{"event": "step_update", "step_update": {"tool_info": {"parameters": "--flag value"}}}` + "\n"
+	var chunks []string
+	p := &antigravityParser{onChunk: func(text string) { chunks = append(chunks, text) }}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(chunks) != 1 || chunks[0] != "\n--flag value\n" {
+		t.Errorf("chunks = %q, want verbatim string parameters with newline padding", chunks)
+	}
+}
+
+func TestAntigravityParser_StructuredSubagentInfoCompacted(t *testing.T) {
+	stream := `{"event": "step_update", "step_update": {"subagent_info": {"task": "review", "depth": 2}}}` + "\n"
+	var chunks []string
+	p := &antigravityParser{onChunk: func(text string) { chunks = append(chunks, text) }}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "\n{\"task\":\"review\",\"depth\":2}\n"
+	if len(chunks) != 1 || chunks[0] != want {
+		t.Errorf("chunks = %q, want compacted subagent payload %q preserving field order", chunks, want)
+	}
+}
+
+func TestAntigravityParser_MalformedAndUnknownLinesAreIgnored(t *testing.T) {
+	stream := `
+not json at all
+{"event": "mystery_event", "payload": {"ignored": true}}
+{"event": "step_update", "step_update": {"text_delta": "kept"}}
+`
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), bytes.NewBufferString(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if text := p.finalText(); text != "kept" {
+		t.Errorf("finalText() = %q, want only the well-formed delta", text)
+	}
+}
+
 func TestAntigravityParser_StructuredOutputOverride(t *testing.T) {
 	stream := `
 {"event": "step_update", "step_update": {"text_delta": "hello"}}
@@ -219,6 +280,68 @@ func TestAntigravityParser_ThinkingTokensAbsentLeavesReasoningUnreported(t *test
 	}
 }
 
+func TestAntigravityParser_PartialUsagePayloadDoesNotZeroEarlierFields(t *testing.T) {
+	stream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "output_tokens": 5}}}
+{"event": "result", "result": {"status": "SUCCESS", "usage": {"output_tokens": 9}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The result payload omits input_tokens, so the last reported value
+	// from the step payload must survive instead of regressing to zero.
+	if p.usage.InputTokens != 10 {
+		t.Errorf("InputTokens = %d, want 10 preserved from the step payload", p.usage.InputTokens)
+	}
+	if p.usage.OutputTokens != 9 {
+		t.Errorf("OutputTokens = %d, want 9 from the later reported value", p.usage.OutputTokens)
+	}
+}
+
+func TestAntigravityParser_CacheCreationPresenceAndStepPath(t *testing.T) {
+	// A step_update usage payload never touches cache_creation accounting:
+	// the stream contains only the step line, so any wrongly-applied value
+	// would be observable in the final usage.
+	stepStream := `
+{"event": "step_update", "step_update": {"usage": {"input_tokens": 10, "cache_creation_tokens": 4}}}
+`
+	buf := bytes.NewBufferString(stepStream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.usage.CacheCreationReported {
+		t.Error("CacheCreationReported = true, want false when only a step payload reports cache_creation_tokens")
+	}
+	if p.usage.CacheCreationTokens != 0 {
+		t.Errorf("CacheCreationTokens = %d, want 0 when only a step payload reports cache_creation_tokens", p.usage.CacheCreationTokens)
+	}
+}
+
+func TestAntigravityParser_CacheCreationGenuineZeroOnResultIsReported(t *testing.T) {
+	stream := `
+{"event": "result", "result": {"status": "SUCCESS", "usage": {"cache_creation_tokens": 0}}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Presence of cache_creation_tokens on the result sets Reported even
+	// when the provider genuinely reports zero.
+	if !p.usage.CacheCreationReported {
+		t.Error("CacheCreationReported = false, want true when the result reports cache_creation_tokens: 0")
+	}
+	if p.usage.CacheCreationTokens != 0 {
+		t.Errorf("CacheCreationTokens = %d, want the reported 0", p.usage.CacheCreationTokens)
+	}
+}
+
 func TestAntigravityParser_ResponseWinsOverStreamDeltas(t *testing.T) {
 	stream := `
 {"event": "step_update", "step_update": {"text_delta": "partial thought "}}
@@ -251,6 +374,22 @@ func TestAntigravityParser_StructuredOutputWinsOverResponse(t *testing.T) {
 	expected := `{"success":true}`
 	if text != expected {
 		t.Errorf("finalText() = %q, want structured_output %q", text, expected)
+	}
+}
+
+func TestAntigravityParser_ExplicitNullStructuredOutputFallsThroughToResponse(t *testing.T) {
+	stream := `
+{"event": "result", "result": {"status": "SUCCESS", "response": "the final answer", "structured_output": null}}
+`
+	buf := bytes.NewBufferString(stream)
+	p := &antigravityParser{}
+	if err := p.parse(context.Background(), buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	text := p.finalText()
+	if text != "the final answer" {
+		t.Errorf("finalText() = %q, want the authoritative result.response when structured_output is explicitly null", text)
 	}
 }
 

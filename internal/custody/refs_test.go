@@ -79,7 +79,10 @@ func TestPreserveRecoveryAnchorRejectsMatchingSymbolicRef(t *testing.T) {
 	repo, head := recoveryTestRepo(t)
 	ref := RecoveryGateRef("run-1")
 	target := "refs/heads/main"
-	gitRun(t, repo, "branch", "main", head)
+	// Plumbing: with init.defaultBranch=main the fixture's empty commit
+	// already created refs/heads/main (and branch -f refuses a checked-out
+	// branch); pointing main at head either way is the intent.
+	gitRun(t, repo, "update-ref", "refs/heads/main", head)
 	gitRun(t, repo, "symbolic-ref", ref, target)
 
 	if err := PreserveRecoveryAnchor(context.Background(), repo, ref, head); err == nil {

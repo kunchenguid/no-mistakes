@@ -46,8 +46,10 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for step to reach awaiting_approval.
-	deadline := time.Now().Add(5 * time.Second)
+	// Wait for step to reach awaiting_approval. Reaching the gate spawns git
+	// and agent processes, which is slow on the process-spawn-bound Windows
+	// runner, so use the same Windows-aware budget as waitForDaemonReady.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		steps, _ := d.GetStepsByRun(pushResult.RunID)
 		for _, s := range steps {
@@ -78,27 +80,68 @@ subscribeNow:
 		t.Fatal(err)
 	}
 
-	// Collect events until channel closes.
-	var events []ipc.Event
-	timeout := time.After(5 * time.Second)
+	// Collect events until channel closes. The stream closes only when the
+	// run ends, and completing the run after the approval is process-spawn-
+	// bound on Windows (worktree teardown and friends), so a fixed five-second
+	// window races the executor. Derive the close deadline from observed
+	// terminal state instead: poll get_run until the run is terminal, then
+	// require the stream to close promptly.
+	events := make(chan ipc.Event, 64)
+	go func() {
+		defer close(events)
+		for event := range ch {
+			events <- event
+		}
+	}()
+
+	var collected []ipc.Event
+	terminalDeadline := time.Now().Add(60 * time.Second)
+	for {
+		var result ipc.GetRunResult
+		callErr := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: pushResult.RunID}, &result)
+		if callErr == nil && result.Run != nil &&
+			(result.Run.Status == types.RunCompleted || result.Run.Status == types.RunFailed || result.Run.Status == types.RunCancelled) {
+			break
+		}
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					t.Fatal("subscriber channel closed before the run reached a terminal state")
+				}
+				collected = append(collected, event)
+			default:
+				goto poll
+			}
+		}
+	poll:
+		if time.Now().After(terminalDeadline) {
+			t.Fatal("run never reached a terminal state")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	closeDeadline := time.Now().Add(30 * time.Second)
 	for {
 		select {
-		case event, ok := <-ch:
+		case event, ok := <-events:
 			if !ok {
 				goto verifyEvents
 			}
-			events = append(events, event)
-		case <-timeout:
-			t.Fatal("subscriber channel never closed")
+			collected = append(collected, event)
+		case <-time.After(100 * time.Millisecond):
+			if time.Now().After(closeDeadline) {
+				t.Fatal("subscriber channel never closed")
+			}
 		}
 	}
 
 verifyEvents:
-	if len(events) == 0 {
+	if len(collected) == 0 {
 		t.Fatal("received no events")
 	}
 	hasRunCompleted := false
-	for _, e := range events {
+	for _, e := range collected {
 		if e.Type == ipc.EventRunCompleted {
 			hasRunCompleted = true
 		}
