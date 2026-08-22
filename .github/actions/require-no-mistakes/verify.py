@@ -2,10 +2,10 @@
 """Enforce that a pull request was raised through the no-mistakes pipeline.
 
 This is the single shared implementation of the `PR must be raised via
-no-mistakes` gate. Every repository that enforces the gate calls the
-`require-no-mistakes` composite action instead of copying this logic into its
-own workflow; the inline copies drifted (several fleet copies never gained the
-head_sha bind), which is exactly what this file exists to prevent.
+no-mistakes` gate. Enforcing repositories can call the `require-no-mistakes`
+composite action instead of copying this logic into their own workflows; the
+inline copies drifted (several fleet copies never gained the head_sha bind),
+which is exactly what this file exists to prevent.
 
 The verdict is a pure function of the pull request body plus the PR head SHA:
 
