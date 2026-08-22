@@ -644,8 +644,15 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 	}
 
+	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
+		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
+			return blocked
+		}
+		return s.finishRecover(ctx, run, false)
+	}
+
 	if !gateAvailable {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be anchored; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be imported; no files or refs were changed")
 	}
 	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
@@ -654,14 +661,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
-		gateAnchorAvailable = true
-	}
-
-	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
-		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
-			return blocked
-		}
-		return s.finishRecover(ctx, run, false)
 	}
 
 	anchored := false
@@ -1448,7 +1447,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
-	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+	if state == nil || run == nil || strings.TrimSpace(run.HeadSHA) == "" {
 		return false
 	}
 	localAnchor := custody.RecoveryRef(run.ID)
@@ -1464,6 +1463,17 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	} else if target, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", localAnchor); err == nil && target != "" {
 		return false
 	}
+	local := state.Local.Head
+	preserved := run.HeadSHA
+	if objectExists(ctx, s.workDir(), preserved) &&
+		(local == preserved || isAncestor(ctx, s.workDir(), preserved, local)) {
+		localPreRecovery := custody.RecoveryLocalRef(run.ID)
+		if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localPreRecovery+"^{commit}"); err == nil && anchored != preserved && local == preserved && !state.Local.Clean {
+			return false
+		}
+		return true
+	}
+
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
 		return false
@@ -1490,25 +1500,13 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if !objectExists(ctx, gateDir, run.HeadSHA) {
 		return false
 	}
-	if state == nil || !objectExists(ctx, s.workDir(), run.HeadSHA) {
+	if !state.Local.Clean || !objectExists(ctx, gateDir, local) {
 		return false
 	}
-	local := state.Local.Head
-	preserved := run.HeadSHA
-	if local == preserved || isAncestor(ctx, s.workDir(), preserved, local) {
-		localPreRecovery := custody.RecoveryLocalRef(run.ID)
-		if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localPreRecovery+"^{commit}"); err == nil && anchored != preserved && local == preserved && !state.Local.Clean {
-			return false
-		}
+	if isAncestor(ctx, gateDir, local, preserved) {
 		return true
 	}
-	if !state.Local.Clean {
-		return false
-	}
-	if isAncestor(ctx, s.workDir(), local, preserved) {
-		return true
-	}
-	return preservedContainsLocalWork(ctx, s.workDir(), local, preserved)
+	return preservedContainsLocalWork(ctx, gateDir, local, preserved)
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
