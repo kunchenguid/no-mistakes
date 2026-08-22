@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/ownerdecision"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -34,11 +36,25 @@ const (
 	defaultGateReconcileTimeout  = 30 * time.Second
 )
 
+var errOwnerDecisionCancelled = errors.New(types.RunCancelReasonAbortedByUser)
+
 type approvalResponse struct {
 	action        types.ApprovalAction
 	findingIDs    []string
 	instructions  map[string]string
 	addedFindings []types.Finding
+}
+
+type ownerDecisionGate struct {
+	runID          string
+	repoID         string
+	branch         string
+	headSHA        string
+	step           types.StepName
+	stepResultID   string
+	roundID        string
+	findings       string
+	findingsDigest string
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -62,10 +78,320 @@ type Executor struct {
 	approvalCh  chan approvalResponse // buffered channel for approval responses
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
+	ownerGate   *ownerDecisionGate
+
+	ownerAuthority    *db.OwnerDecisionAuthority
+	ownerExpectedHead string
+	ownerArmed        bool
+	ownerRun          *db.Run
+	ownerRepo         *db.Repo
+	// beforeOwnerResume is a deterministic test seam after the transaction has
+	// committed and before the approval channel is released.
+	beforeOwnerResume func()
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
 	onPRMerged            func(context.Context, string)
+}
+
+// ArmOwnerDecisionHistory supplies the controller-held expected history head.
+// Protected recovered runs must call this explicitly before Resume; deriving
+// the head only from local SQLite would make a valid-prefix rollback invisible.
+func (e *Executor) ArmOwnerDecisionHistory(runID, expectedHead string) error {
+	if strings.TrimSpace(expectedHead) == "" {
+		return fmt.Errorf("owner decision history: expected head is required")
+	}
+	authority, err := e.db.GetOwnerDecisionAuthority(runID)
+	if err != nil {
+		return err
+	}
+	if authority == nil {
+		return fmt.Errorf("owner decision history: run %s is not protected", runID)
+	}
+	if err := e.db.VerifyOwnerDecisionHistory(runID, expectedHead); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ownerArmed && (e.ownerAuthority == nil || e.ownerAuthority.RunID != runID || e.ownerExpectedHead != expectedHead) {
+		return fmt.Errorf("owner decision history: executor is already armed to a different binding")
+	}
+	e.ownerAuthority = authority
+	e.ownerExpectedHead = expectedHead
+	e.ownerArmed = true
+	return nil
+}
+
+// OwnerDecisionProtected reports whether this executor owns a protected run.
+func (e *Executor) OwnerDecisionProtected() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.ownerAuthority != nil
+}
+
+// OwnerDecisionChallenge returns the canonical challenge the external
+// controller signs. The private key never enters the daemon or run worktree.
+func (e *Executor) OwnerDecisionChallenge(purpose string) (ownerdecision.Challenge, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ownerAuthority == nil || e.ownerRun == nil || e.ownerRepo == nil || !e.ownerArmed {
+		return ownerdecision.Challenge{}, fmt.Errorf("owner decision: run is not protected and armed")
+	}
+	now := time.Now().UTC()
+	challenge := ownerdecision.Challenge{
+		Schema:       ownerdecision.ChallengeSchema,
+		Purpose:      purpose,
+		RunID:        e.ownerRun.ID,
+		RepoID:       e.ownerAuthority.RepoID,
+		Branch:       e.ownerAuthority.Branch,
+		HeadSHA:      e.ownerAuthority.InitialHeadSHA,
+		GateHeadSHA:  e.ownerRun.HeadSHA,
+		PreviousHead: e.ownerExpectedHead,
+		IssuedAt:     now.Unix(),
+		ExpiresAt:    now.Add(ownerdecision.MaxChallengeLifetime).Unix(),
+	}
+	switch purpose {
+	case ownerdecision.PurposeRespond:
+		if !e.waiting || e.ownerGate == nil {
+			return ownerdecision.Challenge{}, fmt.Errorf("owner decision: no step is awaiting approval")
+		}
+		challenge.RunID = e.ownerGate.runID
+		challenge.RepoID = e.ownerAuthority.RepoID
+		challenge.Branch = e.ownerAuthority.Branch
+		challenge.HeadSHA = e.ownerAuthority.InitialHeadSHA
+		challenge.GateHeadSHA = e.ownerGate.headSHA
+		challenge.Step = e.ownerGate.step
+		challenge.StepResultID = e.ownerGate.stepResultID
+		challenge.RoundID = e.ownerGate.roundID
+		challenge.FindingsDigest = e.ownerGate.findingsDigest
+		challenge.Nonce = "respond:" + e.ownerGate.roundID + ":" + e.ownerExpectedHead
+	case ownerdecision.PurposeCancel:
+		challenge.Nonce = "cancel:" + e.ownerRun.ID + ":" + e.ownerExpectedHead
+	default:
+		return ownerdecision.Challenge{}, fmt.Errorf("owner decision: unsupported purpose %q", purpose)
+	}
+	return challenge, nil
+}
+
+// RespondAuthorized transactionally appends a valid owner decision before it
+// releases the approval channel. Exact replay is idempotent; every mismatch
+// leaves the gate waiting.
+func (e *Executor) RespondAuthorized(envelope ownerdecision.Envelope) error {
+	e.mu.Lock()
+	if e.ownerAuthority == nil || !e.ownerArmed {
+		e.mu.Unlock()
+		return fmt.Errorf("owner decision: run is not protected and armed")
+	}
+	if !e.waiting || e.ownerGate == nil {
+		e.mu.Unlock()
+		return fmt.Errorf("no step awaiting approval")
+	}
+	if err := e.validateOwnerEnvelopeLocked(envelope, ownerdecision.PurposeRespond); err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	projection, response, err := e.ownerProjectionLocked(envelope)
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	gateID := ownerdecision.PurposeRespond + ":" + e.ownerGate.roundID
+	result, err := e.db.AppendOwnerDecision(e.ownerRun.ID, gateID, envelope, envelope.Challenge, projection, time.Now().UTC())
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	e.ownerExpectedHead = result.Head
+	if e.beforeOwnerResume != nil {
+		e.beforeOwnerResume()
+	}
+	e.waiting = false
+	e.waitingStep = ""
+	e.ownerGate = nil
+	e.mu.Unlock()
+
+	e.approvalCh <- response
+	return nil
+}
+
+// AuthorizeCancel appends a signed cancellation authorization before the
+// manager invokes the run's cancellation function.
+func (e *Executor) AuthorizeCancel(envelope ownerdecision.Envelope) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ownerAuthority == nil || !e.ownerArmed {
+		return fmt.Errorf("owner decision: run is not protected and armed")
+	}
+	if err := e.validateOwnerEnvelopeLocked(envelope, ownerdecision.PurposeCancel); err != nil {
+		return err
+	}
+	gateID := ownerdecision.PurposeCancel + ":" + envelope.Challenge.Nonce
+	result, err := e.db.AppendOwnerDecision(e.ownerRun.ID, gateID, envelope, envelope.Challenge, nil, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	e.ownerExpectedHead = result.Head
+	return nil
+}
+
+func (e *Executor) validateOwnerEnvelopeLocked(envelope ownerdecision.Envelope, purpose string) error {
+	challenge := envelope.Challenge
+	if challenge.Purpose != purpose || challenge.RunID != e.ownerRun.ID || challenge.RepoID != e.ownerAuthority.RepoID ||
+		challenge.Branch != e.ownerAuthority.Branch || challenge.HeadSHA != e.ownerAuthority.InitialHeadSHA ||
+		challenge.GateHeadSHA != e.ownerRun.HeadSHA || challenge.PreviousHead != e.ownerExpectedHead {
+		return fmt.Errorf("owner decision: envelope does not match the active run and history head")
+	}
+	if purpose == ownerdecision.PurposeCancel {
+		if challenge.Nonce != "cancel:"+e.ownerRun.ID+":"+e.ownerExpectedHead {
+			return fmt.Errorf("owner decision: cancellation nonce does not match the active run")
+		}
+		return ownerdecision.Verify(e.ownerAuthority.PublicKey, envelope, challenge, time.Now().UTC())
+	}
+	gate := e.ownerGate
+	if gate == nil || challenge.Step != gate.step || challenge.StepResultID != gate.stepResultID ||
+		challenge.RoundID != gate.roundID || challenge.FindingsDigest != gate.findingsDigest ||
+		challenge.Nonce != "respond:"+gate.roundID+":"+e.ownerExpectedHead {
+		return fmt.Errorf("owner decision: envelope does not match the active approval gate")
+	}
+	return ownerdecision.Verify(e.ownerAuthority.PublicKey, envelope, challenge, time.Now().UTC())
+}
+
+func (e *Executor) ownerProjectionLocked(envelope ownerdecision.Envelope) (*db.OwnerDecisionProjection, approvalResponse, error) {
+	response := approvalResponse{
+		action:        envelope.Response.Action,
+		findingIDs:    slices.Clone(envelope.Response.FindingIDs),
+		instructions:  cloneInstructions(envelope.Response.Instructions),
+		addedFindings: slices.Clone(envelope.Response.AddedFindings),
+	}
+	projection := &db.OwnerDecisionProjection{
+		RoundID:            e.ownerGate.roundID,
+		SelectedFindingIDs: db.DeclinedSelectionJSON,
+		SelectionSource:    db.RoundSelectionSourceUserDeclined,
+	}
+	if response.action != types.ActionFix {
+		return projection, response, nil
+	}
+	materialized, err := ownerdecision.MaterializeProjection(e.ownerGate.findings, envelope.Response)
+	if err != nil {
+		return nil, approvalResponse{}, err
+	}
+	projection.SelectedFindingIDs = materialized.SelectedFindingIDs
+	projection.SelectionSource = db.RoundSelectionSourceUser
+	projection.UserFindingsJSON = materialized.UserFindingsJSON
+	return projection, response, nil
+}
+
+func cloneInstructions(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
+}
+
+func approvalResponseFromEnvelope(envelope ownerdecision.Envelope) approvalResponse {
+	return approvalResponse{
+		action:        envelope.Response.Action,
+		findingIDs:    slices.Clone(envelope.Response.FindingIDs),
+		instructions:  cloneInstructions(envelope.Response.Instructions),
+		addedFindings: slices.Clone(envelope.Response.AddedFindings),
+	}
+}
+
+func (e *Executor) bindOwnerDecisionRun(run *db.Run, repo *db.Repo) error {
+	if run == nil || repo == nil {
+		return fmt.Errorf("owner decision: run and repository are required")
+	}
+	authority, err := e.db.GetOwnerDecisionAuthority(run.ID)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if authority == nil {
+		if e.ownerArmed || e.ownerAuthority != nil {
+			return fmt.Errorf("owner decision: legacy run cannot use a protected executor binding")
+		}
+		e.ownerRun = run
+		e.ownerRepo = repo
+		return nil
+	}
+	if !e.ownerArmed || e.ownerAuthority == nil || e.ownerAuthority.RunID != run.ID {
+		return fmt.Errorf("owner decision: protected run requires an externally supplied expected history head")
+	}
+	if e.ownerExpectedHead == "" {
+		return fmt.Errorf("owner decision: protected run has no expected history head")
+	}
+	e.ownerAuthority = authority
+	e.ownerRun = run
+	e.ownerRepo = repo
+	if run.RepoID != authority.RepoID || repo.ID != authority.RepoID || run.Branch != authority.Branch ||
+		run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA != authority.InitialHeadSHA {
+		return fmt.Errorf("owner decision: active run identity does not match its sealed authority")
+	}
+	return e.db.VerifyOwnerDecisionHistory(run.ID, e.ownerExpectedHead)
+}
+
+func (e *Executor) verifyOwnerDecisionHistory() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.verifyOwnerDecisionHistoryLocked()
+}
+
+func (e *Executor) verifyOwnerDecisionHistoryLocked() error {
+	if e.ownerAuthority == nil {
+		return nil
+	}
+	runID := e.ownerAuthority.RunID
+	expectedHead := e.ownerExpectedHead
+	pinnedKeyID := e.ownerAuthority.KeyID
+	pinnedGenesis := e.ownerAuthority.GenesisHead
+	boundRun := e.ownerRun
+	boundRepo := e.ownerRepo
+	if boundRun == nil || boundRepo == nil {
+		return fmt.Errorf("owner decision run identity is not bound")
+	}
+	storedRun, err := e.db.GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("owner decision run identity verification failed: %w", err)
+	}
+	if storedRun == nil || storedRun.RepoID != boundRepo.ID || storedRun.Branch != boundRun.Branch || storedRun.HeadSHA != boundRun.HeadSHA {
+		return fmt.Errorf("owner decision run identity verification failed: durable run binding changed")
+	}
+	current, err := e.db.GetOwnerDecisionAuthority(runID)
+	if err != nil {
+		return fmt.Errorf("owner decision authority verification failed: %w", err)
+	}
+	if current == nil || current.KeyID != pinnedKeyID || current.GenesisHead != pinnedGenesis {
+		return fmt.Errorf("owner decision authority verification failed: public-key binding changed")
+	}
+	if err := e.db.VerifyOwnerDecisionHistory(runID, expectedHead); err != nil {
+		return fmt.Errorf("owner decision history verification failed: %w", err)
+	}
+	return nil
+}
+
+func (e *Executor) setWaitingOwnerGate(run *db.Run, repo *db.Repo, step types.StepName, stepResultID, roundID, findings string) {
+	e.waiting = true
+	e.waitingStep = step
+	if e.ownerAuthority == nil {
+		e.ownerGate = nil
+		return
+	}
+	e.ownerGate = &ownerDecisionGate{
+		runID:          run.ID,
+		repoID:         repo.ID,
+		branch:         run.Branch,
+		headSHA:        run.HeadSHA,
+		step:           step,
+		stepResultID:   stepResultID,
+		roundID:        roundID,
+		findings:       findings,
+		findingsDigest: ownerdecision.DigestBytes([]byte(findings)),
+	}
 }
 
 // SetOnPRMerged registers a best-effort hook invoked after a merged PR state
@@ -148,6 +474,10 @@ func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, fin
 // findings on a fix action before the fix agent runs.
 func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding) error {
 	e.mu.Lock()
+	if e.ownerAuthority != nil {
+		e.mu.Unlock()
+		return fmt.Errorf("owner decision: protected run requires a signed decision envelope")
+	}
 	if !e.waiting {
 		e.mu.Unlock()
 		return fmt.Errorf("no step awaiting approval")
@@ -157,6 +487,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
 	}
 	e.waiting = false
+	e.ownerGate = nil
 	e.mu.Unlock()
 
 	e.approvalCh <- approvalResponse{
@@ -174,6 +505,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	if err := e.bindOwnerDecisionRun(run, repo); err != nil {
+		return e.failRun(run, repo, err)
+	}
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -232,6 +566,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 	}
 
+	if err := e.verifyOwnerDecisionHistory(); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("before run completion: %w", err))
+	}
 	// Mark run as completed. A failure here must emit a terminal failure rather
 	// than leaving a silent running row after every step has finished.
 	if err := e.completeRun(run, repo); err != nil {
@@ -282,6 +619,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
 	}
+	if err := e.bindOwnerDecisionRun(run, repo); err != nil {
+		return err
+	}
 	if err := ValidateRecoveredRun(e.db, run, e.steps); err != nil {
 		return err
 	}
@@ -297,6 +637,21 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
 	duration := recoveredStepDuration(gate.stepResult)
+	if e.OwnerDecisionProtected() {
+		cancelled, cancelErr := e.db.CommittedOwnerCancellation(run.ID, e.ownerExpectedHead)
+		if cancelErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("recover committed owner cancellation: %w", cancelErr), ctx)
+		}
+		if cancelled {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete cancelled awaiting-agent state: %w", dbErr), ctx)
+			}
+			if dbErr := e.db.FailStep(gate.stepResult.ID, types.RunCancelReasonAbortedByUser, duration); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete cancelled recovered step: %w", dbErr), ctx)
+			}
+			return e.failRun(run, repo, errors.New(types.RunCancelReasonAbortedByUser), ctx)
+		}
+	}
 	completeRecoveredGate := func() error {
 		if gate.step.Name() == types.StepReview {
 			if gate.reviewedHeadSHA == "" {
@@ -336,53 +691,71 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogFile:    func(string) {},
 		OnPRMerged: e.onPRMerged,
 	}
-	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+	var response approvalResponse
+	committedResponse := false
+	if e.OwnerDecisionProtected() {
+		envelope, found, committedErr := e.db.CommittedOwnerResponse(run.ID, ownerdecision.PurposeRespond+":"+gate.lastRoundID, e.ownerExpectedHead)
+		if committedErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("recover committed owner response: %w", committedErr), ctx)
 		}
-		return completeReconciledGate()
-	} else if reconcileErr != nil && ctx.Err() == nil {
-		if errors.Is(reconcileErr, ErrFatalGateReconciliation) {
+		if found {
+			response = approvalResponseFromEnvelope(envelope)
+			committedResponse = true
+		}
+	}
+	if !committedResponse {
+		if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
 			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("complete fatal reconciliation awaiting-agent state: %w", dbErr), ctx)
+				return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
 			}
-			if dbErr := e.db.FailStep(gate.stepResult.ID, reconcileErr.Error(), duration); dbErr != nil {
+			return completeReconciledGate()
+		} else if reconcileErr != nil && ctx.Err() == nil {
+			if errors.Is(reconcileErr, ErrFatalGateReconciliation) {
+				if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+					return e.failRun(run, repo, fmt.Errorf("complete fatal reconciliation awaiting-agent state: %w", dbErr), ctx)
+				}
+				if dbErr := e.db.FailStep(gate.stepResult.ID, reconcileErr.Error(), duration); dbErr != nil {
+					slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+				}
+				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", reconcileErr.Error(), &duration)
+				return e.failRun(run, repo, fmt.Errorf("step %s: reconcile approval gate: %w", gate.step.Name(), reconcileErr), ctx)
+			}
+			slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
+		}
+
+		e.mu.Lock()
+		e.setWaitingOwnerGate(run, repo, gate.step.Name(), gate.stepResult.ID, gate.lastRoundID, gate.findings)
+		e.mu.Unlock()
+		e.emitStepEventWithFindingsAndError(
+			ipc.EventStepCompleted,
+			run,
+			repo,
+			gate.step.Name(),
+			string(gate.stepResult.Status),
+			gate.findings,
+			"",
+			gate.stepResult.DurationMS,
+		)
+
+		var reconciled bool
+		var waitErr error
+		response, reconciled, waitErr = e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
+		if waitErr != nil {
+			if dbErr := e.db.FailStep(gate.stepResult.ID, waitErr.Error(), duration); dbErr != nil {
 				slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
 			}
-			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", reconcileErr.Error(), &duration)
-			return e.failRun(run, repo, fmt.Errorf("step %s: reconcile approval gate: %w", gate.step.Name(), reconcileErr), ctx)
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", waitErr.Error(), &duration)
+			return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), waitErr), ctx)
 		}
-		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
+		if reconciled {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+			}
+			return completeReconciledGate()
+		}
 	}
-
-	e.mu.Lock()
-	e.waiting = true
-	e.waitingStep = gate.step.Name()
-	e.mu.Unlock()
-	e.emitStepEventWithFindingsAndError(
-		ipc.EventStepCompleted,
-		run,
-		repo,
-		gate.step.Name(),
-		string(gate.stepResult.Status),
-		gate.findings,
-		"",
-		gate.stepResult.DurationMS,
-	)
-
-	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-	}
-	if err != nil {
-		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
-			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
-		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", err.Error(), &duration)
-		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
-	}
-	if reconciled {
-		return completeReconciledGate()
+		return e.failRun(run, repo, fmt.Errorf("complete owner-response awaiting-agent state: %w", dbErr), ctx)
 	}
 
 	approvalFields := telemetry.Fields{
@@ -423,7 +796,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
 		selected := filterFindingsJSON(gate.findings, response.findingIDs)
 		merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
-		if gate.lastRoundID != "" {
+		if gate.lastRoundID != "" && !e.OwnerDecisionProtected() {
 			allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, merged)
 			if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
 				var userFindingsJSON *string
@@ -541,6 +914,9 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.skipRecoveredRemainder(run, repo, index+1)
 		}
 	}
+	if err := e.verifyOwnerDecisionHistory(); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("before recovered run completion: %w", err))
+	}
 	if err := e.completeRun(run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err), ctx)
 	}
@@ -560,6 +936,9 @@ func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int)
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", e.steps[index].Name(), err))
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, e.steps[index].Name(), string(types.StepStatusSkipped), "", "", nil)
+	}
+	if err := e.verifyOwnerDecisionHistory(); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("before recovered run completion: %w", err))
 	}
 	if err := e.completeRun(run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err))
@@ -592,6 +971,13 @@ func recoveredLogPath(step *db.StepResult) string {
 // Returns (skipRemaining, error).
 func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, error) {
 	stepName := step.Name()
+	// A protected run must prove its entire signed history against the
+	// controller-held expected head immediately before every step. In
+	// particular this is the final fail-closed boundary before push, PR, CI,
+	// or any other later step with external effects.
+	if err := e.verifyOwnerDecisionHistory(); err != nil {
+		return false, fmt.Errorf("before step %s: %w", stepName, err)
+	}
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 	autoFixLimit := 0
@@ -765,6 +1151,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 	// Execute with possible fix loop
 	for {
+		// A step may execute again inside its fix loop without returning to the
+		// outer step boundary. Re-verify here as well so a signed decision cannot
+		// be followed by another agent/provider action after local history,
+		// authority, findings, or projection tampering.
+		if err := e.verifyOwnerDecisionHistory(); err != nil {
+			return false, fmt.Errorf("before step %s round %d: %w", stepName, roundNum+1, err)
+		}
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
 		outcome, err := step.Execute(sctx)
@@ -898,8 +1291,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// emitting events, so that callers who poll the DB status can
 		// immediately call Respond once they see it.
 		e.mu.Lock()
-		e.waiting = true
-		e.waitingStep = stepName
+		e.setWaitingOwnerGate(run, repo, stepName, sr.ID, currentRoundID, outcome.Findings)
 		e.mu.Unlock()
 
 		// Parking starts before the gate becomes observable. This includes the
@@ -915,6 +1307,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.mu.Lock()
 			e.waiting = false
 			e.waitingStep = ""
+			e.ownerGate = nil
 			e.mu.Unlock()
 			return false, fmt.Errorf("persist %s approval gate: %w", stepName, dbErr)
 		}
@@ -988,7 +1381,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
 			nextTrigger = "auto_fix"
-			if currentRoundID != "" {
+			if currentRoundID != "" && !e.OwnerDecisionProtected() {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)
 				if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
 					var userFindingsJSON *string
@@ -1053,6 +1446,12 @@ done:
 // failed write degrades to today's behavior and must never fail the run.
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
 	if e == nil || e.db == nil || roundID == "" {
+		return
+	}
+	if e.OwnerDecisionProtected() {
+		// Protected decisions were transactionally materialized before the
+		// approval wait was released. A second mutable write here would weaken
+		// the journal-to-projection invariant.
 		return
 	}
 	if findingsCount(findingsJSON) == 0 {
@@ -1194,6 +1593,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		e.mu.Lock()
 		e.waiting = false
 		e.waitingStep = ""
+		e.ownerGate = nil
 		e.mu.Unlock()
 		// Drain any stale response that arrived after context cancellation or
 		// raced with an external reconciliation.
@@ -1255,6 +1655,7 @@ func (e *Executor) claimGateReconciliation() bool {
 	}
 	e.waiting = false
 	e.waitingStep = ""
+	e.ownerGate = nil
 	return true
 }
 
@@ -1286,7 +1687,7 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 		}
 	}
 	runStatus := types.RunFailed
-	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
+	if errors.Is(err, errOwnerDecisionCancelled) || errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
 	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
@@ -1308,6 +1709,20 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ownerAuthority != nil {
+		if err := e.verifyOwnerDecisionHistoryLocked(); err != nil {
+			return err
+		}
+		cancelled, err := e.db.CommittedOwnerCancellation(run.ID, e.ownerExpectedHead)
+		if err != nil {
+			return err
+		}
+		if cancelled {
+			return errOwnerDecisionCancelled
+		}
+	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	var err error
 	if verified {

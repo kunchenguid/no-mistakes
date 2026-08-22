@@ -95,13 +95,15 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	ID          string
-	Branch      string
-	Status      string
-	HeadSHA     string
-	PRURL       string
-	CIReady     bool
-	CIReadyNoCI bool
+	ID                     string
+	Branch                 string
+	Status                 string
+	HeadSHA                string
+	PRURL                  string
+	CIReady                bool
+	CIReadyNoCI            bool
+	OwnerDecisionProtected bool
+	OwnerDecisionHead      string
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -111,13 +113,15 @@ type runView struct {
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		CIReady:            r.CIReady,
-		CIReadyNoCI:        r.CIReadyNoCI,
-		AwaitingAgentSince: r.AwaitingAgentSince,
+		ID:                     r.ID,
+		Branch:                 r.Branch,
+		Status:                 string(r.Status),
+		HeadSHA:                r.HeadSHA,
+		CIReady:                r.CIReady,
+		CIReadyNoCI:            r.CIReadyNoCI,
+		OwnerDecisionProtected: r.OwnerDecisionProtected,
+		OwnerDecisionHead:      r.OwnerDecisionHead,
+		AwaitingAgentSince:     r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -421,6 +425,12 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
+	if rv.OwnerDecisionProtected {
+		fields = append(fields,
+			toon.Field{Key: "owner_decision_protected", Value: true},
+			toon.Field{Key: "owner_decision_head", Value: rv.OwnerDecisionHead},
+		)
+	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}

@@ -20,6 +20,27 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestDriveRunProtectedYoloRefusesToLoadPrivateKeyBesideWorkload(t *testing.T) {
+	events := make(chan ipc.Event, 1)
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: events}},
+		runs: []*ipc.RunInfo{
+			{ID: "run-protected", RepoID: "repo-1", Branch: "feature/x", HeadSHA: "head-1", Status: types.RunRunning, OwnerDecisionProtected: true,
+				Steps: []ipc.StepResultInfo{{ID: "step-1", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval, FindingsJSON: ownerTestStringPtr(`{"findings":[]}`)}},
+			},
+			{ID: "run-protected", RepoID: "repo-1", Branch: "feature/x", HeadSHA: "head-1", Status: types.RunCompleted, OwnerDecisionProtected: true},
+		},
+	}
+	reconciler := newRunReconciler(source, "run-protected")
+	defer reconciler.Close()
+	_, _, err := driveRunWithReconciler(context.Background(), io.Discard, nil, reconciler, "run-protected", true)
+	if err == nil || !strings.Contains(err.Error(), "externally signed decision") {
+		t.Fatalf("protected yolo error = %v", err)
+	}
+}
+
+func ownerTestStringPtr(value string) *string { return &value }
+
 func ciRunView(ciStatus types.StepStatus) runView {
 	return runView{
 		ID:     "run-1",

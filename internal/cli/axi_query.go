@@ -122,6 +122,10 @@ func annotateRunView(env *axiEnv, rv *runView) {
 	if env == nil || rv == nil {
 		return
 	}
+	if head, protected, err := env.d.OwnerDecisionHead(rv.ID); err == nil && protected {
+		rv.OwnerDecisionProtected = true
+		rv.OwnerDecisionHead = head
+	}
 	quietWarning := configQuietWarning(env)
 	for i := range rv.Steps {
 		step := &rv.Steps[i]

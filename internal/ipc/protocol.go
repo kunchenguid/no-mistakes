@@ -4,25 +4,28 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
+	"github.com/kunchenguid/no-mistakes/internal/ownerdecision"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived            = "push_received"
+	MethodGetRun                  = "get_run"
+	MethodGetStepDiff             = "get_step_diff"
+	MethodGetRuns                 = "get_runs"
+	MethodGetRunsForHead          = "get_runs_for_head"
+	MethodGetActiveRun            = "get_active_run"
+	MethodRerun                   = "rerun"
+	MethodSubscribe               = "subscribe"
+	MethodRespond                 = "respond"
+	MethodCancelRun               = "cancel_run"
+	MethodOwnerDecisionChallenge  = "owner_decision_challenge"
+	MethodOwnerDecisionCheckpoint = "owner_decision_checkpoint"
+	MethodGateContext             = "gate_context"
+	MethodAdmitPush               = "admit_push"
+	MethodHealth                  = "health"
+	MethodShutdown                = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -67,12 +70,21 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate          string                  `json:"gate"`
+	Ref           string                  `json:"ref"`
+	Old           string                  `json:"old"`
+	New           string                  `json:"new"`
+	SkipSteps     []types.StepName        `json:"skip_steps,omitempty"`
+	Intent        string                  `json:"intent,omitempty"`
+	OwnerDecision *OwnerDecisionRunConfig `json:"owner_decision,omitempty"`
+}
+
+// OwnerDecisionRunConfig opts a newly created run into the protected protocol.
+// PublicKey is base64-encoded Ed25519 public-key bytes. ExpectedHead is the
+// controller-held history head and must be the genesis head for a new run.
+type OwnerDecisionRunConfig struct {
+	PublicKey    string `json:"public_key"`
+	ExpectedHead string `json:"expected_head"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -125,11 +137,12 @@ type GetActiveRunParams struct {
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.
 type RerunParams struct {
-	RepoID        string           `json:"repo_id"`
-	Branch        string           `json:"branch"`
-	PreviousRunID string           `json:"previous_run_id,omitempty"`
-	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
-	Intent        string           `json:"intent,omitempty"`
+	RepoID        string                  `json:"repo_id"`
+	Branch        string                  `json:"branch"`
+	PreviousRunID string                  `json:"previous_run_id,omitempty"`
+	SkipSteps     []types.StepName        `json:"skip_steps,omitempty"`
+	Intent        string                  `json:"intent,omitempty"`
+	OwnerDecision *OwnerDecisionRunConfig `json:"owner_decision,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -145,17 +158,30 @@ type SubscribeParams struct {
 // alongside agent-produced ones. Both fields only apply when Action triggers
 // a fix round.
 type RespondParams struct {
-	RunID         string               `json:"run_id"`
-	Step          types.StepName       `json:"step"`
-	Action        types.ApprovalAction `json:"action"`
-	FindingIDs    []string             `json:"finding_ids,omitempty"`
-	Instructions  map[string]string    `json:"instructions,omitempty"`
-	AddedFindings []types.Finding      `json:"added_findings,omitempty"`
+	RunID         string                  `json:"run_id"`
+	Step          types.StepName          `json:"step"`
+	Action        types.ApprovalAction    `json:"action"`
+	FindingIDs    []string                `json:"finding_ids,omitempty"`
+	Instructions  map[string]string       `json:"instructions,omitempty"`
+	AddedFindings []types.Finding         `json:"added_findings,omitempty"`
+	Decision      *ownerdecision.Envelope `json:"decision,omitempty"`
 }
 
 // CancelRunParams cancels an active pipeline run.
 type CancelRunParams struct {
-	RunID string `json:"run_id"`
+	RunID    string                  `json:"run_id"`
+	Decision *ownerdecision.Envelope `json:"decision,omitempty"`
+}
+
+type OwnerDecisionChallengeParams struct {
+	RunID        string `json:"run_id"`
+	Purpose      string `json:"purpose"`
+	ExpectedHead string `json:"expected_head,omitempty"`
+}
+
+type OwnerDecisionCheckpointParams struct {
+	RunID    string                 `json:"run_id"`
+	Decision ownerdecision.Envelope `json:"decision"`
 }
 
 // GateContextParams asks the daemon to classify the authenticated caller.
@@ -214,6 +240,14 @@ type CancelRunResult struct {
 	OK bool `json:"ok"`
 }
 
+type OwnerDecisionChallengeResult struct {
+	Challenge ownerdecision.Challenge `json:"challenge"`
+}
+
+type OwnerDecisionCheckpointResult struct {
+	OK bool `json:"ok"`
+}
+
 // GateContextResult is the privacy-safe execution-context classification.
 type GateContextResult struct {
 	Nested           bool           `json:"nested"`
@@ -244,17 +278,19 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ID               string          `json:"id"`
-	RepoID           string          `json:"repo_id"`
-	Branch           string          `json:"branch"`
-	HeadSHA          string          `json:"head_sha"`
-	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
-	BaseSHA          string          `json:"base_sha"`
-	Status           types.RunStatus `json:"status"`
-	PRURL            *string         `json:"pr_url,omitempty"`
-	Error            *string         `json:"error,omitempty"`
-	CIReady          bool            `json:"ci_ready,omitempty"`
-	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	ID                     string          `json:"id"`
+	RepoID                 string          `json:"repo_id"`
+	Branch                 string          `json:"branch"`
+	HeadSHA                string          `json:"head_sha"`
+	SubmittedHeadSHA       *string         `json:"submitted_head_sha,omitempty"`
+	BaseSHA                string          `json:"base_sha"`
+	Status                 types.RunStatus `json:"status"`
+	PRURL                  *string         `json:"pr_url,omitempty"`
+	Error                  *string         `json:"error,omitempty"`
+	CIReady                bool            `json:"ci_ready,omitempty"`
+	CIReadyNoCI            bool            `json:"ci_ready_no_ci,omitempty"`
+	OwnerDecisionProtected bool            `json:"owner_decision_protected,omitempty"`
+	OwnerDecisionHead      string          `json:"owner_decision_head,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

@@ -84,10 +84,12 @@ func TestTruncateDisclosesTotal(t *testing.T) {
 
 func TestWriteRunObjectShape(t *testing.T) {
 	rv := runView{
-		ID:      "run-1",
-		Branch:  "feature/x",
-		Status:  string(types.RunRunning),
-		HeadSHA: "abcdef1234567890",
+		ID:                     "run-1",
+		Branch:                 "feature/x",
+		Status:                 string(types.RunRunning),
+		HeadSHA:                "abcdef1234567890",
+		OwnerDecisionProtected: true,
+		OwnerDecisionHead:      strings.Repeat("a", 64),
 		Steps: []stepView{
 			{Name: "review", Status: "completed", DurationMS: 1200, FindingsJSON: findingsJSON(t, []types.Finding{{ID: "r1", Action: types.ActionNoOp, Description: "ok"}}, "s")},
 			{Name: "test", Status: "awaiting_approval"},
@@ -98,6 +100,8 @@ func TestWriteRunObjectShape(t *testing.T) {
 	for _, want := range []string{
 		"run:\n",
 		"  id: run-1\n",
+		"  owner_decision_protected: true\n",
+		"  owner_decision_head: " + strings.Repeat("a", 64) + "\n",
 		"  branch: feature/x\n",
 		"  status: running\n",
 		"  head: abcdef12\n",

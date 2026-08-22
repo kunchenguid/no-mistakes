@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/ownerdecision"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -107,5 +109,23 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
+	}
+}
+
+func TestOwnerDecisionPushOptionRoundTrip(t *testing.T) {
+	want := &ipc.OwnerDecisionRunConfig{PublicKey: "base64-public-key", ExpectedHead: ownerdecision.GenesisHead}
+	option, err := formatOwnerDecisionPushOption(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseOwnerDecisionPushOptions([]string{"ci.skip", option})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("owner-decision option = %+v, want %+v", got, want)
+	}
+	if _, err := parseOwnerDecisionPushOptions([]string{option, option}); err == nil {
+		t.Fatal("duplicate owner-decision push options were accepted")
 	}
 }
