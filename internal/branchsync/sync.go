@@ -625,25 +625,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return blocked
 	}
 
-	gateAnchor := custody.RecoveryRef(run.ID)
-	gateAnchorAvailable := false
-	if gateAvailable {
-		gateAnchorTarget, gateAnchorExists, targetErr := git.ExactRefTarget(ctx, gateDir, gateAnchor)
-		if targetErr != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
-		}
-		if gateAnchorExists {
-			gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
-			if err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved))
-			}
-			if gateAnchored != preserved {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
-			}
-			gateAnchorAvailable = true
-		}
-	}
-
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
 		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
 			return blocked
@@ -653,6 +634,22 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 
 	if !gateAvailable {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be imported; no files or refs were changed")
+	}
+	gateAnchor := custody.RecoveryRef(run.ID)
+	gateAnchorAvailable := false
+	gateAnchorTarget, gateAnchorExists, targetErr := git.ExactRefTarget(ctx, gateDir, gateAnchor)
+	if targetErr != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
+	}
+	if gateAnchorExists {
+		gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
+		if err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved))
+		}
+		if gateAnchored != preserved {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
+		}
+		gateAnchorAvailable = true
 	}
 	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
