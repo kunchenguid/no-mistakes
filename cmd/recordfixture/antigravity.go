@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,11 +79,56 @@ func captureAgy(ctx context.Context, bin string, forward []string, prompt, outPa
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", staging, err)
 	}
+	if err := validateAgyCapture(staging); err != nil {
+		return fmt.Errorf("validate %s: %w", staging, err)
+	}
 	if err := scrubFile(staging); err != nil {
 		return fmt.Errorf("scrub %s: %w", staging, err)
 	}
 	if err := os.Rename(staging, outPath); err != nil {
 		return fmt.Errorf("publish %s: %w", outPath, err)
+	}
+	return nil
+}
+
+func validateAgyCapture(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var lastStatus string
+	resultCount := 0
+	decoder := json.NewDecoder(f)
+	for {
+		var envelope struct {
+			Event  string `json:"event"`
+			Result *struct {
+				Status string `json:"status"`
+			} `json:"result"`
+		}
+		err := decoder.Decode(&envelope)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("decode event: %w", err)
+		}
+		if envelope.Event != "result" {
+			continue
+		}
+		if envelope.Result == nil {
+			return fmt.Errorf("result event is missing result envelope")
+		}
+		lastStatus = envelope.Result.Status
+		resultCount++
+	}
+	if resultCount == 0 {
+		return fmt.Errorf("capture has no result event")
+	}
+	if lastStatus != "SUCCESS" {
+		return fmt.Errorf("result status %q is not SUCCESS", lastStatus)
 	}
 	return nil
 }

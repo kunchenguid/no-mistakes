@@ -51,6 +51,14 @@ func TestRunAgyEmitsStreamJSONResult(t *testing.T) {
 	}
 }
 
+func TestRunAgyReturnsErrorWhenConfiguredFixtureIsMissing(t *testing.T) {
+	t.Setenv("FAKEAGENT_FIXTURE", t.TempDir())
+
+	if status := runAgy([]string{"--print", "do work", "--output-format", "stream-json"}, defaultScenario()); status == 0 {
+		t.Fatal("runAgy() status = 0, want configured fixture error")
+	}
+}
+
 func TestPatchAgyFixtureRewritesContentAndKeepsEnvelope(t *testing.T) {
 	raw := []byte(strings.Join([]string{
 		`{"event":"init","conversation_id":"fix","init":{"cwd":"/tmp","tools":["run_command"]}}`,
@@ -103,9 +111,12 @@ func TestRunAgyReplaysRecordedFixture(t *testing.T) {
 	if err := os.MkdirAll(fixture, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fixtureContent := `{"event":"result","result":{"conversation_id":"real","status":"SUCCESS","response":"recorded","structured_output":{"ok":true}}}` + "\n"
-	for _, name := range []string{"plain.jsonl", "structured.jsonl"} {
-		if err := os.WriteFile(filepath.Join(fixture, name), []byte(fixtureContent), 0o644); err != nil {
+	fixtureContents := map[string]string{
+		"plain.jsonl":      `{"event":"result","result":{"conversation_id":"plain-recorded","status":"SUCCESS","response":"recorded"}}` + "\n",
+		"structured.jsonl": `{"event":"result","result":{"conversation_id":"structured-recorded","status":"SUCCESS","response":"recorded","structured_output":{"ok":true}}}` + "\n",
+	}
+	for name, content := range fixtureContents {
+		if err := os.WriteFile(filepath.Join(fixture, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -126,7 +137,7 @@ func TestRunAgyReplaysRecordedFixture(t *testing.T) {
 		if status != 0 {
 			t.Fatalf("runAgy() status = %d", status)
 		}
-		if !strings.Contains(out.String(), `"conversation_id":"real"`) {
+		if !strings.Contains(out.String(), `"conversation_id":"structured-recorded"`) {
 			t.Fatalf("fixture replay should carry the recorded envelope:\n%s", out.String())
 		}
 		if !strings.Contains(out.String(), `"summary"`) {
@@ -149,8 +160,11 @@ func TestRunAgyReplaysRecordedFixture(t *testing.T) {
 		if status != 0 {
 			t.Fatalf("runAgy() status = %d", status)
 		}
-		if !strings.Contains(out.String(), `"conversation_id":"real"`) {
+		if !strings.Contains(out.String(), `"conversation_id":"plain-recorded"`) {
 			t.Fatalf("plain fixture replay should carry the recorded envelope:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), `"conversation_id":"structured-recorded"`) {
+			t.Fatalf("plain call replayed the structured fixture:\n%s", out.String())
 		}
 		if !strings.Contains(out.String(), `"summary"`) {
 			t.Fatalf("plain fixture replay should splice scenario structured output:\n%s", out.String())

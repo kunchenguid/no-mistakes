@@ -134,7 +134,7 @@ make docs    # Build the Astro docs site in docs/dist
 
 See `Makefile` for the full target list.
 
-`make e2e-record` overwrites `internal/e2e/fixtures/` from the real `claude`, `codex`, and `opencode` CLIs, spends real API quota, and should be reviewed before committing.
+`make e2e-record` overwrites `internal/e2e/fixtures/` from the real `claude`, `codex`, `opencode`, and `antigravity` CLIs, spends real API quota, and should be reviewed before committing.
 
 ## Star History
 

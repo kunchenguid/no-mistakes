@@ -30,7 +30,10 @@ func runAgy(args []string, scenario *Scenario) int {
 	if hasAgySchema(args) {
 		flavour = "structured"
 	}
-	if data, err := readFixtureFile(fixtureDir("antigravity"), flavour, ".jsonl"); err == nil && data != nil {
+	if data, err := readFixtureFile(fixtureDir("antigravity"), flavour, ".jsonl"); err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: antigravity fixture: %v\n", err)
+		return 1
+	} else if data != nil {
 		patched, err := patchAgyFixture(data, action)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fakeagent: agy patch: %v\n", err)

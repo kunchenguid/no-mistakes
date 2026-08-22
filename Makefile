@@ -65,7 +65,7 @@ test:
 e2e:
 	@bash scripts/e2e.sh
 
-# Re-record fixtures from the real claude/codex/opencode CLIs and overwrite
+# Re-record fixtures from the real claude/codex/opencode/antigravity CLIs and overwrite
 # internal/e2e/fixtures/. Spends real API quota — run only when the upstream
 # wire format changes or when adding a new flavour. Personal paths are
 # scrubbed automatically; review the diff before committing.

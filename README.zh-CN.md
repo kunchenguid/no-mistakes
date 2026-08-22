@@ -134,7 +134,7 @@ make docs    # 在 docs/dist 构建 Astro 文档站
 
 完整 target 列表见 `Makefile`。
 
-`make e2e-record` 会用真实的 `claude`、`codex`、`opencode` CLI 覆盖 `internal/e2e/fixtures/`，会消耗真实 API 额度，提交前应当审查。
+`make e2e-record` 会用真实的 `claude`、`codex`、`opencode` 和 `antigravity` CLI 覆盖 `internal/e2e/fixtures/`，会消耗真实 API 额度，提交前应当审查。
 
 ## Star 历史
 

@@ -174,7 +174,7 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 	script := strings.Join([]string{
 		"#!/bin/sh",
 		"printf '%s\n' \"$@\" > \"$ARGS_FILE\"",
-		"printf '{\"event\":\"result\"}\n'",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}\n'",
 	}, "\n")
 	if runtime.GOOS == "windows" {
 		binName = "agy.cmd"
@@ -229,5 +229,41 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"event":"result"`) {
 		t.Fatalf("captured output missing stdout: %q", data)
+	}
+}
+
+func TestCaptureAgyRejectsErrorResultWithoutReplacingFixture(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	if err := os.WriteFile(outPath, []byte("existing fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = "@echo off\r\necho {\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\r\n"
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	if err := captureAgy(t.Context(), binPath, nil, "prompt text", outPath, nil); err == nil {
+		t.Fatal("captureAgy() error = nil, want ERROR result rejection")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing fixture\n" {
+		t.Fatalf("destination = %q, want existing fixture preserved", data)
+	}
+	if _, err := os.Stat(outPath + ".recording"); !os.IsNotExist(err) {
+		t.Fatalf("staging file error = %v, want missing staging file", err)
 	}
 }
