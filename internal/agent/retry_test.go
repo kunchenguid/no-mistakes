@@ -156,7 +156,7 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 		OnAttempt: func(attempt Attempt) { attempts = append(attempts, attempt) },
 	}
 
-	res, err := runWithRetry(context.Background(), "claude", opts, 3, classifyTransient, nil, func() (*Result, error) {
+	res, err := runWithRetry(context.Background(), "claude", opts, 3, classifyTransient, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		if calls < 3 {
 			return nil, transientErr
@@ -207,7 +207,7 @@ func TestRunWithRetry_EmitsRetryLifecycleWhenConfigured(t *testing.T) {
 		OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
 	}
 
-	_, err := runWithRetry(context.Background(), "codex", opts, 1, classifyTransient, nil, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "codex", opts, 1, classifyTransient, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		if calls == 1 {
 			return nil, errors.New("API Error: 503 overloaded")
@@ -240,7 +240,7 @@ func TestRunWithRetry_CallsRetryRecoveryBeforeRetry(t *testing.T) {
 		if label == "connection refused" {
 			recovered = true
 		}
-	}, func() (*Result, error) {
+	}, func(o RunOpts) (*Result, error) {
 		calls++
 		if !recovered {
 			return nil, errors.New("dial tcp 127.0.0.1:5555: connection refused")
@@ -264,7 +264,7 @@ func TestRunWithRetry_PermanentErrorFailsImmediately(t *testing.T) {
 	calls := 0
 	permErr := errors.New("API Error: authentication_error: invalid x-api-key")
 
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		return nil, permErr
 	})
@@ -282,7 +282,7 @@ func TestRunWithRetry_ExhaustsRetries(t *testing.T) {
 	calls := 0
 	transientErr := errors.New("503 service unavailable")
 
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, classifyTransient, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		return nil, transientErr
 	})
@@ -318,7 +318,7 @@ func TestRunWithRetry_RespectsContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		return nil, transientErr
 	})
@@ -338,7 +338,7 @@ func TestRunWithRetry_CombinedClassifierForClaude(t *testing.T) {
 
 	// claudeRetryClassifier should retry both transient API errors AND errNoStructuredOutput.
 	calls := 0
-	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, claudeRetryClassifier, nil, func() (*Result, error) {
+	_, err := runWithRetry(context.Background(), "claude", RunOpts{}, 3, claudeRetryClassifier, nil, func(o RunOpts) (*Result, error) {
 		calls++
 		return nil, errNoStructuredOutput
 	})
@@ -368,5 +368,77 @@ func TestTransientBackoffDuration_Progression(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("attempt %d: want %v, got %v", tc.attempt, tc.want, got)
 		}
+	}
+}
+
+func TestClassifyTransient_TurnEndedWithoutJSONIsRetryable(t *testing.T) {
+	wrapped := fmt.Errorf("opencode output parse: %w (output snippet: %q)", errTurnEndedWithoutJSON, "Let me check something.")
+	label, ok := classifyTransient(wrapped)
+	if !ok {
+		t.Fatal("expected turn-without-JSON failure to be retryable")
+	}
+	if !strings.Contains(strings.ToLower(label), "json") {
+		t.Errorf("label %q should mention json", label)
+	}
+	// Only the sentinel identity retries: the same words inside a fresh error
+	// (for example echoed by an unrelated provider message) stay terminal.
+	if _, ok := classifyTransient(errors.New(errTurnEndedWithoutJSON.Error())); ok {
+		t.Error("plain-text match without the sentinel identity must not retry")
+	}
+}
+
+func TestRunWithRetry_TurnEndedWithoutJSONRetriesWithReminder(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	const originalPrompt = "review the diff"
+	calls := 0
+	var prompts []string
+	parseErr := func() error {
+		return fmt.Errorf("opencode output parse: %w (output snippet: %q)", errTurnEndedWithoutJSON, "Let me check something.")
+	}
+	_, err := runWithRetry(context.Background(), "opencode", RunOpts{Prompt: originalPrompt}, 2, classifyTransient, nil, func(o RunOpts) (*Result, error) {
+		calls++
+		prompts = append(prompts, o.Prompt)
+		return nil, parseErr()
+	})
+	if !errors.Is(err, errTurnEndedWithoutJSON) {
+		t.Fatalf("expected sentinel to surface after exhausting retries, got %v", err)
+	}
+	if calls != 3 { // bounded: initial + maxRetries
+		t.Fatalf("expected bounded attempts (1+2), got %d", calls)
+	}
+	if prompts[0] != originalPrompt {
+		t.Errorf("first attempt prompt = %q, want untouched original", prompts[0])
+	}
+	if prompts[1] == prompts[0] || !strings.Contains(prompts[1], originalPrompt) ||
+		!strings.Contains(strings.ToLower(prompts[1]), "json") {
+		t.Errorf("first retry prompt = %q, want original prompt plus JSON reminder", prompts[1])
+	}
+	if prompts[2] != prompts[1] {
+		t.Errorf("reminder must be appended exactly once; second retry prompt = %q, first = %q", prompts[2], prompts[1])
+	}
+}
+
+func TestRunWithRetry_TurnEndedWithoutJSONRecoversWhenNextAttemptSucceeds(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	calls := 0
+	var prompts []string
+	res, err := runWithRetry(context.Background(), "codex", RunOpts{Prompt: "do the task"}, 2, classifyTransient, nil, func(o RunOpts) (*Result, error) {
+		calls++
+		prompts = append(prompts, o.Prompt)
+		if calls == 1 {
+			return nil, fmt.Errorf("codex output parse: %w", errTurnEndedWithoutJSON)
+		}
+		return &Result{Text: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected recovery on second attempt, got %v", err)
+	}
+	if res == nil || res.Text != "ok" || calls != 2 {
+		t.Fatalf("expected success on attempt 2, got calls=%d res=%+v err=%v", calls, res, err)
+	}
+	if prompts[1] == prompts[0] || !strings.Contains(strings.ToLower(prompts[1]), "json") {
+		t.Errorf("retry prompt = %q, want JSON reminder appended", prompts[1])
 	}
 }

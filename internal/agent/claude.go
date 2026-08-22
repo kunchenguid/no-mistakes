@@ -59,8 +59,8 @@ func (a *claudeAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+	return runWithRetry(ctx, "claude", opts, claudeMaxRetries, claudeRetryClassifier, nil, func(o RunOpts) (*Result, error) {
+		return a.runOnce(ctx, o)
 	})
 }
 

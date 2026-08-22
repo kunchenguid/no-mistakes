@@ -49,10 +49,20 @@ func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration
 	return delay
 }
 
+// jsonResultReminder is appended to the prompt (exactly once per invocation)
+// when a retry follows errTurnEndedWithoutJSON: the previous attempt ended
+// with plain prose instead of the required structured result, so the
+// re-invocation restates the final-message contract (#811).
+const jsonResultReminder = "\n\nYour previous reply ended without the required JSON result. Return now: your final assistant message must be exactly one bare JSON object matching the given schema - no prose before or after it."
+
 // runWithRetry invokes runOnce up to maxRetries+1 times, retrying when the
 // classifier marks the error as retriable. Between retries it sleeps with
 // exponential backoff (via transientBackoff) and respects ctx cancellation.
-// The retry attempt and classification label are surfaced to opts.OnLifecycle,
+// When the previous attempt failed with errTurnEndedWithoutJSON, the next
+// attempt is invoked with a reminder appended to the prompt that the final
+// message must be the bare JSON object; adapters that resume a durable
+// session therefore re-invoke that same session with the reminder. The
+// retry attempt and classification label are surfaced to opts.OnLifecycle,
 // falling back to opts.OnChunk for older direct callers.
 func runWithRetry(
 	ctx context.Context,
@@ -61,19 +71,24 @@ func runWithRetry(
 	maxRetries int,
 	classify retryClassifier,
 	recoverRetry func(label string),
-	runOnce func() (*Result, error),
+	runOnce func(RunOpts) (*Result, error),
 ) (*Result, error) {
 	var lastErr error
 	var lastLabel string
+	reminded := false
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
+			if !reminded && errors.Is(lastErr, errTurnEndedWithoutJSON) {
+				opts.Prompt += jsonResultReminder
+				reminded = true
+			}
 			if err := transientBackoff(ctx, attempt); err != nil {
 				return nil, err
 			}
 		}
 		startedAt := time.Now()
-		result, err := runOnce()
+		result, err := runOnce(opts)
 		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
 		if err == nil {
 			return result, nil
@@ -146,15 +161,22 @@ var transientNeedles = []struct {
 	{"unexpected eof", "unexpected eof"},
 }
 
-// classifyTransient reports whether an error message looks like a transient
-// API or network failure. It deliberately ignores ctx cancellation/deadline
-// errors so explicit cancellation is never silently retried.
+// classifyTransient reports whether an error looks like a transient API or
+// network failure, or the prose-final-turn structured-output failure
+// (errTurnEndedWithoutJSON), which is recoverable by re-invoking with a JSON
+// reminder. It deliberately ignores ctx cancellation/deadline errors so
+// explicit cancellation is never silently retried.
 func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
+	}
+	// Identity check on purpose: only a real parse failure carrying this
+	// sentinel retries; the same sentence echoed in provider output must not.
+	if errors.Is(err, errTurnEndedWithoutJSON) {
+		return "missing JSON result", true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, sig := range transientNeedles {

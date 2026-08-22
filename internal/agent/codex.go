@@ -52,8 +52,8 @@ func (a *codexAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func(o RunOpts) (*Result, error) {
+		return a.runOnce(ctx, o)
 	})
 }
 
