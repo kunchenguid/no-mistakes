@@ -87,15 +87,28 @@ workflow. It does not claim that no-mistakes ran: exempt PRs report
 `compliant=false` and `exempt=true`. This is separate from the invariant that no
 standing configuration may skip a step inside a no-mistakes run.
 
-Like the inline gate this action extracts, the attestation is a deterministic,
-commit-bound declaration published in the PR body, not a cryptographic
-signature. Pull request authors can edit the body and reproduce the documented
-format, so a structural pass is not authenticated proof that the no-mistakes
-process produced it. The action emits a warning on every structural pass to
-make that boundary visible in the required check's logs. It detects accidental
-bypass, malformed or incomplete declarations, and stale attestations; it is not
-an authorization boundary against a malicious author deliberately forging the
-format.
+### Non-goal: a contributor guardrail, not a forgery-proof boundary
+
+This gate is a **contributor guardrail**. It is explicitly **not** a
+forgery-proof security boundary, and it is not trying to become one.
+
+The attestation is a deterministic, commit-bound declaration published in the
+PR body, not a cryptographic signature. A pull request author can edit their own
+body and reproduce the documented format by hand, and such a PR passes this
+check. That is a **known and accepted limitation**, and a **pre-existing** one:
+it is inherited verbatim from the inline gate this action extracts, so
+consolidating the fleet onto one implementation neither introduces nor widens
+it. The action emits a warning on every structural pass to keep the boundary
+visible in the required check's logs.
+
+What it does reliably catch is the case it exists for: a contributor who
+bypassed the pipeline by accident, a malformed or incomplete declaration, and an
+attestation left stale by a later push. It authorizes nothing against an author
+who forges the format on purpose.
+
+Authenticated (signed) attestations are the robust fix. They are tracked
+separately as backlog item `nm-signed-attestations-r1` and are deliberately out
+of scope for this action.
 
 ## Rollout
 

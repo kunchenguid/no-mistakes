@@ -17,10 +17,19 @@ The verdict is a pure function of the pull request body plus the PR head SHA:
      (quota or agent) and failures are not compliant.
 
 Nothing here reads the repository contents, so a fork's code is never executed.
-The marker and attestation are author-editable assertions, not authenticated
-proof of which process produced them. This policy check detects missing, stale,
-or incomplete pipeline declarations; it is not an authorization boundary
-against a malicious author who deliberately forges the documented format.
+
+NON-GOAL: this gate is a CONTRIBUTOR GUARDRAIL, not a forgery-proof security
+boundary. The signature line and the attestation are author-editable assertions
+published in the PR body, so a hand-written body that reproduces the documented
+format passes this check and exits 0. That is a known and accepted limitation,
+and a pre-existing one: it is inherited verbatim from the inline gate this file
+consolidates, not introduced by consolidating it. What the gate does reliably
+catch is the case it exists for - a contributor who bypassed the pipeline by
+accident, a malformed or incomplete declaration, and an attestation left stale
+by a later push. It authorizes nothing against an author who forges the format
+on purpose. Authenticated (signed) attestations are the robust fix and are
+tracked separately as backlog item nm-signed-attestations-r1; do not build them
+into this file.
 """
 
 from __future__ import annotations
