@@ -215,9 +215,19 @@ func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
 	for i := range argv {
 		argv[i] = strings.TrimSuffix(argv[i], "\r")
 	}
+	schemaArg := `{"type":"object"}`
+	if runtime.GOOS == "windows" {
+		// The fake agent is a .cmd batch script: Go escapes the embedded
+		// quotes as \" per the Windows command-line convention, and cmd.exe
+		// %~1 expansion hands those backslashes through verbatim instead of
+		// undoing them. Real agy parses argv with CommandLineToArgvW and sees
+		// the unescaped JSON; only this batch harness records the escaped
+		// form. Flag order is identical on every platform.
+		schemaArg = `{\"type\":\"object\"}`
+	}
 	want := []string{
 		"--model", "gemini-flash", "--dangerously-skip-permissions", "--print",
-		"prompt text", "--json-schema", `{"type":"object"}`, "--output-format", "stream-json",
+		"prompt text", "--json-schema", schemaArg, "--output-format", "stream-json",
 	}
 	if !reflect.DeepEqual(argv, want) {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
