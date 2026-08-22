@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.58.0](https://github.com/kunchenguid/no-mistakes/compare/v1.57.1...v1.58.0) (2026-08-22)
+
+
+### Features
+
+* **scm:** add Gitea as a fifth SCM provider ([#789](https://github.com/kunchenguid/no-mistakes/issues/789)) ([c82cfe8](https://github.com/kunchenguid/no-mistakes/commit/c82cfe81d39d4746ef190cbadc1bb79a730a1a23))
+
+
+### Bug Fixes
+
+* **pipeline:** park CI step at ask-user gate on persistent check-read failures ([#654](https://github.com/kunchenguid/no-mistakes/issues/654)) ([c2a75d0](https://github.com/kunchenguid/no-mistakes/commit/c2a75d0b047f8002f3148606c3efa9061efca466))
+
 ## [1.57.1](https://github.com/kunchenguid/no-mistakes/compare/v1.57.0...v1.57.1) (2026-08-22)
 
 
