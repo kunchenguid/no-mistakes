@@ -72,7 +72,7 @@ check while still reporting the same name.
 
 | Output | Meaning |
 | --- | --- |
-| `compliant` | `true` when the PR satisfied the gate or was exempt. |
+| `compliant` | `true` only when the PR satisfied the pipeline gate. It remains `false` for an exemption because bypass is not validation. |
 | `exempt` | `true` when a configured exemption bypassed the gate. |
 | `exempt-reason` | Why the PR was exempt; empty when it was judged. |
 

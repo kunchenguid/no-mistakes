@@ -211,6 +211,15 @@ func TestRequireActionEnforcesTheGate(t *testing.T) {
 			wantOut: []string{"Found no-mistakes signature in PR #549 body.", "Found compliant pipeline step attestation."},
 		},
 		{
+			name: "documentation example before generated attestation does not shadow it",
+			run: actionRun{
+				body:    "Example: <!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"...\",\"steps\":[...]} -->\n\n" + compliant,
+				headSHA: requiredWorkflowTestHeadSHA,
+			},
+			want:    "success",
+			wantOut: []string{"Found compliant pipeline step attestation."},
+		},
+		{
 			name:       "missing signature fails without naming the version floor",
 			run:        actionRun{body: "a regular pull request", headSHA: requiredWorkflowTestHeadSHA},
 			want:       "failure",
@@ -380,6 +389,9 @@ func TestRequireActionExemptions(t *testing.T) {
 			}
 			if got.outputs["exempt"] != "true" {
 				t.Errorf("exempt output = %q, want true", got.outputs["exempt"])
+			}
+			if got.outputs["compliant"] != "false" {
+				t.Errorf("compliant output = %q, want false because an exemption is not validation", got.outputs["compliant"])
 			}
 			if got.outputs["exempt-reason"] != tc.reason {
 				t.Errorf("exempt-reason = %q, want %q", got.outputs["exempt-reason"], tc.reason)
