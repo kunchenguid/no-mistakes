@@ -341,6 +341,10 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 	if err := os.RemoveAll(f.gate); err != nil {
 		t.Fatal(err)
 	}
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code != "recover_custody" {
+		t.Fatalf("equal status without gate did not advertise recovery = %#v", inspected)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
 		t.Fatalf("recover equal = %#v", state)
@@ -367,6 +371,10 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 	ahead := mustRun(t, f.local, "rev-parse", "HEAD")
 	if err := os.RemoveAll(f.gate); err != nil {
 		t.Fatal(err)
+	}
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code != "recover_custody" {
+		t.Fatalf("ahead status without gate did not advertise recovery = %#v", inspected)
 	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationAhead {

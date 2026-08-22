@@ -539,9 +539,10 @@ func (s *Service) Apply(ctx context.Context) State {
 //   - An active run always refuses: only terminal runs are recoverable.
 //   - The preserved commits must be provably safe before custody moves: when
 //     already reachable from the local branch (equal/ahead), recovery pins the
-//     private anchor ref refs/no-mistakes/recover/<runID> locally without gate
-//     access; otherwise the preserved head is verified through the gate's
-//     run-specific recovery ref and fetched into that anchor. Legacy terminal
+//     private anchor ref refs/no-mistakes/recover/<runID> locally without
+//     requiring gate access, but rejects a conflicting recovery ref when the
+//     gate is available; otherwise the preserved head is verified through the
+//     gate's run-specific recovery ref and fetched into that anchor. Legacy terminal
 //     heads that still exist as unreferenced gate objects are anchored before
 //     recovery continues. The branch ref may independently lag or advance.
 //   - The only possible worktree mutation is a guarded move of a clean checked-out
