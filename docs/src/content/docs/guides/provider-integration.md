@@ -232,7 +232,7 @@ tea logins list
 
 - PR mergeability polling and merge-conflict auto-fix. Gitea's PR `mergeable` field has a documented upstream reliability bug ([go-gitea/gitea#25849](https://github.com/go-gitea/gitea/issues/25849)) that can stick `false` after a conflict is actually resolved, so no-mistakes declines the capability rather than trust it - the same posture as Bitbucket Cloud.
 - Fork PR routing (same as GitLab, Bitbucket Cloud, and Azure DevOps)
-- [Cancelled-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)
+- [Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)
 
 Gitea Actions shipped in Gitea 1.19 (2023); older instances have no Actions API to poll. As with any repository with no CI, declare `no_ci: true` on the trusted default branch so the CI step does not wait for checks that will never appear - see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
 
