@@ -205,10 +205,14 @@ func TestRequireActionEnforcesTheGate(t *testing.T) {
 		notWantOut []string
 	}{
 		{
-			name:    "compliant pipeline body passes",
-			run:     actionRun{body: compliant, headSHA: requiredWorkflowTestHeadSHA, number: "549"},
-			want:    "success",
-			wantOut: []string{"Found no-mistakes signature in PR #549 body.", "Found compliant pipeline step attestation."},
+			name: "compliant pipeline body passes",
+			run:  actionRun{body: compliant, headSHA: requiredWorkflowTestHeadSHA, number: "549"},
+			want: "success",
+			wantOut: []string{
+				"Found no-mistakes signature in PR #549 body.",
+				"Found structurally compliant pipeline step attestation.",
+				"PR-body attestation is author-editable and is not cryptographic proof",
+			},
 		},
 		{
 			name:       "missing signature fails without naming the version floor",

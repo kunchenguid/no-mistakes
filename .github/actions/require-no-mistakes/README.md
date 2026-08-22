@@ -1,9 +1,9 @@
 # `require-no-mistakes`
 
-Composite action that enforces "this pull request was raised through the
-no-mistakes pipeline". It is the reusable shared implementation of the check
-named **`PR must be raised via no-mistakes`**; enforcing repositories can call it
-instead of copying the shell into their own workflow.
+Composite action that checks whether a pull request body declares a completed,
+head-bound no-mistakes pipeline run. It is the reusable shared implementation
+of the check named **`PR must be raised via no-mistakes`**; enforcing
+repositories can call it instead of copying the shell into their own workflow.
 
 It verifies, in order:
 
@@ -87,11 +87,15 @@ workflow. It does not claim that no-mistakes ran: exempt PRs report
 `compliant=false` and `exempt=true`. This is separate from the invariant that no
 standing configuration may skip a step inside a no-mistakes run.
 
-Like the inline gate this action extracts, the attestation is deterministic,
-commit-bound evidence published in the PR body, not a cryptographic signature.
-The action detects a missing, malformed, incomplete, or stale attestation. It
-does not protect a repository where an untrusted contributor can freely replace
-the protected check or otherwise control the base branch's enforcement policy.
+Like the inline gate this action extracts, the attestation is a deterministic,
+commit-bound declaration published in the PR body, not a cryptographic
+signature. Pull request authors can edit the body and reproduce the documented
+format, so a structural pass is not authenticated proof that the no-mistakes
+process produced it. The action emits a warning on every structural pass to
+make that boundary visible in the required check's logs. It detects accidental
+bypass, malformed or incomplete declarations, and stale attestations; it is not
+an authorization boundary against a malicious author deliberately forging the
+format.
 
 ## Rollout
 

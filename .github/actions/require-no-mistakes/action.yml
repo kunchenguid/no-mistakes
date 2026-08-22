@@ -1,8 +1,8 @@
 name: Require no-mistakes
 description: >-
-  Verify that a pull request was raised through the no-mistakes pipeline: the
-  body carries the signature line and a v1 pipeline-step attestation bound to
-  the current PR head, with review, test, and document all completed.
+  Verify that a pull request body declares a no-mistakes pipeline run: the body
+  carries the signature line and a v1 pipeline-step attestation bound to the
+  current PR head, with review, test, and document all completed.
 
 inputs:
   pr-body:
@@ -59,7 +59,7 @@ inputs:
 
 outputs:
   compliant:
-    description: "true only when the PR satisfies the pipeline gate; false for exemptions."
+    description: "true only when the PR body structurally satisfies the pipeline gate; false for exemptions."
     value: ${{ steps.verify.outputs.compliant }}
   exempt:
     description: "true when the PR bypassed the gate through a configured exemption."

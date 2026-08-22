@@ -17,6 +17,10 @@ The verdict is a pure function of the pull request body plus the PR head SHA:
      (quota or agent) and failures are not compliant.
 
 Nothing here reads the repository contents, so a fork's code is never executed.
+The marker and attestation are author-editable assertions, not authenticated
+proof of which process produced them. This policy check detects missing, stale,
+or incomplete pipeline declarations; it is not an authorization boundary
+against a malicious author who deliberately forges the documented format.
 """
 
 from __future__ import annotations
@@ -256,7 +260,11 @@ def main() -> int:
     check_head_bind(facts, payload["head_sha"])
     check_required_steps(facts, payload["steps"])
 
-    print("Found compliant pipeline step attestation.")
+    print("Found structurally compliant pipeline step attestation.")
+    print(
+        "::warning::PR-body attestation is author-editable and is not cryptographic proof "
+        "that no-mistakes produced it."
+    )
     emit_output("compliant", "true")
     return 0
 
