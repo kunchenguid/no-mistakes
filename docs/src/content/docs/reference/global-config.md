@@ -182,6 +182,7 @@ Default native binary names when no override is set:
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
 | `copilot`  | `copilot`  |
+| `antigravity` | `agy`      |
 
 ### agent_config
 

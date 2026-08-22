@@ -1,7 +1,8 @@
 // fakeagent is a deterministic stand-in for the real Claude, Codex, Grok,
 // OpenCode, and Antigravity CLIs used by no-mistakes' e2e tests. One binary is
-// compiled and then symlinked under each agent name; argv[0]'s basename
-// selects which wire protocol to speak.
+// compiled and then symlinked under each agent's dispatch name; Antigravity
+// is linked as both `antigravity` and its probed binary name `agy`.
+// argv[0]'s basename selects which wire protocol to speak.
 //
 // All invocations are appended to $FAKEAGENT_LOG (one JSON object per line)
 // so tests can assert on exactly which prompts the pipeline issued.

@@ -13,10 +13,10 @@ import (
 )
 
 // recordAntigravity captures agy CLI's NDJSON stream-json events. The
-// fakeagent replays these envelopes byte-for-byte and patches only the
-// agent_response text delta and the result's response/structured_output,
-// so the recorded content just needs to exercise both flavours: one run
-// with --json-schema (structured) and one plain text run.
+// fakeagent replays these envelopes while patching only the agent_response
+// text delta and the result's response/structured_output, so the recorded
+// content just needs to exercise both flavours: one run with --json-schema
+// (structured) and one plain text run.
 func recordAntigravity(ctx context.Context, out string, args []string) int {
 	bin, forward := splitBinArgs(args, "agy")
 

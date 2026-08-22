@@ -67,7 +67,7 @@ e2e:
 
 # Re-record fixtures from the real claude/codex/opencode/antigravity CLIs and overwrite
 # internal/e2e/fixtures/. Spends real API quota — run only when the upstream
-# wire format changes or when adding a new flavour. Personal paths are
+# wire format changes or when adding a new agent or flavour. Personal paths are
 # scrubbed automatically; review the diff before committing.
 e2e-record:
 	go run ./cmd/recordfixture claude   --out internal/e2e/fixtures/claude

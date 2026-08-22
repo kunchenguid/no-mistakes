@@ -11,12 +11,13 @@
 //
 // Each agent gets a small set of fixture files (one per pipeline-step
 // flavour: review with structured output, plain text, etc). The fake
-// agent in cmd/fakeagent replays these byte-for-byte at runtime.
+// agent in cmd/fakeagent replays the recorded wire envelopes and patches
+// scenario-dependent response fields where needed.
 //
-// The recorder keeps no schema knowledge of its own — it just shells out
-// to the real CLI and tees stdout/stderr/SSE/HTTP responses to disk. If
-// the real wire format drifts upstream, re-recording produces the new
-// fixture and the fake's replay automatically reflects it.
+// The recorder keeps no schema knowledge of its own — it shells out to each
+// real CLI and captures that CLI's wire output to disk. If the real wire
+// format drifts upstream, re-recording produces the new fixture and the
+// fake's replay automatically reflects it.
 package main
 
 import (

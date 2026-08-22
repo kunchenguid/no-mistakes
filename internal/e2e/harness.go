@@ -138,8 +138,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	}
 	// Point the fake at recorded real-agent fixtures by default. When
 	// the directory contains <agent>/structured.{jsonl,*}, the fake
-	// replays those bytes verbatim instead of generating synthetic
-	// output. This is what makes the e2e a real wire-format check.
+	// replays those recorded wire envelopes instead of generating synthetic
+	// output, patching scenario-dependent fields where the adapter needs to.
+	// This is what makes the e2e a real wire-format check.
 	fixtureRoot, err := defaultFixtureRoot()
 	if err != nil {
 		t.Fatalf("fixture root: %v", err)

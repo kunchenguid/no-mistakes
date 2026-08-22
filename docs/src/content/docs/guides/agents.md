@@ -49,6 +49,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
+| Antigravity | `agy` | Subprocess per invocation, NDJSON `stream-json` events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
@@ -302,6 +303,10 @@ It also adds `--no-color` and `--no-ask-user` so the run is non-interactive, plu
 Any `agent_args_override.copilot` flags are inserted before no-mistakes' managed flags, so user choices take effect. Prefer [`agent_config.copilot`](/no-mistakes/reference/global-config/#agent_config) for model and reasoning effort; it renders the same `--model` and `--effort` flags, and a raw flag here still wins over it.
 Reads JSONL events from stdout, streaming incremental `assistant.message_delta` text to the TUI and capturing the final `assistant.message` content.
 The Copilot CLI has no output-schema flag, so when structured output is requested no-mistakes injects the JSON schema into the prompt and validates the final text response with the same JSON fence and bare-object fallback used by Pi and Rovo Dev.
+
+## Antigravity
+
+Spawns the `agy` subprocess for each invocation with `--output-format stream-json`; the prompt is passed with `--print`, and structured output uses a temporary `--json-schema` file. Reads NDJSON events, streams response deltas, and uses the terminal `response`, `structured_output`, and usage fields to build the result. Antigravity runs cold for each invocation and does not participate in native session reuse.
 
 ## ACP aliases
 
