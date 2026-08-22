@@ -30,9 +30,14 @@ func TestStartDetachedDaemonDetectsChildExitPromptly(t *testing.T) {
 
 	oldStartTime := daemonProcessStartTime
 	startedPID := 0
+	var childStartedAt time.Time
 	daemonProcessStartTime = func(pid int) (time.Time, error) {
 		startedPID = pid
-		return oldStartTime(pid)
+		observed, err := oldStartTime(pid)
+		if err == nil {
+			childStartedAt = observed
+		}
+		return observed, err
 	}
 	t.Cleanup(func() { daemonProcessStartTime = oldStartTime })
 
@@ -47,7 +52,7 @@ func TestStartDetachedDaemonDetectsChildExitPromptly(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("child exit detection took %v, want prompt failure", elapsed)
 	}
-	assertTestDaemonNotRunning(t, startedPID)
+	assertTestDaemonNotRunning(t, startedPID, childStartedAt)
 }
 
 func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
@@ -154,9 +159,14 @@ func TestStartDetachedDaemonTimeoutKillsAndReapsChild(t *testing.T) {
 
 	oldStartTime := daemonProcessStartTime
 	startedPID := 0
+	var childStartedAt time.Time
 	daemonProcessStartTime = func(pid int) (time.Time, error) {
 		startedPID = pid
-		return oldStartTime(pid)
+		observed, err := oldStartTime(pid)
+		if err == nil {
+			childStartedAt = observed
+		}
+		return observed, err
 	}
 	t.Cleanup(func() { daemonProcessStartTime = oldStartTime })
 
@@ -164,7 +174,7 @@ func TestStartDetachedDaemonTimeoutKillsAndReapsChild(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "launched but did not become ready") {
 		t.Fatalf("startDetachedDaemon error = %v, want readiness timeout", err)
 	}
-	assertTestDaemonNotRunning(t, startedPID)
+	assertTestDaemonNotRunning(t, startedPID, childStartedAt)
 }
 
 func TestStartPreservesManagedAndDetachedFallbackErrors(t *testing.T) {
@@ -210,10 +220,18 @@ func TestStartPreservesManagedAndDetachedFallbackErrors(t *testing.T) {
 	}
 }
 
-func assertTestDaemonNotRunning(t *testing.T, pid int) {
+func assertTestDaemonNotRunning(t *testing.T, pid int, startedAt time.Time) {
 	t.Helper()
-	if pid <= 0 {
-		t.Fatal("test did not capture child pid")
+	if pid <= 0 || startedAt.IsZero() {
+		t.Fatal("test did not capture child process identity")
+	}
+
+	// startDetachedDaemon waits for the exact child it launched. Under a busy
+	// test runner the kernel may reuse that numeric PID before this assertion;
+	// do not mistake the unrelated replacement process for a leaked daemon.
+	currentStartedAt, err := daemonProcessStartTime(pid)
+	if err != nil || !currentStartedAt.Equal(startedAt) {
+		return
 	}
 	running, err := daemonProcessRunning(pid)
 	if err != nil {
