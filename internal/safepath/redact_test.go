@@ -155,28 +155,79 @@ func TestRedactText_LeavesUnrelatedTextIntact(t *testing.T) {
 
 // TestRedactText_UnconventionalHomeFromEnvironment covers the account whose
 // home is not under /home or /Users - a root daemon, a container, a relocated
-// home. Only the process's own home directory can catch those.
+// or redirected home. Only the process's own home directory can catch those.
+//
+// Both HOME and USERPROFILE are set, because os.UserHomeDir consults a
+// different one per platform (USERPROFILE on Windows, HOME elsewhere) and this
+// property has to hold on all of them.
 func TestRedactText_UnconventionalHomeFromEnvironment(t *testing.T) {
-	t.Setenv("HOME", "/srv/nm-operator")
-	t.Setenv("USERPROFILE", "")
-
 	tests := []struct {
 		name string
+		home string
 		in   string
 		want string
 	}{
-		{name: "prefix", in: "/srv/nm-operator/.no-mistakes/evidence/x.log", want: "~/.no-mistakes/evidence/x.log"},
-		{name: "bare", in: "HOME=/srv/nm-operator", want: "HOME=~"},
-		{name: "sibling directory is not the home", in: "/srv/nm-operator-backup/x", want: "/srv/nm-operator-backup/x"},
-		{name: "suffix match is not a prefix match", in: "/opt/srv/nm-operator/x", want: "/opt/srv/nm-operator/x"},
-		{name: "repeated", in: "/srv/nm-operator/a and /srv/nm-operator/b", want: "~/a and ~/b"},
+		{name: "posix prefix", home: "/srv/nm-operator", in: "/srv/nm-operator/.no-mistakes/evidence/x.log", want: "~/.no-mistakes/evidence/x.log"},
+		{name: "posix bare", home: "/srv/nm-operator", in: "HOME=/srv/nm-operator", want: "HOME=~"},
+		{name: "posix sibling directory is not the home", home: "/srv/nm-operator", in: "/srv/nm-operator-backup/x", want: "/srv/nm-operator-backup/x"},
+		{name: "posix suffix match is not a prefix match", home: "/srv/nm-operator", in: "/opt/srv/nm-operator/x", want: "/opt/srv/nm-operator/x"},
+		{name: "posix repeated", home: "/srv/nm-operator", in: "/srv/nm-operator/a and /srv/nm-operator/b", want: "~/a and ~/b"},
+		// A redirected Windows profile: absolute, but not under C:\Users, so
+		// only the process's own home can catch it.
+		{name: "windows redirected profile", home: `D:\profiles\operator`, in: `D:\profiles\operator\.no-mistakes\evidence\x.log`, want: `~\.no-mistakes\evidence\x.log`},
+		{name: "windows redirected profile forward slashes", home: `D:\profiles\operator`, in: "D:/profiles/operator/evidence/x.log", want: "~/evidence/x.log"},
+		// Git Bash, MSYS2, and Cygwin set a POSIX-rooted HOME on Windows, and
+		// captured output from a test run under those shells prints it. The
+		// conventional-root rules cannot see it: the "/Users" in
+		// "/c/Users/operator" is preceded by a drive letter, which the URL
+		// guard treats as an ordinary path segment.
+		{name: "msys drive-mapped home", home: "/c/Users/operator", in: "rootdir: /c/Users/operator/.no-mistakes/worktrees/ab12cd/1/svc", want: "rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc"},
+		{name: "cygwin drive-mapped home", home: "/cygdrive/c/Users/operator", in: "rootdir: /cygdrive/c/Users/operator/svc", want: "rootdir: ~/svc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", tt.home)
+			t.Setenv("USERPROFILE", tt.home)
 			if got := RedactText(tt.in); got != tt.want {
-				t.Fatalf("RedactText(%q) = %q, want %q", tt.in, got, tt.want)
+				t.Fatalf("RedactText(%q) with home %q = %q, want %q", tt.in, tt.home, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestUsableHomeCandidate_AcceptsBothPlatformSpellings pins the rule directly,
+// because it is the one place a platform-specific helper (filepath.IsAbs)
+// would silently disable redaction rather than fail loudly.
+func TestUsableHomeCandidate_AcceptsBothPlatformSpellings(t *testing.T) {
+	t.Parallel()
+	usable := []string{
+		"/srv/nm-operator",
+		"/home/testuser",
+		"/c/Users/operator",
+		`C:\Users\testuser`,
+		"C:/Users/testuser",
+		`D:\profiles\operator`,
+		`\\fileserver\profiles\operator`,
+	}
+	for _, home := range usable {
+		if !usableHomeCandidate(home) {
+			t.Errorf("usableHomeCandidate(%q) = false, want true", home)
+		}
+	}
+	unusable := []string{
+		"",
+		"/",
+		"//",
+		"////",
+		`C:\`,
+		"C:",
+		"relative/path",
+		"...",
+	}
+	for _, home := range unusable {
+		if usableHomeCandidate(home) {
+			t.Errorf("usableHomeCandidate(%q) = true, want false", home)
+		}
 	}
 }
 
@@ -207,5 +258,31 @@ func TestRedactText_NeverGrowsTheText(t *testing.T) {
 		if got := RedactText(in); len(got) > len(in) {
 			t.Fatalf("RedactText(%q) grew from %d to %d bytes", in, len(in), len(got))
 		}
+	}
+}
+
+// TestHomeCandidates_AreSeparatorSpellingIndependent pins that candidate
+// resolution does not depend on the platform the binary was built for. Without
+// it, filepath.Clean would normalise separators one way on Windows and another
+// on Linux, and a green Linux test run would say nothing about what a Windows
+// daemon actually redacts.
+func TestHomeCandidates_AreSeparatorSpellingIndependent(t *testing.T) {
+	for _, home := range []string{"/srv/nm-operator", `D:\profiles\operator`} {
+		t.Run(home, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			got := map[string]bool{}
+			for _, candidate := range homeCandidates() {
+				got[candidate] = true
+			}
+			for _, want := range []string{
+				strings.ReplaceAll(home, `\`, "/"),
+				strings.ReplaceAll(home, "/", `\`),
+			} {
+				if !got[want] {
+					t.Errorf("home %q: candidates %v missing spelling %q", home, got, want)
+				}
+			}
+		})
 	}
 }

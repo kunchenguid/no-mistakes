@@ -87,29 +87,69 @@ func homeCandidates() []string {
 	}
 	for _, home := range raw {
 		home = filepath.Clean(strings.TrimSpace(home))
-		add(home)
+		addBothSeparatorSpellings(add, home)
 		// A macOS home reached through /var reads back as /private/var, and a
 		// symlinked home directory reads back as its target. Captured output
 		// can carry either spelling.
 		if resolved, err := filepath.EvalSymlinks(home); err == nil {
-			add(filepath.Clean(resolved))
+			addBothSeparatorSpellings(add, filepath.Clean(resolved))
 		}
-		// Windows paths are written both ways in captured output.
-		add(strings.ReplaceAll(home, `\`, "/"))
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
 }
 
+// addBothSeparatorSpellings registers a candidate written with each separator.
+// Captured output mixes them on Windows, and it also removes the last
+// platform-dependent step from candidate resolution: filepath.Clean rewrites
+// separators for the platform the binary was built for, so without this the
+// candidate set - and therefore what gets redacted - would differ between a
+// Linux test run and a Windows one.
+func addBothSeparatorSpellings(add func(string), home string) {
+	add(home)
+	add(strings.ReplaceAll(home, `\`, "/"))
+	add(strings.ReplaceAll(home, "/", `\`))
+}
+
 // usableHomeCandidate rejects values too short or too broad to be a home
 // directory. Redacting "/" or a bare volume root would rewrite every path in
 // the document, which is over-redaction past the point of usefulness.
+//
+// Absoluteness is judged in both platforms' spellings rather than with
+// filepath.IsAbs, which answers only for the platform the binary was built
+// for. On Windows, filepath.IsAbs rejects a POSIX-rooted HOME - the spelling
+// Git Bash, MSYS2, and Cygwin set (/c/Users/<user>, /home/<user>) and the one
+// their captured output prints - so an IsAbs gate silently disables redaction
+// for exactly the shell setup a Windows developer is most likely to run tests
+// under. A home this function rejects is a home that never gets redacted, so
+// it errs toward accepting.
 func usableHomeCandidate(home string) bool {
-	if len(home) < 4 || !filepath.IsAbs(home) {
+	if len(home) < 4 {
 		return false
 	}
-	trimmed := strings.Trim(home, `/\`)
-	return trimmed != "" && trimmed != filepath.VolumeName(home) && strings.Trim(trimmed, ".") != ""
+	rest, absolute := trimAbsoluteRoot(home)
+	if !absolute {
+		return false
+	}
+	// A bare root - "/", a drive letter, a UNC prefix - names no account, and
+	// matching it would rewrite every path in the document.
+	return strings.Trim(rest, `/\.`) != ""
+}
+
+// trimAbsoluteRoot strips a leading Windows drive, UNC, or POSIX root and
+// reports whether the value was rooted in either spelling.
+func trimAbsoluteRoot(p string) (rest string, absolute bool) {
+	if len(p) > 2 && p[1] == ':' && isASCIILetter(p[0]) && (p[2] == '/' || p[2] == '\\') {
+		return strings.TrimLeft(p[2:], `/\`), true
+	}
+	if p != "" && (p[0] == '/' || p[0] == '\\') {
+		return strings.TrimLeft(p, `/\`), true
+	}
+	return "", false
+}
+
+func isASCIILetter(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // replaceHomePrefix rewrites every path-boundary-aligned occurrence of home.
