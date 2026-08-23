@@ -121,7 +121,7 @@ closed on every pull request.
 Pinning the gate to an already-published commit is the self-certification guard.
 A pull request that edits this action is fully **tested** on its own head - the
 repository's Go tests execute `verify.py` from the working tree - while the
-required check judging that pull request keeps running the released copy. The
+required check judging that pull request keeps running the published pinned copy. The
 gate is therefore never rewritten by the change it is judging. Bumping the pin
 is a deliberate, separate pull request.
 
