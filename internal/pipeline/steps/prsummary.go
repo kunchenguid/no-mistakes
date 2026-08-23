@@ -39,6 +39,11 @@ const (
 	noMistakesPRSignature                  = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
 	pipelineAttestationCommentPrefix       = "<!-- no-mistakes-pipeline-attestation:v1 "
 	pipelineAttestationCommentClosingToken = " -->"
+	// escapedPipelineAttestationCommentPrefix keeps an embedded copy readable
+	// while breaking the literal prefix a consumer scans for. Only the marker
+	// is altered; the payload after it is left exactly as the agent captured
+	// it, so evidence stays faithful.
+	escapedPipelineAttestationCommentPrefix = "<!-- no-mistakes-pipeline-attestation\\:v1 "
 )
 
 type pipelineAttestation struct {
@@ -1309,11 +1314,22 @@ func escapePRText(s string, flavor prBodyFlavor) string {
 	return escapePipelineFoldMarkers(html.EscapeString(s))
 }
 
-// escapePipelineFoldMarkers neutralizes the literal byte sequences the PR-body
-// truncation parser (parsePipelineUpdateGroups/nextPipelineFoldStart) treats as
-// step-fold boundaries ("### " and "<details>" at the start of a line), so
-// agent-authored text embedded in a finding, fix summary, or tested detail can
-// never be mistaken for a real fold point.
+// escapePipelineFoldMarkers neutralizes the literal byte sequences a parser
+// reading the assembled PR body treats as structure, so agent-authored text
+// embedded in a finding, fix summary, tested detail, or artifact body can never
+// be mistaken for the real thing. Two parsers matter:
+//
+//   - The PR-body truncation parser (parsePipelineUpdateGroups /
+//     nextPipelineFoldStart) treats "### " and "<details>" at the start of a
+//     line as step-fold boundaries.
+//   - The require-no-mistakes compliance check
+//     (.github/actions/require-no-mistakes/verify.py) takes the FIRST
+//     attestation comment in the body and binds its head_sha to the PR head.
+//     A step agent that captures a generated PR body as evidence embeds a
+//     second attestation comment carrying that evidence run's head_sha; left
+//     intact it precedes and therefore shadows the real one, and the check
+//     fails on a head_sha mismatch for a PR the pipeline did produce. Observed
+//     on kunchenguid/no-mistakes#831, whose test evidence embedded three.
 func escapePipelineFoldMarkers(s string) string {
 	if s == "" {
 		return s
@@ -1321,6 +1337,7 @@ func escapePipelineFoldMarkers(s string) string {
 	replacer := strings.NewReplacer(
 		"\n### ", "\n\\### ",
 		"\n<details>", "\n\\<details>",
+		pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix,
 	)
 	out := replacer.Replace(s)
 	switch {

@@ -1,5 +1,13 @@
 // Package safepath keeps operator filesystem identity - home directory paths -
-// out of text no-mistakes is about to publish.
+// out of the text a caller passes it.
+//
+// It guarantees nothing on its own about what no-mistakes publishes: coverage
+// is exactly the set of publication boundaries that call it. Today that is the
+// pull request title and body (PRStep.buildPRContent). Agent-authored commit
+// subjects, which reach the remote through the auto-fix commit path
+// (commitAgentFixes -> Commit.RenderFixMessage), are a separate surface with a
+// different rendering and are deliberately not covered; so is the opt-in
+// evidence branch, which copies artifact files verbatim.
 //
 // It is the path analogue of internal/safeurl: safeurl keeps credentials out of
 // published text, safepath keeps the operator's home directory out of it. Route

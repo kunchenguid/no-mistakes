@@ -6,6 +6,7 @@ import (
 
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,9 +23,46 @@ import (
 // real account may appear here.
 const (
 	fixtureHome         = "/home/testuser"
-	fixtureEvidenceDir  = fixtureHome + "/.no-mistakes/evidence/run-1"
 	fixtureWorktreePath = fixtureHome + "/.no-mistakes/worktrees/ab12cd/1/svc"
+	fixtureWindowsHome  = `C:\Users\testuser`
 )
+
+// fixtureEvidenceDir is a synthetic evidence directory in the RUNNING
+// platform's spelling, unlike the fixtures above, which are literal strings
+// that only ever have to survive redaction.
+//
+// A case that exercises the artifact `path` field needs the real allowlist to
+// accept the path: sanitizeArtifactPath requires filepath.IsAbs and
+// filepath.Clean(p) == p for this platform, and a POSIX root satisfies neither
+// on Windows. With a POSIX fixture the artifact is dropped before rendering, so
+// the case stops testing redaction and quietly asserts nothing - which is
+// exactly how these passed on Linux and macOS while failing on windows-git.
+var fixtureEvidenceDir = filepath.Join(fixtureNativeHome(), ".no-mistakes", "evidence", "run-1")
+
+func fixtureNativeHome() string {
+	if runtime.GOOS == "windows" {
+		return fixtureWindowsHome
+	}
+	return fixtureHome
+}
+
+// fixtureRedactedPath is what fixtureEvidenceDir renders as once the home
+// prefix is replaced, in the running platform's separators.
+func fixtureRedactedPath(elem ...string) string {
+	return "~" + string(filepath.Separator) + filepath.Join(elem...)
+}
+
+// assertFixturePathIsRenderable fails loudly when a fixture path could not
+// survive the allowlist, instead of letting the case pass vacuously.
+func assertFixturePathIsRenderable(t *testing.T, p string) {
+	t.Helper()
+	if !filepath.IsAbs(p) {
+		t.Fatalf("fixture path %q is not absolute on %s; the artifact allowlist would drop it", p, runtime.GOOS)
+	}
+	if filepath.Clean(p) != p {
+		t.Fatalf("fixture path %q is not already clean on %s (want %q); the artifact allowlist would drop it", p, runtime.GOOS, filepath.Clean(p))
+	}
+}
 
 // homePathLeakNeedles are checked against every assembled PR body regardless of
 // which shape a case exercised. A shape-specific assertion would only catch the
@@ -32,7 +70,7 @@ const (
 var homePathLeakNeedles = []string{
 	fixtureHome,
 	"/Users/testuser",
-	`C:\Users\testuser`,
+	fixtureWindowsHome,
 	"C:/Users/testuser",
 }
 
@@ -78,10 +116,10 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 				Artifacts: []types.TestArtifact{{
 					Kind:  "log",
 					Label: "pytest output",
-					Path:  fixtureEvidenceDir + "/pytest.log",
+					Path:  filepath.Join(fixtureEvidenceDir, "pytest.log"),
 				}},
 			}),
-			wantVisible: []string{"pytest output", "~/.no-mistakes/evidence/run-1/pytest.log"},
+			wantVisible: []string{"pytest output", fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "pytest.log")},
 		},
 		{
 			name:        "pytest rootdir header in captured output",
@@ -139,14 +177,14 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 				Artifacts: []types.TestArtifact{{
 					Kind:  "log",
 					Label: "pytest log",
-					Path:  "%EVIDENCE%/pytest.log",
+					Path:  "%EVIDENCEFILE%",
 				}},
 			}),
 			wantVisible: []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "1 passed in 0.10s"},
 		},
 		{
 			name:        "macOS home root",
-			evidenceDir: "/Users/testuser/.no-mistakes/evidence/run-1",
+			evidenceDir: fixtureEvidenceDir,
 			testFindings: findingsJSON(t, types.Findings{
 				TestingSummary: "Captured the run header.",
 				Artifacts: []types.TestArtifact{{
@@ -222,8 +260,8 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 		{
 			name:          "failed step error text",
 			evidenceDir:   fixtureEvidenceDir,
-			testStepError: "open " + fixtureEvidenceDir + "/pytest.log: no such file or directory",
-			wantVisible:   []string{"open ~/.no-mistakes/evidence/run-1/pytest.log: no such file or directory"},
+			testStepError: "open " + filepath.Join(fixtureEvidenceDir, "pytest.log") + ": no such file or directory",
+			wantVisible:   []string{"open " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "pytest.log") + ": no such file or directory"},
 		},
 		{
 			name:        "agent-authored title and what-changed body",
@@ -298,7 +336,7 @@ func TestPRStep_ExecuteRedactsAbsoluteHomePathsBeforePublishing(t *testing.T) {
 			t.Fatalf("published PR content leaked %q:\n%s", needle, published)
 		}
 	}
-	for _, want := range []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "evidence now lands under ~/.no-mistakes/evidence/run-1"} {
+	for _, want := range []string{"rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc", "evidence now lands under " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1")} {
 		if !strings.Contains(published, want) {
 			t.Fatalf("expected %q in published PR content:\n%s", want, published)
 		}
@@ -315,7 +353,7 @@ func TestPRStep_BuildPRContentRedactsAfterClampingToHostLimit(t *testing.T) {
 		evidenceDir: fixtureEvidenceDir,
 		agentBody: "## What Changed\n\n- evidence now lands under " + fixtureEvidenceDir + "\n" +
 			strings.Repeat("- and a long tail of change notes that overruns the host cap\n", 200),
-		wantVisible: []string{"evidence now lands under ~/.no-mistakes/evidence/run-1"},
+		wantVisible: []string{"evidence now lands under " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1")},
 	}
 	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
 	if limit <= 0 {
@@ -371,7 +409,11 @@ func buildHomePathLeakPRContentWithLimit(t *testing.T, tc homePathLeakCase, body
 				t.Fatal(err)
 			}
 		}
-		testFindings = strings.ReplaceAll(testFindings, "%EVIDENCE%", filepath.ToSlash(sctx.EvidenceDir))
+		// Substitute the whole native path, JSON-escaped: a ToSlash'd Windows
+		// path is absolute but not filepath.Clean, which the allowlist rejects.
+		evidenceFile := filepath.Join(sctx.EvidenceDir, "pytest.log")
+		assertFixturePathIsRenderable(t, evidenceFile)
+		testFindings = strings.ReplaceAll(testFindings, "%EVIDENCEFILE%", strings.ReplaceAll(evidenceFile, `\`, `\\`))
 	}
 
 	if tc.reviewFindings != "" || tc.fixSummary != "" {
@@ -538,12 +580,12 @@ func TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable(t *testing.T) 
 				Artifacts: []types.TestArtifact{{
 					Kind:  "log",
 					Label: "captured session",
-					Path:  fixtureEvidenceDir + "/session.log",
+					Path:  filepath.Join(fixtureEvidenceDir, "session.log"),
 				}},
 			}),
 			wantVisible: []string{
 				"captured session",
-				"~/.no-mistakes/evidence/run-1/session.log",
+				fixtureRedactedPath(".no-mistakes", "evidence", "run-1", "session.log"),
 			},
 		}
 		content := buildHomePathLeakPRContent(t, tc)
