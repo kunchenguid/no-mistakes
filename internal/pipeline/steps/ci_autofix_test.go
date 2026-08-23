@@ -233,13 +233,18 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1} // only 1 attempt allowed
+	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.StepResultID = stepResult.ID
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -258,6 +263,19 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Errorf("expected 1 auto-fix attempt (limit=1), got %d", fixCount)
+	}
+	if _, err := sctx.DB.InsertStepRound(stepResult.ID, 1, "auto_fix", nil, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = (&CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return nil }}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("recovered Execute() error = %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatalf("recovered outcome = %#v, want approval after exhausted limit", outcome)
+	}
+	if fixCount != 1 {
+		t.Fatalf("recovered CI made %d total repairs, want 1", fixCount)
 	}
 }
 

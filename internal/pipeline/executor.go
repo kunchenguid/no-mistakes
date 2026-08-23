@@ -237,8 +237,8 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			break
 		}
 		if restartFrom != "" {
-			restartIndex, err := e.stepIndex(restartFrom)
-			if err != nil || restartIndex >= i {
+			restartIndex, err := e.prepareRestart(run.ID, restartFrom, i)
+			if err != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", step.Name(), restartFrom), ctx)
 			}
 			i = restartIndex - 1
@@ -260,6 +260,17 @@ func (e *Executor) stepIndex(name types.StepName) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("step %s is not in the pipeline", name)
+}
+
+func (e *Executor) prepareRestart(runID string, name types.StepName, currentIndex int) (int, error) {
+	index, err := e.stepIndex(name)
+	if err != nil || index >= currentIndex {
+		return 0, fmt.Errorf("invalid restart boundary")
+	}
+	if err := e.db.ResetStepsFrom(runID, e.steps[index].Name().Order()); err != nil {
+		return 0, err
+	}
+	return index, nil
 }
 
 func (e *Executor) initializeRunScopes(runID string) {
@@ -491,8 +502,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.skipRecoveredRemainder(run, repo, gate.index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.stepIndex(restartFrom)
-			if indexErr != nil || restartIndex >= gate.index {
+			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
+			if indexErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", gate.step.Name(), restartFrom), ctx)
 			}
 			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
@@ -589,8 +600,8 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.skipRecoveredRemainder(run, repo, index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.stepIndex(restartFrom)
-			if indexErr != nil || restartIndex >= index {
+			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
+			if indexErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", e.steps[index].Name(), restartFrom), ctx)
 			}
 			revalidating = true
@@ -876,14 +887,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		var inserted *db.StepRound
 		var dbErr error
+		roundTrigger := nextTrigger
+		if stepName == types.StepCI && restartFrom != "" && !sctx.Fixing {
+			roundTrigger = "auto_fix"
+		}
 		if stepName == types.StepReview {
 			if e.config != nil && e.config.CaptureEvalProvenance {
-				inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, e.config.TrustedConfigSHA, e.config.ReplayGlobalYAML, e.config.ReplayRepoYAML, roundDuration)
+				inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, e.config.TrustedConfigSHA, e.config.ReplayGlobalYAML, e.config.ReplayRepoYAML, roundDuration)
 			} else {
-				inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
+				inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
 			}
 		} else {
-			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration)
+			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, roundDuration)
 		}
 		if dbErr != nil {
 			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)

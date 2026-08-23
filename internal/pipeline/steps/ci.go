@@ -151,6 +151,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if sctx.StepResultID != "" {
+		stats, err := sctx.DB.StepRoundStats(sctx.StepResultID)
+		if err != nil {
+			return nil, fmt.Errorf("restore CI auto-fix attempts: %w", err)
+		}
+		s.ciFixAttempts = max(s.ciFixAttempts, stats.FixRounds)
+	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the
 	// documented limit already accounted for.

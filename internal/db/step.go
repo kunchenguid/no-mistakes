@@ -83,6 +83,20 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	return steps, rows.Err()
 }
 
+func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
+	_, err := d.sql.Exec(`
+		UPDATE step_results
+		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
+			findings_json = NULL, error = NULL, started_at = NULL,
+			completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
+			agent_pid = NULL, auto_fix_limit = NULL
+		WHERE run_id = ? AND step_order >= ?`, types.StepStatusPending, runID, stepOrder)
+	if err != nil {
+		return fmt.Errorf("reset steps for revalidation: %w", err)
+	}
+	return nil
+}
+
 // UpdateStepStatus updates a step's status.
 func (d *DB) UpdateStepStatus(id string, status types.StepStatus) error {
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`, status, now(), fmt.Sprintf("status: %s", status), id)

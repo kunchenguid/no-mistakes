@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -115,9 +116,61 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetRoundsByStep(%s) error = %v", result.StepName, err)
 		}
-		if len(rounds) != 2 || rounds[0].Round != 1 || rounds[1].Round != 2 {
+		if len(rounds) != 2 {
+			t.Errorf("%s rounds = %v, want [1 2]", result.StepName, roundNumbers(rounds))
+			continue
+		}
+		if rounds[0].Round != 1 || rounds[1].Round != 2 {
 			t.Errorf("%s rounds = %v, want [1 2]", result.StepName, roundNumbers(rounds))
 		}
+		if result.StepName == types.StepCI && rounds[0].Trigger != "auto_fix" {
+			t.Errorf("first CI round trigger = %q, want auto_fix", rounds[0].Trigger)
+		}
+	}
+}
+
+func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		if reviewCalls == 2 {
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"review needed","action":"ask-user"}],"summary":"review needed"}`,
+			}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
+		ciCalls++
+		if ciCalls == 1 {
+			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+	steps := []Step{review, newPassStep(types.StepTest), newPassStep(types.StepPush), ci}
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(ctx, run, repo, workDir) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+
+	parkedRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecoveredRun(database, parkedRun, steps); err != nil {
+		t.Errorf("ValidateRecoveredRun() error = %v", err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("executor did not stop after cancellation")
 	}
 }
 
