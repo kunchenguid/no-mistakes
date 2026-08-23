@@ -23,11 +23,9 @@ func fileAtRef(t *testing.T, dir, ref, path string) bool {
 // and force-pushes - discarding the origin-only commit. The lease was anchored
 // to a freshly-read ls-remote SHA, which never refuses.
 //
-// This test reproduces the data loss at the CI auto-fix push boundary: the
-// origin branch carries a commit the worktree never saw, the worktree produces
-// a new head that does not contain it, and commitAndPush must REFUSE rather
-// than overwrite it.
-func TestCIStep_CommitAndPush_RefusesToClobberUnseenUpstreamCommit(t *testing.T) {
+// CI repairs stay local, so even a stale worktree cannot overwrite a commit
+// that reached the remote out of band. The later push step owns that check.
+func TestCIStep_CommitAndPush_DoesNotClobberUnseenUpstreamCommit(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -75,14 +73,12 @@ func TestCIStep_CommitAndPush_RefusesToClobberUnseenUpstreamCommit(t *testing.T)
 	sctx.Run.HeadSHA = headSHA // gate's last-recorded head == H1
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
-
-	// The push must be refused: origin has a commit the worktree never saw.
-	if err == nil {
-		t.Fatalf("expected commitAndPush to refuse the divergent force-push, got pushed=%v err=nil", pushed)
+	changed, err := step.commitAndPush(sctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if pushed {
-		t.Fatalf("expected no push when refusing, got pushed=true")
+	if !changed {
+		t.Fatal("expected the CI repair to be committed locally")
 	}
 
 	// The approved commit must still be on origin.

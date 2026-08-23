@@ -50,7 +50,7 @@ func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 	}
 
 	step := &CIStep{}
-	changed, err := step.commitAndPush(sctx)
+	changed, err := step.commitRepair(sctx, "stabilize Windows path test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 	if localSHA == headSHA {
 		t.Fatal("local head should include the CI repair commit")
 	}
-	if message := gitCmd(t, dir, "log", "-1", "--format=%s"); message != "no-mistakes(ci): repair failing checks" {
+	if message := gitCmd(t, dir, "log", "-1", "--format=%s"); message != "no-mistakes(ci): stabilize Windows path test" {
 		t.Fatalf("repair commit message = %q", message)
 	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -81,7 +81,7 @@ func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 	}
 }
 
-func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
+func TestCIStep_CommitAndPushDoesNotPushForkWhenConfigured(t *testing.T) {
 	t.Parallel()
 	parent := t.TempDir()
 	fork := t.TempDir()
@@ -121,60 +121,19 @@ func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Fatal("expected commitAndPush to report changes were pushed")
+	if !changed {
+		t.Fatal("expected commitAndPush to report committed changes")
 	}
 
-	forkSHA := gitCmd(t, fork, "rev-parse", "refs/heads/feature")
-	if forkSHA == headSHA {
-		t.Fatal("fork branch should have advanced to the CI fix commit")
+	if out, err := exec.Command("git", "-C", fork, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatalf("fork unexpectedly received feature branch at %s", strings.TrimSpace(string(out)))
 	}
 	if out, err := exec.Command("git", "-C", parent, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
 		t.Fatalf("parent unexpectedly received feature branch at %s", strings.TrimSpace(string(out)))
-	}
-}
-
-func TestCIStep_CommitAndPushRedactsForkURLInGitErrors(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "git")
-	env := fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":     "git-remote-error",
-		"FAKE_CLI_REAL_GIT": realGit,
-	})
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
-	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
-	sctx.Run.Branch = "refs/heads/feature"
-
-	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
-	if err == nil {
-		t.Fatal("expected push error")
-	}
-	if pushed {
-		t.Fatal("expected commitAndPush to report no pushed changes")
-	}
-	if strings.Contains(err.Error(), "secret") {
-		t.Fatalf("expected error to redact fork credentials, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "https://redacted@example.com/fork/project.git") {
-		t.Fatalf("expected redacted fork URL in error, got %v", err)
 	}
 }
 
@@ -188,12 +147,12 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pushed {
-		t.Error("expected commitAndPush to report no changes pushed")
+	if changed {
+		t.Error("expected commitAndPush to report no local changes")
 	}
 }
 
@@ -220,12 +179,12 @@ func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err == nil {
 		t.Fatal("expected status error")
 	}
-	if pushed {
-		t.Error("expected commitAndPush to report no push on status error")
+	if changed {
+		t.Error("expected commitAndPush to report no changes on status error")
 	}
 	if !strings.Contains(err.Error(), "git status --porcelain") {
 		t.Fatalf("expected status command in error, got %v", err)
@@ -294,20 +253,21 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Fatal("expected commitAndPush to report changes were pushed")
+	if !changed {
+		t.Fatal("expected commitAndPush to report committed changes")
 	}
 
+	localSHA := realGitCmd(dir, "rev-parse", "HEAD")
 	upstreamSHA := realGitCmd(upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA == headSHA {
-		t.Fatal("expected upstream to receive CI fix commit")
+	if upstreamSHA != headSHA {
+		t.Fatal("expected upstream to remain on the pre-repair head")
 	}
-	if sctx.Run.HeadSHA != upstreamSHA {
-		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, upstreamSHA)
+	if sctx.Run.HeadSHA != localSHA {
+		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, localSHA)
 	}
 }
 
@@ -370,12 +330,12 @@ func TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv(t *testing.T) 
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Fatal("expected commitAndPush to report changes were pushed")
+	if !changed {
+		t.Fatal("expected commitAndPush to report committed changes")
 	}
 }
 
@@ -411,12 +371,12 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pushed {
-		t.Error("expected commitAndPush to report no changes pushed for stale reconcile")
+	if !changed {
+		t.Error("expected commitAndPush to report the reconciled local head")
 	}
 
 	if sctx.Run.HeadSHA != actualHeadSHA {
@@ -474,12 +434,12 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepE
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pushed {
-		t.Error("expected commitAndPush to report no changes pushed for stale reconcile")
+	if !changed {
+		t.Error("expected commitAndPush to report the reconciled local head")
 	}
 
 	if sctx.Run.HeadSHA != actualHeadSHA {
@@ -494,7 +454,7 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepE
 	}
 }
 
-func TestCIStep_CommitAndPush_NoDirtyChangesButHeadAdvanced_PushesNewHead(t *testing.T) {
+func TestCIStep_CommitAndPush_NoDirtyChangesRecordsAdvancedLocalHead(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -529,17 +489,17 @@ func TestCIStep_CommitAndPush_NoDirtyChangesButHeadAdvanced_PushesNewHead(t *tes
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Fatal("expected commitAndPush to push advanced clean head")
+	if !changed {
+		t.Fatal("expected commitAndPush to record advanced clean head")
 	}
 
 	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA != advancedHeadSHA {
-		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, advancedHeadSHA)
+	if upstreamSHA != originalHeadSHA {
+		t.Fatalf("upstream SHA = %s, want unchanged head %s", upstreamSHA, originalHeadSHA)
 	}
 	if sctx.Run.HeadSHA != advancedHeadSHA {
 		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, advancedHeadSHA)
@@ -553,7 +513,7 @@ func TestCIStep_CommitAndPush_NoDirtyChangesButHeadAdvanced_PushesNewHead(t *tes
 	}
 }
 
-func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.T) {
+func TestCIStep_CommitAndPush_UpdatesLocalBranchRefWithoutDetachedPush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -585,12 +545,12 @@ func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Error("expected commitAndPush to report changes were pushed")
+	if !changed {
+		t.Error("expected commitAndPush to report committed changes")
 	}
 	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature")
@@ -598,7 +558,7 @@ func TestCIStep_CommitAndPush_UpdatesLocalBranchRefAfterDetachedPush(t *testing.
 		t.Fatalf("branch ref SHA = %s, want %s", branchSHA, newHeadSHA)
 	}
 	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA != newHeadSHA {
-		t.Fatalf("upstream SHA = %s, want %s", upstreamSHA, newHeadSHA)
+	if upstreamSHA != originalHeadSHA {
+		t.Fatalf("upstream SHA = %s, want unchanged head %s", upstreamSHA, originalHeadSHA)
 	}
 }

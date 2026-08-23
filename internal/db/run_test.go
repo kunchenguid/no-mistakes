@@ -796,6 +796,9 @@ func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "abc"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := d.UpdateRunHeadSHA(run.ID, "xyz"); err != nil {
 		t.Fatalf("update head sha: %v", err)
@@ -803,6 +806,9 @@ func TestUpdateRunHeadSHA(t *testing.T) {
 	got, _ := d.GetRun(run.ID)
 	if got.HeadSHA != "xyz" {
 		t.Errorf("head sha = %q, want %q", got.HeadSHA, "xyz")
+	}
+	if got.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("head update retained stale review authority: %#v", got.ReviewApprovedHeadSHA)
 	}
 }
 

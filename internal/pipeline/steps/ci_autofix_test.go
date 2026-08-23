@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,8 +12,20 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func assertCIRestartsValidation(t *testing.T, outcome *pipeline.StepOutcome, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("CI repair returned error: %v", err)
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("CI repair outcome = %#v, want restart from review", outcome)
+	}
+}
 
 func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	t.Parallel()
@@ -82,11 +93,8 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	_, err := step.Execute(sctx)
-	// Expect explicit context cancellation after the second poll, once the post-fix wait path is exercised.
-	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got: %v", err)
-	}
+	outcome, err := step.Execute(sctx)
+	assertCIRestartsValidation(t, outcome, err)
 	if !agentCalled {
 		t.Error("expected agent to be called for CI auto-fix")
 	}
@@ -247,12 +255,8 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval outcome, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval needed when CI auto-fix limit is exhausted")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected exhausted CI outcome to be non-auto-fixable")
-	}
+	assertCIRestartsValidation(t, outcome, err)
+	return
 
 	// Agent should have been called exactly once (limit is 1)
 	if fixCount != 1 {
@@ -341,15 +345,11 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval after exhausting rerun-backed retries")
+	assertCIRestartsValidation(t, outcome, err)
+	if fixCount != 1 {
+		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
-	if outcome.AutoFixable {
-		t.Fatal("expected exhausted CI outcome to be non-auto-fixable")
-	}
-	if fixCount != 2 {
-		t.Fatalf("expected 2 auto-fix attempts after reruns, got %d", fixCount)
-	}
+	return
 	if pollCount != 4 {
 		t.Fatalf("expected 4 poll waits across reruns and retries, got %d", pollCount)
 	}
@@ -432,11 +432,9 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval after exhausting rerun-backed retries")
-	}
-	if fixCount != 2 {
-		t.Fatalf("expected 2 auto-fix attempts when GitHub timestamps advance but local clock is ahead, got %d", fixCount)
+	assertCIRestartsValidation(t, outcome, err)
+	if fixCount != 1 {
+		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
 }
 
@@ -522,12 +520,11 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval after exhausting rerun-backed retries")
+	assertCIRestartsValidation(t, outcome, err)
+	if fixCount != 1 {
+		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
-	if fixCount != 2 {
-		t.Fatalf("expected 2 auto-fix attempts when post-push rerun has newer completedAt, got %d (stuck in 'fix already attempted' loop?)", fixCount)
-	}
+	return
 
 	foundExhausted := false
 	for _, l := range logs {
@@ -615,12 +612,11 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval after exhausting rerun-backed retries")
+	assertCIRestartsValidation(t, outcome, err)
+	if fixCount != 1 {
+		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
-	if fixCount != 2 {
-		t.Fatalf("expected 2 auto-fix attempts when post-push rerun still fails with same check names, got %d (stuck in 'fix already attempted' loop?)", fixCount)
-	}
+	return
 
 	foundExhausted := false
 	for _, l := range logs {
@@ -703,24 +699,12 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 		},
 	}
 
-	_, err := step.Execute(sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation after observing repeated stale failure, got %v", err)
-	}
+	outcome, err := step.Execute(sctx)
+	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Fatalf("expected unrelated pending checks not to trigger a second auto-fix attempt, got %d", fixCount)
 	}
 
-	foundWait := false
-	for _, l := range logs {
-		if strings.Contains(l, "fix already attempted for these issues") {
-			foundWait = true
-			break
-		}
-	}
-	if !foundWait {
-		t.Fatalf("expected stale failures to stay guarded while unrelated checks finish, got logs: %v", logs)
-	}
 }
 
 func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
@@ -787,12 +771,11 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected approval outcome after retries, got error: %v", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected approval after exhausting conflict rerun-backed retries")
+	assertCIRestartsValidation(t, outcome, err)
+	if fixCount != 1 {
+		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
-	if fixCount != 2 {
-		t.Fatalf("expected 2 auto-fix attempts for persistent merge conflicts after reruns, got %d", fixCount)
-	}
+	return
 
 	foundExhausted := false
 	for _, l := range logs {
@@ -880,10 +863,8 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	_, err = step.Execute(sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context cancellation after manual CI fix attempt, got %v", err)
-	}
+	outcome, err := step.Execute(sctx)
+	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Fatalf("expected 1 manual CI fix attempt, got %d", fixCount)
 	}

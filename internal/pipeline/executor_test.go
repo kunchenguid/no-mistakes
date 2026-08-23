@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -62,6 +63,47 @@ func TestExecutor_SuccessfulStepsDoNotEmitTelemetry(t *testing.T) {
 
 	if event := recorder.find("step", "", nil); event != nil {
 		t.Fatalf("successful steps should not emit step telemetry, got %v", event.fields)
+	}
+}
+
+func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	var order []types.StepName
+	pass := func(name types.StepName) Step {
+		return &adaptiveCallStep{name: name, fn: func(*StepContext) (*StepOutcome, error) {
+			order = append(order, name)
+			return &StepOutcome{}, nil
+		}}
+	}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
+		order = append(order, types.StepCI)
+		ciCalls++
+		if ciCalls == 1 {
+			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+	cycle := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR}
+	steps := make([]Step, 0, len(cycle)+1)
+	for _, name := range cycle {
+		steps = append(steps, pass(name))
+	}
+	steps = append(steps, ci)
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if ciCalls != 2 {
+		t.Fatalf("CI executions = %d, want 2", ciCalls)
+	}
+	want := append(append([]types.StepName{}, cycle...), types.StepCI)
+	want = append(want, want...)
+	if !slices.Equal(order, want) {
+		t.Fatalf("execution order = %v, want %v", order, want)
 	}
 }
 

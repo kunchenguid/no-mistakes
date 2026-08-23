@@ -234,10 +234,8 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 			return ctx.Err()
 		},
 	}
-	_, err := step.Execute(sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected polling to continue after head reconciliation, got %v", err)
-	}
+	outcome, err := step.Execute(sctx)
+	assertCIRestartsValidation(t, outcome, err)
 
 	if sctx.Run.HeadSHA != advancedHeadSHA {
 		t.Fatalf("Run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, advancedHeadSHA)
