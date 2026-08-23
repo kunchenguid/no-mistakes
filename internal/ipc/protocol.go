@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
+	"github.com/kunchenguid/no-mistakes/internal/committrailer"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -73,6 +74,10 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	// CommitTrailers are explicit per-run trailers supplied by the agent
+	// driving axi run. They are validated before reaching this boundary and
+	// persisted onto the run before any pipeline commit can be created.
+	CommitTrailers []committrailer.Trailer `json:"commit_trailers,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -130,6 +135,9 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	// CommitTrailers overrides inherited trailers when non-empty. When empty,
+	// rerun inherits the selected prior run's persisted trailer list.
+	CommitTrailers []committrailer.Trailer `json:"commit_trailers,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

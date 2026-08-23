@@ -144,6 +144,10 @@ Run the pipeline and decide on its findings as they come up:
    ` + "```sh" + `
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ` + "```" + `
+   If the repository requires a generated-commit trailer for this validation
+   run, pass it explicitly on the run, for example
+   ` + "`--commit-trailer 'Co-Authored-By: Name <email>'`" + `. Repeat the flag for
+   multiple distinct trailers.
    ` + "`axi run`" + ` and every ` + "`axi respond`" + ` block synchronously - the review, test,
    and CI steps can each take **several minutes**, so a single call may not
    return for a while. That is normal; allow a long timeout and do not cancel

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/committrailer"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -150,8 +151,8 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // CI repair commits, the generic git runner, and every user-authored commit keep
 // hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
 // remain the authoritative quality checks for what these commits contain.
-func commitPipelineCorrection(ctx context.Context, workDir, message string, logf func(string)) error {
-	return commitPipelineCorrectionWithCleanup(ctx, workDir, message, logf, os.RemoveAll)
+func commitPipelineCorrection(ctx context.Context, workDir, message string, logf func(string), commitTrailers []committrailer.Trailer) error {
+	return commitPipelineCorrectionWithTrailersAndCleanup(ctx, workDir, message, logf, commitTrailers, os.RemoveAll)
 }
 
 func commitPipelineCorrectionWithCleanup(
@@ -160,11 +161,23 @@ func commitPipelineCorrectionWithCleanup(
 	logf func(string),
 	cleanup func(string) error,
 ) error {
+	return commitPipelineCorrectionWithTrailersAndCleanup(ctx, workDir, message, logf, nil, cleanup)
+}
+
+func commitPipelineCorrectionWithTrailersAndCleanup(
+	ctx context.Context,
+	workDir, message string,
+	logf func(string),
+	commitTrailers []committrailer.Trailer,
+	cleanup func(string) error,
+) error {
 	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-correction-hooks-")
 	if err != nil {
 		return fmt.Errorf("prepare hook-free commit environment: %w", err)
 	}
-	_, commitErr := git.Run(ctx, workDir, "-c", "core.hooksPath="+emptyHooksDir, "commit", "--no-verify", "-m", message)
+	args := []string{"-c", "core.hooksPath=" + emptyHooksDir, "commit", "--no-verify", "-m", message}
+	args = committrailer.AppendGitCommitArgs(args, commitTrailers)
+	_, commitErr := git.Run(ctx, workDir, args...)
 	if cleanupErr := cleanup(emptyHooksDir); cleanupErr != nil {
 		if logf != nil {
 			logf(fmt.Sprintf("warning: failed to remove temporary hook-free commit directory %s: %v", emptyHooksDir, cleanupErr))
@@ -198,7 +211,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
+	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log, runCommitTrailers(sctx)); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
@@ -225,6 +238,13 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	}
 	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
 	return nil
+}
+
+func runCommitTrailers(sctx *pipeline.StepContext) []committrailer.Trailer {
+	if sctx == nil || sctx.Run == nil {
+		return nil
+	}
+	return sctx.Run.CommitTrailers
 }
 
 func extractCommitSummary(result *agent.Result) (string, error) {
