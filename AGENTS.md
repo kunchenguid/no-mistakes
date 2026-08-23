@@ -29,6 +29,14 @@ Safest local verification sequence after non-trivial changes:
 - Step-failure errors (`executor.go` `FailStep`/log/IPC emit) and the Bitbucket resolve-repo error are redacted via `safeurl.RedactText`/`safeurl.Redact` so a credentialled URL wrapped into an error can never reach a step log or `runs.error`. Reuse `internal/safeurl` for new redaction sites rather than adding a git-local helper; it is already wired into `git.Run`/step git-run error formatting.
 - Regressions: `TestInitRedactsCredentialURL`, `TestResolveUpstreamURL_PreservesCredential`, `TestResolveUpstreamURL_FallsBackToRecordedURL`, `TestResolvePushURL_ForkWinsOverCredential`.
 
+**Home-Path Redaction in Published PR Content (security)**
+
+- `internal/safepath` is the one owner of home-directory redaction, the path analogue of `internal/safeurl`. `RedactText` rewrites the process's own home plus `/home/<user>`, `/Users/<user>`, and `C:\Users\<user>` to `~`, unconditionally and for every occurrence. Add new shapes there rather than scrubbing paths at a call site.
+- `PRStep.buildPRContent` is the single render boundary: it drafts through `draftPRContent` and returns `redactPRContent(content)`, and `Execute` publishes exactly that. Every source that can reach a PR body - agent prose, extracted intent, findings, fix summaries, step errors, artifact `path`, artifact captions, and captured output embedded from evidence files - is covered there, so a new rendering path cannot reintroduce the leak. Redaction runs after every length cap, which is only safe because the placeholder is never longer than the path it replaces.
+- The `artifacts[].path` description in `testFindingsSchema` (`common.go`) must not solicit absolute paths: the renderer only accepts a path resolving under the worktree or the run's evidence directory, and asking agents for more just re-supplies what the boundary then has to strip. Regression: `TestTestFindingsSchema_DoesNotSolicitAbsolutePaths`.
+- The evidence branch (`test.evidence.store_in_repo`) copies artifact files verbatim and does not share this rendering; it is a separate, opt-in public surface.
+- Regressions: `internal/safepath/redact_test.go`, `internal/pipeline/steps/pr_homepath_test.go`.
+
 **GitLab Backend (`internal/scm/gitlab`)**
 
 - The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.
