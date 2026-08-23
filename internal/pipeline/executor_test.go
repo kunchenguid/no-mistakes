@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -105,6 +106,27 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	if !slices.Equal(order, want) {
 		t.Fatalf("execution order = %v, want %v", order, want)
 	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetStepsByRun() error = %v", err)
+	}
+	for _, result := range results {
+		rounds, err := database.GetRoundsByStep(result.ID)
+		if err != nil {
+			t.Fatalf("GetRoundsByStep(%s) error = %v", result.StepName, err)
+		}
+		if len(rounds) != 2 || rounds[0].Round != 1 || rounds[1].Round != 2 {
+			t.Errorf("%s rounds = %v, want [1 2]", result.StepName, roundNumbers(rounds))
+		}
+	}
+}
+
+func roundNumbers(rounds []*db.StepRound) []int {
+	numbers := make([]int, len(rounds))
+	for index, round := range rounds {
+		numbers[index] = round.Round
+	}
+	return numbers
 }
 
 func TestExecutor_SkippedStepsDoNotEmitTelemetry(t *testing.T) {

@@ -217,7 +217,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", nil)
 			continue
 		}
-		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, stepExecutionState{})
+		state, err := e.durableExecutionState(sr.ID)
+		if err != nil {
+			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", step.Name(), err), ctx)
+		}
+		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -271,6 +275,21 @@ type stepExecutionState struct {
 	autoFixAttempts  int
 	executionMS      int64
 	currentRoundID   string
+}
+
+func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionState, error) {
+	rounds, err := e.db.GetRoundsByStep(stepResultID)
+	if err != nil {
+		return stepExecutionState{}, err
+	}
+	state := stepExecutionState{}
+	for _, round := range rounds {
+		state.roundNum = max(state.roundNum, round.Round)
+		if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix {
+			state.autoFixAttempts++
+		}
+	}
+	return state, nil
 }
 
 type recoveredGate struct {
@@ -558,7 +577,11 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if index >= len(results) || results[index].StepName != e.steps[index].Name() || (!revalidating && results[index].Status != types.StepStatusPending) {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
 		}
-		skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, stepExecutionState{})
+		state, stateErr := e.durableExecutionState(results[index].ID)
+		if stateErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", e.steps[index].Name(), stateErr), ctx)
+		}
+		skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
