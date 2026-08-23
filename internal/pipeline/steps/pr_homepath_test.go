@@ -499,3 +499,76 @@ func artifactPathDescription(t *testing.T, schema map[string]any) string {
 	}
 	return description
 }
+
+// TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable is the other
+// side of the schema contract, and the correction to a first attempt that
+// closed the loop too far.
+//
+// The renderer's allowlist for an absolute artifact path is the worktree or the
+// run's evidence directory (see sanitizeArtifactPath); a path under neither is
+// dropped rather than rendered. The evidence directory defaults to
+// <NM_HOME>/evidence/<run-id> and NM_HOME defaults to a directory under the
+// operator's home, so a schema clause forbidding home directory paths outright
+// would forbid the one path an evidence artifact has to report - an obedient
+// agent would drop its own evidence.
+//
+// Keeping that path reportable is safe because publication safety belongs to
+// the redaction boundary in pr.go, not to the schema. The schema's job is only
+// to stop soliciting paths from elsewhere on the machine.
+func TestTestFindingsSchema_KeepsEvidenceDirectoryPathsReportable(t *testing.T) {
+	t.Parallel()
+
+	var schema map[string]any
+	if err := json.Unmarshal(testFindingsSchema, &schema); err != nil {
+		t.Fatalf("test findings schema is not valid JSON: %v", err)
+	}
+	// Any mention of a home directory here is wrong in both directions: it
+	// either solicits the path the boundary has to strip, or forbids the one
+	// the renderer requires.
+	if description := artifactPathDescription(t, schema); strings.Contains(strings.ToLower(description), "home director") {
+		t.Fatalf("artifact path schema must not rule on home directories, that is the redaction boundary's job: %q", description)
+	}
+
+	t.Run("evidence directory path is rendered, not dropped", func(t *testing.T) {
+		t.Parallel()
+		tc := homePathLeakCase{
+			evidenceDir: fixtureEvidenceDir,
+			testFindings: findingsJSON(t, types.Findings{
+				TestingSummary: "Captured the failing request/response pair.",
+				Artifacts: []types.TestArtifact{{
+					Kind:  "log",
+					Label: "captured session",
+					Path:  fixtureEvidenceDir + "/session.log",
+				}},
+			}),
+			wantVisible: []string{
+				"captured session",
+				"~/.no-mistakes/evidence/run-1/session.log",
+			},
+		}
+		content := buildHomePathLeakPRContent(t, tc)
+		assertNoHomePathLeak(t, tc, content)
+	})
+
+	t.Run("path outside the worktree and evidence directory is still dropped", func(t *testing.T) {
+		t.Parallel()
+		tc := homePathLeakCase{
+			evidenceDir: fixtureEvidenceDir,
+			testFindings: findingsJSON(t, types.Findings{
+				TestingSummary: "Captured the failing request/response pair.",
+				Artifacts: []types.TestArtifact{{
+					Kind:  "log",
+					Label: "stray artifact",
+					Path:  "/var/tmp/elsewhere/session.log",
+				}},
+			}),
+		}
+		content := buildHomePathLeakPRContent(t, tc)
+		assertNoHomePathLeak(t, tc, content)
+		for _, unwanted := range []string{"stray artifact", "/var/tmp/elsewhere/session.log"} {
+			if strings.Contains(content.Body, unwanted) {
+				t.Fatalf("expected %q to be dropped by the artifact path allowlist:\n%s", unwanted, content.Body)
+			}
+		}
+	})
+}
