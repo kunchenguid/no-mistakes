@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.58.0](https://github.com/kunchenguid/no-mistakes/compare/v1.57.1...v1.58.0) (2026-08-23)
+
+
+### Features
+
+* add shared no-mistakes PR enforcement action ([#819](https://github.com/kunchenguid/no-mistakes/issues/819)) ([32d396a](https://github.com/kunchenguid/no-mistakes/commit/32d396ac0f29135daf7fcb9964aba9d5f4e796d6))
+* **pipeline:** surface missing host permissions in test evidence ([#491](https://github.com/kunchenguid/no-mistakes/issues/491)) ([fb94645](https://github.com/kunchenguid/no-mistakes/commit/fb94645eef492602bd13593a3324dac93165424f))
+* **scm:** add Gitea as a fifth SCM provider ([#789](https://github.com/kunchenguid/no-mistakes/issues/789)) ([c82cfe8](https://github.com/kunchenguid/no-mistakes/commit/c82cfe81d39d4746ef190cbadc1bb79a730a1a23))
+
+
+### Bug Fixes
+
+* **pipeline:** park CI step at ask-user gate on persistent check-read failures ([#654](https://github.com/kunchenguid/no-mistakes/issues/654)) ([c2a75d0](https://github.com/kunchenguid/no-mistakes/commit/c2a75d0b047f8002f3148606c3efa9061efca466))
+* **pipeline:** retry GitHub Actions pre-run infrastructure failures ([#678](https://github.com/kunchenguid/no-mistakes/issues/678)) ([bbd769f](https://github.com/kunchenguid/no-mistakes/commit/bbd769f6e7712255db80f698d82d2d465de104c1))
+* replace the running executable during Windows self-update ([#650](https://github.com/kunchenguid/no-mistakes/issues/650)) ([ea8ecb0](https://github.com/kunchenguid/no-mistakes/commit/ea8ecb0d17f2fde4666d03bd5a6fdc82ebe866e1))
+
 ## [1.57.1](https://github.com/kunchenguid/no-mistakes/compare/v1.57.0...v1.57.1) (2026-08-22)
 
 
