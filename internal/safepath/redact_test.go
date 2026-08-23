@@ -48,6 +48,21 @@ func TestRedactText_ConventionalHomeRoots(t *testing.T) {
 			want: `{"path":"~"}`,
 		},
 		{
+			name: "json-escaped newline before home path",
+			in:   `{"log":"line1\n/home/testuser/x.log"}`,
+			want: `{"log":"line1\n~/x.log"}`,
+		},
+		{
+			name: "repeated json-escaped newline separated home paths",
+			in:   `first /home/testuser/a\n/home/testuser/b`,
+			want: `first ~/a\n~/b`,
+		},
+		{
+			name: "json-escaped newline before windows home",
+			in:   `trace\nC:\Users\testuser\x.log`,
+			want: `trace\n~\x.log`,
+		},
+		{
 			name: "bare home directory",
 			in:   "cwd is /home/testuser",
 			want: "cwd is ~",
@@ -155,6 +170,10 @@ func TestRedactText_LeavesUnrelatedTextIntact(t *testing.T) {
 			in:   "fetch https://home/x first",
 		},
 		{
+			name: "cdn url with data path",
+			in:   "fetch https://cdn.example.com/data/file.json first",
+		},
+		{
 			// Deliberate tradeoff: a doubled forward slash before the root is
 			// rare, while accepting it would mangle every https:// URL whose
 			// path starts with users or home.
@@ -199,7 +218,9 @@ func TestRedactText_LeavesUnrelatedTextIntact(t *testing.T) {
 
 // TestRedactText_UnconventionalHomeFromEnvironment covers the account whose
 // home is not under /home or /Users - a root daemon, a container, a relocated
-// or redirected home. Only the process's own home directory can catch those.
+// or redirected home. Only the process's own home directory can catch those,
+// and the same is true of an own-home path embedded in an http(s) URL: the
+// conventional-root rules deliberately never match inside a URL.
 //
 // Both HOME and USERPROFILE are set, because os.UserHomeDir consults a
 // different one per platform (USERPROFILE on Windows, HOME elsewhere) and this
@@ -232,6 +253,10 @@ func TestRedactText_UnconventionalHomeFromEnvironment(t *testing.T) {
 		{name: "msys drive-mapped home", home: "/c/Users/operator", in: "rootdir: /c/Users/operator/.no-mistakes/worktrees/ab12cd/1/svc", want: "rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc"},
 		{name: "msys drive-mapped home flag-attached path", home: "/c/Users/operator", in: "-I/c/Users/operator/include", want: "-I~/include"},
 		{name: "cygwin drive-mapped home", home: "/cygdrive/c/Users/operator", in: "rootdir: /cygdrive/c/Users/operator/svc", want: "rootdir: ~/svc"},
+		{name: "url-embedded own home", home: "/home/testuser", in: "http://localhost:8543/evidence/home/testuser/run-1/x.log", want: "http://localhost:8543/evidence~/run-1/x.log"},
+		{name: "url-embedded own home unconventional root", home: "/srv/nm-operator", in: "https://files.internal/evidence/srv/nm-operator/run-1/x.log", want: "https://files.internal/evidence~/run-1/x.log"},
+		{name: "single-segment home after url host is not redacted", home: "/data", in: "https://cdn.example.com/data/file.json", want: "https://cdn.example.com/data/file.json"},
+		{name: "single-segment home inside url path is not redacted", home: "/data", in: "https://cdn.example.com/static/data/file.json", want: "https://cdn.example.com/static/data/file.json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -302,6 +327,7 @@ func TestRedactText_NeverGrowsTheText(t *testing.T) {
 		`C:\Users\testuser\a\b`,
 		`C:\\Users\\testuser\\a`,
 		"file:///home/testuser/a",
+		`{"log":"line1\n/home/testuser/x"}`,
 		strings.Repeat("/home/testuser/x ", 50),
 		"no paths here at all",
 	} {

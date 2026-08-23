@@ -45,8 +45,10 @@ const Placeholder = "~"
 //
 // The leading group is what precedes the match, re-emitted unchanged: a single
 // boundary byte - which may be the ':' of a colon-separated list - or a
-// one-letter flag prefix such as "-I" glued to the path. It exists because RE2
-// has no lookbehind and the alternative - allowing any preceding bytes - would
+// one-letter flag prefix such as "-I" glued to the path, or the two bytes of a
+// JSON string escape (\n, \r, \t), which is what puts a home path at the start
+// of a line inside JSON-escaped captured output. It exists because RE2 has no
+// lookbehind and the alternative - allowing any preceding bytes - would
 // rewrite the "/users/" segment of an ordinary URL such as
 // https://api.github.com/users/octocat. "file://" is spelled out for the one
 // case where a slash legitimately precedes the home root.
@@ -58,7 +60,7 @@ const Placeholder = "~"
 // https://users/list as https:~, and leaving the rare //home/<user> spelling
 // intact costs less than mangling every such URL.
 var genericHomePattern = regexp.MustCompile(
-	`(^|-[A-Za-z]|[^A-Za-z0-9_./\\-])((?i:file://)?(?:[A-Za-z]:)?(?:\\\\|[/\\])(?i:home|users)(?:\\\\|[/\\])[^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
+	`(^|-[A-Za-z]|\\[nrt]|[^A-Za-z0-9_./\\-])((?i:file://)?(?:[A-Za-z]:)?(?:\\\\|[/\\])(?i:home|users)(?:\\\\|[/\\])[^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
 
 // RedactText replaces every absolute home directory path in text with
 // Placeholder. It is unconditional: there is no detect-and-warn mode, because
@@ -178,6 +180,7 @@ func replaceHomePrefix(text, home string) string {
 	if home == "" || !strings.Contains(text, home) {
 		return text
 	}
+	specific := specificHomeCandidate(home)
 	var b strings.Builder
 	for i := 0; i < len(text); {
 		offset := strings.Index(text[i:], home)
@@ -187,7 +190,7 @@ func replaceHomePrefix(text, home string) string {
 		}
 		start := i + offset
 		end := start + len(home)
-		if boundaryBefore(text, start) && boundaryAfter(text, end) {
+		if boundaryBefore(text, start, specific) && boundaryAfter(text, end) {
 			b.WriteString(text[i:start])
 			b.WriteString(Placeholder)
 			i = end
@@ -199,7 +202,21 @@ func replaceHomePrefix(text, home string) string {
 	return b.String()
 }
 
-func boundaryBefore(text string, i int) bool {
+// specificHomeCandidate reports whether home names at least two path segments
+// beneath its root (/home/<user>, /srv/<name>, C:\Users\<user>). Only a
+// candidate that specific may match inside a URL, where the byte before the
+// home is the tail of the host or of a previous path segment; a
+// single-segment home such as /data would instead rewrite that segment of an
+// unrelated URL (https://cdn.example.com/data/file.json).
+func specificHomeCandidate(home string) bool {
+	rest, _ := trimAbsoluteRoot(home)
+	return strings.ContainsAny(rest, `/\`)
+}
+
+// boundaryBefore reports whether position i in text starts a path rather than
+// the middle of a longer name. specific carries the caller's candidate
+// specificity, which is what admits a name-byte boundary inside a URL.
+func boundaryBefore(text string, i int, specific bool) bool {
 	if i == 0 {
 		return true
 	}
@@ -208,10 +225,33 @@ func boundaryBefore(text string, i int) bool {
 		// The one slash that legitimately precedes an absolute path.
 		return strings.HasSuffix(text[:i], "://")
 	case c == '\\' || isPathNameByte(c):
-		return i >= 2 && text[i-2] == '-' && isASCIILetter(c)
+		// The letter of a JSON string escape (\n, \r, \t) is the tail of an
+		// escape sequence, not a name byte glued to the path - the shape
+		// JSON-escaped captured output prints for a line-initial home path.
+		if i >= 2 && text[i-2] == '\\' && (c == 'n' || c == 'r' || c == 't') {
+			return true
+		}
+		if i >= 2 && text[i-2] == '-' && isASCIILetter(c) {
+			return true
+		}
+		// Inside a URL that byte is the tail of the host or the previous path
+		// segment (https://host/evidence/home/<user>/x.log). Outside one, the
+		// same shape is a different path the home is merely a suffix of
+		// (/opt/srv/<name>), so it stays a non-boundary.
+		return specific && insideURL(text, i)
 	default:
 		return true
 	}
+}
+
+// insideURL reports whether position i in text sits inside a URL: a scheme
+// separator ("://") appears earlier in the text with no whitespace between it
+// and i, so the bytes before i belong to a host or path segment rather than
+// to an ordinary token.
+func insideURL(text string, i int) bool {
+	prefix := text[:i]
+	scheme := strings.LastIndex(prefix, "://")
+	return scheme >= 0 && !strings.ContainsAny(prefix[scheme:], " \t\r\n")
 }
 
 func boundaryAfter(text string, i int) bool {
