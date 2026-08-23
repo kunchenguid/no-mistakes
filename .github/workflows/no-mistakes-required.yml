@@ -59,6 +59,4 @@ jobs:
       # own Go tests execute verify.py from the PR head), but it cannot certify
       # itself through the required check.
       - name: Verify no-mistakes signature and pipeline attestation
-        # 32d396a - "feat: add shared no-mistakes PR enforcement action (#819)",
-        # the first commit on main to carry the action (post-v1.57.1).
-        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)

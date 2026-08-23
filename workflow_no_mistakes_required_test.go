@@ -86,23 +86,45 @@ func TestNoMistakesRequiredWorkflowCallsTheSharedActionAtAnImmutablePin(t *testi
 // an in-job exemption still needs the run to start, and a GITHUB_TOKEN pull
 // request's run is created in action_required and never starts.
 func TestNoMistakesRequiredWorkflowExemptsReleaseAutomation(t *testing.T) {
-	data, err := os.ReadFile(requiredWorkflowPath)
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
+	condition := loadRequiredWorkflow(t).Jobs["check"].If
+	for _, tc := range []struct {
+		login   string
+		wantRun bool
+	}{
+		{login: "github-actions[bot]", wantRun: false},
+		{login: "dependabot[bot]", wantRun: false},
+		{login: "release-please[bot]", wantRun: false},
+		{login: "human-contributor", wantRun: true},
+		{login: "unlisted-automation[bot]", wantRun: true},
+	} {
+		t.Run(tc.login, func(t *testing.T) {
+			got, err := evaluateRequiredWorkflowAuthorCondition(condition, tc.login)
+			if err != nil {
+				t.Fatalf("evaluate check job condition: %v", err)
+			}
+			if got != tc.wantRun {
+				t.Fatalf("check job runs for author %q = %t, want %t", tc.login, got, tc.wantRun)
+			}
+		})
 	}
-	content := string(data)
+}
 
-	exempt := []string{
-		"github-actions[bot]",
-		"dependabot[bot]",
-		"release-please[bot]",
+func evaluateRequiredWorkflowAuthorCondition(condition, author string) (bool, error) {
+	terms := strings.Split(condition, "&&")
+	if len(terms) == 0 {
+		return false, fmt.Errorf("empty author condition")
 	}
-	for _, login := range exempt {
-		needle := "github.event.pull_request.user.login != '" + login + "'"
-		if !strings.Contains(content, needle) {
-			t.Errorf("workflow must exempt %q via %q", login, needle)
+	termPattern := regexp.MustCompile(`^github\.event\.pull_request\.user\.login\s*!=\s*'([^']+)'$`)
+	for _, term := range terms {
+		matches := termPattern.FindStringSubmatch(strings.TrimSpace(term))
+		if matches == nil {
+			return false, fmt.Errorf("unsupported author condition term %q", strings.TrimSpace(term))
+		}
+		if author == matches[1] {
+			return false, nil
 		}
 	}
+	return true, nil
 }
 
 // TestNoMistakesRequiredWorkflowTriggersOnRelevantPREvents ensures the check
@@ -311,6 +333,7 @@ type requiredWorkflowConcurrency struct {
 
 type requiredWorkflowJob struct {
 	Name  string                 `yaml:"name"`
+	If    string                 `yaml:"if"`
 	Steps []requiredWorkflowStep `yaml:"steps"`
 }
 
