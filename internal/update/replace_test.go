@@ -26,8 +26,12 @@ func TestReplaceExecutableWindowsMovesRunningImageAside(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o751 {
-		t.Fatalf("replacement permissions = %o, want 751", got)
+	wantPerm := os.FileMode(0o751)
+	if runtime.GOOS == "windows" {
+		wantPerm = 0o666
+	}
+	if got := info.Mode().Perm(); got != wantPerm {
+		t.Fatalf("replacement permissions = %o, want %o", got, wantPerm)
 	}
 }
 
@@ -142,8 +146,12 @@ func TestReplaceExecutableNonWindowsFallsBackToOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o751 {
-		t.Fatalf("replacement permissions = %o, want 751", got)
+	wantPerm := os.FileMode(0o751)
+	if runtime.GOOS == "windows" {
+		wantPerm = 0o666
+	}
+	if got := info.Mode().Perm(); got != wantPerm {
+		t.Fatalf("replacement permissions = %o, want %o", got, wantPerm)
 	}
 }
 
