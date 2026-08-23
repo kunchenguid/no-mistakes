@@ -191,7 +191,7 @@ func boundaryBefore(text string, i int) bool {
 		// The one slash that legitimately precedes an absolute path.
 		return strings.HasSuffix(text[:i], "://")
 	case c == '\\' || isPathNameByte(c):
-		return false
+		return i >= 2 && text[i-2] == '-' && isASCIILetter(c)
 	default:
 		return true
 	}

@@ -192,16 +192,19 @@ func TestRedactText_UnconventionalHomeFromEnvironment(t *testing.T) {
 		{name: "posix suffix match is not a prefix match", home: "/srv/nm-operator", in: "/opt/srv/nm-operator/x", want: "/opt/srv/nm-operator/x"},
 		{name: "posix repeated", home: "/srv/nm-operator", in: "/srv/nm-operator/a and /srv/nm-operator/b", want: "~/a and ~/b"},
 		{name: "posix colon-separated path entries", home: "/srv/nm-operator", in: "PATH=/srv/nm-operator/bin:/srv/nm-operator/go/bin", want: "PATH=~/bin:~/go/bin"},
+		{name: "posix flag-attached path", home: "/srv/nm-operator", in: "-I/srv/nm-operator/include", want: "-I~/include"},
 		// A redirected Windows profile: absolute, but not under C:\Users, so
 		// only the process's own home can catch it.
 		{name: "windows redirected profile", home: `D:\profiles\operator`, in: `D:\profiles\operator\.no-mistakes\evidence\x.log`, want: `~\.no-mistakes\evidence\x.log`},
 		{name: "windows redirected profile forward slashes", home: `D:\profiles\operator`, in: "D:/profiles/operator/evidence/x.log", want: "~/evidence/x.log"},
+		{name: "windows redirected profile flag-attached path", home: `D:\profiles\operator`, in: "-LD:/profiles/operator/lib", want: "-L~/lib"},
 		// Git Bash, MSYS2, and Cygwin set a POSIX-rooted HOME on Windows, and
 		// captured output from a test run under those shells prints it. The
 		// conventional-root rules cannot see it: the "/Users" in
 		// "/c/Users/operator" is preceded by a drive letter, which the URL
 		// guard treats as an ordinary path segment.
 		{name: "msys drive-mapped home", home: "/c/Users/operator", in: "rootdir: /c/Users/operator/.no-mistakes/worktrees/ab12cd/1/svc", want: "rootdir: ~/.no-mistakes/worktrees/ab12cd/1/svc"},
+		{name: "msys drive-mapped home flag-attached path", home: "/c/Users/operator", in: "-I/c/Users/operator/include", want: "-I~/include"},
 		{name: "cygwin drive-mapped home", home: "/cygdrive/c/Users/operator", in: "rootdir: /cygdrive/c/Users/operator/svc", want: "rootdir: ~/svc"},
 	}
 	for _, tt := range tests {
