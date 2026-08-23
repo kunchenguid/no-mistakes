@@ -422,7 +422,7 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 }
 
 func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string, commitTrailers []committrailer.Trailer) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, CommitTrailers: commitTrailers}
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, CommitTrailers: commitTrailers, CommitTrailersExplicit: true}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

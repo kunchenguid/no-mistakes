@@ -512,6 +512,19 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	if !reflect.DeepEqual(params.CommitTrailers, trailers) {
 		t.Fatalf("CommitTrailers = %#v, want %#v", params.CommitTrailers, trailers)
 	}
+	if !params.CommitTrailersExplicit {
+		t.Fatal("fresh axi-run fallback params must mark commit trailers explicit")
+	}
+}
+
+func TestRerunParamsFreshTrailerFreeRunDoesNotRequestInheritance(t *testing.T) {
+	params := rerunParams("repo-1", "feature/x", nil, "user goal", nil)
+	if len(params.CommitTrailers) != 0 {
+		t.Fatalf("CommitTrailers = %#v, want empty", params.CommitTrailers)
+	}
+	if !params.CommitTrailersExplicit {
+		t.Fatal("fresh trailer-free axi-run fallback must send an explicit empty trailer list")
+	}
 }
 
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {

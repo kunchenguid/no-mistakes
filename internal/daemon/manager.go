@@ -702,7 +702,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // head while custody remains outstanding. An explicit intent overrides the
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
 // runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string, commitTrailers []committrailer.Trailer) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string, commitTrailers []committrailer.Trailer, commitTrailersExplicit bool) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -771,7 +771,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 			intentSource = db.RunIntentSourceRerun
 		}
 	}
-	if len(commitTrailers) == 0 {
+	if len(commitTrailers) == 0 && !commitTrailersExplicit {
 		commitTrailers = selectedRun.CommitTrailers
 	}
 

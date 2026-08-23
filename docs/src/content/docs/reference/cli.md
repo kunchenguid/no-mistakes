@@ -120,6 +120,8 @@ For example, Phiora-style attribution can be supplied as `--commit-trailer "Co-A
 no-mistakes validates trailers before contacting the daemon, persists the canonical list on the run, and passes each trailer to the original git commit command for every pipeline-generated commit.
 Duplicate identical trailers collapse to one entry per commit.
 Malformed trailers, control characters, newlines, empty tokens or values, and option-like tokens or values are rejected.
+If a fresh `axi run` finds the gate branch already at the submitted `HEAD` and internally falls back to rerun creation, the newly supplied trailer list remains authoritative even when it is empty.
+User-initiated reruns still inherit the selected prior run's persisted trailer list unless a future caller supplies a replacement list explicitly.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.

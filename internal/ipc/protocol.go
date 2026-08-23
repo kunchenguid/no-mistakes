@@ -135,9 +135,14 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
-	// CommitTrailers overrides inherited trailers when non-empty. When empty,
-	// rerun inherits the selected prior run's persisted trailer list.
-	CommitTrailers []committrailer.Trailer `json:"commit_trailers,omitempty"`
+	// CommitTrailers overrides inherited trailers when non-empty.
+	// CommitTrailersExplicit makes the supplied list authoritative even when
+	// empty; fresh axi-run fallback uses it so a trailer-free fresh run cannot
+	// inherit stale trailers from a prior branch run. When false and the list is
+	// empty, user-initiated reruns inherit the selected prior run's persisted
+	// trailer list.
+	CommitTrailers         []committrailer.Trailer `json:"commit_trailers,omitempty"`
+	CommitTrailersExplicit bool                    `json:"commit_trailers_explicit,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

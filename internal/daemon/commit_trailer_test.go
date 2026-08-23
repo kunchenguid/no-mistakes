@@ -109,3 +109,49 @@ func TestRerunInheritsCommitTrailersFromSelectedRun(t *testing.T) {
 		t.Fatalf("rerun trailers = %#v, want selected run trailers %#v", got.CommitTrailers, trailers)
 	}
 }
+
+func TestFreshRerunFallbackCanPersistExplicitEmptyCommitTrailers(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "fresh-empty-trailer-rerun-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	trailers, err := committrailer.ParseMany([]string{
+		"Co-Authored-By: Phiora Agent <agent@phiora.test>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:           p.RepoDir("fresh-empty-trailer-rerun-repo"),
+		Ref:            "refs/heads/main",
+		Old:            "0000000000000000000000000000000000000000",
+		New:            headSHA,
+		CommitTrailers: trailers,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:                 "fresh-empty-trailer-rerun-repo",
+		Branch:                 "main",
+		CommitTrailersExplicit: true,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if len(got.CommitTrailers) != 0 {
+		t.Fatalf("fresh trailer-free rerun fallback inherited stale trailers: %#v", got.CommitTrailers)
+	}
+}
