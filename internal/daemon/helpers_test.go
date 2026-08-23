@@ -408,8 +408,13 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 
 func waitForRunTerminalState(t *testing.T, d *db.DB, runID string) *db.Run {
 	t.Helper()
+	return waitForRunTerminalStateWithin(t, d, runID, 5*time.Second)
+}
 
-	deadline := time.Now().Add(5 * time.Second)
+func waitForRunTerminalStateWithin(t *testing.T, d *db.DB, runID string, timeout time.Duration) *db.Run {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		run, err := d.GetRun(runID)
 		if err != nil {
@@ -420,7 +425,7 @@ func waitForRunTerminalState(t *testing.T, d *db.DB, runID string) *db.Run {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("run %s did not reach terminal state", runID)
+	t.Fatalf("run %s did not reach terminal state within %s", runID, timeout)
 	return nil
 }
 

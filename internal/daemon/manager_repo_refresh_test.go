@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -146,7 +147,10 @@ func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *t
 			if err != nil {
 				t.Fatalf("ordinary run did not continue: %v\nlogs: %s", err, logs.String())
 			}
-			if run := waitForRunTerminalState(t, database, runID); run.Status != types.RunCompleted {
+			// Windows git-heavy CI can spend tens of seconds in the run-start
+			// path under package load; keep this failure-mode test focused on
+			// refresh fail-open behavior instead of the generic short helper.
+			if run := waitForRunTerminalStateWithin(t, database, runID, 30*time.Second); run.Status != types.RunCompleted {
 				t.Fatalf("run status = %s, error = %v\nlogs: %s", run.Status, run.Error, logs.String())
 			}
 			pipelineRepo := <-seen
