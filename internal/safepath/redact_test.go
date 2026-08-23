@@ -38,6 +38,16 @@ func TestRedactText_ConventionalHomeRoots(t *testing.T) {
 			want: "~/.no-mistakes/evidence/run-1/pytest.log",
 		},
 		{
+			name: "json-escaped windows home prefix",
+			in:   `{"path":"C:\\Users\\testuser\\x.log"}`,
+			want: `{"path":"~\\x.log"}`,
+		},
+		{
+			name: "json-escaped windows bare home",
+			in:   `{"path":"C:\\Users\\testuser"}`,
+			want: `{"path":"~"}`,
+		},
+		{
 			name: "bare home directory",
 			in:   "cwd is /home/testuser",
 			want: "cwd is ~",
@@ -137,6 +147,21 @@ func TestRedactText_LeavesUnrelatedTextIntact(t *testing.T) {
 			in:   "see https://api.github.com/users/octocat for the account",
 		},
 		{
+			name: "url with users path after scheme",
+			in:   "fetch https://users/list first",
+		},
+		{
+			name: "url with home path after scheme",
+			in:   "fetch https://home/x first",
+		},
+		{
+			// Deliberate tradeoff: a doubled forward slash before the root is
+			// rare, while accepting it would mangle every https:// URL whose
+			// path starts with users or home.
+			name: "doubled forward slash before home root",
+			in:   "//home/testuser/x",
+		},
+		{
 			name: "project signature url",
 			in:   "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)",
 		},
@@ -198,6 +223,7 @@ func TestRedactText_UnconventionalHomeFromEnvironment(t *testing.T) {
 		{name: "windows redirected profile", home: `D:\profiles\operator`, in: `D:\profiles\operator\.no-mistakes\evidence\x.log`, want: `~\.no-mistakes\evidence\x.log`},
 		{name: "windows redirected profile forward slashes", home: `D:\profiles\operator`, in: "D:/profiles/operator/evidence/x.log", want: "~/evidence/x.log"},
 		{name: "windows redirected profile flag-attached path", home: `D:\profiles\operator`, in: "-LD:/profiles/operator/lib", want: "-L~/lib"},
+		{name: "windows redirected profile json-escaped", home: `D:\profiles\operator`, in: `{"path":"D:\\profiles\\operator\\x.log"}`, want: `{"path":"~\\x.log"}`},
 		// Git Bash, MSYS2, and Cygwin set a POSIX-rooted HOME on Windows, and
 		// captured output from a test run under those shells prints it. The
 		// conventional-root rules cannot see it: the "/Users" in
@@ -274,6 +300,7 @@ func TestRedactText_NeverGrowsTheText(t *testing.T) {
 		"/home/testuser/a",
 		"/Users/testuser",
 		`C:\Users\testuser\a\b`,
+		`C:\\Users\\testuser\\a`,
 		"file:///home/testuser/a",
 		strings.Repeat("/home/testuser/x ", 50),
 		"no paths here at all",
@@ -301,6 +328,7 @@ func TestHomeCandidates_AreSeparatorSpellingIndependent(t *testing.T) {
 			for _, want := range []string{
 				strings.ReplaceAll(home, `\`, "/"),
 				strings.ReplaceAll(home, "/", `\`),
+				strings.ReplaceAll(home, `\`, `\\`),
 			} {
 				if !got[want] {
 					t.Errorf("home %q: candidates %v missing spelling %q", home, got, want)

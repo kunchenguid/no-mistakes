@@ -50,8 +50,15 @@ const Placeholder = "~"
 // rewrite the "/users/" segment of an ordinary URL such as
 // https://api.github.com/users/octocat. "file://" is spelled out for the one
 // case where a slash legitimately precedes the home root.
+//
+// Each separator position also accepts the doubled "\\" that JSON-escaped
+// output prints (C:\\Users\<user>), because captured output routinely embeds
+// JSON. A doubled FORWARD slash is deliberately not a separator: "//" after a
+// scheme colon is a URL authority, so accepting it would rewrite
+// https://users/list as https:~, and leaving the rare //home/<user> spelling
+// intact costs less than mangling every such URL.
 var genericHomePattern = regexp.MustCompile(
-	`(^|-[A-Za-z]|[^A-Za-z0-9_./\\-])((?i:file://)?(?:[A-Za-z]:)?[/\\](?i:home|users)[/\\][^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
+	`(^|-[A-Za-z]|[^A-Za-z0-9_./\\-])((?i:file://)?(?:[A-Za-z]:)?(?:\\\\|[/\\])(?i:home|users)(?:\\\\|[/\\])[^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
 
 // RedactText replaces every absolute home directory path in text with
 // Placeholder. It is unconditional: there is no detect-and-warn mode, because
@@ -109,8 +116,9 @@ func homeCandidates() []string {
 	return out
 }
 
-// addBothSeparatorSpellings registers a candidate written with each separator.
-// Captured output mixes them on Windows, and it also removes the last
+// addBothSeparatorSpellings registers a candidate written with each separator,
+// plus the doubled-backslash spelling JSON-escaped output prints. Captured
+// output mixes them on Windows, and it also removes the last
 // platform-dependent step from candidate resolution: filepath.Clean rewrites
 // separators for the platform the binary was built for, so without this the
 // candidate set - and therefore what gets redacted - would differ between a
@@ -119,6 +127,7 @@ func addBothSeparatorSpellings(add func(string), home string) {
 	add(home)
 	add(strings.ReplaceAll(home, `\`, "/"))
 	add(strings.ReplaceAll(home, "/", `\`))
+	add(strings.ReplaceAll(home, `\`, `\\`))
 }
 
 // usableHomeCandidate rejects values too short or too broad to be a home

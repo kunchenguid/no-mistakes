@@ -2341,3 +2341,88 @@ func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		t.Fatalf("embedded evidence payload was dropped instead of neutralized:\n%s", content.Body)
 	}
 }
+
+// assertFirstAttestationBindsHead mirrors verify.py's parse: the FIRST
+// attestation comment in the body must be the pipeline-authored one carrying
+// the run head, and it must be the only parseable marker in the body.
+func assertFirstAttestationBindsHead(t *testing.T, body, headSHA string) {
+	t.Helper()
+	if n := strings.Count(body, pipelineAttestationCommentPrefix); n != 1 {
+		t.Fatalf("expected exactly one parseable attestation marker, got %d:\n%s", n, body)
+	}
+	start := strings.Index(body, pipelineAttestationCommentPrefix)
+	start += len(pipelineAttestationCommentPrefix)
+	end := strings.Index(body[start:], pipelineAttestationCommentClosingToken)
+	if end < 0 {
+		t.Fatalf("attestation comment is not closed:\n%s", body)
+	}
+	var attestation pipelineAttestation
+	if err := json.Unmarshal([]byte(body[start:start+end]), &attestation); err != nil {
+		t.Fatalf("first attestation does not parse: %v", err)
+	}
+	if attestation.HeadSHA != headSHA {
+		t.Fatalf("first attestation binds %q, want the run head %q", attestation.HeadSHA, headSHA)
+	}
+}
+
+// TestPRStep_AgentBodyAttestationDoesNotShadowTheRealOne extends the guard to
+// the PR-drafting agent's own prose. stripGeneratedSections drops an embedded
+// marker only when the agent wraps it in a "## Pipeline" section; one pasted
+// into the What Changed narrative survives verbatim, precedes the real
+// Pipeline section, and would win the compliance check's first-marker parse.
+func TestPRStep_AgentBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	foreignSHA := strings.Repeat("e", 40)
+	embedded := pipelineAttestationCommentPrefix +
+		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
+		pipelineAttestationCommentClosingToken
+	ag := &mockAgent{
+		name: "pr",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload, err := json.Marshal(prContent{
+				Title: "fix(pipeline): keep the attestation authoritative",
+				Body:  "## What Changed\n\n- reuses an earlier PR body verbatim:\n\n" + embedded,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(payload)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{TestingSummary: "Ran the focused suite."}), "")
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
+	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {
+		t.Fatalf("agent-authored attestation was neither neutralized nor kept readable:\n%s", content.Body)
+	}
+}
+
+// TestFallbackPRBodyAttestationDoesNotShadowTheRealOne covers the fallback
+// body, whose What Changed section embeds the final diff verbatim.
+func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{TestingSummary: "Ran the focused suite."}), "")
+
+	foreignSHA := strings.Repeat("d", 40)
+	embedded := pipelineAttestationCommentPrefix +
+		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
+		pipelineAttestationCommentClosingToken
+
+	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
+	content := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0)
+
+	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
+	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {
+		t.Fatalf("fallback-embedded attestation was neither neutralized nor kept readable:\n%s", content.Body)
+	}
+}
