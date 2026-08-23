@@ -43,6 +43,12 @@ const requiredWorkflowTestHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 // in this repository, so a rename breaks the caller test rather than the fleet.
 const requireActionUsesPrefix = "kunchenguid/no-mistakes/"
 
+// requiredActionPin is the exact commit the gate delegates to. It is
+// deliberately asserted by value, not just by shape: the pin must always name
+// a commit that already carries the action, and bumping it is a separate,
+// deliberate pull request that updates this constant in the same change.
+const requiredActionPin = "32d396ac0f29135daf7fcb9964aba9d5f4e796d6"
+
 var immutableActionPin = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // TestNoMistakesRequiredWorkflowCallsTheSharedActionAtAnImmutablePin pins the
@@ -66,6 +72,9 @@ func TestNoMistakesRequiredWorkflowCallsTheSharedActionAtAnImmutablePin(t *testi
 	}
 	if !immutableActionPin.MatchString(pin) {
 		t.Fatalf("action pinned at %q, want a 40-character commit SHA (never a branch or tag)", pin)
+	}
+	if pin != requiredActionPin {
+		t.Fatalf("action pin changed to %q, want %q; bump it only in a separate deliberate pull request", pin, requiredActionPin)
 	}
 
 	actionPath, ok := strings.CutPrefix(reference, requireActionUsesPrefix)
