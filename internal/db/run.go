@@ -2,12 +2,14 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/committrailer"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -31,6 +33,10 @@ type Run struct {
 	// this run. They remain nil only for runs recorded before these fields.
 	NoMistakesVersion  *string
 	NoMistakesBuildSHA *string
+	// CommitTrailers are explicit per-run commit trailers supplied when the run
+	// was created. They remain empty for historical runs and for runs whose
+	// caller did not supply trailer input.
+	CommitTrailers []committrailer.Trailer
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
@@ -75,20 +81,29 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, COALESCE(commit_trailers, ''), review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
-	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+	var commitTrailersJSON string
+	if err := row.Scan(
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &commitTrailersJSON, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
-	)
+	); err != nil {
+		return err
+	}
+	trailers, err := decodeCommitTrailers(commitTrailersJSON)
+	if err != nil {
+		return err
+	}
+	r.CommitTrailers = trailers
+	return nil
 }
 
 // WorktreePath returns the recorded worktree directory of this run, or "" for
@@ -107,6 +122,17 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
+	return d.InsertRunWithOptions(repoID, branch, headSHA, baseSHA, InsertRunOptions{Intent: intent})
+}
+
+// InsertRunOptions carries optional durable per-run state captured at run
+// creation.
+type InsertRunOptions struct {
+	Intent         *RunIntent
+	CommitTrailers []committrailer.Trailer
+}
+
+func (d *DB) InsertRunWithOptions(repoID, branch, headSHA, baseSHA string, opts InsertRunOptions) (*Run, error) {
 	ts := now()
 	version := buildinfo.CurrentVersion()
 	buildSHA := buildinfo.Commit
@@ -123,20 +149,48 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
 	}
-	if intent != nil {
-		r.Intent = &intent.Summary
-		r.IntentSource = &intent.Source
-		r.IntentSessionID = &intent.SessionID
-		r.IntentScore = &intent.Score
+	if opts.Intent != nil {
+		r.Intent = &opts.Intent.Summary
+		r.IntentSource = &opts.Intent.Source
+		r.IntentSessionID = &opts.Intent.SessionID
+		r.IntentScore = &opts.Intent.Score
 	}
-	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
+	trailers, err := committrailer.Canonicalize(opts.CommitTrailers)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize run commit trailers: %w", err)
+	}
+	r.CommitTrailers = trailers
+	var trailersJSON any
+	if len(trailers) > 0 {
+		encoded, err := json.Marshal(trailers)
+		if err != nil {
+			return nil, fmt.Errorf("encode run commit trailers: %w", err)
+		}
+		trailersJSON = string(encoded)
+	}
+	_, err = d.sql.Exec(
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, commit_trailers, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, trailersJSON, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
+}
+
+func decodeCommitTrailers(raw string) ([]committrailer.Trailer, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var trailers []committrailer.Trailer
+	if err := json.Unmarshal([]byte(raw), &trailers); err != nil {
+		return nil, fmt.Errorf("decode run commit trailers: %w", err)
+	}
+	trailers, err := committrailer.Canonicalize(trailers)
+	if err != nil {
+		return nil, fmt.Errorf("decode run commit trailers: %w", err)
+	}
+	return trailers, nil
 }
 
 // RunWorktree is one run's recorded worktree placement, identified by the run

@@ -165,6 +165,7 @@ Agents can also call `no-mistakes axi` directly:
 
 ```sh
 no-mistakes axi run --intent "the user's goal"
+no-mistakes axi run --intent "the user's goal" --commit-trailer "Co-Authored-By: Name <email>"
 no-mistakes axi status
 no-mistakes axi sync --check
 no-mistakes axi sync
@@ -174,6 +175,9 @@ no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
+
+Use `--commit-trailer` when a repository requires pipeline-generated commits to carry a specific trailer, such as `Co-Authored-By: Name <email>`.
+Repeat the flag for multiple distinct trailers.
 
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.

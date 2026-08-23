@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/committrailer"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -496,12 +498,32 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	trailers, err := committrailer.ParseMany([]string{"Co-Authored-By: Name <name@example.test>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", trailers)
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+	if !reflect.DeepEqual(params.CommitTrailers, trailers) {
+		t.Fatalf("CommitTrailers = %#v, want %#v", params.CommitTrailers, trailers)
+	}
+	if !params.CommitTrailersExplicit {
+		t.Fatal("fresh axi-run fallback params must mark commit trailers explicit")
+	}
+}
+
+func TestRerunParamsFreshTrailerFreeRunDoesNotRequestInheritance(t *testing.T) {
+	params := rerunParams("repo-1", "feature/x", nil, "user goal", nil)
+	if len(params.CommitTrailers) != 0 {
+		t.Fatalf("CommitTrailers = %#v, want empty", params.CommitTrailers)
+	}
+	if !params.CommitTrailersExplicit {
+		t.Fatal("fresh trailer-free axi-run fallback must send an explicit empty trailer list")
 	}
 }
 
@@ -826,7 +848,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", nil); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

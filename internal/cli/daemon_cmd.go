@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/committrailer"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -106,6 +107,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			commitTrailers, err := parseCommitTrailerPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +129,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:           gatePath,
+				Ref:            ref,
+				Old:            oldSHA,
+				New:            newSHA,
+				SkipSteps:      skipSteps,
+				Intent:         intent,
+				CommitTrailers: commitTrailers,
 			}, &result)
 		},
 	}
@@ -193,6 +199,7 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // The value is base64-encoded so multi-line or special-character intents
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
+const commitTrailerPushOptionPrefix = "no-mistakes.commit-trailer="
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
@@ -219,6 +226,40 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+func formatCommitTrailerPushOptions(trailers []committrailer.Trailer) []string {
+	if len(trailers) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(trailers))
+	for _, trailer := range trailers {
+		if trailer.String() == "" {
+			continue
+		}
+		out = append(out, commitTrailerPushOptionPrefix+base64.StdEncoding.EncodeToString([]byte(trailer.String())))
+	}
+	return out
+}
+
+func parseCommitTrailerPushOptions(options []string) ([]committrailer.Trailer, error) {
+	var raw []string
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, commitTrailerPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode commit trailer push option: %w", err)
+		}
+		raw = append(raw, string(decoded))
+	}
+	trailers, err := committrailer.ParseMany(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid commit trailer push option: %w", err)
+	}
+	return trailers, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

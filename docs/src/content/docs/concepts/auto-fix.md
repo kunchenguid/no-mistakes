@@ -105,6 +105,7 @@ It allows a legitimate forward commit made by an agent, but aborts the run if an
 
 The template does not control commits created by the Rebase, CI, or Push steps.
 The CI step uses `no-mistakes: apply CI fixes`, and the Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
+If the run was started with `no-mistakes axi run --commit-trailer "Co-Authored-By: Name <email>"`, the persisted trailer is included when each of those pipeline-generated commits is first created.
 
 ## Step rounds
 

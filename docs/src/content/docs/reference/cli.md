@@ -100,19 +100,28 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --commit-trailer "Co-Authored-By: Name <email>"
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag               | Type       | Default | Description                                                      |
+| ------------------ | ---------- | ------- | ---------------------------------------------------------------- |
+| `--intent`         | `string`   | (none)  | What the user set out to accomplish; required to start a new run |
+| `--commit-trailer` | `[]string` | (none)  | Repeatable `<Token>: <Value>` trailer for pipeline commits       |
+| `-y`, `--yes`      | `bool`     | `false` | Auto-resolve every gate until a decision point or outcome        |
+| `--skip`           | `string`   | (none)  | Comma-separated pipeline steps to skip                           |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+`--commit-trailer` is repeatable and applies only to the run being started.
+For example, Phiora-style attribution can be supplied as `--commit-trailer "Co-Authored-By: Name <email>"`.
+no-mistakes validates trailers before contacting the daemon, persists the canonical list on the run, and passes each trailer to the original git commit command for every pipeline-generated commit.
+Duplicate identical trailers collapse to one entry per commit.
+Malformed trailers, control characters, newlines, empty tokens or values, and option-like tokens or values are rejected.
+If a fresh `axi run` finds the gate branch already at the submitted `HEAD` and internally falls back to rerun creation, the newly supplied trailer list remains authoritative even when it is empty.
+User-initiated reruns still inherit the selected prior run's persisted trailer list unless a future caller supplies a replacement list explicitly.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
