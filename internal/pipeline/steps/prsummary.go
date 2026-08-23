@@ -103,7 +103,14 @@ func BuildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.Ste
 		stepRounds := rounds[sr.ID]
 		line, detail := buildStepEntry(sr, stepRounds, flavor)
 		if line != "" && detail != "" {
-			detailBlocks = append(detailBlocks, detail)
+			// Step details quote agent text (findings, fix summaries, tested
+			// commands). A foreign attestation comment in one lands after the
+			// real marker so verify.py's first-match still resolves correctly,
+			// but keeping exactly one live marker in the body is the invariant
+			// worth holding: it survives any future reordering of this section
+			// and is what the regression asserts. The real attestation is
+			// emitted separately by buildPipelineAttestation and is untouched.
+			detailBlocks = append(detailBlocks, neutralizeAttestationMarkers(detail))
 		}
 	}
 

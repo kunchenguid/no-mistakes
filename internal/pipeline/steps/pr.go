@@ -372,7 +372,9 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
-	cleaned := cleanedUserIntent(sctx)
+	// Neutralized for the same reason as in prependIntentSection: intent is
+	// agent-extracted text placed ahead of the pipeline section.
+	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
 	if cleaned == "" {
 		return sections
 	}
@@ -400,7 +402,28 @@ func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD st
 	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes)
 }
 
+// appendGeneratedSectionsToCleanBodyWithinLimit is the single choke point that
+// decides which attestation comment a body consumer sees.
+//
+// pipelineMD carries the run's real attestation. Every other component -
+// what-changed, intent, risk, and above all the Testing section, which embeds
+// artifact captions, captured output, and whole files read from the evidence
+// directory - is agent-derived and can carry a foreign attestation comment. The
+// compliance check (.github/actions/require-no-mistakes/verify.py) scans the raw
+// body and binds the FIRST marker it finds to the PR head, so a foreign copy
+// placed before pipelineMD fails a PR the pipeline did produce.
+//
+// The neutralization is applied HERE rather than at each render path on
+// purpose. The first attempt at this fix escaped the marker inside
+// escapePipelineFoldMarkers, which is per-render-path; it neutralized the
+// artifact-fence and tested-detail copies and missed another path, and PR #831
+// still shipped three live foreign markers ahead of the real one. Fencing is no
+// defense either - verify.py reads raw text, so a marker inside a ```text block
+// counts exactly the same.
 func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD string, maxBytes int) string {
+	body = neutralizeAttestationMarkers(body)
+	riskLine = neutralizeAttestationMarkers(riskLine)
+	testingMD = neutralizeAttestationMarkers(testingMD)
 	generatedSections := generatedEssentialSections(riskLine, testingMD)
 	prefix := body + generatedSections
 	if pipelineMD == "" {
@@ -1106,7 +1129,10 @@ func isGeneratedSectionHeading(line string) bool {
 // rather than being paraphrased by the agent. Returns body unchanged when
 // no intent is available.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
-	cleaned := cleanedUserIntent(sctx)
+	// Intent is agent-extracted text that lands ahead of the pipeline section,
+	// so it can shadow the real attestation the same way the Testing section
+	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
+	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
 	if cleaned == "" {
 		return body
 	}
