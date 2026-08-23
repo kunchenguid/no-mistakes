@@ -256,26 +256,8 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 		t.Fatalf("expected approval outcome, got error: %v", err)
 	}
 	assertCIRestartsValidation(t, outcome, err)
-	return
-
-	// Agent should have been called exactly once (limit is 1)
 	if fixCount != 1 {
 		t.Errorf("expected 1 auto-fix attempt (limit=1), got %d", fixCount)
-	}
-	if pollCount != 1 {
-		t.Errorf("expected 1 poll wait before limit-exhausted outcome, got %d", pollCount)
-	}
-
-	// Should log that max attempts reached on subsequent poll
-	foundExhausted := false
-	for _, l := range logs {
-		if strings.Contains(l, "max auto-fix attempts") {
-			foundExhausted = true
-			break
-		}
-	}
-	if !foundExhausted {
-		t.Errorf("expected 'max auto-fix attempts' in logs, got: %v", logs)
 	}
 }
 
@@ -348,21 +330,6 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
-	}
-	return
-	if pollCount != 4 {
-		t.Fatalf("expected 4 poll waits across reruns and retries, got %d", pollCount)
-	}
-
-	foundExhausted := false
-	for _, l := range logs {
-		if strings.Contains(l, "max auto-fix attempts (2) reached") {
-			foundExhausted = true
-			break
-		}
-	}
-	if !foundExhausted {
-		t.Fatalf("expected max-attempts log after rerun-backed retries, got: %v", logs)
 	}
 }
 
@@ -524,18 +491,6 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	if fixCount != 1 {
 		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
 	}
-	return
-
-	foundExhausted := false
-	for _, l := range logs {
-		if strings.Contains(l, "max auto-fix attempts (2) reached") {
-			foundExhausted = true
-			break
-		}
-	}
-	if !foundExhausted {
-		t.Fatalf("expected max-attempts log after completedAt-backed retries, got: %v", logs)
-	}
 }
 
 // TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing reproduces the real-world
@@ -615,18 +570,6 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
-	}
-	return
-
-	foundExhausted := false
-	for _, l := range logs {
-		if strings.Contains(l, "max auto-fix attempts (2) reached") {
-			foundExhausted = true
-			break
-		}
-	}
-	if !foundExhausted {
-		t.Fatalf("expected max-attempts log after rerun-backed retries, got: %v", logs)
 	}
 }
 
@@ -774,18 +717,6 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	assertCIRestartsValidation(t, outcome, err)
 	if fixCount != 1 {
 		t.Fatalf("expected one local repair before revalidation, got %d", fixCount)
-	}
-	return
-
-	foundExhausted := false
-	for _, l := range logs {
-		if strings.Contains(l, "max auto-fix attempts (2) reached") {
-			foundExhausted = true
-			break
-		}
-	}
-	if !foundExhausted {
-		t.Fatalf("expected max-attempts log after conflict rerun-backed retries, got: %v", logs)
 	}
 }
 
