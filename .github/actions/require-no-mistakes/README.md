@@ -112,13 +112,21 @@ of scope for this action.
 
 ## Rollout
 
-This repository's own gate (`.github/workflows/no-mistakes-required.yml`) still
-runs the inline enforcement it was extracted from. GitHub downloads `uses:`
-actions at job setup, so a caller pinned to a tag that predates this action
-fails closed on every pull request. The flip waits for the first release that
-contains the action and then pins exactly that tag, which is what stops a pull
-request that edits the action from certifying itself. Migrating the other
-enforcing repositories follows the same rule: pin a released tag or SHA.
+This repository's own gate (`.github/workflows/no-mistakes-required.yml`) is a
+thin caller of this action, pinned to the commit that first published it. GitHub
+downloads `uses:` actions at job setup, so the pin must always name a ref that
+already carries the action; a caller pinned to a tag that predates it fails
+closed on every pull request.
+
+Pinning the gate to an already-published commit is the self-certification guard.
+A pull request that edits this action is fully **tested** on its own head - the
+repository's Go tests execute `verify.py` from the working tree - while the
+required check judging that pull request keeps running the released copy. The
+gate is therefore never rewritten by the change it is judging. Bumping the pin
+is a deliberate, separate pull request.
+
+Migrating the other enforcing repositories follows the same rule: pin a released
+tag or a commit SHA, never `@main`.
 
 ## Behavior is pinned by tests
 

@@ -1,10 +1,11 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,16 +18,75 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// This repository's own gate is a thin caller of the shared composite action in
+// .github/actions/require-no-mistakes. The verdict surface itself is owned by
+// require_no_mistakes_action_test.go, which executes verify.py directly; the
+// tests here own the CALLER: its pin, its exemptions, its triggers, its
+// concurrency identity, its fork boundary, and the fact that its wiring
+// actually reaches a verdict.
+//
+// The published workflow pins an immutable upstream SHA, but these tests run
+// the action from the WORKING TREE. That asymmetry is deliberate and is what
+// makes the pin a self-certification guard: a pull request that edits the
+// action is fully tested here on its own head, while the required check that
+// judges it keeps running the already-released copy.
+
 // requiredWorkflowTestHeadSHA is the commit the generated pipeline summary
-// attestation binds to. Tests that execute the workflow script pass the same
-// value as PR_HEAD_SHA unless they are asserting a mismatch.
+// attestation binds to. Tests that execute the gate pass the same value as the
+// PR head SHA unless they are asserting a mismatch.
 const requiredWorkflowTestHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+
+// requireActionUsesPrefix is the `uses:` prefix every enforcing repository in
+// the fleet points at. The path after it must resolve to the action directory
+// in this repository, so a rename breaks the caller test rather than the fleet.
+const requireActionUsesPrefix = "kunchenguid/no-mistakes/"
+
+var immutableActionPin = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// TestNoMistakesRequiredWorkflowCallsTheSharedActionAtAnImmutablePin pins the
+// migration this repository dogfoods for the whole fleet: the gate delegates to
+// the shared action rather than carrying its own copy of the enforcement, and
+// it names a 40-character commit SHA. A mutable ref - `@main` above all - would
+// let the pull request under judgement rewrite its own judge.
+func TestNoMistakesRequiredWorkflowCallsTheSharedActionAtAnImmutablePin(t *testing.T) {
+	step := requiredWorkflowCheckStep(t, loadRequiredWorkflow(t))
+
+	if step.Run != "" {
+		t.Fatalf("check step still carries inline enforcement:\n%s", step.Run)
+	}
+	if step.Uses == "" {
+		t.Fatal("check step must delegate to the shared action via uses:")
+	}
+
+	reference, pin, ok := strings.Cut(step.Uses, "@")
+	if !ok {
+		t.Fatalf("uses: %q carries no ref; the action must be pinned", step.Uses)
+	}
+	if !immutableActionPin.MatchString(pin) {
+		t.Fatalf("action pinned at %q, want a 40-character commit SHA (never a branch or tag)", pin)
+	}
+
+	actionPath, ok := strings.CutPrefix(reference, requireActionUsesPrefix)
+	if !ok {
+		t.Fatalf("uses: %q does not reference %s", step.Uses, requireActionUsesPrefix)
+	}
+	if actionPath != requireActionDir {
+		t.Fatalf("uses: points at %q, want the action directory %q", actionPath, requireActionDir)
+	}
+	if _, err := os.Stat(filepath.Join(actionPath, "action.yml")); err != nil {
+		t.Fatalf("pinned action path does not resolve in this repository: %v", err)
+	}
+}
 
 // TestNoMistakesRequiredWorkflowExemptsReleaseAutomation pins the exemption
 // logic so the release pipeline (release-please via GITHUB_TOKEN) and
 // dependabot are never silently blocked by the gate.
+//
+// These stay job-level rather than moving to the action's exempt-authors input:
+// an in-job exemption still needs the run to start, and a GITHUB_TOKEN pull
+// request's run is created in action_required and never starts.
 func TestNoMistakesRequiredWorkflowExemptsReleaseAutomation(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
+	data, err := os.ReadFile(requiredWorkflowPath)
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
@@ -42,51 +102,6 @@ func TestNoMistakesRequiredWorkflowExemptsReleaseAutomation(t *testing.T) {
 		if !strings.Contains(content, needle) {
 			t.Errorf("workflow must exempt %q via %q", login, needle)
 		}
-	}
-}
-
-// TestNoMistakesRequiredWorkflowChecksSignatureMarker pins the exact signature
-// string the check greps for. It must match the literal line produced by
-// internal/pipeline/steps/prsummary.go when building the Pipeline section.
-func TestNoMistakesRequiredWorkflowChecksSignatureMarker(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-
-	marker := "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
-	if !strings.Contains(content, marker) {
-		t.Fatalf("workflow must grep for the prsummary.go signature marker:\n  %s", marker)
-	}
-
-	summary, err := os.ReadFile("internal/pipeline/steps/prsummary.go")
-	if err != nil {
-		t.Fatalf("read prsummary.go: %v", err)
-	}
-	if !strings.Contains(string(summary), marker) {
-		t.Fatalf("prsummary.go no longer writes the expected marker; update both files in sync")
-	}
-}
-
-// TestNoMistakesRequiredWorkflowReadsPRBodyViaEnv pins the shell-injection-safe
-// pattern: the PR body must be piped through an env var, not interpolated
-// directly into the shell script body.
-func TestNoMistakesRequiredWorkflowReadsPRBodyViaEnv(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-
-	if !strings.Contains(content, "PR_BODY: ${{ github.event.pull_request.body }}") {
-		t.Errorf("workflow must expose PR body via the PR_BODY env var")
-	}
-	if !strings.Contains(content, "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}") {
-		t.Errorf("workflow must expose PR head SHA via the PR_HEAD_SHA env var")
-	}
-	if strings.Contains(content, "${{ github.event.pull_request.body }}\n          run:") {
-		t.Errorf("workflow must not interpolate PR body directly into run: script (injection risk)")
 	}
 }
 
@@ -145,8 +160,12 @@ func requiredWorkflowPullRequestTypes(t *testing.T, workflow requiredWorkflow) [
 // documented one-running/one-pending concurrency limit, including pending-run
 // replacement even when cancel-in-progress is false, and the exact
 // cancel-in-progress ordering observed in runs 29962844999, 29962943078, and
-// 29965243268. It then executes the workflow's real shell step for every job
+// 29965243268. It then drives the check job's real delegation for every job
 // that survives scheduling.
+//
+// This is also the caller's end-to-end wiring test: the workflow forwards no
+// pr-* inputs, so a verdict only appears if the action really does read the
+// body and head SHA out of the workflow event payload.
 func TestNoMistakesRequiredWorkflowExecutesEveryBodyEvent(t *testing.T) {
 	workflow := loadRequiredWorkflow(t)
 	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
@@ -167,164 +186,27 @@ func TestNoMistakesRequiredWorkflowExecutesEveryBodyEvent(t *testing.T) {
 	}
 }
 
-func TestNoMistakesRequiredWorkflowEnforcesPipelineAttestation(t *testing.T) {
+// TestNoMistakesRequiredWorkflowBindsAttestationToTheEventHead keeps the one
+// verdict that is genuinely a property of the caller's wiring rather than of
+// verify.py: the head SHA the gate judges against comes from the event payload
+// this workflow subscribes to, so a body carrying an older attestation fails
+// even though it is otherwise well-formed. Every other verdict is owned by
+// TestRequireActionEnforcesTheGate against the same interpreter.
+func TestNoMistakesRequiredWorkflowBindsAttestationToTheEventHead(t *testing.T) {
 	workflow := loadRequiredWorkflow(t)
-	script := requiredWorkflowRunScript(t, workflow)
-	signature := "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	staleHead := "ffffffffffffffffffffffffffffffffffffffff"
 
-	tests := []struct {
-		name       string
-		body       string
-		headSHA    string
-		want       string
-		wantOut    []string
-		notWantOut []string
-	}{
-		{
-			name:    "missing signature",
-			body:    "a regular pull request",
-			want:    "failure",
-			wantOut: []string{"This PR was not raised through no-mistakes.", "git push no-mistakes", "CONTRIBUTING.md"},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
-		{
-			name: "signature without attestation",
-			body: "## Pipeline\n\n" + signature + "\n",
-			want: "failure",
-			wantOut: []string{
-				">= 1.46.0",
-				"https://github.com/kunchenguid/no-mistakes/pull/670",
-				"only writes the signature",
-			},
-		},
-		{
-			name: "unparseable attestation JSON",
-			body: "## Pipeline\n\n" + signature + "\n\n<!-- no-mistakes-pipeline-attestation:v1 {not-json} -->\n",
-			want: "failure",
-			wantOut: []string{
-				">= 1.46.0",
-				"https://github.com/kunchenguid/no-mistakes/pull/670",
-				"only writes the signature",
-			},
-		},
-		{
-			name: "attestation missing required JSON fields",
-			body: "## Pipeline\n\n" + signature + "\n\n<!-- no-mistakes-pipeline-attestation:v1 {\"steps\":[]} -->\n",
-			want: "failure",
-			wantOut: []string{
-				">= 1.46.0",
-				"https://github.com/kunchenguid/no-mistakes/pull/670",
-			},
-		},
-		{
-			name: "quota skip on document is non-compliant",
-			body: pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusSkipped),
-			want: "failure",
-			wantOut: []string{
-				"document",
-				"skipped",
-			},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
-		{
-			name: "failed test is non-compliant",
-			body: pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusFailed, types.StepStatusCompleted),
-			want: "failure",
-			wantOut: []string{
-				"test",
-				"failed",
-			},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
-		{
-			name:    "missing review step is non-compliant",
-			body:    "## Pipeline\n\n" + signature + "\n\n<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"abc\",\"steps\":[{\"step\":\"test\",\"status\":\"completed\"},{\"step\":\"document\",\"status\":\"completed\"}]} -->\n",
-			headSHA: "abc",
-			want:    "failure",
-			wantOut: []string{
-				"review",
-				"missing",
-			},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
-		{
-			name: "pending review is non-compliant",
-			body: pipelineSummaryWithStatuses(t, types.StepStatusPending, types.StepStatusCompleted, types.StepStatusCompleted),
-			want: "failure",
-			wantOut: []string{
-				"review",
-				"pending",
-			},
-		},
-		{
-			name: "running test is non-compliant",
-			body: pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusRunning, types.StepStatusCompleted),
-			want: "failure",
-			wantOut: []string{
-				"test",
-				"running",
-			},
-		},
-		{
-			name:    "generated compliant attestation passes",
-			body:    pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted),
-			want:    "success",
-			wantOut: []string{"Found no-mistakes signature"},
-		},
-		{
-			name: "empty attestation head_sha is non-compliant",
-			body: "## Pipeline\n\n" + signature + "\n\n<!-- no-mistakes-pipeline-attestation:v1 {\"head_sha\":\"\",\"steps\":[{\"step\":\"review\",\"status\":\"completed\"},{\"step\":\"test\",\"status\":\"completed\"},{\"step\":\"document\",\"status\":\"completed\"}]} -->\n",
-			want: "failure",
-			wantOut: []string{
-				"head_sha",
-				"does not match",
-			},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
-		{
-			name:    "attestation head_sha that does not match the PR head is non-compliant",
-			body:    pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted),
-			headSHA: "ffffffffffffffffffffffffffffffffffffffff",
-			want:    "failure",
-			wantOut: []string{
-				"head_sha",
-				"does not match",
-				requiredWorkflowTestHeadSHA,
-				"ffffffffffffffffffffffffffffffffffffffff",
-			},
-			notWantOut: []string{
-				">= 1.46.0",
-			},
-		},
+	conclusion, output := runRequiredWorkflowCheckJob(t, workflow, requiredWorkflowEvent{
+		Action: "edited", Body: compliant, HeadSHA: staleHead, PRNumber: 549,
+	})
+	if conclusion != "failure" {
+		t.Fatalf("conclusion = %q, want failure for an attestation bound to another head\n%s", conclusion, output)
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			conclusion, output := runRequiredWorkflowStep(t, script, tc.body, tc.headSHA)
-			if conclusion != tc.want {
-				t.Fatalf("conclusion = %q, want %q\n%s", conclusion, tc.want, output)
-			}
-			for _, want := range tc.wantOut {
-				if !strings.Contains(output, want) {
-					t.Errorf("output does not contain %q:\n%s", want, output)
-				}
-			}
-			for _, notWant := range tc.notWantOut {
-				if strings.Contains(output, notWant) {
-					t.Errorf("output unexpectedly contains %q:\n%s", notWant, output)
-				}
-			}
-		})
+	for _, want := range []string{"head_sha", "does not match", requiredWorkflowTestHeadSHA, staleHead} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output does not contain %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -399,7 +281,7 @@ func TestNoMistakesRequiredWorkflowKeepsForkBoundaryReadOnly(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
+	data, err := os.ReadFile(requiredWorkflowPath)
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
@@ -411,6 +293,8 @@ func TestNoMistakesRequiredWorkflowKeepsForkBoundaryReadOnly(t *testing.T) {
 		t.Fatal("required workflow must not check out or execute fork code")
 	}
 }
+
+const requiredWorkflowPath = ".github/workflows/no-mistakes-required.yml"
 
 type requiredWorkflow struct {
 	RunName     string                         `yaml:"run-name"`
@@ -431,17 +315,21 @@ type requiredWorkflowJob struct {
 }
 
 type requiredWorkflowStep struct {
-	Name string `yaml:"name"`
-	Run  string `yaml:"run"`
+	Name string            `yaml:"name"`
+	Uses string            `yaml:"uses"`
+	With map[string]string `yaml:"with"`
+	Run  string            `yaml:"run"`
 }
 
 type requiredWorkflowEvent struct {
 	Action    string
 	Body      string
 	HeadSHA   string
+	HeadRef   string
 	PRNumber  int64
 	RunID     int64
 	RunNumber int64
+	Author    string
 }
 
 type requiredWorkflowResult struct {
@@ -454,7 +342,7 @@ type requiredWorkflowResult struct {
 
 func loadRequiredWorkflow(t *testing.T) requiredWorkflow {
 	t.Helper()
-	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
+	data, err := os.ReadFile(requiredWorkflowPath)
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
@@ -492,7 +380,6 @@ func executeRequiredWorkflowFixture(t *testing.T, workflow requiredWorkflow, eve
 		}
 	}
 
-	script := requiredWorkflowRunScript(t, workflow)
 	results := make([]requiredWorkflowResult, len(events))
 	for i, event := range events {
 		result := requiredWorkflowResult{RunID: event.RunID, RunNumber: event.RunNumber, Action: event.Action}
@@ -502,7 +389,7 @@ func executeRequiredWorkflowFixture(t *testing.T, workflow requiredWorkflow, eve
 			continue
 		}
 
-		conclusion, output := runRequiredWorkflowStep(t, script, event.Body, event.HeadSHA)
+		conclusion, output := runRequiredWorkflowCheckJob(t, workflow, event)
 		result.Executed = true
 		result.Conclusion = conclusion
 		if conclusion != "success" && conclusion != "failure" {
@@ -513,39 +400,90 @@ func executeRequiredWorkflowFixture(t *testing.T, workflow requiredWorkflow, eve
 	return results
 }
 
-func requiredWorkflowRunScript(t *testing.T, workflow requiredWorkflow) string {
+// requiredWorkflowCheckStep returns the check job's single step, so a second
+// step smuggled into the gate is caught rather than silently ignored.
+func requiredWorkflowCheckStep(t *testing.T, workflow requiredWorkflow) requiredWorkflowStep {
 	t.Helper()
 	job, ok := workflow.Jobs["check"]
-	if !ok || len(job.Steps) == 0 || job.Steps[0].Run == "" {
-		t.Fatal("required workflow is missing the check job run script")
+	if !ok {
+		t.Fatal("required workflow is missing the check job")
 	}
-	return job.Steps[0].Run
+	if len(job.Steps) != 1 {
+		t.Fatalf("check job has %d steps, want exactly the shared-action call", len(job.Steps))
+	}
+	return job.Steps[0]
 }
 
-func runRequiredWorkflowStep(t *testing.T, runScript, body, headSHA string) (conclusion, output string) {
+// runRequiredWorkflowCheckJob drives the check job the way a runner does: it
+// resolves the action the workflow delegates to, forwards the step's `with:`
+// inputs under the env names the action maps them to, and hands the action a
+// real workflow event payload for every PR fact the caller does not pass.
+func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event requiredWorkflowEvent) (conclusion, output string) {
 	t.Helper()
+	step := requiredWorkflowCheckStep(t, workflow)
+	reference, _, _ := strings.Cut(step.Uses, "@")
+	actionPath, ok := strings.CutPrefix(reference, requireActionUsesPrefix)
+	if !ok || actionPath != requireActionDir {
+		t.Fatalf("check step uses %q, want the shared action in this repository", step.Uses)
+	}
+
+	headSHA := event.HeadSHA
 	if headSHA == "" {
 		headSHA = requiredWorkflowTestHeadSHA
 	}
-	cmd := exec.Command("bash", "-c", runScript)
-	cmd.Env = append(os.Environ(),
-		"PR_BODY="+body,
-		"PR_HEAD_SHA="+headSHA,
-		"PR_AUTHOR=first-time-fork-contributor",
-		"PR_NUMBER=549",
-	)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	if err == nil {
-		return "success", buf.String()
+	author := event.Author
+	if author == "" {
+		author = "first-time-fork-contributor"
 	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return "failure", buf.String()
+	prNumber := event.PRNumber
+	if prNumber == 0 {
+		prNumber = 549
 	}
-	t.Fatalf("execute compliance step: %v\n%s", err, buf.String())
-	return "", ""
+
+	payload := map[string]any{
+		"pull_request": map[string]any{
+			"body":   event.Body,
+			"number": prNumber,
+			"head":   map[string]any{"sha": headSHA, "ref": event.HeadRef},
+			"user":   map[string]any{"login": author},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal event payload: %v", err)
+	}
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(eventPath, raw, 0o644); err != nil {
+		t.Fatalf("write event payload: %v", err)
+	}
+
+	inputEnv := map[string]string{
+		"pr-body":              "PR_BODY",
+		"pr-head-sha":          "PR_HEAD_SHA",
+		"pr-head-ref":          "PR_HEAD_REF",
+		"pr-author":            "PR_AUTHOR",
+		"pr-number":            "PR_NUMBER",
+		"exempt-authors":       "NM_EXEMPT_AUTHORS",
+		"exempt-bot-authors":   "NM_EXEMPT_BOT_AUTHORS",
+		"exempt-head-branches": "NM_EXEMPT_HEAD_BRANCHES",
+	}
+	run := actionRun{eventPath: eventPath}
+	assign := map[string]*string{
+		"PR_BODY": &run.body, "PR_HEAD_SHA": &run.headSHA, "PR_HEAD_REF": &run.headRef,
+		"PR_AUTHOR": &run.author, "PR_NUMBER": &run.number,
+		"NM_EXEMPT_AUTHORS": &run.exemptUsers, "NM_EXEMPT_BOT_AUTHORS": &run.exemptBots,
+		"NM_EXEMPT_HEAD_BRANCHES": &run.exemptRefs,
+	}
+	for input, value := range step.With {
+		name, known := inputEnv[input]
+		if !known {
+			t.Fatalf("check step passes unknown action input %q", input)
+		}
+		*assign[name] = value
+	}
+
+	result := runRequireAction(t, run)
+	return result.conclusion, result.output
 }
 
 func pipelineSummaryWithStatuses(t *testing.T, review, testStep, document types.StepStatus) string {

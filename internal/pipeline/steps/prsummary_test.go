@@ -16,15 +16,19 @@ import (
 
 const testPipelineHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 
-func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
+// TestNoMistakesRequiredGateChecksPipelineSignature keeps the generator and the
+// gate that judges its output in sync from the generator's side. The gate is no
+// longer inline in the workflow: every enforcing repository now calls the shared
+// composite action, so the signature the gate greps for lives in verify.py.
+func TestNoMistakesRequiredGateChecksPipelineSignature(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "workflows", "no-mistakes-required.yml"))
+	gate, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "actions", "require-no-mistakes", "verify.py"))
 	if err != nil {
-		t.Fatalf("read required workflow: %v", err)
+		t.Fatalf("read shared enforcement action: %v", err)
 	}
-	if !strings.Contains(string(workflow), "marker='"+noMistakesPRSignature+"'") {
-		t.Fatalf("required workflow does not check the generated PR signature %q", noMistakesPRSignature)
+	if !strings.Contains(string(gate), `"`+noMistakesPRSignature+`"`) {
+		t.Fatalf("shared enforcement action does not check the generated PR signature %q", noMistakesPRSignature)
 	}
 }
 
