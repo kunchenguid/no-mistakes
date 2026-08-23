@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.58.1](https://github.com/kunchenguid/no-mistakes/compare/v1.58.0...v1.58.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **pipeline:** redact home-directory paths from published PR content ([#831](https://github.com/kunchenguid/no-mistakes/issues/831)) ([c878873](https://github.com/kunchenguid/no-mistakes/commit/c878873c5573a7cff6ed8b780eb0e1c53a8d8fc7))
+* **pipeline:** revalidate CI repairs before push ([#827](https://github.com/kunchenguid/no-mistakes/issues/827)) ([8dc5c15](https://github.com/kunchenguid/no-mistakes/commit/8dc5c158f8b43612c51911c2d7b58ac18356792e))
+
 ## [1.58.0](https://github.com/kunchenguid/no-mistakes/compare/v1.57.1...v1.58.0) (2026-08-23)
 
 
