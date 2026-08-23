@@ -35,13 +35,15 @@ const Placeholder = "~"
 // consumed, so the rest of the path survives and the result still reads as a
 // path.
 //
-// The leading group is the byte before the match, re-emitted unchanged. It
-// exists because RE2 has no lookbehind and the alternative - allowing any
-// preceding byte - would rewrite the "/users/" segment of an ordinary URL such
-// as https://api.github.com/users/octocat. "file://" is spelled out for the one
+// The leading group is what precedes the match, re-emitted unchanged: a single
+// boundary byte - which may be the ':' of a colon-separated list - or a
+// one-letter flag prefix such as "-I" glued to the path. It exists because RE2
+// has no lookbehind and the alternative - allowing any preceding bytes - would
+// rewrite the "/users/" segment of an ordinary URL such as
+// https://api.github.com/users/octocat. "file://" is spelled out for the one
 // case where a slash legitimately precedes the home root.
 var genericHomePattern = regexp.MustCompile(
-	`(^|[^A-Za-z0-9_.:/\\-])((?i:file://)?(?:[A-Za-z]:)?[/\\](?i:home|users)[/\\][^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
+	`(^|-[A-Za-z]|[^A-Za-z0-9_./\\-])((?i:file://)?(?:[A-Za-z]:)?[/\\](?i:home|users)[/\\][^/\\\s"'` + "`" + `<>()\[\]{},;:&|*?]+)`)
 
 // RedactText replaces every absolute home directory path in text with
 // Placeholder. It is unconditional: there is no detect-and-warn mode, because
@@ -188,7 +190,7 @@ func boundaryBefore(text string, i int) bool {
 	case c == '/':
 		// The one slash that legitimately precedes an absolute path.
 		return strings.HasSuffix(text[:i], "://")
-	case c == '\\' || c == ':' || isPathNameByte(c):
+	case c == '\\' || isPathNameByte(c):
 		return false
 	default:
 		return true

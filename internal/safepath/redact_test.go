@@ -78,6 +78,21 @@ func TestRedactText_ConventionalHomeRoots(t *testing.T) {
 			want: "--basetemp=~/tmp/pytest-of-testuser",
 		},
 		{
+			name: "colon-separated path entries",
+			in:   "PATH=/home/testuser/bin:/home/testuser/go/bin",
+			want: "PATH=~/bin:~/go/bin",
+		},
+		{
+			name: "docker bind target",
+			in:   "-v /data:/home/testuser/app",
+			want: "-v /data:~/app",
+		},
+		{
+			name: "include-flag-attached path",
+			in:   "-I/home/testuser/include",
+			want: "-I~/include",
+		},
+		{
 			name: "every occurrence, not just the first",
 			in: "rootdir: /home/testuser/svc\n" +
 				"cachedir: /home/testuser/svc/.pytest_cache\n" +
@@ -130,6 +145,10 @@ func TestRedactText_LeavesUnrelatedTextIntact(t *testing.T) {
 			in:   "internal/pipeline/steps/prsummary.go:118",
 		},
 		{
+			name: "repo-relative path with users segment and line suffix",
+			in:   "src/users/service.ts:42",
+		},
+		{
 			name: "system path with no home root",
 			in:   "/usr/local/go/bin/go test ./...",
 		},
@@ -172,6 +191,7 @@ func TestRedactText_UnconventionalHomeFromEnvironment(t *testing.T) {
 		{name: "posix sibling directory is not the home", home: "/srv/nm-operator", in: "/srv/nm-operator-backup/x", want: "/srv/nm-operator-backup/x"},
 		{name: "posix suffix match is not a prefix match", home: "/srv/nm-operator", in: "/opt/srv/nm-operator/x", want: "/opt/srv/nm-operator/x"},
 		{name: "posix repeated", home: "/srv/nm-operator", in: "/srv/nm-operator/a and /srv/nm-operator/b", want: "~/a and ~/b"},
+		{name: "posix colon-separated path entries", home: "/srv/nm-operator", in: "PATH=/srv/nm-operator/bin:/srv/nm-operator/go/bin", want: "PATH=~/bin:~/go/bin"},
 		// A redirected Windows profile: absolute, but not under C:\Users, so
 		// only the process's own home can catch it.
 		{name: "windows redirected profile", home: `D:\profiles\operator`, in: `D:\profiles\operator\.no-mistakes\evidence\x.log`, want: `~\.no-mistakes\evidence\x.log`},
