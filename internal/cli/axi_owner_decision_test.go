@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,13 @@ func TestOwnerDecisionSignIsOfflineAndBindsExportedChallenge(t *testing.T) {
 	var output bytes.Buffer
 	cmd.SetOut(&output)
 	cmd.SetArgs([]string{"--challenge-file", challengePath, "--private-key", privatePath, "--action", "approve", "--out", decisionPath})
+	if runtime.GOOS == "windows" {
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
+			t.Fatalf("Windows signer refusal = %v", err)
+		}
+		return
+	}
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +119,13 @@ func TestCheckpointSigningKeepsHistoryHeadUnchanged(t *testing.T) {
 	var output bytes.Buffer
 	cmd.SetOut(&output)
 	cmd.SetArgs([]string{"--challenge-file", challengePath, "--private-key", privatePath, "--out", decisionPath})
+	if runtime.GOOS == "windows" {
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
+			t.Fatalf("Windows checkpoint signer refusal = %v", err)
+		}
+		return
+	}
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +144,12 @@ func TestOwnerPrivateKeyReadRequiresPinnedOwnerOnlyRegularFile(t *testing.T) {
 	good := filepath.Join(dir, "good.key")
 	if err := os.WriteFile(good, []byte(encoded+"\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := readOwnerPrivateKey(good); err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
+			t.Fatalf("Windows private-key refusal = %v", err)
+		}
+		return
 	}
 	if loaded, err := readOwnerPrivateKey(good); err != nil || !bytes.Equal(loaded, privateKey) {
 		t.Fatalf("secure key read = %v, %v", loaded, err)
@@ -221,7 +242,7 @@ func TestOwnerDecisionKeygenCreatesPrivate0600AndNeverOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if privateInfo.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && privateInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("private key mode = %o", privateInfo.Mode().Perm())
 	}
 	privateBefore, _ := os.ReadFile(privatePath)

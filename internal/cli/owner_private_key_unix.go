@@ -10,8 +10,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxOwnerPrivateKeyBytes = 4096
-
 // readOwnerPrivateKeyFile opens the final path without following a symlink and
 // validates the already-open descriptor before reading. This keeps an offline
 // signer from silently consuming a key redirected through a workload-writable
