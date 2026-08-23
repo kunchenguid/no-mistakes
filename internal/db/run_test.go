@@ -807,8 +807,25 @@ func TestUpdateRunHeadSHA(t *testing.T) {
 	if got.HeadSHA != "xyz" {
 		t.Errorf("head sha = %q, want %q", got.HeadSHA, "xyz")
 	}
-	if got.ReviewApprovedHeadSHA != nil {
-		t.Fatalf("head update retained stale review authority: %#v", got.ReviewApprovedHeadSHA)
+	if got.ReviewApprovedHeadSHA == nil || *got.ReviewApprovedHeadSHA != "abc" {
+		t.Fatalf("ordinary head update cleared review authority: %#v", got.ReviewApprovedHeadSHA)
+	}
+}
+
+func TestUpdateRunHeadSHAForRevalidationClearsReviewAuthority(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "abc"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.UpdateRunHeadSHAForRevalidation(run.ID, "xyz"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != "xyz" || got.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("revalidation head update = %#v, want head xyz without review authority", got)
 	}
 }
 

@@ -605,11 +605,19 @@ func (d *DB) SetRunWorktreeDir(id, dir string) error {
 
 // UpdateRunHeadSHA updates the run head SHA and timestamp.
 func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
-	// Any new head must earn review authority again before the push step can
-	// publish it. Keeping the old binding would certify a different commit.
-	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, review_approved_head_sha = NULL, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run head sha: %w", err)
+	}
+	return nil
+}
+
+// UpdateRunHeadSHAForRevalidation records a late repair while revoking the
+// previous review binding so the repaired head must pass review before push.
+func (d *DB) UpdateRunHeadSHAForRevalidation(id, headSHA string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, review_approved_head_sha = NULL, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	if err != nil {
+		return fmt.Errorf("update run head sha for revalidation: %w", err)
 	}
 	return nil
 }

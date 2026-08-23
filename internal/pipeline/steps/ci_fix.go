@@ -170,7 +170,7 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = headSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	if err := sctx.DB.UpdateRunHeadSHAForRevalidation(sctx.Run.ID, headSHA); err != nil {
 		return false, err
 	}
 	sctx.Run.ReviewApprovedHeadSHA = nil
