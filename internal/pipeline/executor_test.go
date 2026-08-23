@@ -154,6 +154,7 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	}}
 	steps := []Step{review, newPassStep(types.StepTest), newPassStep(types.StepPush), ci}
 	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepPush})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(ctx, run, repo, workDir) }()
@@ -165,6 +166,13 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	}
 	if err := ValidateRecoveredRun(database, parkedRun, steps); err != nil {
 		t.Errorf("ValidateRecoveredRun() error = %v", err)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[2].Status != types.StepStatusSkipped {
+		t.Fatalf("push status = %s, want %s", results[2].Status, types.StepStatusSkipped)
 	}
 	cancel()
 	select {
