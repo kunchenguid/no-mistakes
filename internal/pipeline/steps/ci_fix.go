@@ -143,15 +143,15 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool,
 		return false, nil
 	}
 
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
-		return false, fmt.Errorf("stage CI changes: %w", err)
-	}
 	if summary == "" {
 		summary = "repair failing checks"
 	}
 	message, err := sctx.Config.Commit.RenderFixMessage(types.StepCI, summary)
 	if err != nil {
 		return false, fmt.Errorf("render CI repair commit message: %w", err)
+	}
+	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
 		return false, fmt.Errorf("commit: %w", err)

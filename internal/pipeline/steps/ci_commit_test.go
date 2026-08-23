@@ -156,6 +156,23 @@ func TestCIStep_CommitAndPush_NoChanges(t *testing.T) {
 	}
 }
 
+func TestCIStep_InvalidCommitTemplateDoesNotStageChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Commit = config.Commit{FixMessage: `{{printf "%s" .Summary}}`}
+
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&CIStep{}).commitRepair(sctx, "repair checks"); err == nil {
+		t.Fatal("commitRepair() accepted an invalid commit.fix_message")
+	}
+	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("staged files after template error = %q, want none", got)
+	}
+}
+
 func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
