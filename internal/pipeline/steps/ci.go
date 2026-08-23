@@ -152,11 +152,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if sctx.StepResultID != "" {
-		stats, err := sctx.DB.StepRoundStats(sctx.StepResultID)
+		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
 		if err != nil {
 			return nil, fmt.Errorf("restore CI auto-fix attempts: %w", err)
 		}
-		s.ciFixAttempts = max(s.ciFixAttempts, stats.FixRounds)
+		if stepResult != nil {
+			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
+		}
 	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the
@@ -540,7 +542,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				} else if fixKey == s.lastFixedChecks {
 					sctx.Log("fix already attempted for these issues, waiting for CI re-run...")
 				} else {
-					s.ciFixAttempts++
+					nextAttempt := s.ciFixAttempts + 1
+					if sctx.StepResultID != "" {
+						if err := sctx.DB.SetCIFixAttempts(sctx.StepResultID, nextAttempt); err != nil {
+							return nil, fmt.Errorf("persist CI auto-fix attempt: %w", err)
+						}
+					}
+					s.ciFixAttempts = nextAttempt
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
