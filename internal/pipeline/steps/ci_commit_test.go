@@ -12,7 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
-func TestCIStep_CommitAndPush(t *testing.T) {
+func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 	t.Parallel()
 	// Set up upstream bare repo
 	upstream := t.TempDir()
@@ -50,25 +50,34 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	}
 
 	step := &CIStep{}
-	pushed, err := step.commitAndPush(sctx)
+	changed, err := step.commitAndPush(sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !pushed {
-		t.Error("expected commitAndPush to report changes were pushed")
+	if !changed {
+		t.Error("expected commitAndPush to report committed changes")
 	}
 
-	// Verify the commit and push happened
+	localSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if upstreamSHA == headSHA {
-		t.Error("upstream should have a new commit with CI fixes")
+	if upstreamSHA != headSHA {
+		t.Fatalf("upstream head = %s, want unchanged head %s", upstreamSHA, headSHA)
+	}
+	if localSHA == headSHA {
+		t.Fatal("local head should include the CI repair commit")
+	}
+	if message := gitCmd(t, dir, "log", "-1", "--format=%s"); message != "no-mistakes(ci): repair failing checks" {
+		t.Fatalf("repair commit message = %q", message)
 	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != upstreamSHA || dbRun.PushGeneration == nil || *dbRun.PushGeneration != 2 {
-		t.Fatalf("later CI push binding = %#v", dbRun)
+	if dbRun.HeadSHA != localSHA {
+		t.Fatalf("recorded head = %s, want local repair %s", dbRun.HeadSHA, localSHA)
+	}
+	if dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != upstreamSHA || dbRun.PushGeneration == nil || *dbRun.PushGeneration != 1 {
+		t.Fatalf("CI repair changed push binding = %#v", dbRun)
 	}
 }
 

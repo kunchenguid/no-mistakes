@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
@@ -133,7 +134,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
-			return s.pushUpdatedHeadSHA(sctx, headSHA)
+			return s.recordLocalRepair(sctx, headSHA)
 		}
 		return false, nil
 	}
@@ -141,7 +142,11 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	message, err := sctx.Config.Commit.RenderFixMessage(types.StepCI, "repair failing checks")
+	if err != nil {
+		return false, fmt.Errorf("render CI repair commit message: %w", err)
+	}
+	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)
@@ -149,7 +154,20 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
 
-	return s.pushUpdatedHeadSHA(sctx, headSHA)
+	return s.recordLocalRepair(sctx, headSHA)
+}
+
+func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (bool, error) {
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	if _, err := stepGitRun(sctx, "update-ref", ref, headSHA); err != nil {
+		return false, fmt.Errorf("update local branch ref: %w", err)
+	}
+	sctx.Run.HeadSHA = headSHA
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		return false, err
+	}
+	sctx.Log("committed CI repair for revalidation")
+	return true, nil
 }
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
