@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -480,33 +482,76 @@ func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event 
 		t.Fatalf("write event payload: %v", err)
 	}
 
-	inputEnv := map[string]string{
-		"pr-body":              "PR_BODY",
-		"pr-head-sha":          "PR_HEAD_SHA",
-		"pr-head-ref":          "PR_HEAD_REF",
-		"pr-author":            "PR_AUTHOR",
-		"pr-number":            "PR_NUMBER",
-		"exempt-authors":       "NM_EXEMPT_AUTHORS",
-		"exempt-bot-authors":   "NM_EXEMPT_BOT_AUTHORS",
-		"exempt-head-branches": "NM_EXEMPT_HEAD_BRANCHES",
+	action := loadRequireAction(t, actionPath)
+	if action.Runs.Using != "composite" {
+		t.Fatalf("action runs.using = %q, want composite", action.Runs.Using)
 	}
-	run := actionRun{eventPath: eventPath}
-	assign := map[string]*string{
-		"PR_BODY": &run.body, "PR_HEAD_SHA": &run.headSHA, "PR_HEAD_REF": &run.headRef,
-		"PR_AUTHOR": &run.author, "PR_NUMBER": &run.number,
-		"NM_EXEMPT_AUTHORS": &run.exemptUsers, "NM_EXEMPT_BOT_AUTHORS": &run.exemptBots,
-		"NM_EXEMPT_HEAD_BRANCHES": &run.exemptRefs,
+	if len(action.Runs.Steps) != 1 {
+		t.Fatalf("composite action has %d steps, want exactly one", len(action.Runs.Steps))
 	}
-	for input, value := range step.With {
-		name, known := inputEnv[input]
-		if !known {
+	compositeStep := action.Runs.Steps[0]
+	if compositeStep.Shell != "bash" {
+		t.Fatalf("composite action shell = %q, want bash", compositeStep.Shell)
+	}
+	if strings.TrimSpace(compositeStep.Run) == "" {
+		t.Fatal("composite action step has no run script")
+	}
+	for input := range step.With {
+		if _, ok := action.Inputs[input]; !ok {
 			t.Fatalf("check step passes unknown action input %q", input)
 		}
-		*assign[name] = value
 	}
 
-	result := runRequireAction(t, run)
-	return result.conclusion, result.output
+	inputExpression := regexp.MustCompile(`^\$\{\{\s*inputs\.([a-z0-9-]+)\s*\}\}$`)
+	env := make([]string, 0, len(compositeStep.Env)+3)
+	for name, expression := range compositeStep.Env {
+		matches := inputExpression.FindStringSubmatch(expression)
+		if matches == nil {
+			t.Fatalf("composite action env %q has unsupported expression %q", name, expression)
+		}
+		inputName := matches[1]
+		input, ok := action.Inputs[inputName]
+		if !ok {
+			t.Fatalf("composite action env %q references undeclared input %q", name, inputName)
+		}
+		value, passed := step.With[inputName]
+		if !passed {
+			value = input.Default
+		}
+		env = append(env, name+"="+value)
+	}
+
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable to execute the composite action")
+	}
+	actionDir, err := filepath.Abs(actionPath)
+	if err != nil {
+		t.Fatalf("resolve composite action path: %v", err)
+	}
+	outputPath := filepath.Join(t.TempDir(), "github_output")
+	if err := os.WriteFile(outputPath, nil, 0o644); err != nil {
+		t.Fatalf("seed GITHUB_OUTPUT: %v", err)
+	}
+
+	cmd := exec.Command(bash, "-c", compositeStep.Run)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(cmd.Env,
+		"GITHUB_ACTION_PATH="+actionDir,
+		"GITHUB_EVENT_PATH="+eventPath,
+		"GITHUB_OUTPUT="+outputPath,
+	)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err = cmd.Run()
+	if err == nil {
+		return "success", buf.String()
+	}
+	if _, ok := err.(*exec.ExitError); !ok {
+		t.Fatalf("execute composite action: %v\n%s", err, buf.String())
+	}
+	return "failure", buf.String()
 }
 
 func pipelineSummaryWithStatuses(t *testing.T, review, testStep, document types.StepStatus) string {

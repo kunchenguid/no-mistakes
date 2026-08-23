@@ -56,9 +56,9 @@ type compositeStep struct {
 	Run   string            `yaml:"run"`
 }
 
-func loadRequireAction(t *testing.T) compositeAction {
+func loadRequireAction(t *testing.T, actionDir string) compositeAction {
 	t.Helper()
-	data, err := os.ReadFile(requireActionDir + "/action.yml")
+	data, err := os.ReadFile(filepath.Join(actionDir, "action.yml"))
 	if err != nil {
 		t.Fatalf("read composite action: %v", err)
 	}
@@ -154,7 +154,7 @@ func runRequireAction(t *testing.T, run actionRun) actionResult {
 // action (not a workflow) whose per-repo configuration surface is exemptions
 // only, so a caller can never weaken which steps the gate certifies.
 func TestRequireActionIsAComposite(t *testing.T) {
-	action := loadRequireAction(t)
+	action := loadRequireAction(t, requireActionDir)
 	if action.Runs.Using != "composite" {
 		t.Fatalf("runs.using = %q, want composite", action.Runs.Using)
 	}
