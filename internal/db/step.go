@@ -28,7 +28,15 @@ type StepResult struct {
 	CIFixAttempts  int
 }
 
-const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit, ci_fix_attempts`
+const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
+
+func (d *DB) readableStepResultColumns() string {
+	if d.hasColumn("step_results", "ci_fix_attempts") {
+		return stepResultColumns + ", ci_fix_attempts"
+	}
+	// Read-only preflight can inspect a database before migrations run.
+	return stepResultColumns + ", 0 AS ci_fix_attempts"
+}
 
 // InsertStepResult creates a new step result record.
 func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResult, error) {
@@ -53,7 +61,7 @@ func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResul
 func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
-		`SELECT `+stepResultColumns+` FROM step_results WHERE id = ?`, id,
+		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
 	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -67,7 +75,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 // GetStepsByRun returns all step results for a run, in execution order.
 func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+stepResultColumns+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
+		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get steps by run: %w", err)
@@ -91,7 +99,7 @@ func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
 			findings_json = NULL, error = NULL, started_at = NULL,
 			completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
 			agent_pid = NULL, auto_fix_limit = NULL
-		WHERE run_id = ? AND step_order >= ?`, types.StepStatusPending, runID, stepOrder)
+		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
 	if err != nil {
 		return fmt.Errorf("reset steps for revalidation: %w", err)
 	}

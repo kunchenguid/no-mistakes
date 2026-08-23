@@ -174,6 +174,44 @@ func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	}
 }
 
+func TestExecutor_RecoveredRevalidationPreservesSkippedStep(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	review := newPassStep(types.StepReview)
+	push := newPassStep(types.StepPush)
+	steps := []Step{review, push}
+
+	_, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pushResult, err := database.InsertStepResult(run.ID, types.StepPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(pushResult.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	exec.initializeRunScopes(run.ID)
+
+	if err := exec.executeRecoveredRemainder(context.Background(), run, repo, t.TempDir(), t.TempDir(), 0, true); err != nil {
+		t.Fatalf("executeRecoveredRemainder() error = %v", err)
+	}
+	if got := review.callCount(); got != 1 {
+		t.Fatalf("review executed %d times, want 1", got)
+	}
+	if got := push.callCount(); got != 0 {
+		t.Fatalf("skipped push executed %d times, want 0", got)
+	}
+	gotPush, err := database.GetStepResult(pushResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPush.Status != types.StepStatusSkipped {
+		t.Fatalf("push status = %s, want %s", gotPush.Status, types.StepStatusSkipped)
+	}
+}
+
 func roundNumbers(rounds []*db.StepRound) []int {
 	numbers := make([]int, len(rounds))
 	for index, round := range rounds {

@@ -20,10 +20,10 @@ import (
 // end-to-end reproduction of the leak this package exists for, with real
 // processes. A pipeline child calls setsid(2), leaving the process group
 // no-mistakes isolated it in; the group teardown that runs on every exit path
-// then cannot reach it, and once its parent exits it reparents to init and
-// runs forever. The test asserts both halves: the escapee genuinely survives
-// the group teardown, and the worktree-scoped sweep - the one the daemon runs
-// when a run's goroutine finishes - terminates it.
+// then cannot reach it, and once its parent exits it can reparent to init or a
+// process subreaper and run forever. The test asserts both halves: the escapee
+// genuinely survives the group teardown, and the worktree-scoped sweep - the
+// one the daemon runs when a run's goroutine finishes - terminates it.
 func TestSweepReapsSetsidEscapeeThatProcessGroupTeardownCannotReach(t *testing.T) {
 	requireCWDLookup(t)
 	root, wt := newFakeWorktree(t)
@@ -32,10 +32,6 @@ func TestSweepReapsSetsidEscapeeThatProcessGroupTeardownCannotReach(t *testing.T
 	if !processAlive(escapee) {
 		t.Fatalf("precondition failed: escapee %d should have survived the process-group teardown", escapee)
 	}
-	if ppid := parentOf(t, escapee); ppid > 1 {
-		t.Fatalf("precondition failed: escapee %d should have reparented to init, has ppid %d", escapee, ppid)
-	}
-
 	victims, err := Sweep(Options{WorktreesRoot: root, Scopes: []string{wt}, Grace: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -228,20 +224,6 @@ func requireCWDLookup(t *testing.T) {
 	if _, ok := cwds[self]; !ok {
 		t.Skip("process working directories are not readable on this host")
 	}
-}
-
-func parentOf(t *testing.T, pid int) int {
-	t.Helper()
-	procs, err := listProcesses()
-	if err != nil {
-		t.Fatalf("listProcesses: %v", err)
-	}
-	for _, p := range procs {
-		if p.PID == pid {
-			return p.PPID
-		}
-	}
-	return 0
 }
 
 func containsPID(victims []Victim, pid int) bool {
