@@ -309,6 +309,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(mr.Title) == "" {
+		return nil, errors.New("glab mr view: missing merge request title")
+	}
 	title := content.Title
 	if isDraftTitle(mr.Title) && !isDraftTitle(title) {
 		title = "Draft: " + title

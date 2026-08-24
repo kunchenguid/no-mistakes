@@ -845,6 +845,29 @@ func TestUpdatePRDoesNotAddDraftToReadyMR(t *testing.T) {
 	}
 }
 
+func TestUpdatePRRejectsMissingLiveTitle(t *testing.T) {
+	t.Parallel()
+
+	for _, response := range []string{
+		`{"iid":9}` + "\n",
+		`{"iid":9,"title":null}` + "\n",
+		`{"iid":9,"title":"  "}` + "\n",
+	} {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab mr view 9 --output json": {
+				stdout: response,
+			},
+			"glab mr update 9 --title fix: x --description body --yes": {},
+		}), nil, "", "")
+
+		pr := &scm.PR{Number: "9"}
+		_, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: x", Body: "body"})
+		if err == nil || !strings.Contains(err.Error(), "missing merge request title") {
+			t.Fatalf("UpdatePR() error = %v, want missing title error", err)
+		}
+	}
+}
+
 func TestIsDraftTitle(t *testing.T) {
 	t.Parallel()
 
