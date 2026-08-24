@@ -259,11 +259,12 @@ type RunInfo struct {
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both
 	// are observability only and clear the moment the agent responds.
-	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
-	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
-	ScheduleKnown      bool             `json:"schedule_known,omitempty"`
-	ScheduledSteps     []types.StepName `json:"scheduled_steps,omitempty"`
-	Steps              []StepResultInfo `json:"steps,omitempty"`
+	AwaitingAgent             bool             `json:"awaiting_agent,omitempty"`
+	AwaitingAgentSince        *int64           `json:"awaiting_agent_since,omitempty"`
+	ScheduleTopologySupported bool             `json:"schedule_topology_supported,omitempty"`
+	ScheduleKnown             bool             `json:"schedule_known,omitempty"`
+	ScheduledSteps            []types.StepName `json:"scheduled_steps,omitempty"`
+	Steps                     []StepResultInfo `json:"steps,omitempty"`
 	// StateRev is the monotonic run-state revision this snapshot is at least
 	// as new as. It is sampled before the database read, so every event at or
 	// below it is already reflected here and every event above it still

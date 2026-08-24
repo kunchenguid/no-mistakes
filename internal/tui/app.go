@@ -98,9 +98,9 @@ type Model struct {
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
-	knownSteps, authoritative := scheduledPipelineSteps(run.ScheduledSteps, run.ScheduleKnown)
+	knownSteps, authoritative := scheduledPipelineSteps(run.ScheduledSteps, run.ScheduleKnown, run.ScheduleTopologySupported)
 	syntheticSteps := len(run.Steps) == 0 && shouldBackfillPipelineSteps(run.Status, run.Steps, knownSteps, authoritative)
-	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps, run.ScheduledSteps, run.ScheduleKnown)
+	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps, run.ScheduledSteps, run.ScheduleKnown, run.ScheduleTopologySupported)
 	run.Steps = steps
 	m := Model{
 		socketPath:          socketPath,
@@ -141,8 +141,8 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 	return m
 }
 
-func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc.StepResultInfo, scheduledSteps []types.StepName, scheduleKnown bool) []ipc.StepResultInfo {
-	knownSteps, authoritative := scheduledPipelineSteps(scheduledSteps, scheduleKnown)
+func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc.StepResultInfo, scheduledSteps []types.StepName, scheduleKnown, scheduleTopologySupported bool) []ipc.StepResultInfo {
+	knownSteps, authoritative := scheduledPipelineSteps(scheduledSteps, scheduleKnown, scheduleTopologySupported)
 	if !shouldBackfillPipelineSteps(runStatus, steps, knownSteps, authoritative) {
 		return steps
 	}
@@ -185,9 +185,12 @@ func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc
 	return normalized
 }
 
-func scheduledPipelineSteps(scheduled []types.StepName, scheduleKnown bool) ([]types.StepName, bool) {
+func scheduledPipelineSteps(scheduled []types.StepName, scheduleKnown, scheduleTopologySupported bool) ([]types.StepName, bool) {
 	if scheduleKnown {
 		return scheduled, true
+	}
+	if !scheduleTopologySupported {
+		return types.AllSteps(), false
 	}
 	return nil, false
 }

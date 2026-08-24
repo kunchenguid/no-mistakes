@@ -243,16 +243,17 @@ func TestRunInfoRoundTrip(t *testing.T) {
 	prURL := "https://github.com/user/repo/pull/42"
 	submittedHead := "submitted123"
 	info := RunInfo{
-		ID:               "run001",
-		RepoID:           "repo001",
-		Branch:           "feature",
-		HeadSHA:          "abc123",
-		SubmittedHeadSHA: &submittedHead,
-		BaseSHA:          "def456",
-		Status:           types.RunRunning,
-		PRURL:            &prURL,
-		CreatedAt:        1700000000,
-		UpdatedAt:        1700000001,
+		ID:                        "run001",
+		RepoID:                    "repo001",
+		Branch:                    "feature",
+		HeadSHA:                   "abc123",
+		SubmittedHeadSHA:          &submittedHead,
+		BaseSHA:                   "def456",
+		Status:                    types.RunRunning,
+		PRURL:                     &prURL,
+		ScheduleTopologySupported: true,
+		CreatedAt:                 1700000000,
+		UpdatedAt:                 1700000001,
 	}
 	data, _ := json.Marshal(info)
 	var got RunInfo
@@ -267,6 +268,9 @@ func TestRunInfoRoundTrip(t *testing.T) {
 	}
 	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != submittedHead {
 		t.Errorf("submitted_head_sha = %v, want %q", got.SubmittedHeadSHA, submittedHead)
+	}
+	if !got.ScheduleTopologySupported {
+		t.Error("schedule topology capability was lost in round trip")
 	}
 }
 

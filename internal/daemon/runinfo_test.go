@@ -47,6 +47,9 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	if !info.ScheduleKnown {
 		t.Fatal("scheduled topology was not marked authoritative")
 	}
+	if !info.ScheduleTopologySupported {
+		t.Fatal("dynamic schedule topology capability was not advertised")
+	}
 }
 
 func TestStepToInfoIncludesFixSummaries(t *testing.T) {
