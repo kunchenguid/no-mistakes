@@ -189,7 +189,7 @@ func scheduledPipelineSteps(scheduled []types.StepName, scheduleKnown bool) ([]t
 	if scheduleKnown {
 		return scheduled, true
 	}
-	return types.AllSteps(), false
+	return nil, false
 }
 
 func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResultInfo, knownSteps []types.StepName, authoritative bool) bool {

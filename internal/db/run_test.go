@@ -1,6 +1,7 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -60,12 +61,15 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	}
 }
 
-func TestRunScheduledStepsAreDurableAndImmutable(t *testing.T) {
+func TestRunTrustedNoCIScheduleIsDurableAndImmutable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if run.ScheduleKnown || run.ScheduledSteps != nil {
+		t.Fatalf("new run schedule = known %v, steps %v; want unresolved", run.ScheduleKnown, run.ScheduledSteps)
 	}
 	want := types.AllSteps()[:len(types.AllSteps())-1]
 	if err := d.SetRunScheduledSteps(run.ID, want); err != nil {
@@ -86,6 +90,104 @@ func TestRunScheduledStepsAreDurableAndImmutable(t *testing.T) {
 	}
 	if !stored.ScheduleKnown {
 		t.Fatal("stored schedule was not marked known")
+	}
+}
+
+func TestRunOrdinaryCISchedulePublishesAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := types.AllSteps()
+	done := make(chan error, 1)
+	go func() {
+		done <- d.SetRunScheduledSteps(run.ID, want)
+	}()
+	for {
+		stored, err := d.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.ScheduleKnown {
+			if !equalStepNames(stored.ScheduledSteps, want) {
+				t.Fatalf("known schedule = %v, want %v", stored.ScheduledSteps, want)
+			}
+		} else if stored.ScheduledSteps != nil {
+			t.Fatalf("unresolved snapshot exposed steps %v", stored.ScheduledSteps)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := d.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stored.ScheduleKnown || !equalStepNames(stored.ScheduledSteps, want) {
+				t.Fatalf("published schedule = known %v, steps %v; want %v", stored.ScheduleKnown, stored.ScheduledSteps, want)
+			}
+			return
+		default:
+		}
+	}
+}
+
+func TestRunScheduledStepsSupportsFinalZeroStepTopology(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunScheduledSteps(run.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.ScheduleKnown || len(stored.ScheduledSteps) != 0 {
+		t.Fatalf("zero-step schedule = known %v, steps %v", stored.ScheduleKnown, stored.ScheduledSteps)
+	}
+	if err := d.SetRunScheduledSteps(run.ID, types.AllSteps()); err == nil {
+		t.Fatal("zero-step final schedule was overwritten")
+	}
+}
+
+func TestRunSetupFailurePreservesUnknownScheduleAfterReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunError(run.ID, "agent setup failed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ScheduleKnown || stored.ScheduledSteps != nil {
+		t.Fatalf("failed setup schedule = known %v, steps %v; want unresolved", stored.ScheduleKnown, stored.ScheduledSteps)
 	}
 }
 

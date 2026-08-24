@@ -259,12 +259,14 @@ func TestModel_Update_RerunStartedBackfillsMissingPipelineSteps(t *testing.T) {
 	m := NewModel("/tmp/sock", nil, run)
 
 	newRun := &ipc.RunInfo{
-		ID:      "run-002",
-		RepoID:  run.RepoID,
-		Branch:  run.Branch,
-		HeadSHA: run.HeadSHA,
-		BaseSHA: run.BaseSHA,
-		Status:  types.RunRunning,
+		ID:             "run-002",
+		RepoID:         run.RepoID,
+		Branch:         run.Branch,
+		HeadSHA:        run.HeadSHA,
+		BaseSHA:        run.BaseSHA,
+		Status:         types.RunRunning,
+		ScheduleKnown:  true,
+		ScheduledSteps: types.AllSteps(),
 		Steps: []ipc.StepResultInfo{
 			{
 				ID:        "s0",
@@ -323,12 +325,14 @@ func TestModel_Update_RerunStartedBackfillsEmptyRunningPipelineSteps(t *testing.
 	m := NewModel("/tmp/sock", nil, run)
 
 	newRun := &ipc.RunInfo{
-		ID:      "run-002",
-		RepoID:  run.RepoID,
-		Branch:  run.Branch,
-		HeadSHA: run.HeadSHA,
-		BaseSHA: run.BaseSHA,
-		Status:  types.RunRunning,
+		ID:             "run-002",
+		RepoID:         run.RepoID,
+		Branch:         run.Branch,
+		HeadSHA:        run.HeadSHA,
+		BaseSHA:        run.BaseSHA,
+		Status:         types.RunRunning,
+		ScheduleKnown:  true,
+		ScheduledSteps: types.AllSteps(),
 	}
 
 	updated, _ := m.Update(rerunStartedMsg{run: newRun})
@@ -440,12 +444,25 @@ func TestNewModel_PartialNoCIScheduleNeverSynthesizesCI(t *testing.T) {
 func TestNewModel_UnresolvedNewScheduleDoesNotGuessCI(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunPending
-	run.ScheduleKnown = true
+	run.ScheduleKnown = false
 
 	m := NewModel("/tmp/sock", nil, run)
 
 	if len(m.steps) != 0 {
 		t.Fatalf("unresolved schedule synthesized steps: %v", m.steps)
+	}
+}
+
+func TestNewModel_FinalZeroStepScheduleRemainsEmpty(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	run.ScheduleKnown = true
+	run.ScheduledSteps = []types.StepName{}
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != 0 {
+		t.Fatalf("final zero-step schedule synthesized steps: %v", m.steps)
 	}
 }
 

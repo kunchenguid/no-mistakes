@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS runs (
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
     review_approved_head_sha TEXT,
-    scheduled_steps        TEXT,
+    scheduled_steps         TEXT,
+    schedule_known          INTEGER NOT NULL DEFAULT 0,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
@@ -207,6 +208,7 @@ var migrationStatements = []string{
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN scheduled_steps TEXT`,
+	`ALTER TABLE runs ADD COLUMN schedule_known INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,

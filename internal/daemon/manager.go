@@ -208,12 +208,6 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}
-	scheduledSteps := scheduledStepNames(execSteps)
-	if err := m.db.SetRunScheduledSteps(run.ID, scheduledSteps); err != nil {
-		return nil, fmt.Errorf("record recovered run schedule: %w", err)
-	}
-	run.ScheduledSteps = scheduledSteps
-	run.ScheduleKnown = true
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
 	if err != nil {
 		return nil, err
@@ -224,6 +218,13 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 			return nil, err
 		}
 	}
+	scheduledSteps := scheduledStepNames(execSteps)
+	if err := m.db.SetRunScheduledSteps(run.ID, scheduledSteps); err != nil {
+		_ = ag.Close()
+		return nil, fmt.Errorf("record recovered run schedule: %w", err)
+	}
+	run.ScheduledSteps = scheduledSteps
+	run.ScheduleKnown = true
 	return &recoveredRunPlan{
 		run:     run,
 		repo:    repo,
