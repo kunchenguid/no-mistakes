@@ -187,9 +187,13 @@ type globalConfigRaw struct {
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
+// ExpectedLogin optionally pins the account the profile must be signed in as;
+// resolution fails closed when the profile's active login differs. It carries
+// an account name only, never credentials.
 type ForgeProfile struct {
 	GHConfigDir   string `yaml:"gh_config_dir"`
 	GLabConfigDir string `yaml:"glab_config_dir"`
+	ExpectedLogin string `yaml:"expected_login"`
 }
 
 // ForgeProfiles maps a remote host token to its machine-local provider profile.
@@ -1868,6 +1872,7 @@ func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
 		}
 		profile.GHConfigDir = ghDir
 		profile.GLabConfigDir = glabDir
+		profile.ExpectedLogin = strings.TrimSpace(profile.ExpectedLogin)
 		if ghDir != "" {
 			normalized, err := normalizeForgeProfilePath(ghDir)
 			if err != nil {

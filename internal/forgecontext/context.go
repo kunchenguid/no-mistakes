@@ -75,7 +75,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 		return nil, fmt.Errorf("forge profile %q selects provider %s but the upstream remote is %s", profileHost, profileProvider, detected)
 	}
 	if profile.GHConfigDir != "" {
-		if err := validateGitHubProfile(profile.GHConfigDir, targetHost); err != nil {
+		if err := validateGitHubProfile(profile.GHConfigDir, targetHost, profile.ExpectedLogin); err != nil {
 			return nil, fmt.Errorf("forge profile %q: %w", profileHost, err)
 		}
 		return &Context{
@@ -86,7 +86,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 			Environment: githubEnvironment(profile.GHConfigDir),
 		}, nil
 	}
-	if err := validateGitLabProfile(profile.GLabConfigDir, targetHost); err != nil {
+	if err := validateGitLabProfile(profile.GLabConfigDir, targetHost, profile.ExpectedLogin); err != nil {
 		return nil, fmt.Errorf("forge profile %q: %w", profileHost, err)
 	}
 	return &Context{
@@ -171,6 +171,7 @@ func githubHostEntryFor(hosts githubHosts, targetHost string) (githubHostEntry, 
 
 type gitlabHostEntry struct {
 	APIHost string `yaml:"api_host"`
+	User    string `yaml:"user"`
 }
 
 type gitlabConfig struct {
@@ -291,7 +292,7 @@ func profileForHost(profiles config.ForgeProfiles, host string) (config.ForgePro
 	return config.ForgeProfile{}, "", false
 }
 
-func validateGitHubProfile(dir, targetHost string) error {
+func validateGitHubProfile(dir, targetHost, expectedLogin string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("GitHub config directory: %w", err)
@@ -308,7 +309,7 @@ func validateGitHubProfile(dir, targetHost string) error {
 		return fmt.Errorf("GitHub host %q is not configured", targetHost)
 	}
 	if len(entry.Users) == 0 && strings.TrimSpace(entry.User) != "" {
-		return nil
+		return expectLogin(expectedLogin, entry.User, "GitHub", targetHost)
 	}
 	if len(entry.Users) != 1 {
 		return fmt.Errorf("GitHub host %q must contain exactly one account", targetHost)
@@ -318,10 +319,26 @@ func validateGitHubProfile(dir, targetHost string) error {
 			return fmt.Errorf("GitHub host %q must have its only account active", targetHost)
 		}
 	}
+	return expectLogin(expectedLogin, entry.User, "GitHub", targetHost)
+}
+
+// expectLogin fails closed when a profile pins expected_login and the
+// provider config's active account differs. An empty expectation keeps the
+// existing behavior; an empty active login under a pinned expectation is a
+// mismatch, never a fallback.
+func expectLogin(expected, active, provider, targetHost string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return nil
+	}
+	active = strings.TrimSpace(active)
+	if !strings.EqualFold(active, expected) {
+		return fmt.Errorf("%s host %q is signed in as %q, but the profile expects login %q", provider, targetHost, active, expected)
+	}
 	return nil
 }
 
-func validateGitLabProfile(dir, targetHost string) error {
+func validateGitLabProfile(dir, targetHost, expectedLogin string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("GitLab config directory: %w", err)
@@ -336,5 +353,14 @@ func validateGitLabProfile(dir, targetHost string) error {
 	if !gitlabConfigHasHost(cfg, targetHost) {
 		return fmt.Errorf("GitLab host %q is not configured", targetHost)
 	}
-	return nil
+	return expectLogin(expectedLogin, gitlabActiveUser(cfg, targetHost), "GitLab", targetHost)
+}
+
+func gitlabActiveUser(cfg gitlabConfig, targetHost string) string {
+	for host, entry := range cfg.Hosts {
+		if strings.EqualFold(strings.TrimSpace(host), targetHost) || strings.EqualFold(scm.ExtractHost(entry.APIHost), targetHost) {
+			return entry.User
+		}
+	}
+	return ""
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -286,4 +287,63 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return result
+}
+
+func TestResolveEnforcesExpectedGitHubLogin(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte("github.com:\n    user: work-account\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	matched, err := Resolve(context.Background(), config.ForgeProfiles{
+		"github.com": {GHConfigDir: dir, ExpectedLogin: "Work-Account"},
+	}, "https://github.com/acme/repo.git", "")
+	if err != nil {
+		t.Fatalf("Resolve with matching login: %v", err)
+	}
+	if matched == nil || matched.Provider != scm.ProviderGitHub {
+		t.Fatalf("resolved context = %#v, want GitHub", matched)
+	}
+
+	if _, err := Resolve(context.Background(), config.ForgeProfiles{
+		"github.com": {GHConfigDir: dir, ExpectedLogin: "personal-account"},
+	}, "https://github.com/acme/repo.git", ""); err == nil {
+		t.Fatal("expected login mismatch to fail closed")
+	} else if !strings.Contains(err.Error(), "personal-account") || !strings.Contains(err.Error(), "work-account") {
+		t.Fatalf("mismatch error should name both logins, got %v", err)
+	}
+}
+
+func TestResolveEnforcesExpectedGitLabLogin(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := "hosts:\n    gitlab.com:\n        user: team-bot\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Resolve(context.Background(), config.ForgeProfiles{
+		"gitlab.com": {GLabConfigDir: dir, ExpectedLogin: "team-bot"},
+	}, "https://gitlab.com/acme/repo.git", ""); err != nil {
+		t.Fatalf("Resolve with matching login: %v", err)
+	}
+
+	if _, err := Resolve(context.Background(), config.ForgeProfiles{
+		"gitlab.com": {GLabConfigDir: dir, ExpectedLogin: "someone-else"},
+	}, "https://gitlab.com/acme/repo.git", ""); err == nil {
+		t.Fatal("expected login mismatch to fail closed")
+	}
+}
+
+func TestResolveExpectedLoginRequiresDeclaredActiveUser(t *testing.T) {
+	dir := t.TempDir()
+	// A GitLab host entry without a user cannot satisfy a pinned login:
+	// silence must fail closed, never fall back to ambient identity.
+	if err := os.WriteFile(filepath.Join(dir, "config.yml"), []byte("hosts:\n    gitlab.com:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(context.Background(), config.ForgeProfiles{
+		"gitlab.com": {GLabConfigDir: dir, ExpectedLogin: "team-bot"},
+	}, "https://gitlab.com/acme/repo.git", ""); err == nil {
+		t.Fatal("expected missing active user under a pinned login to fail closed")
+	}
 }
