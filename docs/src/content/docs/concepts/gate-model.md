@@ -19,7 +19,7 @@ flowchart TD
   admission --> daemon["Daemon"]
   hook --> daemon
   daemon --> worktree["Disposable worktree"]
-  worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
+  worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci unless trusted no_ci"]
   pipeline --> target["Push target"]
   daemon --> db["SQLite state"]
   daemon --> ipc["IPC socket"]
@@ -57,22 +57,23 @@ That is a core design choice, not an implementation detail.
 3. Git writes an admitted push into the local bare gate repo.
 4. The gate repo's `post-receive` hook notifies the daemon.
 5. The daemon creates a detached worktree for this run.
-6. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
+6. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr`, followed by `ci` unless the trusted default-branch policy declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci).
 7. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
    Use `no-mistakes axi abort` only when you mean to cancel the whole run.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
    While a step is actively running or fixing, AXI run objects can also show `active_steps` with the active duration, latest activity, native agent PID, and current execution or fix round.
 8. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
    For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
-9. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
-   While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable (or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) and no checks are registered), and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it. An empty forge response without that declaration stays not-ready.
+9. When scheduled, the CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
+   While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable, and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it. An empty forge response stays not-ready.
+   Trusted default-branch `no_ci: true` instead omits the CI step before its forge client or monitor is constructed. The run performs no CI polling or background monitoring and returns terminal `outcome: passed` immediately after the PR step completes.
 
 **Key design decisions:**
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
 - **Recursive-run containment** - managed gate identity and authenticated daemon peer ancestry prevent active validation steps from starting or controlling another pipeline. `NO_MISTAKES_GATE` is diagnostic evidence only, not authorization.
 - **Disposable worktrees** - each run happens in its own detached worktree, under `~/.no-mistakes/worktrees/` by default or under the directory [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) names for that repository. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
-- **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
+- **Fixed pipeline order** - the validation order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr`, then `ci` when CI is scheduled. Trusted default-branch `no_ci: true` is the narrow scheduling declaration that omits only the final CI step. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
 - **Remote data-loss guard** - force-pushes are checked against the live push target and refused when they would discard commits the run did not incorporate.
 
 ## Why it is built this way

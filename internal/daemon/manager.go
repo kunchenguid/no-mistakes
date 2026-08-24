@@ -98,6 +98,24 @@ func (m *RunManager) stepsForConfig(cfg *config.Config) []pipeline.Step {
 	return steps.AllStepsForConfig(cfg)
 }
 
+func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, runID string) ([]pipeline.Step, error) {
+	if m.steps != nil {
+		return m.steps(), nil
+	}
+	recorded, err := m.db.GetStepsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("get recovered steps: %w", err)
+	}
+	recordedCI := false
+	for _, result := range recorded {
+		if result.StepName == types.StepCI {
+			recordedCI = true
+			break
+		}
+	}
+	return steps.RecoverySteps(cfg, recordedCI), nil
+}
+
 type recoveredRunPlan struct {
 	run     *db.Run
 	repo    *db.Repo
@@ -166,7 +184,10 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	execSteps := m.stepsForConfig(cfg)
+	execSteps, err := m.stepsForRecoveredRun(cfg, run.ID)
+	if err != nil {
+		return nil, err
+	}
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}

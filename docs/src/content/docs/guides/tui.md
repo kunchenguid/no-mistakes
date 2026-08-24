@@ -130,10 +130,12 @@ On narrow terminals, the log panel expands to fill the remaining vertical space 
 While the CI step is active, the TUI shows a dedicated CI panel instead of the generic findings view.
 It shows the PR label, the latest CI activity, and a log tail.
 When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
-Once the CI monitor reports readiness and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`. Readiness includes the trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) when no checks are registered; an empty forge response alone is not ready.
+Once the CI monitor reports that scheduled checks passed and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`. An empty forge response is not ready.
 That text means the CI monitor is still active; it can still pause later if the configured idle timeout elapses with no base-branch movement.
 That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
 The ready signal is persisted, so a fresh attach shows `Checks passed` without depending on delivery of an earlier log line.
+
+A trusted default-branch [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) omits the CI step before scheduling. Those runs show no CI panel, perform no forge polling or background monitoring, and become terminal `passed` immediately after the PR step completes.
 
 ### Local branch
 
