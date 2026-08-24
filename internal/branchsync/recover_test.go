@@ -164,6 +164,30 @@ func (f *recoverFixture) custodyReturned() bool {
 	return run.CustodyReturnedAt != nil
 }
 
+const cancelledReplacementIntent = "deliver the replacement candidate for the same task"
+
+func newCancelledReplacementFixture(t *testing.T) *recoverFixture {
+	t.Helper()
+	f := newRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunIntent(f.run.ID, db.RunIntent{Summary: cancelledReplacementIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered || recovered.Changed || recovered.State != StateCustodyReturned {
+		t.Fatalf("return custody before replacement = %#v", recovered)
+	}
+	mustRun(t, f.local, "reset", "--hard", f.base)
+	mustWrite(t, filepath.Join(f.local, "replacement.txt"), "replacement\n")
+	mustRun(t, f.local, "add", "replacement.txt")
+	mustRun(t, f.local, "commit", "-m", "replacement candidate")
+	return f
+}
+
+func supersessionRefs(t *testing.T, gate string) string {
+	t.Helper()
+	return mustRun(t, gate, "for-each-ref", "--format=%(refname) %(objectname)", "refs/no-mistakes")
+}
+
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
 // for the stranded state itself (dogfood run 01KXN8YJ6DWF8XPP582DWQC3HV): a
 // terminal run at the pre_push phase must not be a dead end. The state stays
@@ -1803,6 +1827,160 @@ func TestRecoverRebasedPreservedHeadRechecksAfterAnchoringLocalHead(t *testing.T
 	}
 	if f.custodyReturned() {
 		t.Fatal("branch-switch refusal stamped custody")
+	}
+}
+
+func TestPrepareCancelledReplacementRetargetsOnlyReturnedGateHeadAndRetriesIdempotently(t *testing.T) {
+	f := newCancelledReplacementFixture(t)
+	replacement := mustRun(t, f.local, "rev-parse", "HEAD")
+	returned := mustRun(t, f.gate, "rev-parse", custody.ReturnedRef(f.run.ID)+"^{commit}")
+	if returned != f.submitted {
+		t.Fatalf("returned custody head = %s, want submitted %s", returned, f.submitted)
+	}
+
+	prepared := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+	if prepared.Error != "" || !prepared.Changed || prepared.State != StateCustodyReturned {
+		t.Fatalf("prepare cancelled replacement = %#v", prepared)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != replacement {
+		t.Fatalf("gate branch = %s, want replacement %s", got, replacement)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", custody.SupersededGateRef(f.run.ID)); got != f.submitted {
+		t.Fatalf("superseded gate anchor = %s, want %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", custody.ReplacementRef(f.run.ID)); got != replacement {
+		t.Fatalf("replacement anchor = %s, want %s", got, replacement)
+	}
+	if _, err := gitpkg.Run(f.ctx, f.local, "merge-base", "--is-ancestor", f.submitted, replacement); err == nil {
+		t.Fatal("replacement adopted obsolete candidate commits")
+	}
+
+	refsBefore := supersessionRefs(t, f.gate)
+	retried := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+	if retried.Error != "" || retried.Changed {
+		t.Fatalf("idempotent replacement retry = %#v", retried)
+	}
+	if got := supersessionRefs(t, f.gate); got != refsBefore {
+		t.Fatalf("idempotent retry changed refs:\n%s\nwant:\n%s", got, refsBefore)
+	}
+}
+
+func TestPrepareCancelledReplacementRefusesActiveAndIdentityMismatchesWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*recoverFixture) (*Service, string, string)
+	}{
+		{
+			name: "active run",
+			prepare: func(f *recoverFixture) (*Service, string, string) {
+				if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+				return f.service, f.run.ID, cancelledReplacementIntent
+			},
+		},
+		{
+			name: "mismatched run",
+			prepare: func(f *recoverFixture) (*Service, string, string) {
+				return f.service, "different-run", cancelledReplacementIntent
+			},
+		},
+		{
+			name: "mismatched task",
+			prepare: func(f *recoverFixture) (*Service, string, string) {
+				return f.service, f.run.ID, "different task"
+			},
+		},
+		{
+			name: "mismatched project",
+			prepare: func(f *recoverFixture) (*Service, string, string) {
+				service := *f.service
+				wrongRepo := *f.repo
+				wrongRepo.ID = "different-project"
+				service.Repo = &wrongRepo
+				return &service, f.run.ID, cancelledReplacementIntent
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCancelledReplacementFixture(t)
+			service, runID, intent := tc.prepare(f)
+			gateBefore := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+			refsBefore := supersessionRefs(t, f.gate)
+			state := service.PrepareCancelledReplacement(f.ctx, runID, intent)
+			if state.Error == "" || state.Changed {
+				t.Fatalf("identity refusal = %#v", state)
+			}
+			if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != gateBefore {
+				t.Fatalf("refusal moved gate to %s, want %s", got, gateBefore)
+			}
+			if got := supersessionRefs(t, f.gate); got != refsBefore {
+				t.Fatalf("refusal changed run refs:\n%s\nwant:\n%s", got, refsBefore)
+			}
+		})
+	}
+}
+
+func TestPrepareCancelledReplacementRefusesAmbiguousAndIndependentlyDivergedGateWithoutMutation(t *testing.T) {
+	t.Run("ambiguous branch ownership", func(t *testing.T) {
+		f := newCancelledReplacementFixture(t)
+		duplicate := filepath.Join(filepath.Dir(f.local), "duplicate")
+		mustRun(t, f.local, "worktree", "add", "--force", duplicate, "feature/recover")
+		gateBefore := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+		refsBefore := supersessionRefs(t, f.gate)
+
+		state := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+		if state.Safety != "blocked_supersession_ambiguous" || state.Changed {
+			t.Fatalf("ambiguous ownership refusal = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != gateBefore {
+			t.Fatalf("ambiguous refusal moved gate to %s, want %s", got, gateBefore)
+		}
+		if got := supersessionRefs(t, f.gate); got != refsBefore {
+			t.Fatalf("ambiguous refusal changed refs:\n%s\nwant:\n%s", got, refsBefore)
+		}
+	})
+
+	t.Run("gate moved after custody return", func(t *testing.T) {
+		f := newCancelledReplacementFixture(t)
+		mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
+		refsBefore := supersessionRefs(t, f.gate)
+
+		state := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+		if state.Safety != "blocked_supersession_gate_mismatch" || state.Changed {
+			t.Fatalf("independent divergence refusal = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("divergence refusal moved gate to %s, want %s", got, f.preserved)
+		}
+		if got := supersessionRefs(t, f.gate); got != refsBefore {
+			t.Fatalf("divergence refusal changed refs:\n%s\nwant:\n%s", got, refsBefore)
+		}
+	})
+}
+
+func TestPrepareCancelledReplacementAllowsOnlyOneReplacementHead(t *testing.T) {
+	f := newCancelledReplacementFixture(t)
+	first := mustRun(t, f.local, "rev-parse", "HEAD")
+	prepared := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+	if prepared.Error != "" {
+		t.Fatalf("prepare first replacement = %#v", prepared)
+	}
+	mustWrite(t, filepath.Join(f.local, "second.txt"), "second replacement\n")
+	mustRun(t, f.local, "add", "second.txt")
+	mustRun(t, f.local, "commit", "-m", "second replacement")
+	refsBefore := supersessionRefs(t, f.gate)
+
+	state := f.service.PrepareCancelledReplacement(f.ctx, f.run.ID, cancelledReplacementIntent)
+	if state.Safety != "blocked_supersession_replacement_mismatch" || state.Changed {
+		t.Fatalf("second replacement refusal = %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != first {
+		t.Fatalf("second replacement moved gate to %s, want first %s", got, first)
+	}
+	if got := supersessionRefs(t, f.gate); got != refsBefore {
+		t.Fatalf("second replacement changed refs:\n%s\nwant:\n%s", got, refsBefore)
 	}
 }
 

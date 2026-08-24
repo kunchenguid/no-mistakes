@@ -724,6 +724,159 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 }
 
+// PrepareCancelledReplacement binds and retires one returned-custody gate head before axi run performs its ordinary non-force trigger.
+func (s *Service) PrepareCancelledReplacement(ctx context.Context, runID, intent string) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, run, _ := s.inspect(ctx)
+	refuse := func(safety, message string) State {
+		return blockedPlan(state, state.State, safety, message+"; the task gate branch was not changed")
+	}
+	if state.State != StateCustodyReturned || run == nil || run.ID != runID {
+		return refuse("blocked_supersession_not_returned", "the exact run does not hold returned custody for this project and task")
+	}
+	if run.RepoID != s.Repo.ID || run.Branch != state.Local.Branch || run.CustodyReturnedAt == nil {
+		return refuse("blocked_supersession_identity_mismatch", "the exact run, registered project, checked-out task branch, and returned custody do not match")
+	}
+	if !state.Local.Clean || duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
+		return refuse("blocked_supersession_ambiguous", "the replacement requires one clean checkout of the exact task branch")
+	}
+	if strings.TrimSpace(s.GateDir) == "" {
+		return refuse("blocked_supersession_gate_unavailable", "the registered project's local gate is unavailable")
+	}
+
+	gateRef := "refs/heads/" + state.Local.Branch
+	gateHead, gateExists, gateErr := exactCommitRef(ctx, s.GateDir, gateRef)
+	if gateErr != nil || !gateExists {
+		return refuse("blocked_supersession_gate_mismatch", "the exact task gate ref is missing or unreadable")
+	}
+	replacementHead, replacementExists, replacementErr := exactCommitRef(ctx, s.GateDir, custody.ReplacementRef(run.ID))
+	if replacementErr != nil || (replacementExists && replacementHead != state.Local.Head) {
+		return refuse("blocked_supersession_replacement_mismatch", "the cancelled run is already bound to a different replacement head")
+	}
+	if gateHead == state.Local.Head {
+		return state
+	}
+	if !objectExists(ctx, s.workDir(), gateHead) {
+		return refuse("blocked_supersession_relation_unknown", "the returned gate head is unavailable in the exact task worktree")
+	}
+	if isAncestor(ctx, s.workDir(), gateHead, state.Local.Head) {
+		return state
+	}
+	if isAncestor(ctx, s.workDir(), state.Local.Head, gateHead) {
+		return refuse("blocked_supersession_behind", "the local task branch is genuinely behind the returned gate head")
+	}
+	if run.Status != types.RunCancelled {
+		return refuse("blocked_supersession_identity_mismatch", "the exact returned-custody run is not cancelled")
+	}
+	if run.Intent == nil || run.IntentSource == nil || !db.IsAuthoritativeRunIntentSource(*run.IntentSource) || *run.Intent != strings.TrimSpace(intent) {
+		return refuse("blocked_supersession_task_mismatch", "the replacement intent does not exactly match the cancelled run's authoritative task")
+	}
+
+	recoveryRef := custody.RecoveryRef(run.ID)
+	recoveredHead, recoveryExists, recoveryErr := exactCommitRef(ctx, s.workDir(), recoveryRef)
+	if recoveryErr != nil || !recoveryExists {
+		return refuse("blocked_supersession_recovery_mismatch", "the cancelled run's preserved-head anchor is missing")
+	}
+	if recoveredHead != run.HeadSHA {
+		return refuse("blocked_supersession_recovery_mismatch", "the cancelled run's preserved-head anchor does not match its recorded terminal head")
+	}
+
+	returnedRef := custody.ReturnedRef(run.ID)
+	returnedHead, returnedExists, returnedErr := exactCommitRef(ctx, s.GateDir, returnedRef)
+	if returnedErr != nil {
+		return refuse("blocked_supersession_returned_mismatch", "the cancelled run's returned-custody gate binding is unreadable")
+	}
+	if !returnedExists {
+		if !headBoundToRun(run, gateHead) {
+			return refuse("blocked_supersession_returned_mismatch", "the live gate head is not bound to the cancelled run's returned custody")
+		}
+		if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, returnedRef, gateHead); err != nil {
+			return refuse("blocked_supersession_returned_mismatch", "the cancelled run's legacy returned-custody gate binding could not be anchored")
+		}
+		returnedHead = gateHead
+	}
+	if returnedHead != gateHead {
+		return refuse("blocked_supersession_gate_mismatch", "the live gate ref moved after custody was returned")
+	}
+
+	if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, custody.SupersededGateRef(run.ID), gateHead); err != nil {
+		return refuse("blocked_supersession_preserve_failed", "the stale cancelled-run gate head could not be preserved")
+	}
+	if err := s.stageReplacementHead(ctx, state, run.ID); err != nil {
+		return refuse("blocked_supersession_replacement_mismatch", err.Error())
+	}
+	if s.beforeGateReset != nil {
+		s.beforeGateReset()
+	}
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	head, headErr := git.HeadSHA(ctx, s.workDir())
+	clean, _ := worktreeClean(ctx, s.workDir())
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
+		return refuse("blocked_supersession_assumptions_changed", "the checked-out task branch changed while the replacement was being prepared")
+	}
+	if _, err := git.Run(ctx, s.GateDir, "update-ref", gateRef, state.Local.Head, gateHead); err != nil {
+		current, currentErr := git.Run(ctx, s.GateDir, "rev-parse", gateRef+"^{commit}")
+		if currentErr != nil || current != state.Local.Head {
+			return refuse("blocked_supersession_gate_race", "the exact task gate ref changed while the replacement was being prepared")
+		}
+	}
+	state.Changed = true
+	return state
+}
+
+func (s *Service) stageReplacementHead(ctx context.Context, state State, runID string) error {
+	replacementRef := custody.ReplacementRef(runID)
+	if replacement, exists, err := exactCommitRef(ctx, s.GateDir, replacementRef); err != nil || (exists && replacement != state.Local.Head) {
+		return fmt.Errorf("the cancelled run is already bound to a different replacement head")
+	} else if exists {
+		return nil
+	}
+	source, err := filepath.Abs(s.workDir())
+	if err != nil {
+		return fmt.Errorf("the replacement worktree path could not be resolved")
+	}
+	stagingRef := "refs/no-mistakes/replacement-stage/" + runID
+	if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
+		return fmt.Errorf("the replacement head could not be staged into the local gate")
+	}
+	defer func() { _, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef) }()
+	staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
+	if err != nil || staged != state.Local.Head {
+		return fmt.Errorf("the checked-out task head changed while its replacement was staged")
+	}
+	if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, replacementRef, staged); err != nil {
+		return fmt.Errorf("the cancelled run is already bound to a different replacement head")
+	}
+	return nil
+}
+
+func exactCommitRef(ctx context.Context, dir, ref string) (string, bool, error) {
+	if target, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && target != "" {
+		return "", true, fmt.Errorf("ref %s is symbolic", ref)
+	}
+	_, exists, err := git.ExactRefTarget(ctx, dir, ref)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	head, err := git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
+	if err != nil {
+		return "", true, err
+	}
+	return head, true, nil
+}
+
+func headBoundToRun(run *db.Run, head string) bool {
+	if run == nil || head == "" {
+		return false
+	}
+	if head == run.HeadSHA || run.SubmittedHeadSHA != nil && head == *run.SubmittedHeadSHA || run.LastPushedSHA != nil && head == *run.LastPushedSHA {
+		return true
+	}
+	return false
+}
+
 // recoverKeepLocal performs the explicit keep-local custody return: the
 // worktree is never touched; the gate branch moves to the kept local head with
 // an atomic compare-and-swap so a concurrent gate push refuses instead of
@@ -768,11 +921,17 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
 		}
+		if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, custody.ReturnedRef(run.ID), staged); err != nil {
+			_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the kept gate head could not be bound to the returned custody; no files or branch refs were changed")
+		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
 		_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
 		if casErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
 		}
+	} else if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, custody.ReturnedRef(run.ID), state.Local.Head); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the kept gate head could not be bound to the returned custody; no files or branch refs were changed")
 	}
 	return s.finishRecover(ctx, run, false)
 }

@@ -253,7 +253,11 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 }
 
 func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
-	service := &branchsync.Service{
+	return axiBranchSyncService(env).InspectCached(ctx)
+}
+
+func axiBranchSyncService(env *axiEnv) *branchsync.Service {
+	return &branchsync.Service{
 		DB:            env.d,
 		Repo:          env.repo,
 		WorkDir:       ".",
@@ -261,7 +265,6 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 		Paths:         env.p,
 		RemoteTimeout: env.cfg.BranchSyncRemoteTimeout,
 	}
-	return service.InspectCached(ctx)
 }
 
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
@@ -302,6 +305,13 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	}
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
+	}
+	state := inspectAxiBranchSync(ctx, env)
+	if state.State == branchsync.StateCustodyReturned {
+		prepared := axiBranchSyncService(env).PrepareCancelledReplacement(ctx, state.Pipeline.RunID, intent)
+		if prepared.Error != "" {
+			return "", &branchOwnershipError{state: prepared}
+		}
 	}
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {

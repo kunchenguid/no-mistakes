@@ -472,6 +472,73 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	t.Logf("end-user fresh-run result after custody return:\n%s", freshOut)
 }
 
+// TestAxiCancelledRunCanBeCompletelySuperseded reproduces the stale gate-ref
+// mask after custody has already been returned. The replacement deliberately
+// starts from the pre-candidate base and must not inherit obsolete commits.
+func TestAxiCancelledRunCanBeCompletelySuperseded(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	base := h.CommitChange("init-complete-supersession", "seed.txt", "seed\n", "seed complete supersession")
+	initWorktree := h.AddWorktree("init-complete-supersession")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	branch := "feature/complete-supersession"
+	obsolete := h.CommitChange(branch, "feature.txt", "unsafe\n", "obsolete candidate")
+	operator := h.AddWorktree(branch)
+	intent := "deliver the replacement candidate for the same task"
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", intent)
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	if fixOut, fixErr := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1"); fixErr != nil {
+		t.Fatalf("review fix: %v\n%s", fixErr, fixOut)
+	}
+	if abortOut, abortErr := h.RunInDir(operator, "axi", "abort"); abortErr != nil {
+		t.Fatalf("cancel obsolete run: %v\n%s", abortErr, abortOut)
+	}
+	obsoleteRun := h.WaitForRun(branch, 30*time.Second)
+	if obsoleteRun.Status != types.RunCancelled {
+		t.Fatalf("obsolete run status = %s, want cancelled", obsoleteRun.Status)
+	}
+	if recoverOut, recoverErr := h.RunInDir(operator, "axi", "sync", "--recover", "--keep-local"); recoverErr != nil {
+		t.Fatalf("return custody while keeping obsolete submitted head: %v\n%s", recoverErr, recoverOut)
+	}
+
+	if out, gitErr := h.runGit(context.Background(), operator, "reset", "--hard", base); gitErr != nil {
+		t.Fatalf("restore pre-candidate base: %v\n%s", gitErr, out)
+	}
+	if writeErr := os.WriteFile(filepath.Join(operator, "replacement.txt"), []byte("replacement\n"), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "add", "replacement.txt"); gitErr != nil {
+		t.Fatalf("stage replacement: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "commit", "-m", "replacement candidate"); gitErr != nil {
+		t.Fatalf("commit replacement: %v\n%s", gitErr, out)
+	}
+	replacement := strings.TrimSpace(h.WorktreeRefSHA(branch))
+	if out, gitErr := h.runGit(context.Background(), operator, "merge-base", "--is-ancestor", obsolete, replacement); gitErr == nil {
+		t.Fatalf("replacement unexpectedly adopted obsolete candidate %s\n%s", obsolete, out)
+	}
+
+	statusOut, statusErr := h.RunInDir(operator, "axi", "sync", "--check")
+	if statusErr != nil || !strings.Contains(statusOut, "state: custody_returned") || !strings.Contains(statusOut, "code: run_pipeline") {
+		t.Fatalf("returned-custody contract before replacement run: %v\n%s", statusErr, statusOut)
+	}
+	runsBefore := len(h.Runs())
+	replacementOut, replacementErr := h.RunInDir(operator, "axi", "run", "--intent", intent)
+	if replacementErr != nil || !strings.Contains(replacementOut, "sync-1") {
+		t.Fatalf("replacement pipeline submission: %v\n%s", replacementErr, replacementOut)
+	}
+	if got := len(h.Runs()); got != runsBefore+1 {
+		t.Fatalf("replacement run count = %d, want %d", got, runsBefore+1)
+	}
+	if got := h.ActiveRun(branch); got == nil || got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != replacement {
+		t.Fatalf("replacement active run = %#v, want submitted head %s", got, replacement)
+	}
+}
+
 // rebaseCustodyScenario differs from branchSyncScenario in exactly one way that
 // matters here: its fix round ADDS a file instead of rewriting the operator's
 // own line. Both shapes advance the gate branch, but only this one leaves the

@@ -53,3 +53,18 @@ func RecoveryLocalRef(runID string) string {
 func RecoveryGateRef(runID string) string {
 	return "refs/no-mistakes/recover-gate/" + runID
 }
+
+// ReturnedRef binds the gate head at the moment custody was returned.
+func ReturnedRef(runID string) string {
+	return "refs/no-mistakes/custody-returned/" + runID
+}
+
+// SupersededGateRef preserves the stale gate head retired by one replacement.
+func SupersededGateRef(runID string) string {
+	return "refs/no-mistakes/superseded-gate/" + runID
+}
+
+// ReplacementRef binds the one replacement head authorized for a cancelled run.
+func ReplacementRef(runID string) string {
+	return "refs/no-mistakes/replacement/" + runID
+}
