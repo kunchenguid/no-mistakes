@@ -7,9 +7,11 @@
 // hand control back to the agent. Keeping the strings and the parser here means
 // both consumers interpret a run identically and cannot drift apart.
 //
-// Readiness ownership is split deliberately: the pipeline/config owner decides
-// whether a trusted default-branch `no_ci: true` declaration applies, and this
-// package combines that authoritative state with the activity log for consumers.
+// Production scheduling omits CI entirely for trusted default-branch
+// `no_ci: true`. The declared-no-CI vocabulary below remains for compatibility
+// with persisted readiness and callers that directly instantiate the CI step;
+// this package combines any such authoritative state with the activity log for
+// consumers.
 package cimonitor
 
 import "strings"
@@ -22,11 +24,12 @@ const (
 	// not yet merged or closed, so the monitor keeps watching subject to its
 	// configured timeout.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
-	// NoChecksPassedMsg is logged only when the trusted default-branch config
-	// declares `no_ci: true` and the forge reports zero checks. The message
-	// names the positive declaration so agents and operators can inspect the
-	// evidence rather than treating every empty forge response as green. An
-	// empty check list WITHOUT that declaration must never produce this line.
+	// NoChecksPassedMsg is the compatibility log emitted when a directly
+	// instantiated CI step receives trusted `no_ci: true` and the forge reports
+	// zero checks. Production no-CI runs omit the step before this path. The
+	// message names the positive declaration so legacy state never makes every
+	// empty forge response green; without that declaration this line must not be
+	// emitted.
 	NoChecksPassedMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
@@ -37,8 +40,8 @@ const (
 type Activity struct {
 	CIFixes      int    // number of auto-fix attempts observed
 	AutoFixing   bool   // an auto-fix is currently in progress
-	Ready        bool   // checks have passed (or declared no-CI); PR ready to merge
-	DeclaredNoCI bool   // Ready because of an explicit no_ci declaration, not green checks
+	Ready        bool   // checks have passed (or legacy declared-no-CI readiness); PR ready to merge
+	DeclaredNoCI bool   // compatibility readiness came from no_ci, not green checks
 	LastEvent    string // the most recent recognized log line
 }
 
@@ -122,13 +125,14 @@ func ParseActivity(logs []string) Activity {
 
 // ChecksPassed reports whether the CI monitor's latest state is "checks passed,
 // PR ready to merge". It is the agent-facing summary of ParseActivity(logs).Ready.
-// Ready covers both all-green checks and a trusted no_ci declaration with zero
-// registered checks; use DeclaredNoCI to distinguish the two for help text.
+// Ready covers all-green checks plus retained compatibility state for a trusted
+// no_ci declaration with zero registered checks; use DeclaredNoCI to
+// distinguish the latter for help text. Production no-CI runs have no CI step.
 func ChecksPassed(logs []string) bool {
 	return ParseActivity(logs).Ready
 }
 
-// DeclaredNoCI reports whether the latest ready state is backed by an explicit
+// DeclaredNoCI reports whether compatibility readiness is backed by an explicit
 // trusted no_ci declaration rather than observed green checks.
 func DeclaredNoCI(logs []string) bool {
 	return ParseActivity(logs).DeclaredNoCI

@@ -577,12 +577,13 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
-// 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
-// established by green checks or the trusted no_ci declaration and the PR is
-// ready for a human to merge), or the terminal outcome (exit 0 when passed,
-// exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
-// the fixes the pipeline applied and reporting instructions, so the agent
-// closes the loop with the user instead of stopping at "it passed".
+// 0, a normal decision point), a checks-passed outcome (exit 0, scheduled CI is
+// green and the PR is ready for a human to merge), or the terminal outcome
+// (exit 0 when passed, exit 1 when blocked, failed, or cancelled). Retained
+// declared-no-CI readiness is rendered only for compatibility with old state;
+// current trusted no_ci runs omit CI and reach terminal passed after PR.
+// Successful outcomes also carry the fixes the pipeline applied and reporting
+// instructions, so the agent closes the loop instead of stopping at "it passed".
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
