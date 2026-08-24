@@ -276,6 +276,49 @@ func TestResolveRejectsDifferentParentAndForkProfiles(t *testing.T) {
 	}
 }
 
+// TestResolveRejectsConflictingExpectedLoginsOnOneConfigDirectory reproduces
+// the parent/fork pair that shares a config directory but pins different
+// accounts. Selecting the upstream side would validate only its own pin and
+// run under an account the matched fork profile never expected, which is the
+// silent fallback expected_login exists to refuse.
+func TestResolveRejectsConflictingExpectedLoginsOnOneConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte("github.com:\n    user: alice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Resolve(context.Background(), config.ForgeProfiles{
+		"github.com":      {GHConfigDir: dir, ExpectedLogin: "alice"},
+		"github-personal": {GHConfigDir: dir, ExpectedLogin: "bob"},
+	}, "https://github.com/upstream/project.git", "git@github-personal:bob/project.git")
+	if err == nil {
+		t.Fatal("conflicting expected_login pins on one config directory resolved instead of failing as ambiguous")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("error = %v, want an ambiguous-profile refusal", err)
+	}
+}
+
+// TestResolveAcceptsMatchingExpectedLoginOnOneConfigDirectory keeps the
+// legitimate alias case working: identical pins are the same selection.
+func TestResolveAcceptsMatchingExpectedLoginOnOneConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte("github.com:\n    user: alice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := Resolve(context.Background(), config.ForgeProfiles{
+		"github.com":      {GHConfigDir: dir, ExpectedLogin: "alice"},
+		"github-personal": {GHConfigDir: dir, ExpectedLogin: "Alice"},
+	}, "https://github.com/upstream/project.git", "git@github-personal:alice/project.git")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("matching expected_login pins did not resolve")
+	}
+}
+
 func envMap(env []string) map[string]string {
 	result := make(map[string]string, len(env))
 	for _, entry := range env {

@@ -360,7 +360,7 @@ func writeMockGHState(t *testing.T, dir, state string) (string, string) {
 	logPath := filepath.Join(dir, "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "gh.bat")
-		script := "@echo off\r\necho env:%GH_CONFIG_DIR% token:%GH_TOKEN%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\nset TOKENSTATE=\r\nif defined GH_TOKEN set TOKENSTATE=set\r\necho env:%GH_CONFIG_DIR% token:%TOKENSTATE%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -469,7 +469,10 @@ func shutdownTestDaemonAndWaitForCleanup(t *testing.T, p *paths.Paths) {
 	}
 	client.Close()
 
-	deadline := time.Now().Add(3 * time.Second)
+	// Worktree removal is process-spawn-bound and runs before the socket
+	// disappears, so match the graceful-shutdown budget the run-goroutine
+	// cleanup above already needs on Windows.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(p.Socket()); os.IsNotExist(err) {
 			return
@@ -478,5 +481,5 @@ func shutdownTestDaemonAndWaitForCleanup(t *testing.T, p *paths.Paths) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("daemon did not finish cleanup within 3s")
+	t.Fatal("daemon did not finish cleanup within 15s")
 }

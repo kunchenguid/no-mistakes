@@ -51,7 +51,7 @@ func TestStartServerWithPortAppliesForgeEnvironment(t *testing.T) {
 	script := "#!/bin/sh\nprintf 'config:%s token:%s\\n' \"$GLAB_CONFIG_DIR\" \"${GITLAB_TOKEN:+set}\" > \"$CAPTURE_FILE\"\nexit 1\n"
 	if runtime.GOOS == "windows" {
 		name += ".cmd"
-		script = "@echo off\r\necho config:%GLAB_CONFIG_DIR% token:%GITLAB_TOKEN%>\"%CAPTURE_FILE%\"\r\nexit /b 1\r\n"
+		script = "@echo off\r\nset TOKENSTATE=\r\nif defined GITLAB_TOKEN set TOKENSTATE=set\r\necho config:%GLAB_CONFIG_DIR% token:%TOKENSTATE%>\"%CAPTURE_FILE%\"\r\nexit /b 1\r\n"
 	}
 	bin := filepath.Join(dir, name)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {

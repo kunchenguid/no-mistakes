@@ -142,8 +142,11 @@ func gitlabConfigContainsHost(dir, targetHost string) bool {
 }
 
 type githubHostEntry struct {
-	User  string                 `yaml:"user"`
-	Users map[string]interface{} `yaml:"users"`
+	User string `yaml:"user"`
+	// Users decodes account keys only. gh nests each account's oauth_token
+	// under its login, and only the logins are ever read, so an empty-struct
+	// value keeps a live credential out of the process image entirely.
+	Users map[string]struct{} `yaml:"users"`
 }
 
 type githubHosts map[string]githubHostEntry
@@ -217,9 +220,19 @@ func selectProfile(profiles config.ForgeProfiles, upstreamHost, forkHost string)
 	}
 }
 
+// sameProfile reports whether two host tokens resolve to the same account
+// selection. The expected_login pin is part of that identity: two profiles
+// sharing a config directory but pinning different logins disagree about which
+// account the run must be signed in as, and silently taking either one is the
+// fallback expectLogin exists to refuse.
 func sameProfile(a, b config.ForgeProfile) bool {
 	return effectiveProfilePath(a.GHConfigDir) == effectiveProfilePath(b.GHConfigDir) &&
-		effectiveProfilePath(a.GLabConfigDir) == effectiveProfilePath(b.GLabConfigDir)
+		effectiveProfilePath(a.GLabConfigDir) == effectiveProfilePath(b.GLabConfigDir) &&
+		normalizeExpectedLogin(a.ExpectedLogin) == normalizeExpectedLogin(b.ExpectedLogin)
+}
+
+func normalizeExpectedLogin(login string) string {
+	return strings.ToLower(strings.TrimSpace(login))
 }
 
 func effectiveProfilePath(path string) string {

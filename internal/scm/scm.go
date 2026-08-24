@@ -147,27 +147,12 @@ func detectLegacyProviderHost(host string) Provider {
 	case strings.Contains(host, "bitbucket.org"):
 		return ProviderBitbucket
 	case strings.Contains(host, "dev.azure.com") || strings.Contains(host, "visualstudio.com"):
+		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
+		// the legacy vs-ssh.visualstudio.com SSH host.
 		return ProviderAzureDevOps
 	default:
 		return ProviderUnknown
 	}
-}
-
-func detectKnownProvider(url string) Provider {
-	lower := strings.ToLower(url)
-	switch {
-	case strings.Contains(lower, "github.com"):
-		return ProviderGitHub
-	case strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "gitlab."):
-		return ProviderGitLab
-	case strings.Contains(lower, "bitbucket.org"):
-		return ProviderBitbucket
-	case strings.Contains(lower, "dev.azure.com") || strings.Contains(lower, "visualstudio.com"):
-		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
-		// the legacy vs-ssh.visualstudio.com SSH host.
-		return ProviderAzureDevOps
-	}
-	return ProviderUnknown
 }
 
 // ResolveHost returns the canonical host for a remote. For SSH remotes it

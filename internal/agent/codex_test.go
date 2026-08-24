@@ -21,7 +21,7 @@ func TestCodexAgentRunAppliesForgeEnvironment(t *testing.T) {
 printf 'config:%s token:%s\n' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}" > "$CAPTURE_FILE"
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
-`, "@echo off\r\necho config:%GH_CONFIG_DIR% token:%GH_TOKEN%>\"%CAPTURE_FILE%\"\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\r\necho {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\r\n")
+`, "@echo off\r\nset TOKENSTATE=\r\nif defined GH_TOKEN set TOKENSTATE=set\r\necho config:%GH_CONFIG_DIR% token:%TOKENSTATE%>\"%CAPTURE_FILE%\"\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\r\necho {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\r\n")
 	t.Setenv("GH_TOKEN", "ambient-must-not-leak")
 
 	ca := &codexAgent{bin: bin, subprocessContext: newSubprocessContext(runenv.Overlay{
