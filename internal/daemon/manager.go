@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +23,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/ownerdecision"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
@@ -39,15 +43,16 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu           sync.Mutex
-	executors    map[string]*pipeline.Executor      // runID → executor
-	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
-	dones        map[string]chan struct{}           // runID → closed when goroutine exits
-	wg           sync.WaitGroup                     // tracks background run goroutines
-	shuttingDown atomic.Bool                        // prevents new runs during shutdown
-	db           *db.DB
-	paths        *paths.Paths
-	steps        StepFactory
+	mu               sync.Mutex
+	executors        map[string]*pipeline.Executor      // runID → executor
+	cancels          map[string]context.CancelCauseFunc // runID → cancel function with cause
+	dones            map[string]chan struct{}           // runID → closed when goroutine exits
+	pendingProtected map[string]recoveredRunPlan        // restart-fenced until signed checkpoint
+	wg               sync.WaitGroup                     // tracks background run goroutines
+	shuttingDown     atomic.Bool                        // prevents new runs during shutdown
+	db               *db.DB
+	paths            *paths.Paths
+	steps            StepFactory
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
@@ -81,26 +86,28 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]*eventMailbox),
-		stateRevs:     make(map[string]int64),
-		completedRuns: make(map[string]bool),
+		executors:        make(map[string]*pipeline.Executor),
+		cancels:          make(map[string]context.CancelCauseFunc),
+		dones:            make(map[string]chan struct{}),
+		pendingProtected: make(map[string]recoveredRunPlan),
+		db:               database,
+		paths:            p,
+		steps:            stepFactory,
+		subscribers:      make(map[string][]*eventMailbox),
+		stateRevs:        make(map[string]int64),
+		completedRuns:    make(map[string]bool),
 	}
 }
 
 type recoveredRunPlan struct {
-	run     *db.Run
-	repo    *db.Repo
-	workDir string
-	gateDir string
-	cfg     *config.Config
-	agent   agent.Agent
-	steps   []pipeline.Step
+	run                      *db.Run
+	repo                     *db.Repo
+	workDir                  string
+	gateDir                  string
+	cfg                      *config.Config
+	agent                    agent.Agent
+	steps                    []pipeline.Step
+	ownerCheckpointChallenge *ownerdecision.Challenge
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -132,6 +139,15 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
+	}
+	authority, err := m.db.GetOwnerDecisionAuthority(run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read recovered owner-decision authority: %w", err)
+	}
+	if authority != nil {
+		if err := m.db.VerifyRecoveredOwnerDecisionRun(run.ID); err != nil {
+			return nil, err
+		}
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil {
@@ -308,17 +324,51 @@ func samePath(a, b string) bool {
 
 func (m *RunManager) resumeRecoveredRuns(plans []recoveredRunPlan) {
 	for _, plan := range plans {
-		m.resumeRecoveredRun(plan)
+		authority, err := m.db.GetOwnerDecisionAuthority(plan.run.ID)
+		if err != nil {
+			reason := "recovered run owner-decision authority is unreadable; refusing restart"
+			if failErr := m.db.FailUnboundRecoveredRun(plan.run.ID, plan.run.HeadSHA, reason); failErr != nil {
+				slog.Error("failed to terminalize unreadable recovered owner-decision authority", "run_id", plan.run.ID, "error", failErr)
+			}
+			_ = plan.agent.Close()
+			continue
+		}
+		if authority != nil {
+			m.mu.Lock()
+			m.pendingProtected[plan.run.ID] = plan
+			m.mu.Unlock()
+			slog.Info("protected recovered run is waiting for a signed history checkpoint", "run_id", plan.run.ID)
+			continue
+		}
+		// After a restart, total deletion of a protected run's local authority
+		// row is indistinguishable from a historical legacy run. Auto-resuming
+		// either would create a same-UID downgrade path. Legacy/unbound parked
+		// runs therefore fail closed and retain their verified head for custody
+		// recovery; fresh legacy runs remain otherwise unchanged.
+		reason := "unbound legacy run cannot be resumed after daemon restart; start a new run"
+		if err := m.db.FailUnboundRecoveredRun(plan.run.ID, plan.run.HeadSHA, reason); err != nil {
+			slog.Error("failed to terminalize unbound recovered run", "run_id", plan.run.ID, "error", err)
+		}
+		_ = plan.agent.Close()
 	}
 }
 
 func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
+	_ = m.resumeRecoveredRunArmed(plan, "")
+}
+
+func (m *RunManager) resumeRecoveredRunArmed(plan recoveredRunPlan, expectedOwnerHead string) error {
 	if m.shuttingDown.Load() {
 		_ = plan.agent.Close()
-		return
+		return fmt.Errorf("daemon is shutting down")
+	}
+	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	if expectedOwnerHead != "" {
+		if err := executor.ArmOwnerDecisionHistory(plan.run.ID, expectedOwnerHead); err != nil {
+			return fmt.Errorf("arm protected recovered run: %w", err)
+		}
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -390,6 +440,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		addRunPerformanceSummary(m.db, plan.run.ID, fields)
 		telemetry.Track("run", fields)
 	}()
+	return nil
 }
 
 func agentListsEqual(a, b []types.AgentName) bool {
@@ -693,7 +744,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRunWithOwnerDecision(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.OwnerDecision)
 }
 
 // HandleRerun creates a new run for the latest recoverable head on a branch:
@@ -702,6 +753,10 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
 // runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+	return m.HandleRerunWithOwnerDecision(ctx, repoID, branch, previousRunID, skipSteps, intent, nil)
+}
+
+func (m *RunManager) HandleRerunWithOwnerDecision(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string, ownerConfig *ipc.OwnerDecisionRunConfig) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -771,7 +826,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSourceAndOwnerDecision(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownerConfig)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -836,10 +891,18 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
 }
 
+func (m *RunManager) startRunWithOwnerDecision(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string, ownerConfig *ipc.OwnerDecisionRunConfig) (string, error) {
+	return m.startRunWithIntentSourceAndOwnerDecision(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, ownerConfig)
+}
+
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	return m.startRunWithIntentSourceAndOwnerDecision(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil)
+}
+
+func (m *RunManager) startRunWithIntentSourceAndOwnerDecision(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, ownerConfig *ipc.OwnerDecisionRunConfig) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -853,6 +916,21 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	var ownerPublicKey ed25519.PublicKey
+	if ownerConfig != nil {
+		var err error
+		ownerPublicKey, err = ownerdecision.ParsePublicKey(ownerConfig.PublicKey)
+		if err != nil {
+			return "", err
+		}
+		genesisHead, err := ownerdecision.GenesisHeadForRun(ownerPublicKey, repo.ID, branch, headSHA)
+		if err != nil {
+			return "", err
+		}
+		if ownerConfig.ExpectedHead != genesisHead {
+			return "", fmt.Errorf("owner decision: a new protected run must start at the public-key-and-run-bound genesis history head")
+		}
 	}
 
 	// Serialize per repo+branch to prevent two concurrent pushes from both
@@ -874,8 +952,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		repo = refreshed
 	}
 
-	// Cancel any active run for this repo+branch.
-	m.cancelActiveRuns(repo.ID, branch)
+	// Cancel any active legacy run for this repo+branch. Protected runs cannot
+	// be superseded as an unsigned side effect of a new push: the controller
+	// must first submit a signed cancellation envelope.
+	if err := m.cancelActiveRuns(repo.ID, branch); err != nil {
+		trackStartFailure("cancel_active_run")
+		return "", err
+	}
 
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
@@ -893,6 +976,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if ownerConfig != nil {
+		if _, err := m.db.ProtectRunOwnerDecisions(run.ID, ownerPublicKey); err != nil {
+			_ = m.db.UpdateRunErrorStatus(run.ID, err.Error(), types.RunFailed)
+			trackStartFailure("protect_owner_decisions")
+			return "", err
+		}
 	}
 
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
@@ -1081,8 +1171,16 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	})
 
 	// Create executor with event broadcast.
-	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	if ownerConfig != nil {
+		if err := executor.ArmOwnerDecisionHistory(run.ID, ownerConfig.ExpectedHead); err != nil {
+			_ = ag.Close()
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("arm_owner_decisions")
+			return "", err
+		}
+	}
+	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor.SetSkippedSteps(skipSteps)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
@@ -1344,6 +1442,126 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 	return exec.RespondWithOverrides(step, action, findingIDs, instructions, addedFindings)
 }
 
+func (m *RunManager) HandleOwnerDecisionChallenge(runID, purpose, expectedHead string) (ownerdecision.Challenge, error) {
+	if purpose == ownerdecision.PurposeCheckpoint {
+		if strings.TrimSpace(expectedHead) == "" {
+			return ownerdecision.Challenge{}, fmt.Errorf("owner decision checkpoint requires the controller-held expected head")
+		}
+		m.mu.Lock()
+		plan, pending := m.pendingProtected[runID]
+		m.mu.Unlock()
+		if !pending {
+			return ownerdecision.Challenge{}, fmt.Errorf("run %s is not waiting for a protected restart checkpoint", runID)
+		}
+		authority, err := m.db.GetOwnerDecisionAuthority(runID)
+		if err != nil {
+			return ownerdecision.Challenge{}, fmt.Errorf("read owner decision checkpoint authority: %w", err)
+		}
+		if authority == nil {
+			return ownerdecision.Challenge{}, fmt.Errorf("run %s is not protected", runID)
+		}
+		if err := m.db.VerifyOwnerDecisionHistory(runID, expectedHead); err != nil {
+			return ownerdecision.Challenge{}, fmt.Errorf("verify owner decision checkpoint history: %w", err)
+		}
+		nonceBytes := make([]byte, 32)
+		if _, err := rand.Read(nonceBytes); err != nil {
+			return ownerdecision.Challenge{}, fmt.Errorf("generate owner decision checkpoint nonce: %w", err)
+		}
+		now := time.Now().UTC()
+		challenge := ownerdecision.Challenge{
+			Schema: ownerdecision.ChallengeSchema, Purpose: ownerdecision.PurposeCheckpoint,
+			RunID: plan.run.ID, RepoID: authority.RepoID, Branch: authority.Branch,
+			HeadSHA: authority.InitialHeadSHA, GateHeadSHA: plan.run.HeadSHA,
+			PreviousHead: expectedHead, Nonce: "checkpoint:" + plan.run.ID + ":" + base64.RawURLEncoding.EncodeToString(nonceBytes),
+			IssuedAt: now.Unix(), ExpiresAt: now.Add(ownerdecision.MaxChallengeLifetime).Unix(),
+		}
+		m.mu.Lock()
+		current, stillPending := m.pendingProtected[runID]
+		if !stillPending {
+			m.mu.Unlock()
+			return ownerdecision.Challenge{}, fmt.Errorf("run %s is no longer waiting for a protected restart checkpoint", runID)
+		}
+		if current.ownerCheckpointChallenge != nil && time.Now().Unix() < current.ownerCheckpointChallenge.ExpiresAt {
+			existing := *current.ownerCheckpointChallenge
+			m.mu.Unlock()
+			if existing.PreviousHead != expectedHead {
+				return ownerdecision.Challenge{}, fmt.Errorf("owner decision checkpoint challenge is already issued for a different expected head")
+			}
+			return existing, nil
+		}
+		current.ownerCheckpointChallenge = &challenge
+		m.pendingProtected[runID] = current
+		m.mu.Unlock()
+		return challenge, nil
+	}
+	m.mu.Lock()
+	exec, ok := m.executors[runID]
+	m.mu.Unlock()
+	if !ok {
+		return ownerdecision.Challenge{}, fmt.Errorf("no active executor for run %s", runID)
+	}
+	return exec.OwnerDecisionChallenge(purpose)
+}
+
+func (m *RunManager) HandleSignedRespond(runID string, envelope ownerdecision.Envelope) error {
+	m.mu.Lock()
+	exec, ok := m.executors[runID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active executor for run %s", runID)
+	}
+	return exec.RespondAuthorized(envelope)
+}
+
+// HandleOwnerDecisionCheckpoint resumes a protected parked run only after a
+// fresh Ed25519-signed statement binds the controller-held expected history
+// head. A local process cannot bless a rolled-back SQLite prefix by merely
+// repeating the locally visible head.
+func (m *RunManager) HandleOwnerDecisionCheckpoint(runID string, envelope ownerdecision.Envelope) error {
+	m.mu.Lock()
+	plan, ok := m.pendingProtected[runID]
+	if ok {
+		delete(m.pendingProtected, runID)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("run %s is not waiting for a protected restart checkpoint", runID)
+	}
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		m.mu.Lock()
+		if _, active := m.executors[runID]; !active {
+			m.pendingProtected[runID] = plan
+		}
+		m.mu.Unlock()
+	}()
+	authority, err := m.db.GetOwnerDecisionAuthority(runID)
+	if err != nil {
+		return err
+	}
+	if authority == nil {
+		return fmt.Errorf("run %s is not protected", runID)
+	}
+	if plan.ownerCheckpointChallenge == nil {
+		return fmt.Errorf("owner decision checkpoint has no fresh daemon-issued challenge")
+	}
+	challenge := *plan.ownerCheckpointChallenge
+	if err := ownerdecision.Verify(authority.PublicKey, envelope, challenge, time.Now().UTC()); err != nil {
+		return fmt.Errorf("verify owner decision checkpoint: %w", err)
+	}
+	if err := m.db.VerifyOwnerDecisionHistory(runID, challenge.PreviousHead); err != nil {
+		return fmt.Errorf("verify owner decision checkpoint history: %w", err)
+	}
+	if err := m.resumeRecoveredRunArmed(plan, challenge.PreviousHead); err != nil {
+		return err
+	}
+	started = true
+	return nil
+}
+
 // Shutdown cancels all active runs. Called during daemon shutdown to prevent
 // orphaned goroutines from continuing agent calls and git operations.
 func (m *RunManager) Shutdown() {
@@ -1354,7 +1572,15 @@ func (m *RunManager) Shutdown() {
 	for id, cancel := range m.cancels {
 		cancels[id] = cancel
 	}
+	pending := make([]recoveredRunPlan, 0, len(m.pendingProtected))
+	for id, plan := range m.pendingProtected {
+		pending = append(pending, plan)
+		delete(m.pendingProtected, id)
+	}
 	m.mu.Unlock()
+	for _, plan := range pending {
+		_ = plan.agent.Close()
+	}
 
 	for id, cancel := range cancels {
 		cancel(fmt.Errorf("daemon shutting down"))
@@ -1377,12 +1603,31 @@ func (m *RunManager) Shutdown() {
 func (m *RunManager) HandleCancel(runID string) error {
 	m.mu.Lock()
 	cancel, ok := m.cancels[runID]
+	exec := m.executors[runID]
 	m.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no active run %s", runID)
 	}
+	if exec != nil && exec.OwnerDecisionProtected() {
+		return fmt.Errorf("owner decision: protected run requires a signed cancellation envelope")
+	}
 
+	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
+	return nil
+}
+
+func (m *RunManager) HandleSignedCancel(runID string, envelope ownerdecision.Envelope) error {
+	m.mu.Lock()
+	cancel, ok := m.cancels[runID]
+	exec := m.executors[runID]
+	m.mu.Unlock()
+	if !ok || exec == nil {
+		return fmt.Errorf("no active run %s", runID)
+	}
+	if err := exec.AuthorizeCancel(envelope); err != nil {
+		return err
+	}
 	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
 	return nil
 }
@@ -1392,34 +1637,54 @@ func (m *RunManager) HandleCancel(runID string) error {
 // concurrent pushes to upstream.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
-func (m *RunManager) cancelActiveRuns(repoID, branch string) {
+func (m *RunManager) cancelActiveRuns(repoID, branch string) error {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
-		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
-		return
+		return fmt.Errorf("query active runs for cancellation: %w", err)
+	}
+
+	type activeRun struct {
+		run    *db.Run
+		cancel context.CancelCauseFunc
+		done   chan struct{}
+	}
+	var active []activeRun
+	// First classify every candidate. Cancelling a legacy run before later
+	// discovering a protected run would make the refusal itself destructive.
+	// The in-memory executor/pending-plan checks preserve protection even if a
+	// same-UID workload deletes the local authority row while the daemon lives.
+	for _, run := range runs {
+		if run.Branch != branch || (run.Status != types.RunPending && run.Status != types.RunRunning) {
+			continue
+		}
+		m.mu.Lock()
+		exec := m.executors[run.ID]
+		_, pendingProtected := m.pendingProtected[run.ID]
+		cancel := m.cancels[run.ID]
+		done := m.dones[run.ID]
+		m.mu.Unlock()
+		protected := pendingProtected || (exec != nil && exec.OwnerDecisionProtected())
+		if !protected {
+			authority, authorityErr := m.db.GetOwnerDecisionAuthority(run.ID)
+			if authorityErr != nil {
+				return fmt.Errorf("classify active run %s owner-decision authority: %w", run.ID, authorityErr)
+			}
+			protected = authority != nil
+		}
+		if protected {
+			return fmt.Errorf("owner decision: active protected run %s requires signed cancellation before it can be superseded", run.ID)
+		}
+		if cancel != nil {
+			active = append(active, activeRun{run: run, cancel: cancel, done: done})
+		}
 	}
 
 	var toWait []chan struct{}
-	for _, run := range runs {
-		if run.Branch != branch {
-			continue
-		}
-		if run.Status != types.RunPending && run.Status != types.RunRunning {
-			continue
-		}
-
-		m.mu.Lock()
-		cancel, ok := m.cancels[run.ID]
-		done := m.dones[run.ID]
-		m.mu.Unlock()
-		if !ok {
-			continue
-		}
-
-		cancel(fmt.Errorf(types.RunCancelReasonSuperseded))
-		slog.Info("cancelled active run", "run_id", run.ID, "repo_id", repoID, "branch", branch)
-		if done != nil {
-			toWait = append(toWait, done)
+	for _, candidate := range active {
+		candidate.cancel(fmt.Errorf(types.RunCancelReasonSuperseded))
+		slog.Info("cancelled active run", "run_id", candidate.run.ID, "repo_id", repoID, "branch", branch)
+		if candidate.done != nil {
+			toWait = append(toWait, candidate.done)
 		}
 	}
 
@@ -1429,7 +1694,8 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 		case <-done:
 		case <-timeout:
 			slog.Warn("timed out waiting for cancelled runs to finish")
-			return
+			return fmt.Errorf("timed out waiting for cancelled runs to finish")
 		}
 	}
+	return nil
 }

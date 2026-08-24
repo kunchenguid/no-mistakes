@@ -107,6 +107,8 @@ no-mistakes axi run --intent "the user's goal" --yes
 | `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
 | `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
 | `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| `--owner-decision-public-key` | `path` | (none) | Bind a new protected run to an Ed25519 public key |
+| `--expected-owner-decision-head` | `sha256` | key-and-run-bound genesis | Controller-held initial history head for a new protected run |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
@@ -120,6 +122,7 @@ Reattaching to an in-flight run can proceed while the daemon is already running 
 Starting a fresh run also requires a runnable effective pipeline agent.
 If the configured native agent or ACP runner is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
 With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
+Protected runs refuse local `--yes`: putting the private key on the workload host would let the workload mint its own decisions. An external controller must export each challenge, sign it offline, and apply the resulting envelope.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
@@ -152,12 +155,60 @@ no-mistakes axi respond --action skip
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
+| `--decision-file` | `path`  | (none)        | Apply one controller-signed protected-run envelope                  |
 
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when the CI monitor reports readiness but the PR still needs a human merge.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
 When the daemon is already running, `axi respond` can continue an active run even if the global config file has become invalid, because it is not starting a fresh run.
 The same successful-output reporting instructions apply to `axi respond` results.
+
+## no-mistakes axi owner-decision
+
+Protected runs keep the private key outside the daemon, database, run worktree, and pipeline-agent process.
+Create a controller key pair once, then bind a new run with the public key:
+
+```sh
+no-mistakes axi owner-decision keygen --private-key owner.key --public-key owner.pub
+no-mistakes axi run --intent "the user's goal" --owner-decision-public-key owner.pub
+```
+
+At a gate, sign and apply the exact canonical challenge:
+
+```sh
+# Workload host: export, then transfer only challenge.json to the controller.
+no-mistakes axi owner-decision challenge --run <id> --purpose respond --out challenge.json
+
+# Controller host: this command is offline and never connects to the daemon.
+no-mistakes axi owner-decision sign --challenge-file challenge.json --private-key owner.key --action approve --out decision.json
+
+# Workload host: transfer back only decision.json and apply it.
+no-mistakes axi respond --decision-file decision.json
+```
+
+Use `--action fix --findings F1,F2`, `--instructions`, and `--add-finding` on `owner-decision sign` to bind the full fix choice into the signature.
+Unsigned `axi respond`, TUI responses, and local `--yes` resolution are rejected for protected runs.
+Never copy `owner.key` to the workload host or pass it in a workload command.
+
+The signed history is appended and its round projection is committed in one SQLite transaction before execution resumes.
+For journaled `respond` and `cancel` envelopes, each externally retained history head hashes the prior head and exact signed envelope, so the offline signer reports a `next_head` the controller can derive and retain before submission. A `checkpoint` is admission proof rather than a journal event, so its signer output reports the unchanged `history_head` and never a `next_head`.
+The daemon separately requires the materialized round projection to match that envelope and the immutable signed findings digest byte for byte.
+The initial head commits to the exact public key, repository ID, branch, and submitted head. Every challenge repeats that sealed identity and separately carries the current gate head, so replacing a local authority/run row or replaying a decision against another current head cannot preserve the controller-held binding.
+
+After a daemon restart, a protected parked run remains compute-idle until the controller signs its externally retained head:
+
+```sh
+no-mistakes axi owner-decision challenge --run <id> --purpose checkpoint --expected-head <sha256> --out checkpoint-challenge.json
+no-mistakes axi owner-decision sign --challenge-file checkpoint-challenge.json --private-key owner.key --out checkpoint.json
+no-mistakes axi owner-decision checkpoint --run <id> --decision-file checkpoint.json
+```
+
+Offline signing accepts a private key only from a directly opened regular file owned by the current user with exact mode `0600`; it refuses final-path symlinks and oversized key files. Secure private-key loading currently fails closed on Windows, where POSIX mode bits cannot prove an owner-only ACL.
+
+The checkpoint challenge carries a fresh unpredictable nonce created for that exact daemon recovery. It expires within 15 minutes and cannot be replayed after another restart. Challenge export itself verifies the supplied controller-held head against the complete local history before emitting anything to sign. The controller must also compare the sealed repository, branch, submitted head, and current gate head with its own run record before signing.
+
+An unbound legacy parked run cannot be distinguished from a protected run whose same-UID workload deleted every local protection row.
+It therefore fails closed on restart and retains its verified head for custody recovery instead of auto-resuming.
 
 ## no-mistakes axi status
 
@@ -173,6 +224,7 @@ no-mistakes axi status --run <id>
 | `--run` | `string` | resolved run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
+Protected run objects also include `owner_decision_protected: true` and the complete `owner_decision_head`; an external controller should compare that value with the head it independently derives and retains, never replace its checkpoint from an untrusted local read after an ambiguous failure.
 The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
@@ -271,6 +323,7 @@ no-mistakes axi abort --run <id>
 ```
 
 `--run` does not need a repo, branch, or worktree, so it works from anywhere.
+Protected runs require an exported cancel challenge and an offline signed cancellation envelope, applied with `axi abort --run <id> --decision-file <path>`.
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 A `--run` id that is not currently active is resolved against the exact run's durable record rather than trusted blindly: a known already-terminal run returns an idempotent success carrying its terminal `run_status` with no fabricated new cancellation, a positively proven unknown id keeps the documented successful no-op with no fabricated state, and a run that is recorded as still nonterminal or cannot be read returns the nonzero terminal-unconfirmed contract.
 When the daemon is not running, nothing can be cancelled and abort never starts one: the durable record alone decides the same three outcomes, and a recorded nonterminal run reports that cancellation could not be requested.

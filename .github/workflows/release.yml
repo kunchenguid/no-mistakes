@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          COMMIT="$(git rev-parse --short=7 HEAD)"
+          COMMIT="$(git rev-parse HEAD)"
           CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
             go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=${UMAMI_HOST} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=${UMAMI_WEBSITE_ID}" \
             -o "dist/no-mistakes" ./cmd/no-mistakes
@@ -258,7 +258,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          COMMIT="$(git rev-parse --short=7 HEAD)"
+          COMMIT="$(git rev-parse HEAD)"
           BIN="no-mistakes"
           OUT="dist/${BIN}"
           if [ "$GOOS" = "windows" ]; then

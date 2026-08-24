@@ -115,7 +115,9 @@ reason about in one long-lived process than inside independent hook invocations.
 On startup, the daemon checks for runs that were left in `pending` or `running` status (which means the daemon crashed while they were active):
 
 - Completes legacy active rows whose persisted PR state is already `merged` or `closed`, including their CI step, before active-run recovery and parked-run planning
-- Resumes only fully recorded parked approval gates whose worktree and step history can be validated; incomplete or ambiguous active runs fail closed
+- Fails a protected `pending` row left between durable run protection and executor registration before any provider setup, restoring its sealed repository, branch, and submitted head so it cannot wedge a later run; likewise anchors the exact managed-worktree head before projecting an already-journaled signed cancellation without recreating an executor
+- Keeps a public-key-bound protected gate compute-idle until a fresh controller-signed checkpoint verifies the externally retained decision-history head, then resumes only if its worktree and step history also validate
+- Fails an unbound legacy parked gate closed while retaining its verified custody head; after restart, a missing local authority row cannot safely distinguish a real legacy run from a protected run whose same-UID workload deleted all protection rows
 - Before resuming a parked CI gate, re-checks its persisted PR URL through the configured provider; a currently merged or closed PR completes the stale gate, while an open, unknown, or unreachable PR remains parked
 - Preserves a run that was actively monitoring CI for an already-created PR as `ci_monitor_interrupted` rather than failing it: the PR is still open, so a restart mid-monitor is not a pipeline failure. That run is terminal and never resumed
 - Before failing any other stale active run, verifies its managed worktree head and pins an unpublished descendant under the run-specific recovery ref so later rerun or guarded custody recovery does not fall back to a stale gate branch

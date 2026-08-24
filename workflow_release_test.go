@@ -88,6 +88,35 @@ func TestReleaseWorkflowEmbedsSelfHostedTelemetryConfig(t *testing.T) {
 	}
 }
 
+func TestNormalAndReleaseBuildsEmbedFullSourceRevision(t *testing.T) {
+	makeData, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makeContent := string(makeData)
+	if !strings.Contains(makeContent, "git rev-parse HEAD 2>/dev/null") {
+		t.Fatalf("normal builds must embed the full source revision")
+	}
+	if strings.Contains(makeContent, "rev-parse --short") {
+		t.Fatalf("normal builds must not shorten the source revision")
+	}
+
+	workflowData, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	workflow := string(workflowData)
+	for _, job := range []string{"build-darwin", "build-and-upload"} {
+		block := extractJobBlock(t, workflow, job)
+		if got := strings.Count(block, `COMMIT="$(git rev-parse HEAD)"`); got != 1 {
+			t.Fatalf("%s must bind exactly one full source revision, got %d", job, got)
+		}
+		if strings.Contains(block, "rev-parse --short") {
+			t.Fatalf("%s must not shorten the source revision", job)
+		}
+	}
+}
+
 // Partial-release protection: release-please must create drafts so that a
 // release is never marked "latest" until all binaries and checksums are
 // uploaded. A separate finalize job gates the promotion on every asset job

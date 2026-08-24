@@ -410,6 +410,19 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 		logStartupPhase("terminal_pr_runs", terminalPRStarted, "reconciled", terminalPRCount)
 	}
 
+	protectedCrashStarted := time.Now()
+	protectedCrash, err := d.ReconcileProtectedCrashStates()
+	if err != nil {
+		slog.Error("failed to reconcile protected crash states", "error", err)
+		logStartupPhase("protected_crash_states", protectedCrashStarted, "failed", true)
+	} else {
+		cancelled := recoverCommittedProtectedCancellations(d, p, protectedCrash.CancellationRunIDs)
+		logStartupPhase("protected_crash_states", protectedCrashStarted,
+			"pending_failed", protectedCrash.PendingFailed,
+			"cancelled", cancelled,
+		)
+	}
+
 	parkedStarted := time.Now()
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
@@ -467,6 +480,27 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	logStartupPhase("evidence_cleanup", evidenceStarted)
 
 	mgr.resumeRecoveredRuns(plans)
+}
+
+func recoverCommittedProtectedCancellations(d *db.DB, p *paths.Paths, runIDs []string) int {
+	recovered := 0
+	for _, runID := range runIDs {
+		run, err := d.GetRun(runID)
+		if err != nil || run == nil || run.Status != types.RunRunning {
+			continue
+		}
+		workDir := worktrees.RecordedDir(p, run.WorktreePath(), run.RepoID, run.ID)
+		if _, ok := preserveRunHead(d, workDir, run); !ok {
+			slog.Warn("protected cancellation remains stale because its worktree head could not be anchored", "run_id", runID)
+			continue
+		}
+		if err := d.RecoverCommittedOwnerCancellation(runID); err != nil {
+			slog.Warn("failed to project committed protected cancellation", "run_id", runID, "error", err)
+			continue
+		}
+		recovered++
+	}
+	return recovered
 }
 
 func preserveStaleRunHeads(d *db.DB, p *paths.Paths, excluded map[string]struct{}) {
@@ -1194,7 +1228,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerunWithOwnerDecision(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.OwnerDecision)
 		if err != nil {
 			return nil, err
 		}
@@ -1227,7 +1261,16 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings); err != nil {
+		var err error
+		if p.Decision != nil {
+			if p.Step != "" || p.Action != "" || len(p.FindingIDs) != 0 || len(p.Instructions) != 0 || len(p.AddedFindings) != 0 {
+				return nil, fmt.Errorf("signed decision cannot be combined with legacy response fields")
+			}
+			err = mgr.HandleSignedRespond(p.RunID, *p.Decision)
+		} else {
+			err = mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings)
+		}
+		if err != nil {
 			return nil, err
 		}
 		return &ipc.RespondResult{OK: true}, nil
@@ -1241,10 +1284,45 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleCancel(p.RunID); err != nil {
+		var err error
+		if p.Decision != nil {
+			err = mgr.HandleSignedCancel(p.RunID, *p.Decision)
+		} else {
+			err = mgr.HandleCancel(p.RunID)
+		}
+		if err != nil {
 			return nil, err
 		}
 		return &ipc.CancelRunResult{OK: true}, nil
+	})
+
+	srv.Handle(ipc.MethodOwnerDecisionChallenge, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.OwnerDecisionChallengeParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		challenge, err := mgr.HandleOwnerDecisionChallenge(p.RunID, p.Purpose, p.ExpectedHead)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.OwnerDecisionChallengeResult{Challenge: challenge}, nil
+	})
+
+	srv.Handle(ipc.MethodOwnerDecisionCheckpoint, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.OwnerDecisionCheckpointParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := mgr.HandleOwnerDecisionCheckpoint(p.RunID, p.Decision); err != nil {
+			return nil, err
+		}
+		return &ipc.OwnerDecisionCheckpointResult{OK: true}, nil
 	})
 
 	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {
@@ -1334,6 +1412,12 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	if authority, err := d.GetOwnerDecisionAuthority(r.ID); err == nil && authority != nil {
+		info.OwnerDecisionProtected = true
+		if head, protected, headErr := d.OwnerDecisionHead(r.ID); headErr == nil && protected {
+			info.OwnerDecisionHead = head
+		}
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))

@@ -155,6 +155,42 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
     created_at    INTEGER NOT NULL,
     PRIMARY KEY (repo_id, branch)
 );
+
+-- Protected runs bind every owner decision to an immutable Ed25519 public
+-- key. Historical runs have no row and retain the legacy protocol.
+CREATE TABLE IF NOT EXISTS owner_decision_authorities (
+    run_id           TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    public_key       BLOB NOT NULL,
+    key_id           TEXT NOT NULL,
+    repo_id          TEXT NOT NULL,
+    branch           TEXT NOT NULL,
+    initial_head_sha TEXT NOT NULL,
+    genesis_head     TEXT NOT NULL,
+    created_at       INTEGER NOT NULL
+);
+
+-- Append-only signed authorization journal. The externally retained history
+-- head chains signed envelopes; this local record digest also covers the exact
+-- deterministic round projection so direct edits are detected and refused.
+CREATE TABLE IF NOT EXISTS owner_decision_events (
+    run_id                    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    sequence                  INTEGER NOT NULL,
+    gate_id                   TEXT NOT NULL,
+    previous_head             TEXT NOT NULL,
+    record_digest             TEXT NOT NULL,
+    history_head              TEXT NOT NULL,
+    envelope_json             TEXT NOT NULL,
+    projection_round_id       TEXT,
+    selected_finding_ids      TEXT,
+    selection_source          TEXT,
+    user_findings_json        TEXT,
+    created_at                INTEGER NOT NULL,
+    PRIMARY KEY (run_id, sequence),
+    UNIQUE (run_id, gate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_owner_decision_events_run_gate
+    ON owner_decision_events (run_id, gate_id);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -162,6 +198,9 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	`ALTER TABLE owner_decision_authorities ADD COLUMN repo_id TEXT`,
+	`ALTER TABLE owner_decision_authorities ADD COLUMN branch TEXT`,
+	`ALTER TABLE owner_decision_authorities ADD COLUMN initial_head_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,

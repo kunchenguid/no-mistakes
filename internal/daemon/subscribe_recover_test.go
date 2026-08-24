@@ -490,7 +490,7 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 	}
 }
 
-func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
+func TestRecoverOnStartup_UnboundLegacyParkedRunFailsClosed(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
 		t.Fatal(err)
@@ -572,60 +572,22 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	// where the git-backed recovery path can exceed the old five-second loop.
 	waitForDaemonReady(t, p)
 
-	deadline := time.Now().Add(5 * time.Second)
-	var lastErr error
-	for {
-		if time.Now().After(deadline) {
-			recovered, getErr := d.GetRun(run.ID)
-			t.Fatalf("recovered gate never accepted an approval: last error %v, run %#v, get run error %v", lastErr, recovered, getErr)
-		}
-		client, err := ipc.Dial(p.Socket())
-		if err == nil {
-			var response ipc.RespondResult
-			err = client.Call(ipc.MethodRespond, &ipc.RespondParams{
-				RunID:  run.ID,
-				Step:   types.StepReview,
-				Action: types.ActionApprove,
-			}, &response)
-			_ = client.Close()
-			if err == nil {
-				break
-			}
-			lastErr = err
-		} else {
-			lastErr = err
-		}
-		time.Sleep(20 * time.Millisecond)
+	failed := waitForRunTerminalState(t, d, run.ID)
+	if failed.Status != types.RunFailed || failed.Error == nil || !strings.Contains(*failed.Error, "unbound legacy run") {
+		t.Fatalf("unbound recovered run = status %s error %v", failed.Status, failed.Error)
 	}
-
-	completed := waitForRunTerminalState(t, d, run.ID)
-	if completed.Status != types.RunCompleted {
-		t.Fatalf("recovered run status = %s, want completed", completed.Status)
+	if failed.AwaitingAgentSince != nil {
+		t.Fatal("unbound recovered run retained its awaiting-agent marker")
 	}
-	if completed.AwaitingAgentSince != nil {
-		t.Fatal("recovered run remained parked after approval")
+	if failed.TerminalHeadVerifiedAt == nil || failed.HeadSHA != headSHA {
+		t.Fatalf("unbound recovery lost verified custody head: head=%s verified=%v", failed.HeadSHA, failed.TerminalHeadVerifiedAt)
 	}
-	if completed.ReviewApprovedHeadSHA == nil || *completed.ReviewApprovedHeadSHA != headSHA {
-		t.Fatalf("recovered review approval = %#v, want %s", completed.ReviewApprovedHeadSHA, headSHA)
-	}
-	// The executor marks the run terminal before its owner goroutine performs
-	// worktree cleanup. Wait for that cleanup rather than assuming it completed
-	// in the same scheduling slice, which is especially unreliable on Windows.
-	cleanupDeadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(worktree); os.IsNotExist(err) {
-			break
-		} else if err != nil {
-			t.Fatalf("stat recovered worktree: %v", err)
-		}
-		if time.Now().After(cleanupDeadline) {
-			t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("unbound recovery removed retained worktree: %v", err)
 	}
 }
 
-func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testing.T) {
+func TestRecoverOnStartup_RefusesUnboundHistoricalCIGate(t *testing.T) {
 	for _, state := range []string{"MERGED", "CLOSED"} {
 		t.Run(state, func(t *testing.T) {
 			tmpDir, err := os.MkdirTemp("", "dtest")
@@ -707,9 +669,9 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			}()
 
 			waitForDaemonReady(t, p)
-			completed := waitForRunTerminalState(t, d, run.ID)
-			if completed.Status != types.RunCompleted || completed.AwaitingAgentSince != nil {
-				t.Fatalf("historical CI gate after %s reconciliation = status %s awaiting %v", state, completed.Status, completed.AwaitingAgentSince)
+			failed := waitForRunTerminalState(t, d, run.ID)
+			if failed.Status != types.RunFailed || failed.AwaitingAgentSince != nil || failed.Error == nil || !strings.Contains(*failed.Error, "unbound legacy run") {
+				t.Fatalf("unbound historical CI gate with provider state %s = status %s awaiting %v error %v", state, failed.Status, failed.AwaitingAgentSince, failed.Error)
 			}
 			active, err := lifecycle.ActiveRuns(p)
 			if err != nil {
@@ -718,12 +680,10 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			if len(active) != 0 {
 				t.Fatalf("update guard still sees %d active runs after reconciliation", len(active))
 			}
-			logData, err := os.ReadFile(ghLog)
-			if err != nil {
+			if logData, err := os.ReadFile(ghLog); err == nil && len(logData) != 0 {
+				t.Fatalf("unbound recovery consulted external PR state before failing closed: %s", logData)
+			} else if err != nil && !os.IsNotExist(err) {
 				t.Fatal(err)
-			}
-			if !strings.Contains(string(logData), "pr view 42") {
-				t.Fatalf("startup reconciliation did not read current PR state: %s", logData)
 			}
 		})
 	}

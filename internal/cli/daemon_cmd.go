@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -106,6 +108,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ownerConfig, err := parseOwnerDecisionPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +130,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:          gatePath,
+				Ref:           ref,
+				Old:           oldSHA,
+				New:           newSHA,
+				SkipSteps:     skipSteps,
+				Intent:        intent,
+				OwnerDecision: ownerConfig,
 			}, &result)
 		},
 	}
@@ -193,6 +200,7 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // The value is base64-encoded so multi-line or special-character intents
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
+const ownerDecisionPushOptionPrefix = "no-mistakes.owner-decision="
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
@@ -219,6 +227,45 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+func formatOwnerDecisionPushOption(config *ipc.OwnerDecisionRunConfig) (string, error) {
+	if config == nil {
+		return "", nil
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return "", err
+	}
+	return ownerDecisionPushOptionPrefix + base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+func parseOwnerDecisionPushOptions(options []string) (*ipc.OwnerDecisionRunConfig, error) {
+	var config *ipc.OwnerDecisionRunConfig
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, ownerDecisionPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if config != nil {
+			return nil, fmt.Errorf("duplicate owner-decision push option")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode owner-decision push option: %w", err)
+		}
+		var next ipc.OwnerDecisionRunConfig
+		decoder := json.NewDecoder(bytes.NewReader(decoded))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&next); err != nil {
+			return nil, fmt.Errorf("decode owner-decision push option: %w", err)
+		}
+		if err := requireJSONEOF(decoder); err != nil {
+			return nil, fmt.Errorf("decode owner-decision push option: %w", err)
+		}
+		config = &next
+	}
+	return config, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

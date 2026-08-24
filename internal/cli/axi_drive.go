@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/ownerdecision"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -58,6 +59,7 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var ownerPublicKey, ownerExpectedHead string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -89,17 +91,23 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				return runAxiRunProtected(cmd, autoYes, skipSteps, intent, ownerPublicKey, ownerExpectedHead)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&ownerPublicKey, "owner-decision-public-key", "", "Ed25519 public-key file for a new protected run")
+	cmd.Flags().StringVar(&ownerExpectedHead, "expected-owner-decision-head", "", "controller-held history head (new protected runs require genesis)")
 	return cmd
 }
 
 func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+	return runAxiRunProtected(cmd, autoYes, skipSteps, intent, "", "")
+}
+
+func runAxiRunProtected(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, publicKeyPath, expectedHead string) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -119,6 +127,10 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	headSHA, err := git.Run(ctx, ".", "rev-parse", "HEAD")
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("get current HEAD: %v", err))
+	}
+	ownerConfig, err := loadOwnerRunProtection(publicKeyPath, expectedHead, env.repo.ID, branch, headSHA)
+	if err != nil {
+		return emitError(cmd, 2, err.Error())
 	}
 
 	runID := activeRunID(env, branch, headSHA)
@@ -142,7 +154,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		runID, err = triggerRunWithOwnerDecision(ctx, env, branch, headSHA, skipSteps, intent, ownerConfig)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -290,8 +302,17 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+	return triggerRunWithOwnerDecision(ctx, env, branch, headSHA, skipSteps, intent, nil)
+}
+
+func triggerRunWithOwnerDecision(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string, ownerConfig *ipc.OwnerDecisionRunConfig) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	if opt, err := formatOwnerDecisionPushOption(ownerConfig); err != nil {
+		return "", fmt.Errorf("encode owner-decision run binding: %w", err)
+	} else if opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
@@ -323,7 +344,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	rerun := rerunParams(env.repo.ID, branch, skipSteps, intent)
+	rerun.OwnerDecision = ownerConfig
+	if err := env.client.Call(ipc.MethodRerun, rerun, &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -467,7 +490,9 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil); err != nil {
+			if run.OwnerDecisionProtected {
+				return nil, false, fmt.Errorf("auto-resolve %s: protected runs require an externally signed decision; refusing to load a private key beside the workload", gate.Name)
+			} else if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -572,6 +597,17 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 	}
 	if !result.OK {
 		return fmt.Errorf("daemon rejected the response")
+	}
+	return nil
+}
+
+func sendSignedRespond(client *ipc.Client, runID string, envelope ownerdecision.Envelope) error {
+	var result ipc.RespondResult
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Decision: &envelope}, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		return fmt.Errorf("daemon rejected the signed response")
 	}
 	return nil
 }
@@ -687,7 +723,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding string
+	var action, step, findings, instructions, addFinding, decisionFile string
 	var autoYes bool
 
 	cmd := &cobra.Command{
@@ -710,6 +746,7 @@ func newAxiRespondCmd() *cobra.Command {
 					findings:     findings,
 					instructions: instructions,
 					addFinding:   addFinding,
+					decisionFile: decisionFile,
 					autoYes:      autoYes,
 				})
 			})
@@ -720,6 +757,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().StringVar(&decisionFile, "decision-file", "", "controller-signed owner-decision envelope (protected runs)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate until a decision point or outcome")
 	return cmd
 }
@@ -730,6 +768,7 @@ type respondArgs struct {
 	findings     string
 	instructions string
 	addFinding   string
+	decisionFile string
 	autoYes      bool
 }
 
@@ -737,14 +776,18 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	ctx := cmd.Context()
 
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
-	switch act {
-	case types.ActionApprove, types.ActionFix, types.ActionSkip:
-	case "":
-		return emitError(cmd, 2, "--action is required",
-			"Run `no-mistakes axi respond --action approve|fix|skip`")
-	default:
-		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
-			"Valid actions: approve, fix, skip")
+	if ra.decisionFile == "" {
+		switch act {
+		case types.ActionApprove, types.ActionFix, types.ActionSkip:
+		case "":
+			return emitError(cmd, 2, "--action is required",
+				"Run `no-mistakes axi respond --action approve|fix|skip`")
+		default:
+			return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
+				"Valid actions: approve, fix, skip")
+		}
+	} else if ra.action != "" || ra.step != "" || ra.findings != "" || ra.instructions != "" || ra.addFinding != "" || ra.autoYes {
+		return emitError(cmd, 2, "--decision-file cannot be combined with legacy response fields or --yes")
 	}
 
 	env, err := openAxiDaemonEnv()
@@ -766,6 +809,27 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			"Run `no-mistakes axi run --intent \"...\"` to start one")
 	}
 	runID := active.Run.ID
+	if ra.decisionFile != "" {
+		envelope, err := readOwnerDecisionEnvelope(ra.decisionFile)
+		if err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
+		if envelope.Challenge.RunID != runID || envelope.Challenge.Purpose != ownerdecision.PurposeRespond {
+			return emitError(cmd, 1, "signed decision does not belong to the active response gate")
+		}
+		if err := sendSignedRespond(env.client, runID, envelope); err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("respond with signed decision: %v", err))
+		}
+		view := runViewFromIPC(active.Run)
+		if err := waitStepLeavesGate(ctx, env.p.Socket(), runID, string(envelope.Challenge.Step), gateStatusFor(view, string(envelope.Challenge.Step))); err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", envelope.Challenge.Step, err))
+		}
+		final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, false)
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
+		}
+		return renderDriveResult(cmd, final, ciReady)
+	}
 
 	run, err := getRunInfo(env.client, runID)
 	if err != nil || run == nil {
@@ -838,7 +902,7 @@ func gateStatusFor(rv runView, step string) string {
 }
 
 func newAxiAbortCmd() *cobra.Command {
-	var runID string
+	var runID, decisionFile string
 	cmd := &cobra.Command{
 		Use:   "abort",
 		Short: "Cancel the active pipeline run",
@@ -856,16 +920,20 @@ func newAxiAbortCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-abort", "/axi/abort", nil, func() error {
-				return runAxiAbort(cmd, strings.TrimSpace(runID))
+				return runAxiAbort(cmd, strings.TrimSpace(runID), strings.TrimSpace(decisionFile))
 			})
 		},
 	}
 	cmd.Flags().StringVar(&runID, "run", "", "cancel this run id directly, without resolving the current branch or worktree")
+	cmd.Flags().StringVar(&decisionFile, "decision-file", "", "controller-signed cancellation envelope (protected runs)")
 	return cmd
 }
 
-func runAxiAbort(cmd *cobra.Command, runID string) error {
+func runAxiAbort(cmd *cobra.Command, runID, decisionFile string) error {
 	if runID != "" {
+		if decisionFile != "" {
+			return runAxiSignedAbortByRunID(cmd, runID, decisionFile)
+		}
 		return runAxiAbortByRunID(cmd, runID)
 	}
 
@@ -900,8 +968,19 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 		return nil
 	}
 
+	params := &ipc.CancelRunParams{RunID: active.Run.ID}
+	if decisionFile != "" {
+		envelope, err := readOwnerDecisionEnvelope(decisionFile)
+		if err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
+		if envelope.Challenge.RunID != active.Run.ID || envelope.Challenge.Purpose != ownerdecision.PurposeCancel {
+			return emitError(cmd, 1, "signed cancellation does not belong to the active run")
+		}
+		params.Decision = &envelope
+	}
 	var result ipc.CancelRunResult
-	if err := env.client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: active.Run.ID}, &result); err != nil {
+	if err := env.client.Call(ipc.MethodCancelRun, params, &result); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
 	}
 	// Success and the final ownership state may only be reported after the
@@ -1034,6 +1113,42 @@ func emitUnconfirmedAbort(cmd *cobra.Command, runID, branch, reason string, last
 	}})
 	emitDoc(cmd, fields...)
 	return &exitError{code: 1}
+}
+
+func runAxiSignedAbortByRunID(cmd *cobra.Command, runID, decisionFile string) error {
+	p, err := paths.New()
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("resolve paths: %v", err))
+	}
+	if alive, _ := daemon.IsRunning(p); !alive {
+		return emitError(cmd, 1, "daemon is not running; a signed cancellation was not applied")
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("connect to daemon: %v", err))
+	}
+	defer client.Close()
+	envelope, err := readOwnerDecisionEnvelope(decisionFile)
+	if err != nil {
+		return emitError(cmd, 1, err.Error())
+	}
+	if envelope.Challenge.RunID != runID || envelope.Challenge.Purpose != ownerdecision.PurposeCancel {
+		return emitError(cmd, 1, "signed cancellation does not belong to the requested run")
+	}
+	var result ipc.CancelRunResult
+	if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: runID, Decision: &envelope}, &result); err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
+	}
+	final, confirmed, reason := waitForTerminalRun(cmd.Context(), client, runID, abortStateWaitTimeout)
+	if !confirmed {
+		return emitUnconfirmedAbort(cmd, runID, "", reason, runViewPtrFromIPC(final), true)
+	}
+	emitDoc(cmd,
+		toon.Field{Key: "aborted", Value: true},
+		toon.Field{Key: "run", Value: runID},
+		toon.Field{Key: "run_status", Value: string(final.Status)},
+	)
+	return nil
 }
 
 // runAxiAbortByRunID cancels a run by its id directly via the daemon, without
