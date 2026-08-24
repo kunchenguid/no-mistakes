@@ -253,7 +253,9 @@ type RepoConfig struct {
 	Test    TestRaw    `yaml:"test"`
 	PR      PRRaw      `yaml:"pr"`
 	// Providers carries provider-specific settings. Repo values overlay the
-	// global ones; every field is opt-in and defaults to main's behavior.
+	// global ones field by field. Every field is opt-in and defaults false, and
+	// none of them gates or weakens a pipeline step, so unlike the trusted-only
+	// fields below they are read from the pushed branch.
 	Providers ProvidersRaw `yaml:"providers"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
