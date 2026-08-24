@@ -191,6 +191,9 @@ func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResu
 	if len(steps) >= len(knownSteps) {
 		return false
 	}
+	if len(steps) == len(knownSteps)-1 && knownSteps[len(knownSteps)-1] == types.StepCI {
+		return false
+	}
 	for i, step := range steps {
 		if step.StepName != knownSteps[i] {
 			return false

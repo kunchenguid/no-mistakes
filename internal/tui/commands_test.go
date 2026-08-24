@@ -362,6 +362,35 @@ func TestNewModel_DoesNotBackfillEmptyTerminalPipelineSteps(t *testing.T) {
 	}
 }
 
+func TestNewModel_PreservesPipelineWithoutScheduledCI(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunRunning, types.RunCompleted} {
+		t.Run(string(status), func(t *testing.T) {
+			run := testRun()
+			run.Status = status
+			run.Steps = make([]ipc.StepResultInfo, 0, len(types.AllSteps())-1)
+			for _, stepName := range types.AllSteps()[:len(types.AllSteps())-1] {
+				run.Steps = append(run.Steps, ipc.StepResultInfo{
+					RunID:     run.ID,
+					StepName:  stepName,
+					StepOrder: stepName.Order(),
+					Status:    types.StepStatusCompleted,
+				})
+			}
+
+			m := NewModel("/tmp/sock", nil, run)
+
+			if len(m.steps) != len(types.AllSteps())-1 {
+				t.Fatalf("step count = %d, want %d", len(m.steps), len(types.AllSteps())-1)
+			}
+			for _, step := range m.steps {
+				if step.StepName == types.StepCI {
+					t.Fatal("CI step was synthesized for an authoritative no-CI pipeline")
+				}
+			}
+		})
+	}
+}
+
 func TestModel_SubscribeCmdReturnsScopedError(t *testing.T) {
 	run := testRun()
 	m := NewModel(filepath.Join(t.TempDir(), "missing.sock"), nil, run)
