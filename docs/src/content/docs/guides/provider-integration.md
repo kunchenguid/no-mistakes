@@ -46,6 +46,8 @@ pushes to the configured target:
 - fetch failing job logs for the CI auto-fix loop when the provider exposes them
 - on GitHub, GitLab, Forgejo, and Azure DevOps, watch mergeability and fix merge conflicts when possible
 
+GitHub, GitLab, Bitbucket Cloud, and Azure DevOps can create draft PRs or MRs. The [global](/no-mistakes/reference/global-config/#providersgithubdraft_pull_requests) and [per-repo](/no-mistakes/reference/repo-config/#providersgithubdraft_pull_requests) config references own these settings.
+
 ## GitHub
 
 Install the GitHub CLI and authenticate:
@@ -75,7 +77,7 @@ If one daemon serves repositories that require non-overlapping accounts, give ea
 
 **What you get:**
 
-- PR creation and update on pushes (optionally opened as drafts via `providers.github.draft_pull_requests`)
+- PR creation and update on pushes
 - CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
 - Unresolved Greptile review-thread comments supplied to CI auto-fix prompts; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for filtering and prompt-safety details
@@ -114,7 +116,7 @@ glab auth login
 
 **What you get:**
 
-- PR (merge request) creation and update (optionally opened as drafts via `providers.gitlab.draft_pull_requests`)
+- PR (merge request) creation and update
 - CI pipeline status polling until the merge request is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
@@ -153,7 +155,7 @@ Get an API token from [Bitbucket account settings](https://bitbucket.org/account
 
 **What you get:**
 
-- PR creation and update (optionally opened as drafts via `providers.bitbucket.draft_pull_requests`)
+- PR creation and update
 - CI pipeline status polling until the PR is merged, declined, or the configured `ci_timeout` idle window elapses
 - Failed pipeline step log fetching for the CI auto-fix step
 
@@ -194,8 +196,7 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
 
 **What you get:**
 
-- PR creation and update (`az repos pr create` / `update`, optionally opened
-  as drafts via `providers.azuredevops.draft_pull_requests`); Azure DevOps caps
+- PR creation and update (`az repos pr create` / `update`); Azure DevOps caps
   PR descriptions at 4000 characters, so the pipeline builds the body within
   that budget and applies a final truncation backstop with a visible marker.
   See the [PR step reference](/no-mistakes/reference/pipeline-steps/#pr) for

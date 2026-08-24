@@ -2296,9 +2296,10 @@ func validatePathInstructionGlob(pattern string) error {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
-// always taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell, select a process, or spend the maintainer's CI minutes.
+// Non-executing fields (ignore patterns, auto-fix, commit, intent, test, and
+// providers) are always taken from the pushed copy, matching prior behavior,
+// since they cannot run arbitrary shell, select a process, or spend the
+// maintainer's CI minutes.
 // The single exception inside test is evidence.branch, which names a git ref
 // the daemon pushes to and is therefore trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
