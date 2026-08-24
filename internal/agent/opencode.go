@@ -184,7 +184,7 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// requires, or an expired provider credential. Any prose streamed before
 	// the failure is reasoning, not an answer.
 	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error != nil {
-		return nil, newOpencodeMessageFailure(mr.resp.Info.Error)
+		return nil, newOpencodeMessageFailure(mr.resp.Info.Error, opencodeTurnRanTools(state, mr.resp))
 	}
 
 	// Fall back to parsing JSON from text

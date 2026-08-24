@@ -192,5 +192,15 @@ type opencodeStreamState struct {
 	assistantMsgIDs map[string]bool
 	filteredPartIDs map[string]bool
 	hasEmittedText  bool
-	hadToolActivity bool
+
+	// pendingStepSeparator marks a completed model step so the next emitted
+	// text is separated from what came before it. It is cosmetic and is
+	// consumed on every emit.
+	pendingStepSeparator bool
+
+	// toolInvoked records that the turn invoked at least one tool. Unlike
+	// pendingStepSeparator it is never cleared: it is the durable evidence
+	// that a failed turn may have left side effects behind, which is what
+	// decides whether the turn can be retried in a fresh session.
+	toolInvoked bool
 }

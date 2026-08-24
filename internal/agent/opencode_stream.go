@@ -94,8 +94,11 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 					}
 					state.emitTextPartChunk(part, p.ID)
 				}
+				if isOpencodeToolPart(p.Type) {
+					state.toolInvoked = true
+				}
 				if p.Type == "step-finish" {
-					state.hadToolActivity = true
+					state.pendingStepSeparator = true
 					if p.MessageID != "" && p.Tokens != nil {
 						state.usageByMsg[p.MessageID] = opencodeTokensToUsage(p.Tokens)
 						state.usage = accumulateUsage(state.usageByMsg)
@@ -144,13 +147,13 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
 }
 
 func (s *opencodeStreamState) emitSeparatorIfNeeded() {
-	if !s.hadToolActivity || s.onChunk == nil {
+	if !s.pendingStepSeparator || s.onChunk == nil {
 		return
 	}
 	if s.hasEmittedText {
 		s.onChunk("\n\n")
 	}
-	s.hadToolActivity = false
+	s.pendingStepSeparator = false
 }
 
 func (s *opencodeStreamState) emitTextPartChunk(part *opencodeTextPart, partID string) {

@@ -17,19 +17,25 @@ type opencodeMessageFailure struct {
 	retries    int
 	retryable  bool
 	structured bool
+
+	// toolActivity records that the failed turn already invoked at least one
+	// tool, which withdraws the retry however retryable opencode called the
+	// failure. See classifyOpencodeTransient.
+	toolActivity bool
 }
 
-func newOpencodeMessageFailure(e *opencodeMessageError) error {
+func newOpencodeMessageFailure(e *opencodeMessageError, toolActivity bool) error {
 	if e == nil {
 		return nil
 	}
 	return &opencodeMessageFailure{
-		name:       e.Name,
-		message:    e.message(),
-		statusCode: e.statusCode(),
-		retries:    e.retries(),
-		retryable:  e.retryable(),
-		structured: e.IsStructuredOutput(),
+		name:         e.Name,
+		message:      e.message(),
+		statusCode:   e.statusCode(),
+		retries:      e.retries(),
+		retryable:    e.retryable(),
+		structured:   e.IsStructuredOutput(),
+		toolActivity: toolActivity,
 	}
 }
 
@@ -45,10 +51,17 @@ func (e *opencodeMessageFailure) Error() string {
 	if name == "" {
 		name = "error"
 	}
+	msg := fmt.Sprintf("opencode %s: %s", name, e.detail())
 	if e.statusCode != 0 {
-		return fmt.Sprintf("opencode %s (status %d): %s", name, e.statusCode, e.detail())
+		msg = fmt.Sprintf("opencode %s (status %d): %s", name, e.statusCode, e.detail())
 	}
-	return fmt.Sprintf("opencode %s: %s", name, e.detail())
+	// Without this clause a withheld retry is indistinguishable from a
+	// failure opencode called non-retryable, so an operator reading a 503
+	// would expect the attempts the run did not spend.
+	if e.retryable && e.toolActivity {
+		msg += " (not retried: the failed turn already ran tools)"
+	}
+	return msg
 }
 
 func (e *opencodeMessageFailure) detail() string {
@@ -78,10 +91,44 @@ func (e *opencodeMessageFailure) label() string {
 func classifyOpencodeTransient(err error) (string, bool) {
 	var failure *opencodeMessageFailure
 	if errors.As(err, &failure) {
-		if failure.retryable {
+		// A retry starts a FRESH opencode session (runOnce always calls
+		// createSession), so it replays the whole prompt with no memory of
+		// the tools the failed attempt already executed - a second commit, a
+		// second file write, a second posted comment. Nothing in the wire
+		// protocol says which of those were idempotent, so a turn that got
+		// as far as running a tool fails closed and the operator decides.
+		// The failure this retry exists for - a provider blip that kills the
+		// turn before the model acts - is untouched by the gate.
+		if failure.retryable && !failure.toolActivity {
 			return failure.label(), true
 		}
 		return "", false
 	}
 	return classifyTransient(err)
+}
+
+// isOpencodeToolPart reports whether a message-part type is a tool
+// invocation. opencode names the part "tool"; the prefix match is deliberate
+// slack for wire drift, because a part type this misses is a side effect
+// silently replayed rather than a spurious refusal.
+func isOpencodeToolPart(partType string) bool {
+	return partType == "tool" || strings.HasPrefix(partType, "tool-")
+}
+
+// opencodeTurnRanTools reports whether the turn invoked any tool, reading
+// both places a tool part can appear: the SSE stream, and the message
+// response body for a stream that was cut short before the part arrived.
+func opencodeTurnRanTools(state *opencodeStreamState, resp *opencodeMessageResponse) bool {
+	if state != nil && state.toolInvoked {
+		return true
+	}
+	if resp == nil {
+		return false
+	}
+	for _, part := range resp.Parts {
+		if isOpencodeToolPart(part.Type) {
+			return true
+		}
+	}
+	return false
 }

@@ -16,6 +16,14 @@ import (
 // what real opencode emits for a turn that failed before the model replied.
 func opencodeErrorServer(t *testing.T, bodies ...string) (*httptest.Server, *int) {
 	t.Helper()
+	return opencodeErrorServerWithEvents(t, "", bodies...)
+}
+
+// opencodeErrorServerWithEvents is opencodeErrorServer with caller-supplied
+// SSE events replayed before session.idle, so a test can put the tool
+// activity that a failed turn left behind on the stream.
+func opencodeErrorServerWithEvents(t *testing.T, events string, bodies ...string) (*httptest.Server, *int) {
+	t.Helper()
 	sent := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -25,6 +33,9 @@ func opencodeErrorServer(t *testing.T, bodies ...string) (*httptest.Server, *int
 		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
+			if events != "" {
+				fmt.Fprint(w, events)
+			}
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
 
 		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
@@ -146,9 +157,10 @@ func TestClassifyOpencodeTransient(t *testing.T) {
 	notRetryable := false
 
 	cases := []struct {
-		name      string
-		err       *opencodeMessageError
-		wantRetry bool
+		name         string
+		err          *opencodeMessageError
+		toolActivity bool
+		wantRetry    bool
 	}{
 		{
 			name:      "provider marks the call retryable",
@@ -185,11 +197,19 @@ func TestClassifyOpencodeTransient(t *testing.T) {
 			err:       &opencodeMessageError{Name: "StructuredOutputError", Data: &opencodeMessageErrorData{Retries: new(int)}},
 			wantRetry: false,
 		},
+		{
+			// A retry starts a fresh session, so repeating a turn that
+			// already ran tools re-executes their side effects.
+			name:         "retryable but the turn already ran tools",
+			err:          &opencodeMessageError{Name: "APIError", Data: &opencodeMessageErrorData{StatusCode: 503, IsRetryable: &retryable}},
+			toolActivity: true,
+			wantRetry:    false,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, retry := classifyOpencodeTransient(newOpencodeMessageFailure(tc.err))
+			_, retry := classifyOpencodeTransient(newOpencodeMessageFailure(tc.err, tc.toolActivity))
 			if retry != tc.wantRetry {
 				t.Errorf("retry = %v, want %v", retry, tc.wantRetry)
 			}
@@ -199,5 +219,100 @@ func TestClassifyOpencodeTransient(t *testing.T) {
 	// Errors from outside a message response keep the shared classification.
 	if _, retry := classifyOpencodeTransient(fmt.Errorf("opencode server: connection refused")); !retry {
 		t.Error("expected shared transient classification to still apply")
+	}
+}
+
+// toolPartEvent is a tool part on the SSE stream: opencode reports every tool
+// invocation as a part of type "tool" on the assistant message.
+const toolPartEvent = `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1",` +
+	`"part":{"id":"prt1","messageID":"msg1","type":"tool"}}}}` + "\n\n"
+
+// stepFinishEvent ends a model step. Every turn emits one, including a turn
+// that only produced text, so it must never by itself count as tool activity.
+const stepFinishEvent = `data: {"payload":{"type":"message.part.updated","properties":{"sessionID":"s1",` +
+	`"part":{"id":"step1","messageID":"msg1","type":"step-finish","tokens":{"input":10,"output":5}}}}}` + "\n\n"
+
+// retryableProviderBlipBody is a failure opencode itself marks retryable.
+const retryableProviderBlipBody = `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError",` +
+	`"data":{"message":"Service Unavailable","statusCode":503,"isRetryable":true}}},"parts":[]}`
+
+const structuredSuccessBody = `{"info":{"id":"msg2","role":"assistant","structured":{"summary":"all good"},` +
+	`"tokens":{"input":10,"output":5}},"parts":[{"type":"text","text":"{\"summary\":\"all good\"}"}]}`
+
+// TestOpencodeAgent_RetryableFailureAfterToolActivityIsNotRetried is the
+// regression for the retry replaying side effects. runOnce creates a fresh
+// session per attempt, so a retry replays the whole prompt with no memory of
+// the tools the failed attempt already executed - a second branch push, a
+// second file write, a second PR comment. When the failed turn ran any tool
+// the retry is refused and the provider error is reported as-is.
+func TestOpencodeAgent_RetryableFailureAfterToolActivityIsNotRetried(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sent := opencodeErrorServerWithEvents(t, toolPartEvent,
+		retryableProviderBlipBody,
+		structuredSuccessBody,
+	)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err == nil {
+		t.Fatalf("expected the failed turn to fail closed, got result %+v", result)
+	}
+	if *sent != 1 {
+		t.Fatalf("expected 1 message request after tool activity, got %d", *sent)
+	}
+	msg := err.Error()
+	// The provider's own cause must survive the refusal.
+	for _, want := range []string{"APIError", "503", "Service Unavailable"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected error to carry %q, got %q", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "already ran tools") {
+		t.Errorf("expected the error to explain why it was not retried, got %q", msg)
+	}
+}
+
+// TestOpencodeAgent_RetryableFailureWithoutToolActivityStillRetries pins the
+// other side of the gate: the motivating failure mode is a provider blip that
+// kills the turn before any tool runs, and that must still cost only a retry.
+// A step-finish part alone is not tool activity - every turn emits one.
+func TestOpencodeAgent_RetryableFailureWithoutToolActivityStillRetries(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sent := opencodeErrorServerWithEvents(t, stepFinishEvent,
+		retryableProviderBlipBody,
+		structuredSuccessBody,
+	)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if result == nil || result.Output == nil {
+		t.Fatalf("expected structured output, got %+v", result)
+	}
+	if *sent != 2 {
+		t.Errorf("expected exactly one retry, got %d message requests", *sent)
+	}
+}
+
+// TestOpencodeAgent_ToolPartInTheMessageResponseAlsoBlocksRetry covers the
+// tool part that arrives only on the message response body: the SSE stream
+// can be cut short, so the response is the second place tool activity shows.
+func TestOpencodeAgent_ToolPartInTheMessageResponseAlsoBlocksRetry(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sent := opencodeErrorServer(t,
+		`{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError",`+
+			`"data":{"message":"Service Unavailable","statusCode":503,"isRetryable":true}}},`+
+			`"parts":[{"type":"tool"}]}`,
+		structuredSuccessBody,
+	)
+
+	if _, err := runOpencodeAgainst(t, server); err == nil {
+		t.Fatal("expected the failed turn to fail closed")
+	}
+	if *sent != 1 {
+		t.Errorf("expected 1 message request after tool activity, got %d", *sent)
 	}
 }
