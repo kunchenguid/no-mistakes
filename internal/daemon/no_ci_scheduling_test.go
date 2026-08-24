@@ -7,11 +7,89 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	pipelinesteps "github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRunManagerPublishesFinalizedScheduleToAttachedSubscriber(t *testing.T) {
+	p, database := newNoCIRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "schedule-publication")
+
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	factoryReleased := false
+	defer func() {
+		if !factoryReleased {
+			close(releaseFactory)
+		}
+	}()
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		close(factoryEntered)
+		<-releaseFactory
+		return pipelinesteps.AllSteps()
+	})
+	t.Cleanup(manager.Shutdown)
+
+	type startResult struct {
+		runID string
+		err   error
+	}
+	started := make(chan startResult, 1)
+	go func() {
+		runID, err := manager.startRun(context.Background(), repo, "main", head, head, "test", types.AllSteps(), "observe schedule publication")
+		started <- startResult{runID: runID, err: err}
+	}()
+
+	select {
+	case <-factoryEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run setup did not reach schedule resolution")
+	}
+	runs, err := database.GetActiveRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("active runs = %d, want 1", len(runs))
+	}
+	runID := runs[0].ID
+	sub := subscribeDrained(t, manager, runID)
+	defer sub.Close()
+	unknown, err := database.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.ScheduleKnown {
+		t.Fatal("schedule was finalized before the attached-client snapshot")
+	}
+
+	close(releaseFactory)
+	factoryReleased = true
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	event, ok := sub.Next(ctx)
+	if !ok || event.Type != ipc.EventRunScheduleFinalized {
+		t.Fatalf("schedule publication event = %#v ok=%v", event, ok)
+	}
+	finalized, err := database.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalized.ScheduleKnown || strings.Join(stepNameStrings(finalized.ScheduledSteps), ",") != strings.Join(stepNameStrings(types.AllSteps()), ",") {
+		t.Fatalf("finalized schedule = known %v steps %v", finalized.ScheduleKnown, finalized.ScheduledSteps)
+	}
+	result := <-started
+	if result.err != nil || result.runID != runID {
+		t.Fatalf("start result = %#v", result)
+	}
+	waitForRunTerminalState(t, database, runID)
+}
 
 func TestRunManagerTrustedNoCISchedulingControlsForgeActivity(t *testing.T) {
 	tests := []struct {
@@ -145,4 +223,12 @@ func stepNames(results []*db.StepResult) []types.StepName {
 		names = append(names, result.StepName)
 	}
 	return names
+}
+
+func stepNameStrings(names []types.StepName) []string {
+	result := make([]string, len(names))
+	for i, name := range names {
+		result[i] = string(name)
+	}
+	return result
 }

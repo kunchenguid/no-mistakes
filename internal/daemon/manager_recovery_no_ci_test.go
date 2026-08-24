@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -52,7 +54,7 @@ func TestRecoveredRunPreservesRecordedNoCITopology(t *testing.T) {
 }
 
 func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
-	database, run := parkedRecoveryRun(t, true)
+	database, run := parkedRecoveryRunAt(t, true, types.StepCI)
 	manager := NewRunManager(database, nil, nil)
 	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
 	if err != nil {
@@ -61,22 +63,33 @@ func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 
 	ghDir, ghLog := writeMockGHState(t, t.TempDir(), "OPEN")
 	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	executedCI := false
-	for _, step := range execSteps {
-		if step.Name() != types.StepCI {
-			continue
-		}
-		executedCI = true
-		outcome, err := step.Execute(&pipeline.StepContext{Ctx: context.Background()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if outcome == nil || !outcome.Skipped {
-			t.Fatalf("recovered legacy CI outcome = %#v, want skipped", outcome)
-		}
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
 	}
-	if !executedCI {
-		t.Fatal("recorded CI topology did not produce a recovery step")
+	repo, err := database.GetRepo(run.RepoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := pipeline.NewExecutor(database, p, &config.Config{NoCI: true}, nil, execSteps, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := executor.Resume(ctx, run, repo, ""); err != nil {
+		t.Fatalf("resume recovered CI gate: %v", err)
+	}
+	stored, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != types.RunCompleted {
+		t.Fatalf("recovered run status = %s, want completed", stored.Status)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[len(results)-1].StepName != types.StepCI || results[len(results)-1].Status != types.StepStatusCompleted {
+		t.Fatalf("recovered CI gate = %s %s, want completed", results[len(results)-1].StepName, results[len(results)-1].Status)
 	}
 	forgeCalls, err := os.ReadFile(ghLog)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -88,6 +101,10 @@ func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 }
 
 func parkedRecoveryRun(t *testing.T, includeCI bool) (*db.DB, *db.Run) {
+	return parkedRecoveryRunAt(t, includeCI, types.StepReview)
+}
+
+func parkedRecoveryRunAt(t *testing.T, includeCI bool, gateStep types.StepName) (*db.DB, *db.Run) {
 	t.Helper()
 	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {
@@ -111,17 +128,14 @@ func parkedRecoveryRun(t *testing.T, includeCI bool) (*db.DB, *db.Run) {
 		names = names[:len(names)-1]
 	}
 	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"needs approval"}`
+	gateReached := false
 	for _, name := range names {
 		result, err := database.InsertStepResult(run.ID, name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		switch name {
-		case types.StepIntent, types.StepRebase:
-			if err := database.CompleteStep(result.ID, 0, 1, ""); err != nil {
-				t.Fatal(err)
-			}
-		case types.StepReview:
+		if name == gateStep {
+			gateReached = true
 			if err := database.StartStep(result.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -132,6 +146,10 @@ func parkedRecoveryRun(t *testing.T, includeCI bool) (*db.DB, *db.Run) {
 				t.Fatal(err)
 			}
 			if err := database.UpdateStepStatusWithDuration(result.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+				t.Fatal(err)
+			}
+		} else if !gateReached {
+			if err := database.CompleteStep(result.ID, 0, 1, ""); err != nil {
 				t.Fatal(err)
 			}
 		}

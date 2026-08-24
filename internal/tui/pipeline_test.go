@@ -479,6 +479,8 @@ func TestModel_ApplyEvent_RunCompleted_FailedStoresError(t *testing.T) {
 func TestModel_ApplyEvent_RunCompleted_FailedClearsSyntheticBackfill(t *testing.T) {
 	run := testRun()
 	run.Steps = nil
+	run.ScheduledSteps = types.AllSteps()
+	run.ScheduleKnown = true
 	m := NewModel("/tmp/sock", nil, run)
 	errMsg := "setup failed before any step started"
 
@@ -515,6 +517,14 @@ func TestModel_ApplyEvent_RunUpdated_PRURL(t *testing.T) {
 
 	if m.run.PRURL == nil || *m.run.PRURL != prURL {
 		t.Errorf("expected run PRURL %q, got %v", prURL, m.run.PRURL)
+	}
+}
+
+func TestModel_ApplyEvent_FinalizedScheduleRequestsAuthoritativeSnapshot(t *testing.T) {
+	m := Model{run: &ipc.RunInfo{}, stepFindings: make(map[types.StepName]string)}
+
+	if !m.applyEvent(ipc.Event{Type: ipc.EventRunScheduleFinalized, RunID: "run-1", StateRev: 1}) {
+		t.Fatal("finalized schedule did not request authoritative reconciliation")
 	}
 }
 

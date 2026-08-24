@@ -18,6 +18,7 @@ func TestClassOfPartitionsEventsByLossTolerance(t *testing.T) {
 		{ipc.EventStreamGap, ipc.ClassControl},
 		{ipc.EventRunCreated, ipc.ClassState},
 		{ipc.EventRunUpdated, ipc.ClassState},
+		{ipc.EventRunScheduleFinalized, ipc.ClassState},
 		{ipc.EventRunCompleted, ipc.ClassState},
 		{ipc.EventStepStarted, ipc.ClassState},
 		{ipc.EventStepCompleted, ipc.ClassState},

@@ -187,3 +187,7 @@ func (*omittedCIStep) Name() types.StepName { return types.StepCI }
 func (*omittedCIStep) Execute(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	return &pipeline.StepOutcome{Skipped: true}, nil
 }
+
+func (*omittedCIStep) ReconcileApprovalGate(*pipeline.StepContext) (bool, error) {
+	return true, nil
+}

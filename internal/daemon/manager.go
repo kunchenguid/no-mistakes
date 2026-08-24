@@ -1130,6 +1130,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 	run.ScheduledSteps = scheduledSteps
 	run.ScheduleKnown = true
+	m.broadcast(ipc.Event{Type: ipc.EventRunScheduleFinalized, RunID: run.ID, RepoID: repo.ID})
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,

@@ -307,13 +307,14 @@ type StepResultInfo struct {
 type EventType string
 
 const (
-	EventRunCreated         EventType = "run_created"
-	EventRunUpdated         EventType = "run_updated"
-	EventRunCompleted       EventType = "run_completed"
-	EventCIReadinessChanged EventType = "ci_readiness_changed"
-	EventStepStarted        EventType = "step_started"
-	EventStepCompleted      EventType = "step_completed"
-	EventLogChunk           EventType = "log_chunk"
+	EventRunCreated           EventType = "run_created"
+	EventRunUpdated           EventType = "run_updated"
+	EventRunScheduleFinalized EventType = "run_schedule_finalized"
+	EventRunCompleted         EventType = "run_completed"
+	EventCIReadinessChanged   EventType = "ci_readiness_changed"
+	EventStepStarted          EventType = "step_started"
+	EventStepCompleted        EventType = "step_completed"
+	EventLogChunk             EventType = "log_chunk"
 	// EventStreamGap tells a subscriber that the daemon coalesced at least
 	// one state transition away under buffer pressure. StateRev is the
 	// highest revision folded into it. The subscriber must read authoritative
