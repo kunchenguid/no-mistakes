@@ -1,17 +1,20 @@
 ---
 title: Pipeline
-description: The nine steps that run on every gated push.
+description: The fixed pipeline order and its conditional CI step.
 ---
 
-The pipeline runs a fixed, opinionated sequence of steps. Order is not configurable. What each step runs *is*.
+The pipeline runs a fixed, opinionated sequence of eight steps, followed by CI when CI is scheduled. Order is not configurable. What each step runs *is*.
 
 ```
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → test → document → lint → push → pr → ci (unless trusted no_ci)
 ```
 
 ```mermaid
 flowchart LR
-  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"] --> ci["CI"]
+  intent["Intent"] --> rebase["Rebase"] --> review["Review"] --> test["Test"] --> document["Document"] --> lint["Lint"] --> push["Push"] --> pr["PR"]
+  pr -->|"CI scheduled"| ci["CI"]
+  pr -->|"trusted no_ci"| passed["Passed"]
+  ci --> passed
   review -. findings .-> action["Approve / fix / skip / abort"]
   test -. findings .-> action
   document -. findings .-> action
@@ -29,9 +32,11 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - review, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
 - the human stayed in control when a step needed judgment
 - the final branch update was guarded against discarding unincorporated commits already on the push target
-- push, PR creation, and CI monitoring only happened after the local gate was satisfied
+- push, PR creation, and any scheduled CI monitoring only happened after the local gate was satisfied
 
-## The nine steps
+## The pipeline steps
+
+Trusted default-branch [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) schedules steps 1–8 and omits step 9 before its forge client or monitor is constructed. That path performs no CI polling or zero-check query and becomes terminal `passed` immediately after PR delivery. When the trusted policy is false or absent, all nine steps run normally; a feature branch cannot grant itself the exemption.
 
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
@@ -43,7 +48,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
 | 7 | **Push** | Safely push the validated branch to the configured target | n/a |
 | 8 | **PR** | Create or update the pull request | n/a |
-| 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
+| 9 | **CI** | When scheduled, watch CI + mergeability and auto-fix failures | `3` |
 
 ## Why these steps, in this order
 
@@ -55,7 +60,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   A later run's initial review also receives fix-round provenance for any uncertified pipeline-authored commits left on the branch when a previous run's re-review did not complete.
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
-- **Push → PR → CI** happens after all local checks pass.
+- **Push → PR → CI when scheduled** happens after all local checks pass.
   A CI repair restarts the pipeline at Review, so the repaired commit passes the local checks before the Push step publishes it through the same overwrite protection.
   CI is the only step that talks to the outside world for validation.
 
@@ -89,7 +94,7 @@ See [Configuration](/no-mistakes/guides/configuration/).
 ## What you can't configure
 
 - The step order.
-- Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
+- Skipping arbitrary steps permanently - per-run skips are allowed, and trusted default-branch `no_ci: true` is the one narrow policy that omits the final CI step.
 - Adding new steps.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.
