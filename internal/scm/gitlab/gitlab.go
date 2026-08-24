@@ -191,6 +191,7 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 
 type mrPayload struct {
 	IID                 int    `json:"iid"`
+	Title               string `json:"title"`
 	WebURL              string `json:"web_url"`
 	URL                 string `json:"url"`
 	State               string `json:"state"`
@@ -298,8 +299,22 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	// Unlike `glab mr create`, `glab mr update` (glab v1.5x) has no
 	// -y/--yes confirmation-skip flag at all; passing it fails the whole
 	// command with "unknown flag: --yes", so every UpdatePR call errored.
+	//
+	// GitLab has no separate draft field: an MR is a draft because its title
+	// carries a draft marker. Updating with a plain title would silently mark a
+	// draft MR ready for review, so read the live title first and re-apply the
+	// marker. Preserve only: a non-draft MR never gains one. A failed read fails
+	// the update closed rather than risk toggling draft state.
+	mr, err := h.viewMR(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	title := content.Title
+	if isDraftTitle(mr.Title) && !isDraftTitle(title) {
+		title = "Draft: " + title
+	}
 	cmd := h.cmd(ctx, "glab", "mr", "update", id,
-		"--title", content.Title,
+		"--title", title,
 		"--description", content.Body,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -329,6 +344,13 @@ func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch strin
 		return fmt.Errorf("glab mr update --target-branch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// isDraftTitle reports whether an MR title carries a marker GitLab treats as
+// draft: "Draft:", "[Draft]", or "(Draft)", all case-insensitive.
+func isDraftTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	return strings.HasPrefix(t, "draft:") || strings.HasPrefix(t, "[draft]") || strings.HasPrefix(t, "(draft)")
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
