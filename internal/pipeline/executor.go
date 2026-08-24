@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -46,6 +47,7 @@ type Executor struct {
 	db     *db.DB
 	paths  *paths.Paths
 	config *config.Config
+	forge  *forgecontext.Context
 	agent  agent.Agent
 	steps  []Step
 	skips  map[types.StepName]bool
@@ -75,6 +77,12 @@ func (e *Executor) SetOnPRMerged(fn func(context.Context, string)) {
 		return
 	}
 	e.onPRMerged = fn
+}
+
+// SetForgeContext configures the immutable provider context used by every
+// subprocess in this run. A nil context preserves ambient behavior.
+func (e *Executor) SetForgeContext(ctx *forgecontext.Context) {
+	e.forge = ctx
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -174,6 +182,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	ctx = e.runContext(ctx)
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -327,6 +336,7 @@ func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 // an error so startup recovery can fail the run rather than guessing.
 func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
+	ctx = e.runContext(ctx)
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
 	}
@@ -368,15 +378,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	}
 	reconcileCtx := &StepContext{
-		Ctx:      ctx,
-		Run:      run,
-		Repo:     repo,
-		WorkDir:  workDir,
-		Config:   e.config,
-		DB:       e.db,
-		Agent:    e.agent,
-		Sessions: e.sessions,
-		Shared:   e.shared,
+		Ctx:          ctx,
+		Run:          run,
+		Repo:         repo,
+		WorkDir:      workDir,
+		Config:       e.config,
+		ForgeContext: e.forge,
+		DB:           e.db,
+		Agent:        e.agent,
+		Sessions:     e.sessions,
+		Shared:       e.shared,
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
@@ -512,6 +523,13 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
+}
+
+func (e *Executor) runContext(ctx context.Context) context.Context {
+	if e.forge == nil {
+		return ctx
+	}
+	return git.WithEnvironment(ctx, e.forge.Environment)
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
@@ -800,6 +818,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		WorkDir:          workDir,
 		Agent:            stepAgent,
 		Config:           e.config,
+		ForgeContext:     e.forge,
 		DB:               e.db,
 		StepResultID:     sr.ID,
 		UserIntent:       userIntent,

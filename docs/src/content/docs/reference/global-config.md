@@ -57,6 +57,14 @@ session_reuse: true
 worktree_roots:
   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 
+forge_profiles:
+  github-personal:
+    gh_config_dir: ~/.config/gh-personal
+  github-work:
+    gh_config_dir: ~/.config/gh-work
+  gitlab-work:
+    glab_config_dir: ~/.config/glab-work
+
 auto_fix:
   rebase: 3
   review: 0
@@ -309,6 +317,38 @@ agent_args_override:
 Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
 
 For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+### forge_profiles
+
+Optional machine-local routing for repositories that use different GitHub or GitLab identities. Keys are the raw host tokens recorded in the repository remote, including SSH aliases such as `github-personal`. Each entry must set exactly one provider config directory:
+
+```yaml
+forge_profiles:
+  github-personal:
+    gh_config_dir: ~/.config/gh-personal
+  github-work:
+    gh_config_dir: /Users/you/.config/gh-work
+  gitlab-work:
+    glab_config_dir: ~/.config/glab-work
+    expected_login: team-bot
+```
+
+Paths must be absolute or begin with `~/`; environment variables and other shell expansion are not supported. Host keys are case-insensitive.
+
+When a repository matches a profile, no-mistakes validates it before starting the pipeline and applies an immutable environment to every subprocess in that run: built-in provider commands, custom shell commands, agents, managed agent servers, and the run's Git commands together with any hooks or credential helpers they spawn. A GitHub profile sets `GH_CONFIG_DIR` and removes higher-precedence GitHub token, host, and repository variables; a GitLab profile does the equivalent for `GLAB_CONFIG_DIR` and GitLab variables. The daemon process environment is never changed.
+
+Each selected GitHub config must contain the target host and exactly one account for it, with that account active. A selected GitLab config must contain the target host. An optional `expected_login` pins the account name the profile must be signed in as; resolution fails closed when the config's active login differs or is missing, so a swapped or re-authenticated config directory can never route a run through the wrong account. It carries an account name only, never credentials. `no-mistakes doctor` validates every configured profile and its online authentication.
+
+Profile activation is provider-specific and fail-closed: after at least one GitHub profile is configured, a GitHub repository must match a GitHub profile; GitLab remains ambient unless a GitLab profile is also configured, and vice versa. With no `forge_profiles`, provider detection and ambient CLI authentication behave exactly as before.
+
+For a GitHub fork, no-mistakes considers both the parent and fork host tokens. A match on either side is sufficient. If both match, they must select the same account: the same effective provider config directory *and* the same `expected_login` pin. Otherwise startup fails as ambiguous, so two host tokens sharing a config directory while pinning different logins can never silently resolve to one of them. Fork PR topology itself is unchanged.
+
+Deliberate scope boundaries, so profiles never duplicate what other layers own:
+
+- **Commit identity stays with Git.** Author and committer for pipeline fix commits come from the effective Git configuration (for example remote-keyed `includeIf` sections), which resolves naturally inside run worktrees. Profiles carry no name/email fields.
+- **Two accounts on the same host are distinguished by remote host tokens.** Give each account its own SSH alias (`github-personal`, `github-work`) and key a profile per alias; a profile cannot disambiguate two accounts behind one identical remote URL.
+- **Executable selection stays with the machine.** Which `gh`, `glab`, or `git` runs is owned by `PATH` and the existing command resolution, not by profile configuration.
+- **Credential-helper context stays with Git configuration.** Profiles point at provider CLI config directories and never model or store credential material; credentials remain in the CLI's own store.
 
 ### ci_timeout
 

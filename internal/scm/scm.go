@@ -53,6 +53,31 @@ func DetectProviderWithForgejoBaseURL(remoteURL, forgejoBaseURL string) Provider
 	return DetectProviderContextWithForgejoBaseURL(context.Background(), remoteURL, forgejoBaseURL)
 }
 
+// DetectProviderStaticContext identifies providers from the remote URL and
+// SSH HostName resolution without consulting ambient gh, glab, or forgejo
+// configuration. It is used when a caller already selected an explicit
+// provider profile.
+func DetectProviderStaticContext(ctx context.Context, url string) Provider {
+	if provider := detectStaticProvider(url); provider != ProviderUnknown {
+		return provider
+	}
+	host := resolveHost(ctx, url, lookupSSHHostname)
+	if host == "" || strings.EqualFold(host, ExtractHost(url)) {
+		return ProviderUnknown
+	}
+	return detectStaticProvider(host)
+}
+
+// detectStaticProvider recognizes providers purely from URL/host text, with no
+// ambient CLI configuration consulted.
+func detectStaticProvider(url string) Provider {
+	lower := strings.ToLower(url)
+	if strings.Contains(lower, "codeberg.org") || strings.Contains(lower, "forgejo") {
+		return ProviderForgejo
+	}
+	return detectLegacyProviderHost(lower)
+}
+
 // DetectProviderContextWithForgejoBaseURL is DetectProviderWithForgejoBaseURL
 // with caller-controlled cancellation for SSH host alias resolution.
 func DetectProviderContextWithForgejoBaseURL(ctx context.Context, remoteURL, forgejoBaseURL string) Provider {
@@ -122,6 +147,8 @@ func detectLegacyProviderHost(host string) Provider {
 	case strings.Contains(host, "bitbucket.org"):
 		return ProviderBitbucket
 	case strings.Contains(host, "dev.azure.com") || strings.Contains(host, "visualstudio.com"):
+		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
+		// the legacy vs-ssh.visualstudio.com SSH host.
 		return ProviderAzureDevOps
 	default:
 		return ProviderUnknown
