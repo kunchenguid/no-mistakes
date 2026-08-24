@@ -32,10 +32,11 @@ const (
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, auto-fixing CI failures.
 //
-// Empty check lists are never treated as green unless the resolved config
-// carries the trusted default-branch `no_ci: true` declaration (config.Config.NoCI).
-// A feature branch cannot self-declare that value. When checks exist, their
-// actual states are always processed normally - even on a declared no-CI repo.
+// Production pipeline construction omits this step entirely when the resolved
+// config carries the trusted default-branch `no_ci: true` declaration. The
+// direct-execution no_ci handling below is retained as a defensive compatibility
+// path for callers that explicitly instantiate CIStep; it is not the production
+// scheduling path.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt

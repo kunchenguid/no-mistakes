@@ -35,7 +35,11 @@ func IsDemoMode() bool {
 
 // DemoSteps returns mock pipeline steps for demo recordings.
 func DemoSteps() []pipeline.Step {
-	return []pipeline.Step{
+	return demoSteps(true)
+}
+
+func demoSteps(includeCI bool) []pipeline.Step {
+	result := []pipeline.Step{
 		&demoStep{
 			name:       types.StepRebase,
 			delay:      6 * time.Second,
@@ -100,10 +104,11 @@ func DemoSteps() []pipeline.Step {
 			log:        "Creating pull request...\nhttps://github.com/kunchenguid/no-mistakes/pull/42",
 			prURL:      "https://github.com/kunchenguid/no-mistakes/pull/42",
 		},
-		&demoCIStep{
-			displayDur: 120 * time.Second,
-		},
 	}
+	if includeCI {
+		result = append(result, &demoCIStep{displayDur: 120 * time.Second})
+	}
+	return result
 }
 
 type demoFindings struct {

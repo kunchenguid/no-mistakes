@@ -166,11 +166,9 @@ Declare that this repository intentionally has no CI.
 | Type | `bool` |
 | Default | `false` |
 
-When `true` and the forge reports **zero** checks on the PR head, the CI monitor treats that empty result as all-checks-passed and `axi run` may return `outcome: checks-passed`. The monitor log names the declaration (`no_ci: true`) so the positive evidence stays inspectable rather than silently equating every empty forge response with green.
+When `true`, no-mistakes omits the CI step before pipeline scheduling. It does not construct a CI monitor or forge client and makes no provider request to discover checks. Use this only when the repository intentionally has no hosted CI; it is not a way to waive registered checks because no-mistakes does not query the forge under this policy.
 
-Absence of this field means CI is expected. A zero-length check result then stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence.
-
-If checks still appear on a declared no-CI repository, their actual states are processed normally. The declaration never waives a registered pending or failing check.
+Absence of this field or an explicit `false` means CI is expected. The CI step is scheduled normally, and a zero-length check result stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence.
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A feature branch cannot self-declare `no_ci: true` to bypass checks, and cannot clear a trusted declaration either.

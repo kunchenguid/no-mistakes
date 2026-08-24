@@ -230,16 +230,13 @@ type RepoConfig struct {
 	// able to turn it off (or on). Default false; a plain bool so a missing key
 	// or a YAML/JSON null is falsy and preserves current loading.
 	DisableProjectSettings bool `yaml:"disable_project_settings"`
-	// NoCI declares that this repository intentionally has no CI. When true and
-	// the forge reports zero checks, the CI monitor treats that empty result as
-	// all-checks-passed. It is a readiness boundary honored ONLY from the trusted
+	// NoCI declares that this repository intentionally has no CI. When true, the
+	// resolved pipeline omits the CI step before constructing its monitor or forge
+	// dependencies. It is a scheduling boundary honored ONLY from the trusted
 	// default-branch copy of .no-mistakes.yaml (see EffectiveRepoConfig): a
 	// contributor's pushed branch must not self-declare no-CI and bypass checks.
 	// Default false - absence means CI is expected, and an unproven empty check
-	// list remains not-ready regardless of elapsed time. If checks still appear,
-	// their actual states are processed normally; the declaration never waives a
-	// registered pending or failing check. No inference from workflow files,
-	// prior history, branch names, or grace-period expiry.
+	// list remains not-ready regardless of elapsed time.
 	NoCI bool `yaml:"no_ci"`
 }
 
@@ -500,8 +497,8 @@ type Config struct {
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
 	// NoCI is the resolved, trusted-only declaration that this repository
-	// intentionally has no CI (see the RepoConfig field). When true and the
-	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
+	// intentionally has no CI (see the RepoConfig field). When true, pipeline
+	// construction omits the CI step and its forge dependencies.
 	NoCI bool
 }
 
@@ -2041,7 +2038,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// means the trusted config was legitimately absent (the daemon aborts
 		// separately when it could not be READ at all), so falsy is correct.
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
-		// no_ci is a readiness boundary: honor it ONLY from the trusted
+		// no_ci is a scheduling boundary: honor it ONLY from the trusted
 		// default-branch copy so a pushed branch cannot self-declare no-CI and
 		// bypass checks that the default branch still expects.
 		effective.NoCI = trusted.NoCI

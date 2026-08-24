@@ -30,7 +30,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
-// StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
+// StepFactory creates pipeline steps for a run. A nil factory uses the
+// resolved-config-aware production sequence from steps.AllStepsForConfig.
 type StepFactory func() []pipeline.Step
 
 var recoveredConfigFetchTimeout = 10 * time.Second
@@ -77,9 +78,6 @@ const maxSubscribersPerRun = 32
 
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
-	if stepFactory == nil {
-		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
-	}
 	return &RunManager{
 		executors:     make(map[string]*pipeline.Executor),
 		cancels:       make(map[string]context.CancelCauseFunc),
@@ -91,6 +89,13 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stateRevs:     make(map[string]int64),
 		completedRuns: make(map[string]bool),
 	}
+}
+
+func (m *RunManager) stepsForConfig(cfg *config.Config) []pipeline.Step {
+	if m.steps != nil {
+		return m.steps()
+	}
+	return steps.AllStepsForConfig(cfg)
 }
 
 type recoveredRunPlan struct {
@@ -157,12 +162,12 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, fmt.Errorf("worktree does not belong to its gate repository")
 	}
 
-	execSteps := m.steps()
-	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
-		return nil, err
-	}
 	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
 	if err != nil {
+		return nil, err
+	}
+	execSteps := m.stepsForConfig(cfg)
+	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
@@ -1070,7 +1075,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}
 
-	execSteps := m.steps()
+	execSteps := m.stepsForConfig(cfg)
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,

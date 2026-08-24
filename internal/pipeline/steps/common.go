@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -126,10 +127,21 @@ var reviewFindingsSchema = json.RawMessage(`{
 // AllSteps returns the fixed pipeline step sequence.
 // When NM_DEMO=1, it returns mock steps for demo recordings.
 func AllSteps() []pipeline.Step {
+	return AllStepsForConfig(nil)
+}
+
+// AllStepsForConfig constructs the fixed pipeline step sequence for a resolved
+// run configuration. A trusted no_ci declaration removes CI at this boundary,
+// before a monitor or any of its forge dependencies can be constructed.
+func AllStepsForConfig(cfg *config.Config) []pipeline.Step {
 	if IsDemoMode() {
-		return DemoSteps()
+		return demoSteps(cfg == nil || !cfg.NoCI)
 	}
-	return []pipeline.Step{
+	return allStepsForConfig(cfg, func() pipeline.Step { return &CIStep{} })
+}
+
+func allStepsForConfig(cfg *config.Config, newCI func() pipeline.Step) []pipeline.Step {
+	result := []pipeline.Step{
 		&IntentStep{},
 		&RebaseStep{},
 		&ReviewStep{},
@@ -138,6 +150,9 @@ func AllSteps() []pipeline.Step {
 		&LintStep{},
 		&PushStep{},
 		&PRStep{},
-		&CIStep{},
 	}
+	if cfg == nil || !cfg.NoCI {
+		result = append(result, newCI())
+	}
+	return result
 }
