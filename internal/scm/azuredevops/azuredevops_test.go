@@ -244,18 +244,37 @@ func TestCreatePRConstructsURL(t *testing.T) {
 func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	h := NewWithDraft(azdoTestCmdFactory(map[string]azdoTestResponse{
-		"az repos pr create --source-branch feature --target-branch main --title T --description B --draft true --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
-			stdout: `{"pullRequestId":7}` + "\n",
-		},
-	}), func() bool { return true }, testOrg, testProject, testRepo, true)
+	for _, tc := range []struct {
+		name      string
+		draft     bool
+		wantDraft bool
+	}{
+		{name: "draft", draft: true, wantDraft: true},
+		{name: "not draft", draft: false, wantDraft: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B"})
-	if err != nil {
-		t.Fatalf("CreatePR() error = %v", err)
-	}
-	if pr.Number != "7" {
-		t.Fatalf("CreatePR() number = %q, want 7", pr.Number)
+			var rec []capturedCmd
+			h := NewWithDraft(capturingCmdFactory(&rec, azdoTestResponse{
+				stdout: `{"pullRequestId":7}` + "\n",
+			}), func() bool { return true }, testOrg, testProject, testRepo, tc.draft)
+
+			pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B"})
+			if err != nil {
+				t.Fatalf("CreatePR() error = %v", err)
+			}
+			if pr.Number != "7" {
+				t.Fatalf("CreatePR() number = %q, want 7", pr.Number)
+			}
+			if len(rec) != 1 {
+				t.Fatalf("recorded %d commands, want 1", len(rec))
+			}
+			got := strings.Join(append([]string{rec[0].name}, rec[0].args...), " ")
+			if strings.Contains(got, "--draft true") != tc.wantDraft {
+				t.Fatalf("command = %q, want --draft true present = %v", got, tc.wantDraft)
+			}
+		})
 	}
 }
 
