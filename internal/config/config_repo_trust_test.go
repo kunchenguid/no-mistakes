@@ -175,6 +175,24 @@ func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 	}
 }
 
+func TestEffectiveRepoConfig_ProvidersUsePushedValues(t *testing.T) {
+	truthy := true
+	falsy := false
+	pushed := &RepoConfig{Providers: ProvidersRaw{
+		GitHub: GitHubProviderRaw{DraftPullRequests: &truthy},
+	}}
+	trusted := &RepoConfig{Providers: ProvidersRaw{
+		GitHub: GitHubProviderRaw{DraftPullRequests: &falsy},
+	}}
+
+	for _, allowRepoCommands := range []bool{false, true} {
+		got := EffectiveRepoConfig(pushed, trusted, allowRepoCommands)
+		if got.Providers.GitHub.DraftPullRequests == nil || !*got.Providers.GitHub.DraftPullRequests {
+			t.Fatalf("allowRepoCommands=%v: draft_pull_requests = %v, want pushed true", allowRepoCommands, got.Providers.GitHub.DraftPullRequests)
+		}
+	}
+}
+
 // TestLoadRepo_AllowRepoCommands proves the per-repo opt-in is read from the
 // repo config (the trusted default-branch copy), replacing the former coarse
 // global flag. It defaults false.
