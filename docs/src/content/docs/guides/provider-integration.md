@@ -234,7 +234,7 @@ tea logins list
 - Fork PR routing (same as GitLab, Bitbucket Cloud, and Azure DevOps)
 - [Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)
 
-Gitea Actions shipped in Gitea 1.19 (2023); older instances have no Actions API to poll. As with any repository with no CI, declare `no_ci: true` on the trusted default branch so the CI step does not wait for checks that will never appear - see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
+Gitea Actions shipped in Gitea 1.19 (2023); older instances have no Actions API to poll. As with any repository with no CI, declare `no_ci: true` on the trusted default branch so no-mistakes omits the CI step and makes no forge query - see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci).
 
 ### Self-hosted Gitea
 

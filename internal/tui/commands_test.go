@@ -384,6 +384,8 @@ func TestNewModel_PreservesPipelineWithoutScheduledCI(t *testing.T) {
 			}
 
 			m := NewModel("/tmp/sock", nil, run)
+			m.width = 100
+			m.height = 30
 
 			if len(m.steps) != len(types.AllSteps())-1 {
 				t.Fatalf("step count = %d, want %d", len(m.steps), len(types.AllSteps())-1)
@@ -393,6 +395,7 @@ func TestNewModel_PreservesPipelineWithoutScheduledCI(t *testing.T) {
 					t.Fatal("CI step was synthesized for an authoritative no-CI pipeline")
 				}
 			}
+			t.Logf("authoritative no-CI TUI (%s):\n%s", status, stripANSI(m.View()))
 		})
 	}
 }
@@ -402,6 +405,7 @@ func TestNewModel_PartialOrdinaryScheduleKeepsCIVisible(t *testing.T) {
 	run.Status = types.RunRunning
 	run.ScheduleKnown = true
 	run.ScheduledSteps = types.AllSteps()
+	run.Steps = nil
 	for _, stepName := range types.AllSteps()[:len(types.AllSteps())-1] {
 		run.Steps = append(run.Steps, ipc.StepResultInfo{
 			RunID: run.ID, StepName: stepName, StepOrder: stepName.Order(), Status: types.StepStatusPending,
@@ -409,6 +413,8 @@ func TestNewModel_PartialOrdinaryScheduleKeepsCIVisible(t *testing.T) {
 	}
 
 	m := NewModel("/tmp/sock", nil, run)
+	m.width = 100
+	m.height = 30
 
 	if len(m.steps) != len(types.AllSteps()) {
 		t.Fatalf("step count = %d, want %d", len(m.steps), len(types.AllSteps()))
@@ -416,6 +422,7 @@ func TestNewModel_PartialOrdinaryScheduleKeepsCIVisible(t *testing.T) {
 	if got := m.steps[len(m.steps)-1]; got.StepName != types.StepCI || got.Status != types.StepStatusPending {
 		t.Fatalf("final step = %#v, want pending CI", got)
 	}
+	t.Logf("ordinary partial-snapshot TUI:\n%s", stripANSI(m.View()))
 }
 
 func TestNewModel_PartialNoCIScheduleNeverSynthesizesCI(t *testing.T) {
@@ -445,6 +452,7 @@ func TestNewModel_UnresolvedNewScheduleDoesNotGuessCI(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunPending
 	run.ScheduleKnown = false
+	run.Steps = nil
 
 	m := NewModel("/tmp/sock", nil, run)
 
@@ -458,6 +466,7 @@ func TestNewModel_FinalZeroStepScheduleRemainsEmpty(t *testing.T) {
 	run.Status = types.RunRunning
 	run.ScheduleKnown = true
 	run.ScheduledSteps = []types.StepName{}
+	run.Steps = nil
 
 	m := NewModel("/tmp/sock", nil, run)
 

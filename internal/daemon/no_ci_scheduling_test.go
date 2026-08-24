@@ -71,6 +71,11 @@ func TestRunManagerTrustedNoCISchedulingControlsForgeActivity(t *testing.T) {
 			if calledForge != tt.wantForgeCall {
 				t.Fatalf("forge called = %v, want %v; calls = %q", calledForge, tt.wantForgeCall, forgeCalls)
 			}
+			forgeTrace := strings.TrimSpace(string(forgeCalls))
+			if forgeTrace == "" {
+				forgeTrace = "<none>"
+			}
+			t.Logf("resolved production schedule: steps=%v; forge calls=%s", stepNames(results), forgeTrace)
 		})
 	}
 }

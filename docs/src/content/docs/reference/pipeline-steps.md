@@ -6,10 +6,11 @@ description: Reference for each step in the validation pipeline.
 This is the per-step reference. For the overview and rationale, see [Pipeline](/no-mistakes/concepts/pipeline/). For the fix loop, see [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/).
 
 ```text
-intent → rebase → review → test → document → lint → push → pr → ci
+intent → rebase → review → test → document → lint → push → pr → ci (unless trusted no_ci)
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
+The trusted default-branch [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) policy omits the final CI step before scheduling; the [CI section](#ci) owns the exact behavior.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps: `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, and gates with only `no-op` findings are approved as-is.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
@@ -257,7 +258,7 @@ The `v1` payload is compact JSON with these required fields:
 - `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
 
-Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can detect when a later push has made the comment stale. It is not refreshed after the PR step unless no-mistakes writes the body again.
+Items are ordered by the scheduled pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes the `pr` record and, when CI was scheduled, the `ci` record even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. Under trusted `no_ci: true`, no `ci` record exists because that step was omitted before scheduling. The `head_sha` binds that snapshot to the commit it describes, so consumers can detect when a later push has made the comment stale. It is not refreshed after the PR step unless no-mistakes writes the body again.
 
 The comment is intentionally data only. It does not declare any step required, passed for a policy, compliant, or mergeable. Consumers can parse the versioned JSON without scraping prose and apply their own policy. The comment stays with the Pipeline header when no-mistakes truncates older human-readable update details to fit a PR-body limit, and is omitted on Bitbucket Cloud.
 
