@@ -105,11 +105,15 @@ func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pi
 		return m.steps(), nil
 	}
 	recordedCI := false
-	if len(run.ScheduledSteps) > 0 {
+	legacyOmittedCI := false
+	if run.ScheduleKnown {
 		for _, name := range run.ScheduledSteps {
-			if name == types.StepCI {
+			switch name {
+			case types.StepCI:
 				recordedCI = true
-				break
+			case types.StepLegacyOmittedCI:
+				recordedCI = true
+				legacyOmittedCI = true
 			}
 		}
 	} else {
@@ -131,13 +135,17 @@ func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pi
 	if run.ScheduleKnown {
 		cfg = nil
 	}
-	return steps.RecoverySteps(cfg, recordedCI), nil
+	return steps.RecoverySteps(cfg, recordedCI, legacyOmittedCI), nil
 }
 
 func scheduledStepNames(execSteps []pipeline.Step) []types.StepName {
 	names := make([]types.StepName, 0, len(execSteps))
 	for _, step := range execSteps {
-		names = append(names, step.Name())
+		if scheduled, ok := step.(interface{ ScheduledName() types.StepName }); ok {
+			names = append(names, scheduled.ScheduledName())
+		} else {
+			names = append(names, step.Name())
+		}
 	}
 	return names
 }

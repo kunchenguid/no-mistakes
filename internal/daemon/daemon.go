@@ -1334,7 +1334,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince:        r.AwaitingAgentSince,
 		ScheduleTopologySupported: true,
 		ScheduleKnown:             r.ScheduleKnown,
-		ScheduledSteps:            append([]types.StepName(nil), r.ScheduledSteps...),
+		ScheduledSteps:            presentedScheduledSteps(r.ScheduledSteps),
 		CreatedAt:                 r.CreatedAt,
 		UpdatedAt:                 r.UpdatedAt,
 	}
@@ -1345,6 +1345,16 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		}
 	}
 	return info
+}
+
+func presentedScheduledSteps(scheduled []types.StepName) []types.StepName {
+	presented := append([]types.StepName(nil), scheduled...)
+	for i, name := range presented {
+		if name == types.StepLegacyOmittedCI {
+			presented[i] = types.StepCI
+		}
+	}
+	return presented
 }
 
 func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {

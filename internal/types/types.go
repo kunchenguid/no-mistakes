@@ -49,15 +49,16 @@ func (s RunStatus) Terminal() bool {
 type StepName string
 
 const (
-	StepIntent   StepName = "intent"
-	StepRebase   StepName = "rebase"
-	StepReview   StepName = "review"
-	StepTest     StepName = "test"
-	StepDocument StepName = "document"
-	StepLint     StepName = "lint"
-	StepPush     StepName = "push"
-	StepPR       StepName = "pr"
-	StepCI       StepName = "ci"
+	StepIntent          StepName = "intent"
+	StepRebase          StepName = "rebase"
+	StepReview          StepName = "review"
+	StepTest            StepName = "test"
+	StepDocument        StepName = "document"
+	StepLint            StepName = "lint"
+	StepPush            StepName = "push"
+	StepPR              StepName = "pr"
+	StepCI              StepName = "ci"
+	StepLegacyOmittedCI StepName = "legacy_omitted_ci"
 )
 
 func normalizeStepName(s StepName) StepName {
@@ -115,7 +116,7 @@ func (s StepName) Order() int {
 		return 7
 	case StepPR:
 		return 8
-	case StepCI:
+	case StepCI, StepLegacyOmittedCI:
 		return 9
 	default:
 		return 0

@@ -140,12 +140,12 @@ func AllStepsForConfig(cfg *config.Config) []pipeline.Step {
 	return allStepsForConfig(cfg, func() pipeline.Step { return &CIStep{} })
 }
 
-func RecoverySteps(cfg *config.Config, recordedCI bool) []pipeline.Step {
+func RecoverySteps(cfg *config.Config, recordedCI, legacyOmittedCI bool) []pipeline.Step {
 	if IsDemoMode() {
 		if !recordedCI {
 			return demoSteps(false)
 		}
-		if cfg == nil || !cfg.NoCI {
+		if !legacyOmittedCI && (cfg == nil || !cfg.NoCI) {
 			return demoSteps(true)
 		}
 		result := demoSteps(false)
@@ -153,7 +153,7 @@ func RecoverySteps(cfg *config.Config, recordedCI bool) []pipeline.Step {
 		return result
 	}
 	newCI := func() pipeline.Step { return &CIStep{} }
-	if cfg != nil && cfg.NoCI {
+	if legacyOmittedCI || cfg != nil && cfg.NoCI {
 		newCI = func() pipeline.Step { return &omittedCIStep{} }
 	}
 	return pipelineSteps(recordedCI, newCI)
@@ -183,6 +183,8 @@ func pipelineSteps(includeCI bool, newCI func() pipeline.Step) []pipeline.Step {
 type omittedCIStep struct{}
 
 func (*omittedCIStep) Name() types.StepName { return types.StepCI }
+
+func (*omittedCIStep) ScheduledName() types.StepName { return types.StepLegacyOmittedCI }
 
 func (*omittedCIStep) Execute(*pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	return &pipeline.StepOutcome{Skipped: true}, nil

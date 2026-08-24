@@ -53,12 +53,30 @@ func TestRecoveredRunPreservesRecordedNoCITopology(t *testing.T) {
 	}
 }
 
-func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
+func TestRecoveredLegacyOmittedCISurvivesThreeRestartsWithoutForge(t *testing.T) {
 	database, run := parkedRecoveryRunAt(t, true, types.StepCI)
 	manager := NewRunManager(database, nil, nil)
-	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
-	if err != nil {
-		t.Fatal(err)
+	var execSteps []pipeline.Step
+	for restart, noCI := range []bool{true, false, true} {
+		var err error
+		execSteps, err = manager.stepsForRecoveredRun(&config.Config{NoCI: noCI}, run)
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart+1, err)
+		}
+		scheduled := scheduledStepNames(execSteps)
+		if got := scheduled[len(scheduled)-1]; got != types.StepLegacyOmittedCI {
+			t.Fatalf("restart %d schedule ended in %q, want %q", restart+1, got, types.StepLegacyOmittedCI)
+		}
+		if err := database.SetRunScheduledSteps(run.ID, scheduled); err != nil {
+			t.Fatalf("restart %d publish schedule: %v", restart+1, err)
+		}
+		run, err = database.GetRun(run.ID)
+		if err != nil {
+			t.Fatalf("restart %d reload run: %v", restart+1, err)
+		}
+		if got := run.ScheduledSteps[len(run.ScheduledSteps)-1]; got != types.StepLegacyOmittedCI {
+			t.Fatalf("restart %d persisted schedule ended in %q, want %q", restart+1, got, types.StepLegacyOmittedCI)
+		}
 	}
 
 	ghDir, ghLog := writeMockGHState(t, t.TempDir(), "OPEN")
@@ -71,7 +89,7 @@ func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := pipeline.NewExecutor(database, p, &config.Config{NoCI: true}, nil, execSteps, nil)
+	executor := pipeline.NewExecutor(database, p, &config.Config{NoCI: false}, nil, execSteps, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := executor.Resume(ctx, run, repo, ""); err != nil {
@@ -96,7 +114,39 @@ func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(forgeCalls) != 0 {
-		t.Fatalf("trusted no_ci recovery called forge: %q", forgeCalls)
+		t.Fatalf("legacy omitted-CI recovery called forge: %q", forgeCalls)
+	}
+}
+
+func TestLegacyOmittedCIScheduleSnapshotPresentsCI(t *testing.T) {
+	database, run := parkedRecoveryRunAt(t, true, types.StepReview)
+	manager := NewRunManager(database, nil, nil)
+	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunScheduledSteps(run.ID, scheduledStepNames(execSteps)); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run.ScheduledSteps[len(run.ScheduledSteps)-1]; got != types.StepLegacyOmittedCI {
+		t.Fatalf("persisted schedule ended in %q, want %q", got, types.StepLegacyOmittedCI)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := runToInfo(database, run, results)
+	if got := info.ScheduledSteps[len(info.ScheduledSteps)-1]; got != types.StepCI {
+		t.Fatalf("snapshot schedule ended in %q, want user-facing %q", got, types.StepCI)
+	}
+	for _, name := range info.ScheduledSteps {
+		if name == types.StepLegacyOmittedCI {
+			t.Fatalf("snapshot exposed internal schedule identity %q", name)
+		}
 	}
 }
 
@@ -114,9 +164,15 @@ func TestRecoveredFinalizedCIScheduleIsNotSkippedByLaterNoCIPolicy(t *testing.T)
 	run.HeadSHA = ""
 
 	manager := NewRunManager(database, nil, nil)
-	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
-	if err != nil {
-		t.Fatal(err)
+	var execSteps []pipeline.Step
+	for restart, noCI := range []bool{false, true} {
+		execSteps, err = manager.stepsForRecoveredRun(&config.Config{NoCI: noCI}, run)
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart+1, err)
+		}
+		if got := scheduledStepNames(execSteps)[len(execSteps)-1]; got != types.StepCI {
+			t.Fatalf("restart %d schedule ended in %q, want %q", restart+1, got, types.StepCI)
+		}
 	}
 
 	ghDir, ghLog := writeMockGHState(t, t.TempDir(), "OPEN")
