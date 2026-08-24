@@ -308,7 +308,7 @@ agent_args_override:
 
 Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
 
-For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For a routine one-run agent/model switch, use the local operator-only [`axi run --agent/--model` flags](/no-mistakes/reference/cli/#no-mistakes-axi-run); they do not make repository configuration trusted. For repeatable durable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
 ### ci_timeout
 

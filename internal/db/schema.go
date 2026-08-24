@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS runs (
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
     review_approved_head_sha TEXT,
+    run_agent_name         TEXT,
+    run_agent_model        TEXT,
+    run_agent_effort       TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
@@ -205,6 +208,13 @@ var migrationStatements = []string{
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
+	// An explicit per-run agent choice is operator-owned and immutable. The
+	// resolved profile is stored with the run so daemon recovery cannot pick up
+	// a later global-config edit. NULL means the run used the legacy/default
+	// configuration path.
+	`ALTER TABLE runs ADD COLUMN run_agent_name TEXT`,
+	`ALTER TABLE runs ADD COLUMN run_agent_model TEXT`,
+	`ALTER TABLE runs ADD COLUMN run_agent_effort TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,

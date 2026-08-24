@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -235,6 +236,11 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if name, profile, ok := run.RunAgentSelection(); ok {
+		if err := applyPersistedRunAgentSelection(cfg, name, profile); err != nil {
+			return nil, err
+		}
+	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		return nil, err
 	}
@@ -284,6 +290,27 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 	}
 	return ag, nil
+}
+
+func applyPersistedRunAgentSelection(cfg *config.Config, name types.AgentName, profile agentcfg.Profile) error {
+	if cfg == nil {
+		return fmt.Errorf("restore per-run agent selection: config is nil")
+	}
+	if name == "" || name == types.AgentAuto || !agentcfg.Known(name) {
+		return fmt.Errorf("restore per-run agent selection: invalid persisted agent %q", name)
+	}
+	if err := agentcfg.Validate(name, profile); err != nil {
+		return fmt.Errorf("restore per-run agent selection: %w", err)
+	}
+	profiles := make(map[string]agentcfg.Profile, len(cfg.AgentConfig)+1)
+	for key, value := range cfg.AgentConfig {
+		profiles[key] = value
+	}
+	profiles[string(name)] = profile
+	cfg.AgentConfig = profiles
+	cfg.Agent = name
+	cfg.Agents = []types.AgentName{name}
+	return nil
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -693,6 +720,9 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
+	if params.Agent != "" || params.Model != "" {
+		return m.startRunWithIntentSourceAndAgent(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, db.RunIntentSourceAgent, params.Agent, params.Model)
+	}
 	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
 }
 
@@ -701,7 +731,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // head while custody remains outstanding. An explicit intent overrides the
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
 // runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string, runAgent types.AgentName, model string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -771,7 +801,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSourceAndAgent(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, runAgent, model)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -840,6 +870,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	return m.startRunWithIntentSourceAndAgent(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "")
+}
+
+func (m *RunManager) startRunWithIntentSourceAndAgent(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, runAgent types.AgentName, model string) (string, error) {
+	if err := agentcfg.ValidateRunOverride(runAgent, model); err != nil {
+		return "", fmt.Errorf("invalid per-run agent selection: %w", err)
+	}
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -1010,6 +1047,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if runAgent != "" {
+		if err := applyRunAgentOverride(cfg, runAgent, model); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("run_agent_selection")
+			return "", err
+		}
+	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("evidence_root")
@@ -1068,6 +1112,22 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				return "", err
 			}
 		}
+	}
+	if runAgent != "" {
+		profile := cfg.AgentProfileFor(cfg.Agent)
+		if err := m.db.SetRunAgentSelection(run.ID, cfg.Agent, profile); err != nil {
+			_ = ag.Close()
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("persist_run_agent_selection")
+			return "", err
+		}
+		name := string(cfg.Agent)
+		model := profile.Model
+		effort := string(profile.Effort)
+		run.RunAgentName = &name
+		run.RunAgentModel = &model
+		run.RunAgentEffort = &effort
+		slog.Info("per-run agent selection resolved", "run_id", run.ID, "agent", name, "model", model, "effort", effort)
 	}
 
 	execSteps := m.steps()
@@ -1196,6 +1256,39 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}()
 
 	return run.ID, nil
+}
+
+// applyRunAgentOverride overlays only the local operator's explicit run
+// selection after repository trust filtering has completed. It replaces the
+// configured fallback list with one exact agent, retains that agent's trusted
+// global model/effort defaults, and lets an explicit model win unless legacy
+// raw args already pin one (an ambiguous request is refused, never lied about).
+func applyRunAgentOverride(cfg *config.Config, name types.AgentName, model string) error {
+	if cfg == nil {
+		return fmt.Errorf("apply per-run agent selection: config is nil")
+	}
+	if err := agentcfg.ValidateRunOverride(name, model); err != nil {
+		return fmt.Errorf("invalid per-run agent selection: %w", err)
+	}
+	if model != "" && agentcfg.RawArgsPin(name, agentcfg.KnobModel, cfg.AgentArgsFor(name)) {
+		return fmt.Errorf("per-run model %q conflicts with agent_args_override.%s, which already pins a model", model, name)
+	}
+	profile := cfg.AgentProfileFor(name)
+	if model != "" {
+		profile.Model = model
+	}
+	if err := agentcfg.Validate(name, profile); err != nil {
+		return fmt.Errorf("invalid per-run agent selection: %w", err)
+	}
+	profiles := make(map[string]agentcfg.Profile, len(cfg.AgentConfig)+1)
+	for key, value := range cfg.AgentConfig {
+		profiles[key] = value
+	}
+	profiles[string(name)] = profile
+	cfg.AgentConfig = profiles
+	cfg.Agent = name
+	cfg.Agents = []types.AgentName{name}
+	return nil
 }
 
 // evalAutoCaptureTimeout bounds one automatic collection pass. Collection is

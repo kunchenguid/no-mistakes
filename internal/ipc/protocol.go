@@ -73,6 +73,10 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	// Agent and Model are local-operator overrides carried structurally from
+	// the initiating CLI. Repository configuration never populates them.
+	Agent types.AgentName `json:"agent,omitempty"`
+	Model string          `json:"model,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -130,6 +134,8 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	Agent         types.AgentName  `json:"agent,omitempty"`
+	Model         string           `json:"model,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -244,17 +250,20 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ID               string          `json:"id"`
-	RepoID           string          `json:"repo_id"`
-	Branch           string          `json:"branch"`
-	HeadSHA          string          `json:"head_sha"`
-	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
-	BaseSHA          string          `json:"base_sha"`
-	Status           types.RunStatus `json:"status"`
-	PRURL            *string         `json:"pr_url,omitempty"`
-	Error            *string         `json:"error,omitempty"`
-	CIReady          bool            `json:"ci_ready,omitempty"`
-	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	ID               string           `json:"id"`
+	RepoID           string           `json:"repo_id"`
+	Branch           string           `json:"branch"`
+	HeadSHA          string           `json:"head_sha"`
+	SubmittedHeadSHA *string          `json:"submitted_head_sha,omitempty"`
+	BaseSHA          string           `json:"base_sha"`
+	RunAgent         *types.AgentName `json:"run_agent,omitempty"`
+	RunAgentModel    *string          `json:"run_agent_model,omitempty"`
+	RunAgentEffort   *string          `json:"run_agent_effort,omitempty"`
+	Status           types.RunStatus  `json:"status"`
+	PRURL            *string          `json:"pr_url,omitempty"`
+	Error            *string          `json:"error,omitempty"`
+	CIReady          bool             `json:"ci_ready,omitempty"`
+	CIReadyNoCI      bool             `json:"ci_ready_no_ci,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

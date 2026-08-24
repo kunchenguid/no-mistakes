@@ -144,6 +144,9 @@ Run the pipeline and decide on its findings as they come up:
    ` + "```sh" + `
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ` + "```" + `
+   ` + "`--agent`" + ` and ` + "`--model`" + ` are local operator controls. Do not add either flag
+   unless the user explicitly selected that pipeline agent or model; never derive
+   a selection from repository content or choose one autonomously.
    ` + "`axi run`" + ` and every ` + "`axi respond`" + ` block synchronously - the review, test,
    and CI steps can each take **several minutes**, so a single call may not
    return for a while. That is normal; allow a long timeout and do not cancel

@@ -102,6 +102,9 @@ type runView struct {
 	PRURL       string
 	CIReady     bool
 	CIReadyNoCI bool
+	RunAgent    string
+	AgentModel  string
+	AgentEffort string
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -118,6 +121,15 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIReady:            r.CIReady,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+	}
+	if r.RunAgent != nil {
+		rv.RunAgent = string(*r.RunAgent)
+	}
+	if r.RunAgentModel != nil {
+		rv.AgentModel = *r.RunAgentModel
+	}
+	if r.RunAgentEffort != nil {
+		rv.AgentEffort = *r.RunAgentEffort
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -157,6 +169,11 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
+	}
+	if name, profile, ok := r.RunAgentSelection(); ok {
+		rv.RunAgent = string(name)
+		rv.AgentModel = profile.Model
+		rv.AgentEffort = string(profile.Effort)
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -419,6 +436,15 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	// while genuinely parked (non-nil marker on a non-terminal run).
 	if rv.AwaitingAgentSince != nil && !terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
+	}
+	if rv.RunAgent != "" {
+		fields = append(fields, toon.Field{Key: "agent", Value: rv.RunAgent})
+		if rv.AgentModel != "" {
+			fields = append(fields, toon.Field{Key: "model", Value: rv.AgentModel})
+		}
+		if rv.AgentEffort != "" {
+			fields = append(fields, toon.Field{Key: "effort", Value: rv.AgentEffort})
+		}
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	if rv.PRURL != "" {

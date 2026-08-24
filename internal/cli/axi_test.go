@@ -152,6 +152,18 @@ func TestRunObjectRendersAwaitingAgent(t *testing.T) {
 	}
 }
 
+func TestRunObjectRendersPerRunAgentSelection(t *testing.T) {
+	out := axiDoc(runObjectField(runView{
+		ID: "run-1", Branch: "feature/x", Status: "running", HeadSHA: "abcdef1234567890",
+		RunAgent: "codex", AgentModel: "gpt-5.6-codex", AgentEffort: "high",
+	}))
+	for _, want := range []string{"agent: codex", "model: gpt-5.6-codex", "effort: high"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("run object missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 	restore := nowUnix
 	nowUnix = func() int64 { return 1_000_000 }
@@ -496,12 +508,37 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", types.AgentCodex, "gpt-5.6-codex")
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+	if params.Agent != types.AgentCodex || params.Model != "gpt-5.6-codex" {
+		t.Fatalf("selection = %q/%q, want codex/gpt-5.6-codex", params.Agent, params.Model)
+	}
+}
+
+func TestAxiRunHelpDocumentsPerRunAgentSelection(t *testing.T) {
+	cmd := newAxiRunCmd()
+	help := cmd.Long + "\n" + cmd.Flags().FlagUsages()
+	for _, want := range []string{"--agent", "--model", "local operator override"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("axi run help missing %q:\n%s", want, help)
+		}
+	}
+}
+
+func TestReattachSelectionMustMatchImmutableRun(t *testing.T) {
+	name := types.AgentCodex
+	model := "gpt-5.6-codex"
+	run := &ipc.RunInfo{RunAgent: &name, RunAgentModel: &model}
+	if err := matchesReattachedSelection(run, name, model); err != nil {
+		t.Fatalf("matching reattach refused: %v", err)
+	}
+	if err := matchesReattachedSelection(run, types.AgentClaude, "opus"); err == nil {
+		t.Fatal("reattach changed an active run's selection")
 	}
 }
 
@@ -826,7 +863,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", "", ""); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

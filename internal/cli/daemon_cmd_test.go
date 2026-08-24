@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -107,5 +108,39 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 	}
 	if got != "" {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
+	}
+}
+
+func TestAgentPushOptionRoundTripIsStructural(t *testing.T) {
+	options, err := formatAgentPushOptions(types.AgentCodex, "gpt-5.6-codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, model, err := parseAgentPushOptions(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != types.AgentCodex || model != "gpt-5.6-codex" {
+		t.Fatalf("selection = %q/%q, want codex/gpt-5.6-codex", name, model)
+	}
+	for _, option := range options {
+		if strings.ContainsAny(option, "\r\n") {
+			t.Fatalf("push option is not line-safe: %q", option)
+		}
+	}
+}
+
+func TestAgentPushOptionRejectsMaliciousOrUnsupportedInput(t *testing.T) {
+	for _, tc := range []struct {
+		name  types.AgentName
+		model string
+	}{
+		{name: "attacker-agent"},
+		{name: types.AgentRovoDev, model: "ignored-model"},
+		{name: types.AgentCodex, model: "gpt-5\n--sandbox=danger-full-access"},
+	} {
+		if _, err := formatAgentPushOptions(tc.name, tc.model); err == nil {
+			t.Errorf("formatAgentPushOptions(%q, %q) succeeded", tc.name, tc.model)
+		}
 	}
 }

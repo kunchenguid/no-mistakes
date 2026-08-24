@@ -225,6 +225,15 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 		{Key: "step", Value: step},
 		{Key: "run", Value: run.ID},
 	}
+	if name, profile, ok := run.RunAgentSelection(); ok {
+		fields = append(fields, toon.Field{Key: "agent", Value: string(name)})
+		if profile.Model != "" {
+			fields = append(fields, toon.Field{Key: "model", Value: profile.Model})
+		}
+		if profile.Effort != "" {
+			fields = append(fields, toon.Field{Key: "effort", Value: string(profile.Effort)})
+		}
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			fields = append(fields, toon.Field{Key: "log", Value: fmt.Sprintf("no log recorded for step %q in this run", step)})

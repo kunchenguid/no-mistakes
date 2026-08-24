@@ -100,6 +100,7 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --agent codex --model gpt-5.6-codex
 ```
 
 | Flag          | Type     | Default | Description                                                      |
@@ -107,12 +108,16 @@ no-mistakes axi run --intent "the user's goal" --yes
 | `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
 | `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
 | `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| `--agent`     | `string` | (none)  | Local operator's explicit pipeline agent for this new run        |
+| `--model`     | `string` | (none)  | Model for `--agent`, where that agent supports model selection   |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+`--agent` and `--model` are operator-authorized new-run controls, not repository policy. `--model` requires `--agent`; both are validated by the daemon, and an unavailable agent or unsupported model mechanism fails before the first step. The resolved agent plus its model/effort profile are persisted on the run, shown by `axi status` and `axi logs`, and restored after daemon recovery. Repository or feature-branch `.no-mistakes.yaml` content cannot set these fields or change the existing repository-config trust rules.
+Reattachment never mutates that binding: omitted flags reattach normally, matching explicit flags are accepted for idempotency, and a different agent or model is refused.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
@@ -173,6 +178,7 @@ no-mistakes axi status --run <id>
 | `--run` | `string` | resolved run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
+Runs created with an operator override also include `agent`, plus non-empty `model` and `effort` values from the immutable resolved profile. `axi logs` repeats the same selection beside the run ID before the step output.
 The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
@@ -313,6 +319,7 @@ Rerun the pipeline for the current branch.
 ```sh
 no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
+no-mistakes rerun --agent codex --model gpt-5.6-codex
 ```
 
 Starts a new pipeline run from the current gate branch, except when the latest
@@ -330,10 +337,13 @@ records the transcript source. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
 an active run; do not use it to bypass a gate.
+Agent/model selection is deliberately not inherited by rerun: it is a new run, so omission preserves the historical behavior of resolving the current trusted/global defaults. Pass `--agent` and optionally `--model` again to create a new operator override.
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| `--agent` | `string` | (none) | Local operator's explicit pipeline agent for the new rerun |
+| `--model` | `string` | (none) | Model for `--agent`, where supported |
 
 ## no-mistakes sync
 

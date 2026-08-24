@@ -73,6 +73,12 @@ func newStatusCmd() *cobra.Command {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("     id:"), activeRun.ID)
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" branch:"), activeRun.Branch)
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" status:"), runStatusStyle(activeRun.Status))
+					if name, profile, ok := activeRun.RunAgentSelection(); ok {
+						fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  agent:"), name)
+						if profile.Model != "" {
+							fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  model:"), profile.Model)
+						}
+					}
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("   head:"), sDim.Render(sha))
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("started:"), sDim.Render(ts))
 				} else {

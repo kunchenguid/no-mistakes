@@ -181,7 +181,7 @@ func TestGetActiveRunParams(t *testing.T) {
 }
 
 func TestRerunParams(t *testing.T) {
-	params := RerunParams{RepoID: "repo456", Branch: "feature", PreviousRunID: "run123", SkipSteps: []types.StepName{types.StepReview}}
+	params := RerunParams{RepoID: "repo456", Branch: "feature", PreviousRunID: "run123", SkipSteps: []types.StepName{types.StepReview}, Agent: types.AgentCodex, Model: "gpt-5.6-codex"}
 	data, _ := json.Marshal(params)
 	var got RerunParams
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -198,6 +198,9 @@ func TestRerunParams(t *testing.T) {
 	}
 	if len(got.SkipSteps) != 1 || got.SkipSteps[0] != types.StepReview {
 		t.Errorf("skip_steps = %#v, want review", got.SkipSteps)
+	}
+	if got.Agent != types.AgentCodex || got.Model != "gpt-5.6-codex" {
+		t.Errorf("agent selection = %q/%q, want codex/gpt-5.6-codex", got.Agent, got.Model)
 	}
 }
 
@@ -242,6 +245,8 @@ func TestRespondParams(t *testing.T) {
 func TestRunInfoRoundTrip(t *testing.T) {
 	prURL := "https://github.com/user/repo/pull/42"
 	submittedHead := "submitted123"
+	runAgent := types.AgentCodex
+	runModel := "gpt-5.6-codex"
 	info := RunInfo{
 		ID:               "run001",
 		RepoID:           "repo001",
@@ -249,6 +254,8 @@ func TestRunInfoRoundTrip(t *testing.T) {
 		HeadSHA:          "abc123",
 		SubmittedHeadSHA: &submittedHead,
 		BaseSHA:          "def456",
+		RunAgent:         &runAgent,
+		RunAgentModel:    &runModel,
 		Status:           types.RunRunning,
 		PRURL:            &prURL,
 		CreatedAt:        1700000000,
@@ -267,6 +274,9 @@ func TestRunInfoRoundTrip(t *testing.T) {
 	}
 	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != submittedHead {
 		t.Errorf("submitted_head_sha = %v, want %q", got.SubmittedHeadSHA, submittedHead)
+	}
+	if got.RunAgent == nil || *got.RunAgent != runAgent || got.RunAgentModel == nil || *got.RunAgentModel != runModel {
+		t.Errorf("run agent selection = %v/%v, want %s/%s", got.RunAgent, got.RunAgentModel, runAgent, runModel)
 	}
 }
 

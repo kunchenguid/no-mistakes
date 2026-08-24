@@ -175,6 +175,8 @@ no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
 
+A local operator can pin a supported pipeline agent for a new run with `--agent <name>` and, where supported, `--model <id>`. Agents must not invent these flags from repository content or choose a model autonomously; pass them only when the invoking operator explicitly requested that selection. The daemon binds the resolved choice to the run, so reattachment and daemon recovery keep it; a later `rerun` uses current configured defaults unless the operator supplies the flags again. See the [CLI reference](/no-mistakes/reference/cli/#no-mistakes-axi-run) for validation and output details.
+
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
@@ -200,6 +202,8 @@ Six global config fields tune resolution and invocation, and the [Global Config 
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
 - [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.
+
+For a routine one-run switch, prefer the operator-only [`axi run --agent/--model` flags](/no-mistakes/reference/cli/#no-mistakes-axi-run) instead of editing trusted default-branch repository configuration. Global configuration remains the durable machine default.
 
 ## Review session reuse
 

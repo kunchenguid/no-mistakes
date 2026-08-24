@@ -3,9 +3,37 @@ package db
 import (
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRunAgentSelectionIsDurableAndImmutable(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/selection-project", "git@github.com:user/selection-project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := agentcfg.Profile{Model: "gpt-5.6-codex", Effort: agentcfg.EffortHigh}
+	if err := d.SetRunAgentSelection(run.ID, types.AgentCodex, profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunAgentSelection(run.ID, types.AgentClaude, agentcfg.Profile{Model: "opus"}); err == nil {
+		t.Fatal("a second selection replaced an immutable run binding")
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, got, ok := stored.RunAgentSelection()
+	if !ok || name != types.AgentCodex || got != profile {
+		t.Fatalf("selection = (%q, %#v, %v), want codex %#v", name, got, ok, profile)
+	}
+}
 
 func TestRunInsertAndGet(t *testing.T) {
 	d := openTestDB(t)

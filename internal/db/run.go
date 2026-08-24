@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -34,7 +35,13 @@ type Run struct {
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
-	ReviewApprovedHeadSHA  *string
+	ReviewApprovedHeadSHA *string
+	// RunAgentName is non-nil only when the local operator selected an agent
+	// for this run. Model and effort are the complete resolved profile captured
+	// at creation time, so recovery is isolated from later config edits.
+	RunAgentName           *string
+	RunAgentModel          *string
+	RunAgentEffort         *string
 	Status                 types.RunStatus
 	PRURL                  *string
 	PRState                *string
@@ -75,13 +82,14 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, run_agent_name, run_agent_model, run_agent_effort, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA,
+		&r.RunAgentName, &r.RunAgentModel, &r.RunAgentEffort, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
@@ -89,6 +97,42 @@ func scanRun(row interface {
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
+}
+
+// SetRunAgentSelection immutably records the resolved operator override. It
+// refuses to replace an existing selection so concurrent setup paths cannot
+// retarget a run after agent construction has begun.
+func (d *DB) SetRunAgentSelection(id string, name types.AgentName, profile agentcfg.Profile) error {
+	result, err := d.sql.Exec(
+		`UPDATE runs SET run_agent_name = ?, run_agent_model = ?, run_agent_effort = ?, updated_at = ? WHERE id = ? AND run_agent_name IS NULL`,
+		string(name), profile.Model, string(profile.Effort), now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("set run agent selection: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read run agent selection result: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("set run agent selection: run %s is missing or already has a selection", id)
+	}
+	return nil
+}
+
+// RunAgentSelection returns the persisted override and whether one exists.
+func (r *Run) RunAgentSelection() (types.AgentName, agentcfg.Profile, bool) {
+	if r == nil || r.RunAgentName == nil || strings.TrimSpace(*r.RunAgentName) == "" {
+		return "", agentcfg.Profile{}, false
+	}
+	profile := agentcfg.Profile{}
+	if r.RunAgentModel != nil {
+		profile.Model = *r.RunAgentModel
+	}
+	if r.RunAgentEffort != nil {
+		profile.Effort = agentcfg.Effort(*r.RunAgentEffort)
+	}
+	return types.AgentName(*r.RunAgentName), profile, true
 }
 
 // WorktreePath returns the recorded worktree directory of this run, or "" for

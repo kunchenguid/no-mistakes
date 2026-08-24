@@ -316,6 +316,28 @@ func TestEverySupportedAgentHasAMapping(t *testing.T) {
 	}
 }
 
+func TestValidateRunOverrideFailsClosed(t *testing.T) {
+	tests := []struct {
+		name  types.AgentName
+		model string
+		want  string
+	}{
+		{name: "unknown", want: "unknown agent"},
+		{name: types.AgentAuto, want: "not auto"},
+		{model: "gpt-5", want: "requires --agent"},
+		{name: types.AgentRovoDev, model: "gpt-5", want: "cannot express model"},
+		{name: types.AgentCodex, model: "gpt-5\n-c sandbox=workspace-write", want: "whitespace or control"},
+	}
+	for _, tt := range tests {
+		if err := ValidateRunOverride(tt.name, tt.model); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("ValidateRunOverride(%q, %q) = %v, want error containing %q", tt.name, tt.model, err, tt.want)
+		}
+	}
+	if err := ValidateRunOverride(types.AgentCodex, "gpt-5.6-codex"); err != nil {
+		t.Fatalf("valid codex selection refused: %v", err)
+	}
+}
+
 func TestProfileString(t *testing.T) {
 	if got := (Profile{}).String(); got != "" {
 		t.Errorf("zero Profile.String() = %q, want empty", got)

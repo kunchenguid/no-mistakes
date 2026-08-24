@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -106,6 +107,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			agentName, model, err := parseAgentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -130,6 +135,8 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				New:       newSHA,
 				SkipSteps: skipSteps,
 				Intent:    intent,
+				Agent:     agentName,
+				Model:     model,
 			}, &result)
 		},
 	}
@@ -219,6 +226,50 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+const (
+	agentPushOptionPrefix = "no-mistakes.agent="
+	modelPushOptionPrefix = "no-mistakes.model="
+)
+
+// formatAgentPushOptions carries the validated operator choice as discrete Git
+// push-option argv values. The model is encoded because push options are
+// line-oriented; neither value is evaluated by a shell.
+func formatAgentPushOptions(name types.AgentName, model string) ([]string, error) {
+	if err := agentcfg.ValidateRunOverride(name, model); err != nil {
+		return nil, err
+	}
+	if name == "" {
+		return nil, nil
+	}
+	options := []string{agentPushOptionPrefix + string(name)}
+	if model != "" {
+		options = append(options, modelPushOptionPrefix+base64.StdEncoding.EncodeToString([]byte(model)))
+	}
+	return options, nil
+}
+
+func parseAgentPushOptions(options []string) (types.AgentName, string, error) {
+	var name types.AgentName
+	model := ""
+	for _, option := range options {
+		if value, ok := strings.CutPrefix(option, agentPushOptionPrefix); ok {
+			name = types.AgentName(value)
+			continue
+		}
+		if encoded, ok := strings.CutPrefix(option, modelPushOptionPrefix); ok {
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return "", "", fmt.Errorf("decode model push option: %w", err)
+			}
+			model = string(decoded)
+		}
+	}
+	if err := agentcfg.ValidateRunOverride(name, model); err != nil {
+		return "", "", err
+	}
+	return name, model, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

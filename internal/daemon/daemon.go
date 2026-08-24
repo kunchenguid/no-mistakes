@@ -1194,7 +1194,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.Agent, p.Model)
 		if err != nil {
 			return nil, err
 		}
@@ -1334,6 +1334,13 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,
+	}
+	if name, profile, ok := r.RunAgentSelection(); ok {
+		info.RunAgent = &name
+		model := profile.Model
+		effort := string(profile.Effort)
+		info.RunAgentModel = &model
+		info.RunAgentEffort = &effort
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))

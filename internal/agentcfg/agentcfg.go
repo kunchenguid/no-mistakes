@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -79,6 +80,43 @@ func ParseEffort(raw string) (Effort, error) {
 		}
 	}
 	return "", fmt.Errorf("invalid effort %q (valid: %s)", raw, strings.Join(EffortNames(), ", "))
+}
+
+// ValidateRunOverride validates the operator-facing per-run selection shape.
+// The empty pair means "use configured defaults". An explicit model always
+// names its agent so the daemon never applies it to an auto/fallback choice,
+// and control characters are refused before the value reaches argv or a
+// request body.
+func ValidateRunOverride(name types.AgentName, model string) error {
+	if name == "" {
+		if model != "" {
+			return fmt.Errorf("--model requires --agent")
+		}
+		return nil
+	}
+	if name == types.AgentAuto {
+		return fmt.Errorf("--agent must name an explicit supported agent, not auto")
+	}
+	if !Known(name) {
+		return fmt.Errorf("unknown agent %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesForError(), ", "))
+	}
+	if model != "" {
+		if len(model) > 256 {
+			return fmt.Errorf("model name is too long (maximum 256 bytes)")
+		}
+		if strings.IndexFunc(model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+			return fmt.Errorf("model name must not contain whitespace or control characters")
+		}
+	}
+	return Validate(name, Profile{Model: model})
+}
+
+func agentNamesForError() []string {
+	names := make([]string, 0, len(harnesses))
+	for _, name := range Agents() {
+		names = append(names, string(name))
+	}
+	return names
 }
 
 // Profile is the harness-neutral tuning surface: what the operator asked for,
@@ -317,6 +355,18 @@ func MechanismFor(name types.AgentName, k Knob) Mechanism {
 		return MechanismUnsupported
 	}
 	return h.knob(k).mechanism
+}
+
+// RawArgsPin reports whether operator-supplied native args already set a knob.
+// Per-run overrides use this to refuse an ambiguous explicit model instead of
+// claiming a selection that the existing precedence rule would discard.
+func RawArgsPin(name types.AgentName, k Knob, rawArgs []string) bool {
+	h, ok := lookup(name)
+	if !ok {
+		return false
+	}
+	knob := h.knob(k)
+	return knob.pinned != nil && knob.pinned(rawArgs)
 }
 
 // Validate reports whether a harness can express every knob the profile sets,
