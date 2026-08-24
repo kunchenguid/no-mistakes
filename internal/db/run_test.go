@@ -60,6 +60,35 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	}
 }
 
+func TestRunScheduledStepsAreDurableAndImmutable(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := types.AllSteps()[:len(types.AllSteps())-1]
+	if err := d.SetRunScheduledSteps(run.ID, want); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunScheduledSteps(run.ID, want); err != nil {
+		t.Fatalf("idempotent schedule publication: %v", err)
+	}
+	if err := d.SetRunScheduledSteps(run.ID, types.AllSteps()); err == nil {
+		t.Fatal("schedule overwrite succeeded")
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStepNames(stored.ScheduledSteps, want) {
+		t.Fatalf("scheduled steps = %v, want %v", stored.ScheduledSteps, want)
+	}
+	if !stored.ScheduleKnown {
+		t.Fatal("stored schedule was not marked known")
+	}
+}
+
 func TestInsertRunWithIntent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

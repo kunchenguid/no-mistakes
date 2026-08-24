@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -35,6 +36,8 @@ type Run struct {
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
 	ReviewApprovedHeadSHA  *string
+	ScheduledSteps         []types.StepName
+	ScheduleKnown          bool
 	Status                 types.RunStatus
 	PRURL                  *string
 	PRState                *string
@@ -75,20 +78,31 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, scheduled_steps, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
-	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+	var scheduledSteps sql.NullString
+	if err := row.Scan(
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA,
+		&scheduledSteps, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
-	)
+	); err != nil {
+		return err
+	}
+	if scheduledSteps.Valid {
+		r.ScheduleKnown = true
+		if err := json.Unmarshal([]byte(scheduledSteps.String), &r.ScheduledSteps); err != nil {
+			return fmt.Errorf("decode scheduled steps: %w", err)
+		}
+	}
+	return nil
 }
 
 // WorktreePath returns the recorded worktree directory of this run, or "" for
@@ -119,6 +133,7 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		SubmittedHeadSHA:   &headSHA,
 		NoMistakesVersion:  &version,
 		NoMistakesBuildSHA: &buildSHA,
+		ScheduleKnown:      true,
 		Status:             types.RunPending,
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
@@ -130,13 +145,60 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		r.IntentScore = &intent.Score
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, scheduled_steps, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, 'none', ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
+}
+
+func (d *DB) SetRunScheduledSteps(id string, steps []types.StepName) error {
+	if len(steps) == 0 {
+		return fmt.Errorf("scheduled steps cannot be empty")
+	}
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		return fmt.Errorf("encode scheduled steps: %w", err)
+	}
+	result, err := d.sql.Exec(
+		`UPDATE runs SET scheduled_steps = ?, updated_at = ? WHERE id = ? AND (scheduled_steps IS NULL OR scheduled_steps = '[]')`,
+		string(encoded), now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("set scheduled steps: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set scheduled steps: %w", err)
+	}
+	if changed == 1 {
+		return nil
+	}
+	existing, err := d.GetRun(id)
+	if err != nil {
+		return fmt.Errorf("read scheduled steps: %w", err)
+	}
+	if existing == nil {
+		return fmt.Errorf("run not found")
+	}
+	if equalStepNames(existing.ScheduledSteps, steps) {
+		return nil
+	}
+	return fmt.Errorf("scheduled steps are immutable")
+}
+
+func equalStepNames(a, b []types.StepName) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // RunWorktree is one run's recorded worktree placement, identified by the run

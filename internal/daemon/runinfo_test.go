@@ -26,6 +26,9 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	if err := d.UpdateRunHeadSHA(run.ID, "pipeline-fix-head"); err != nil {
 		t.Fatalf("advance run head: %v", err)
 	}
+	if err := d.SetRunScheduledSteps(run.ID, types.AllSteps()); err != nil {
+		t.Fatalf("set scheduled steps: %v", err)
+	}
 	run, err = d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("reload run: %v", err)
@@ -37,6 +40,12 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 	if info.SubmittedHeadSHA == nil || *info.SubmittedHeadSHA != "submitted-head" {
 		t.Fatalf("submitted head = %v, want submitted-head", info.SubmittedHeadSHA)
+	}
+	if len(info.ScheduledSteps) != len(types.AllSteps()) || info.ScheduledSteps[len(info.ScheduledSteps)-1] != types.StepCI {
+		t.Fatalf("scheduled steps = %v, want complete pipeline", info.ScheduledSteps)
+	}
+	if !info.ScheduleKnown {
+		t.Fatal("scheduled topology was not marked authoritative")
 	}
 }
 

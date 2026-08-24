@@ -30,7 +30,7 @@ func TestRecoveredRunPreservesRecordedNoCITopology(t *testing.T) {
 			cfg := &config.Config{NoCI: tt.currentNoCI}
 			manager := NewRunManager(database, nil, nil)
 
-			execSteps, err := manager.stepsForRecoveredRun(cfg, run.ID)
+			execSteps, err := manager.stepsForRecoveredRun(cfg, run)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -54,7 +54,7 @@ func TestRecoveredRunPreservesRecordedNoCITopology(t *testing.T) {
 func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 	database, run := parkedRecoveryRun(t, true)
 	manager := NewRunManager(database, nil, nil)
-	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run.ID)
+	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
 	if err != nil {
 		t.Fatal(err)
 	}

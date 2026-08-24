@@ -197,7 +197,7 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) bool {
 	}
 	m.err = nil
 	m.stateRev = run.StateRev
-	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
+	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps, run.ScheduledSteps, run.ScheduleKnown)
 	findings := make(map[types.StepName]string, len(steps))
 	for _, step := range steps {
 		if step.FindingsJSON != nil && *step.FindingsJSON != "" {

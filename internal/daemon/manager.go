@@ -98,22 +98,39 @@ func (m *RunManager) stepsForConfig(cfg *config.Config) []pipeline.Step {
 	return steps.AllStepsForConfig(cfg)
 }
 
-func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, runID string) ([]pipeline.Step, error) {
+func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pipeline.Step, error) {
 	if m.steps != nil {
 		return m.steps(), nil
 	}
-	recorded, err := m.db.GetStepsByRun(runID)
-	if err != nil {
-		return nil, fmt.Errorf("get recovered steps: %w", err)
-	}
 	recordedCI := false
-	for _, result := range recorded {
-		if result.StepName == types.StepCI {
-			recordedCI = true
-			break
+	if len(run.ScheduledSteps) > 0 {
+		for _, name := range run.ScheduledSteps {
+			if name == types.StepCI {
+				recordedCI = true
+				break
+			}
+		}
+	} else {
+		recorded, err := m.db.GetStepsByRun(run.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get recovered steps: %w", err)
+		}
+		for _, result := range recorded {
+			if result.StepName == types.StepCI {
+				recordedCI = true
+				break
+			}
 		}
 	}
 	return steps.RecoverySteps(cfg, recordedCI), nil
+}
+
+func scheduledStepNames(execSteps []pipeline.Step) []types.StepName {
+	names := make([]types.StepName, 0, len(execSteps))
+	for _, step := range execSteps {
+		names = append(names, step.Name())
+	}
+	return names
 }
 
 type recoveredRunPlan struct {
@@ -184,13 +201,19 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	execSteps, err := m.stepsForRecoveredRun(cfg, run.ID)
+	execSteps, err := m.stepsForRecoveredRun(cfg, run)
 	if err != nil {
 		return nil, err
 	}
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}
+	scheduledSteps := scheduledStepNames(execSteps)
+	if err := m.db.SetRunScheduledSteps(run.ID, scheduledSteps); err != nil {
+		return nil, fmt.Errorf("record recovered run schedule: %w", err)
+	}
+	run.ScheduledSteps = scheduledSteps
+	run.ScheduleKnown = true
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
 	if err != nil {
 		return nil, err
@@ -1097,6 +1120,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 
 	execSteps := m.stepsForConfig(cfg)
+	scheduledSteps := scheduledStepNames(execSteps)
+	if err := m.db.SetRunScheduledSteps(run.ID, scheduledSteps); err != nil {
+		_ = ag.Close()
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record run schedule: %s", err))
+		trackStartFailure("record_schedule")
+		return "", fmt.Errorf("record run schedule: %w", err)
+	}
+	run.ScheduledSteps = scheduledSteps
+	run.ScheduleKnown = true
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,

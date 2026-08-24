@@ -98,8 +98,9 @@ type Model struct {
 // NewModel creates a TUI model for the given run.
 // The client should already be connected to the daemon.
 func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
-	syntheticSteps := len(run.Steps) == 0 && shouldBackfillPipelineSteps(run.Status, run.Steps, types.AllSteps())
-	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
+	knownSteps, authoritative := scheduledPipelineSteps(run.ScheduledSteps, run.ScheduleKnown)
+	syntheticSteps := len(run.Steps) == 0 && shouldBackfillPipelineSteps(run.Status, run.Steps, knownSteps, authoritative)
+	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps, run.ScheduledSteps, run.ScheduleKnown)
 	run.Steps = steps
 	m := Model{
 		socketPath:          socketPath,
@@ -140,9 +141,9 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 	return m
 }
 
-func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc.StepResultInfo) []ipc.StepResultInfo {
-	knownSteps := types.AllSteps()
-	if !shouldBackfillPipelineSteps(runStatus, steps, knownSteps) {
+func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc.StepResultInfo, scheduledSteps []types.StepName, scheduleKnown bool) []ipc.StepResultInfo {
+	knownSteps, authoritative := scheduledPipelineSteps(scheduledSteps, scheduleKnown)
+	if !shouldBackfillPipelineSteps(runStatus, steps, knownSteps, authoritative) {
 		return steps
 	}
 
@@ -184,14 +185,24 @@ func normalizePipelineSteps(runID string, runStatus types.RunStatus, steps []ipc
 	return normalized
 }
 
-func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResultInfo, knownSteps []types.StepName) bool {
+func scheduledPipelineSteps(scheduled []types.StepName, scheduleKnown bool) ([]types.StepName, bool) {
+	if scheduleKnown {
+		return scheduled, true
+	}
+	return types.AllSteps(), false
+}
+
+func shouldBackfillPipelineSteps(runStatus types.RunStatus, steps []ipc.StepResultInfo, knownSteps []types.StepName, authoritative bool) bool {
+	if len(knownSteps) == 0 {
+		return false
+	}
 	if len(steps) == 0 {
-		return runStatus == types.RunPending || runStatus == types.RunRunning
+		return authoritative || runStatus == types.RunPending || runStatus == types.RunRunning
 	}
 	if len(steps) >= len(knownSteps) {
 		return false
 	}
-	if len(steps) == len(knownSteps)-1 && knownSteps[len(knownSteps)-1] == types.StepCI {
+	if !authoritative && runStatus.Terminal() {
 		return false
 	}
 	for i, step := range steps {

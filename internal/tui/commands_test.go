@@ -367,6 +367,8 @@ func TestNewModel_PreservesPipelineWithoutScheduledCI(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			run := testRun()
 			run.Status = status
+			run.ScheduleKnown = true
+			run.ScheduledSteps = append([]types.StepName(nil), types.AllSteps()[:len(types.AllSteps())-1]...)
 			run.Steps = make([]ipc.StepResultInfo, 0, len(types.AllSteps())-1)
 			for _, stepName := range types.AllSteps()[:len(types.AllSteps())-1] {
 				run.Steps = append(run.Steps, ipc.StepResultInfo{
@@ -388,6 +390,62 @@ func TestNewModel_PreservesPipelineWithoutScheduledCI(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewModel_PartialOrdinaryScheduleKeepsCIVisible(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	run.ScheduleKnown = true
+	run.ScheduledSteps = types.AllSteps()
+	for _, stepName := range types.AllSteps()[:len(types.AllSteps())-1] {
+		run.Steps = append(run.Steps, ipc.StepResultInfo{
+			RunID: run.ID, StepName: stepName, StepOrder: stepName.Order(), Status: types.StepStatusPending,
+		})
+	}
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != len(types.AllSteps()) {
+		t.Fatalf("step count = %d, want %d", len(m.steps), len(types.AllSteps()))
+	}
+	if got := m.steps[len(m.steps)-1]; got.StepName != types.StepCI || got.Status != types.StepStatusPending {
+		t.Fatalf("final step = %#v, want pending CI", got)
+	}
+}
+
+func TestNewModel_PartialNoCIScheduleNeverSynthesizesCI(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunRunning
+	run.ScheduleKnown = true
+	run.ScheduledSteps = append([]types.StepName(nil), types.AllSteps()[:len(types.AllSteps())-1]...)
+	for _, stepName := range run.ScheduledSteps[:3] {
+		run.Steps = append(run.Steps, ipc.StepResultInfo{
+			RunID: run.ID, StepName: stepName, StepOrder: stepName.Order(), Status: types.StepStatusPending,
+		})
+	}
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != len(run.ScheduledSteps) {
+		t.Fatalf("step count = %d, want %d", len(m.steps), len(run.ScheduledSteps))
+	}
+	for _, step := range m.steps {
+		if step.StepName == types.StepCI {
+			t.Fatal("CI step was synthesized outside the authoritative schedule")
+		}
+	}
+}
+
+func TestNewModel_UnresolvedNewScheduleDoesNotGuessCI(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunPending
+	run.ScheduleKnown = true
+
+	m := NewModel("/tmp/sock", nil, run)
+
+	if len(m.steps) != 0 {
+		t.Fatalf("unresolved schedule synthesized steps: %v", m.steps)
 	}
 }
 
