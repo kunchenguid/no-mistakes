@@ -25,7 +25,7 @@ Safest local verification sequence after non-trivial changes:
 
 **Repository Forge Identity (`internal/forgecontext`)**
 
-- Optional global `forge_profiles` map raw remote host tokens/SSH aliases to one isolated `gh` or `glab` config directory. The resolver owns profile selection, validation, parent/fork ambiguity, provider-specific fail-closed activation, and the immutable run environment; do not add ambient account switching or per-step routing.
+- Optional global `forge_profiles` map raw remote host tokens/SSH aliases to one isolated `gh` or `glab` config directory, plus an optional `expected_login` pin. The resolver owns profile selection, validation, parent/fork ambiguity, provider-specific fail-closed activation, and the immutable run environment; do not add ambient account switching or per-step routing. Profile identity for the parent/fork same-profile check is the config directory AND the pin, so conflicting pins fail as ambiguous instead of silently picking one account (`sameProfile`/`expectLogin` own the rationale).
 - A resolved context must reach built-in provider commands, configured shell commands, native agents, managed agent servers, and recovered approval reconciliation. Never mutate the daemon environment or persist credentials/profile selection in the DB; recovery re-resolves from current global config.
 - No configured profiles means exact legacy ambient behavior. Online auth failures keep provider steps' existing skip behavior; deterministic config/routing errors fail before the pipeline. The public contract lives in `docs/src/content/docs/reference/global-config.md`.
 
