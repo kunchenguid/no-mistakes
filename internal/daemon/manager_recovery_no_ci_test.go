@@ -100,6 +100,50 @@ func TestRecoveredLegacyCIUnderTrustedNoCIDoesNotCallForge(t *testing.T) {
 	}
 }
 
+func TestRecoveredFinalizedCIScheduleIsNotSkippedByLaterNoCIPolicy(t *testing.T) {
+	database, run := parkedRecoveryRunAt(t, true, types.StepCI)
+	if err := database.SetRunScheduledSteps(run.ID, types.AllSteps()); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This test isolates recovered topology selection from the independent git
+	// head-continuity guard; the parked run has no real worktree.
+	run.HeadSHA = ""
+
+	manager := NewRunManager(database, nil, nil)
+	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ghDir, ghLog := writeMockGHState(t, t.TempDir(), "OPEN")
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.GetRepo(run.RepoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := pipeline.NewExecutor(database, p, &config.Config{NoCI: true}, nil, execSteps, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := executor.Resume(ctx, run, repo, ""); err == nil {
+		t.Fatal("resume unexpectedly skipped finalized CI gate")
+	}
+	forgeCalls, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forgeCalls) == 0 {
+		t.Fatal("finalized CI schedule performed no forge call; later no_ci policy reinterpreted durable topology")
+	}
+}
+
 func parkedRecoveryRun(t *testing.T, includeCI bool) (*db.DB, *db.Run) {
 	return parkedRecoveryRunAt(t, includeCI, types.StepReview)
 }

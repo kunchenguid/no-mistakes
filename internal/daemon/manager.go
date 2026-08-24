@@ -122,6 +122,13 @@ func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pi
 			}
 		}
 	}
+	// A finalized schedule is part of the run's durable execution contract.
+	// Current policy may provide a compatibility escape hatch for legacy runs
+	// whose topology was never recorded, but it must not reinterpret a known CI
+	// step as omitted after the run has already been scheduled.
+	if run.ScheduleKnown {
+		cfg = nil
+	}
 	return steps.RecoverySteps(cfg, recordedCI), nil
 }
 
