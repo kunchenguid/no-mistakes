@@ -384,7 +384,7 @@ gates:
 ```
 
 A gate with `command` runs that command in the run worktree and passes on exit code 0.
-A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings. That agent is instructed to report only and to leave the worktree alone, which is a prompt contract like the rest of the pipeline's agent steering rather than an enforced sandbox.
+A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings. On that judging turn the agent is instructed to report only and to leave the worktree alone, which is a prompt contract like the rest of the pipeline's agent steering rather than an enforced sandbox. Only an explicitly authorized `fix` answer lets a gate of either kind change the worktree, and what it repairs is committed to the branch - see [Failure](#failure) below.
 
 #### Placement
 
