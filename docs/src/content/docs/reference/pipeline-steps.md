@@ -11,6 +11,7 @@ intent → rebase → review → test → document → lint → push → pr → 
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept. The Test evidence analyzer first returns the validation errors to the agent for a bounded correction; exhausting that bound, and every other step's invalid analyzer output, still stops the affected step.
+Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
 See [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
@@ -273,12 +274,12 @@ The `v1` payload is compact JSON with these required fields:
 - `head_sha`: the exact git commit SHA recorded for the run when no-mistakes writes the PR body
 - `steps`: the ordered pipeline step snapshot; every item has exactly the fields below
 
-- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`
+- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`; a repository-declared [gate](/no-mistakes/reference/repo-config/#gates) appears as `gate.<anchor>.<name>`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
 
 When the Test step validated the same `head_sha`, the payload also includes `live_validation` with `verdict`, `live` (the number of scenarios driven live), and `total`. The field is omitted for pre-contract findings and whenever a later Document, Lint, Push, or repair commit changes the head without validating that new commit. Consumers therefore never receive a previous head's live-validation verdict as a claim about the current head.
 
-Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can reject a stale comment after the PR head changes.
+Items follow pipeline order, with each repository gate immediately after its anchor. They represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can reject a stale comment after the PR head changes.
 
 For an existing GitHub PR on a non-base branch, every later no-mistakes publication rewrites that existing attestation for the proposed head **before** pushing the branch. This ordering ensures a `synchronize` check cannot observe a newly pushed legitimate head with the old binding. The ordinary Push step replaces the step list with its own current snapshot; a continuity-proven CI repair published without revalidation keeps the prior attested statuses because Review, Test, and Document did not run for that repair. A PR that never carried an attestation remains unchanged. A rewrite error aborts before branch mutation, while an unavailable GitHub SCM host skips the rewrite and leaves strict head equality to reject any stale binding. If the attestation write succeeds but the subsequent git push fails, the body can temporarily point ahead of the PR head, and the Push step reports the failure.
 

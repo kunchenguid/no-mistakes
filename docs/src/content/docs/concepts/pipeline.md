@@ -21,6 +21,8 @@ flowchart LR
 
 This page is the overview. For each step's exact behavior, defaults, skip rules, and fix-commit format, see [Pipeline Steps](/no-mistakes/reference/pipeline-steps/).
 
+A repository can add to this sequence but never subtract from it: [`gates`](/no-mistakes/reference/repo-config/#gates) declares extra checks that run immediately after a core step, and nothing there can skip, reorder, or replace one.
+
 ## What a passed gate means
 
 The pipeline is opinionated so that "passed the gate" has a stable meaning:

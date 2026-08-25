@@ -384,7 +384,7 @@ gates:
 ```
 
 A gate with `command` runs that command in the run worktree and passes on exit code 0.
-A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings; it reports only, and never modifies the worktree.
+A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings. That agent is instructed to report only and to leave the worktree alone, which is a prompt contract like the rest of the pipeline's agent steering rather than an enforced sandbox.
 
 #### Placement
 
@@ -394,6 +394,8 @@ The delivery tail (`push`, `pr`, `ci`) cannot be anchored: a gate that ran after
 
 Gates are inserted into the run's step sequence and never replace, reorder, or remove a core step. Two gates sharing an anchor run in the order they appear in the file. A gate shares its anchor's step order, so a restart that resets from the anchor resets the gate with it.
 
+A run resolves this list once, when it starts, and keeps it for its whole lifetime, including across a daemon restart. Adding or removing a gate on the default branch therefore applies to later runs, and never retargets a run that is already in flight or parked at a gate.
+
 #### Failure
 
 A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
@@ -402,7 +404,9 @@ Answering that decision with `fix` is that authorization: the gate then runs a f
 
 Each gate keeps its own step log under the step name `gate.<anchor>.<name>`, so a gate declared as `name: mutation-budget` with `after: test` is read with `no-mistakes axi logs --step gate.test.mutation-budget`.
 
-Because a gate can only add a verdict, a repository that configures gates makes a pass mean *more* than the core pipeline, never less. There is no way to switch a core step off here; to skip one for a single run, use the per-run [`--skip`](/reference/cli/) instead.
+Because a gate can only add a verdict, a repository that configures gates makes a pass mean *more* than the core pipeline, never less. There is no way to switch a core step off here; to skip one for a single run, use the per-run [`--skip`](/no-mistakes/reference/cli/) instead.
+
+A gate also cannot be pre-skipped: neither `--skip` nor the `no-mistakes.skip=` push option accepts a gate step name, so a pushed branch cannot switch off the maintainer's extra check before its own run starts. Answering a parked gate with `skip` stays available, like any other gate, as a decision made at the park.
 
 #### Limits and validation
 
