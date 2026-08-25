@@ -18,13 +18,21 @@ var errOpencodeThinkingToolChoiceConflict = errors.New("opencode provider reject
 // fresh session, so it must not be taken past this marker.
 var errOpencodeToolsAlreadyRan = errors.New("the failed turn already ran tools")
 
-// thinkingConflict builds the fallback trigger, recording whether the turn
-// had already invoked a tool. A session.error can arrive at any point in a
-// turn, so the conflict is not always detected before the model has acted.
-func thinkingConflict(state *opencodeStreamState, resp *opencodeMessageResponse, cause error) error {
+// errOpencodeToolActivityUnknown annotates a failure whose turn could not be
+// read at all: no tool part observed, and no complete record of the turn to
+// prove none ran. It withholds the same replays as errOpencodeToolsAlreadyRan
+// - an unverified turn is not a turn that did nothing - and stays a separate
+// sentinel so the surfaced error says which of the two it was.
+var errOpencodeToolActivityUnknown = errors.New("could not verify the failed turn ran no tools")
+
+// thinkingConflict builds the fallback trigger, carrying the turn's tool
+// evidence. A session.error can arrive at any point in a turn, so the
+// conflict is not always detected before the model has acted, and the
+// fallback is another fresh session.
+func thinkingConflict(evidence opencodeToolEvidence, cause error) error {
 	err := errOpencodeThinkingToolChoiceConflict
-	if opencodeTurnRanTools(state, resp) {
-		err = fmt.Errorf("%w (%w)", err, errOpencodeToolsAlreadyRan)
+	if !evidence.replaySafe() {
+		err = fmt.Errorf("%w (%w)", err, evidence.marker())
 	}
 	if cause != nil {
 		return fmt.Errorf("%w: %v", err, cause)
@@ -83,10 +91,11 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	}
 
 	// The fallback is a second attempt in a fresh session, so a turn that
-	// already invoked a tool would replay its side effects. Same reasoning as
+	// already invoked a tool would replay its side effects - and so would one
+	// whose tool activity could not be established. Same reasoning as
 	// classifyOpencodeTransient, and the same fail-closed answer: report the
 	// conflict and let the operator decide.
-	if errors.Is(err, errOpencodeToolsAlreadyRan) {
+	if opencodeReplayUnsafe(err) {
 		return nil, err
 	}
 
@@ -132,20 +141,16 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	defer eventBody.Close()
 
 	// Send message concurrently — blocks until agent completes
-	type messageResult struct {
-		resp *opencodeMessageResponse
-		err  error
-	}
 	msgCtx, msgCancel := context.WithCancel(ctx)
 	defer msgCancel()
-	msgCh := make(chan messageResult, 1)
+	msgCh := make(chan opencodeMessageResult, 1)
 	go func() {
 		schema := opts.JSONSchema
 		if !nativeFormat {
 			schema = nil
 		}
 		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, schema)
-		msgCh <- messageResult{resp: resp, err: err}
+		msgCh <- opencodeMessageResult{resp: resp, err: err, settled: true}
 	}()
 
 	// Process SSE events until session.idle
@@ -159,35 +164,50 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	streamCancel()
 
 	if err != nil {
-		// Check if message request failed. Its response is kept either way:
-		// a stream that died before the tool part arrived leaves the message
-		// body as the only record that the turn ran one.
-		var msgResp *opencodeMessageResponse
-		select {
-		case mr := <-msgCh:
-			msgResp = mr.resp
-			if mr.err != nil {
-				if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-					return nil, thinkingConflict(state, msgResp, mr.err)
-				}
-				return nil, opencodeTurnFailure(state, msgResp, fmt.Errorf("opencode message: %w", mr.err))
+		// The stream carried the tool events, so with it gone the message
+		// response is the remaining record of what the turn ran. Taking only
+		// what has already arrived answers "nothing yet" while the request is
+		// still in flight, and that is not the same answer as "no tool ran" -
+		// so the evidence is resolved here, before anything classifies the
+		// failure.
+		mr := pollOpencodeMessage(msgCh)
+		aborted := false
+		if !mr.settled {
+			// Aborting is the cleanup this branch already did. Doing it
+			// first also ends the turn opencode is still running, which is
+			// what makes the in-flight request answer - with the assistant
+			// message and its parts. The wait is bounded: a server that is
+			// gone never answers, and that turn is simply unverifiable.
+			a.abortSession(baseURL, sessionID)
+			aborted = true
+			mr = awaitOpencodeMessage(msgCh, opencodeEvidenceWait)
+		}
+		evidence := resolveOpencodeToolEvidence(state, mr, false)
+		if mr.settled && mr.err != nil {
+			if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
+				return nil, thinkingConflict(evidence, mr.err)
 			}
-		default:
+			return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 		}
-		a.abortSession(baseURL, sessionID)
+		if !aborted {
+			a.abortSession(baseURL, sessionID)
+		}
 		if nativeFormat && errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
-			return nil, thinkingConflict(state, msgResp, nil)
+			return nil, thinkingConflict(evidence, nil)
 		}
-		return nil, opencodeTurnFailure(state, msgResp, fmt.Errorf("opencode events: %w", err))
+		return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode events: %w", err))
 	}
 
-	// Wait for message response
+	// Wait for message response. The stream ran to session.idle, so every
+	// tool part of the session crossed it and the evidence is settled however
+	// this request ends.
 	mr := <-msgCh
+	evidence := resolveOpencodeToolEvidence(state, mr, true)
 	if mr.err != nil {
 		if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-			return nil, thinkingConflict(state, mr.resp, mr.err)
+			return nil, thinkingConflict(evidence, mr.err)
 		}
-		return nil, opencodeTurnFailure(state, mr.resp, fmt.Errorf("opencode message: %w", mr.err))
+		return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 	}
 
 	// Update usage and text from message response
@@ -258,7 +278,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	// prompt-only fallback in runOnce, so it must be recognised before the
 	// general failure below claims it.
 	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isThinkingToolChoiceConflict(mr.resp.Info.Error) {
-		return nil, thinkingConflict(state, mr.resp, nil)
+		return nil, thinkingConflict(evidence, nil)
 	}
 
 	// A turn that failed reports its cause on info.error rather than on the
@@ -273,7 +293,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	// case with the same wording and decodes the nested error payload the
 	// flat fields never carried.
 	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error != nil {
-		return nil, newOpencodeMessageFailure(mr.resp.Info.Error, opencodeTurnRanTools(state, mr.resp))
+		return nil, newOpencodeMessageFailure(mr.resp.Info.Error, evidence == opencodeToolsRan)
 	}
 
 	// Fall back to parsing JSON from text
@@ -286,7 +306,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		// A parse failure quotes the model's own output, so whether it looks
 		// transient to the shared classifier is decided by text the model
 		// wrote. It takes the same gate as the rest.
-		return nil, opencodeTurnFailure(state, mr.resp, err)
+		return nil, opencodeTurnFailure(evidence, err)
 	}
 	return result, nil
 }

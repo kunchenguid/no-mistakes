@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // opencodeErrorServer serves the minimal session lifecycle with a
@@ -474,36 +477,292 @@ func TestOpencodeAgent_SSEFailureWithoutToolActivityStillRetries(t *testing.T) {
 // carry no verdict from opencode. The classifier sees only text there, so
 // the marker is what stands between a dropped stream and a replayed tool.
 func TestOpencodeTurnFailure_GatesTheSharedClassifier(t *testing.T) {
-	ranTools := &opencodeStreamState{toolInvoked: true}
 	streamDrop := fmt.Errorf("opencode events: unexpected EOF")
 
-	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(ranTools, nil, streamDrop)); retry {
+	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(opencodeToolsRan, streamDrop)); retry {
 		t.Error("a dropped stream after tool activity must not be retried")
 	}
-	if msg := opencodeTurnFailure(ranTools, nil, streamDrop).Error(); !strings.Contains(msg, "not retried: the failed turn already ran tools") {
+	if msg := opencodeTurnFailure(opencodeToolsRan, streamDrop).Error(); !strings.Contains(msg, "not retried: the failed turn already ran tools") {
 		t.Errorf("expected the withheld retry to be named, got %q", msg)
 	}
 
 	// The blip the retry exists for is untouched by the gate.
-	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(&opencodeStreamState{}, nil, streamDrop)); !retry {
-		t.Error("a dropped stream before any tool ran must still be retried")
+	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(opencodeToolsNone, streamDrop)); !retry {
+		t.Error("a dropped stream proven to be before any tool ran must still be retried")
 	}
 
-	// A tool part reaching only the message response is the same evidence.
-	respRanTools := &opencodeMessageResponse{Parts: []opencodeMessagePart{{Type: "tool"}}}
-	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(&opencodeStreamState{}, respRanTools, streamDrop)); retry {
-		t.Error("a tool part in the message response must also withhold the retry")
+	// An unverified turn is refused like one known to have run tools, and
+	// says which of the two it was.
+	unverified := opencodeTurnFailure(opencodeToolsUnknown, streamDrop)
+	if _, retry := classifyOpencodeTransient(unverified); retry {
+		t.Error("a turn whose tool activity is unknown must not be retried")
+	}
+	if msg := unverified.Error(); !strings.Contains(msg, "not retried: could not verify the failed turn ran no tools") {
+		t.Errorf("expected the unverified turn to be named as such, got %q", msg)
 	}
 
 	// A failure that was never retryable keeps its wording, so the suffix
 	// stays a reliable signal that a retry was withheld.
 	parseFailure := fmt.Errorf("opencode output parse: invalid character 'N'")
-	if msg := opencodeTurnFailure(ranTools, nil, parseFailure).Error(); msg != parseFailure.Error() {
+	if msg := opencodeTurnFailure(opencodeToolsRan, parseFailure).Error(); msg != parseFailure.Error() {
 		t.Errorf("expected a non-retryable failure to render unchanged, got %q", msg)
 	}
 
-	// The thinking-conflict trigger reaches the retry loop by the same route.
-	if _, retry := classifyOpencodeTransient(thinkingConflict(ranTools, nil, fmt.Errorf("connection reset by peer"))); retry {
-		t.Error("a thinking conflict after tool activity must not be retried")
+	// The thinking-conflict trigger reaches the retry loop by the same route,
+	// and the prompt-only fallback reads the same markers.
+	for _, evidence := range []opencodeToolEvidence{opencodeToolsRan, opencodeToolsUnknown} {
+		conflict := thinkingConflict(evidence, fmt.Errorf("connection reset by peer"))
+		if _, retry := classifyOpencodeTransient(conflict); retry {
+			t.Errorf("a thinking conflict with evidence %v must not be retried", evidence)
+		}
+		if !opencodeReplayUnsafe(conflict) {
+			t.Errorf("a thinking conflict with evidence %v must block the fresh-session fallback", evidence)
+		}
+	}
+	if opencodeReplayUnsafe(thinkingConflict(opencodeToolsNone, nil)) {
+		t.Error("a conflict proven to be before any tool ran must still reach the fallback")
+	}
+}
+
+// TestResolveOpencodeToolEvidence is the three-valued question itself: a turn
+// that ran a tool, a turn PROVEN to have run none, and a turn nothing
+// available can answer for. The last one used to be read as the second.
+func TestResolveOpencodeToolEvidence(t *testing.T) {
+	respWithTool := &opencodeMessageResponse{Parts: []opencodeMessagePart{{Type: "tool"}}}
+	respWithoutTool := &opencodeMessageResponse{Parts: []opencodeMessagePart{{Type: "text", Text: "done"}}}
+	dialFailure := &url.Error{Op: "Post", URL: "http://127.0.0.1:1/session/s1/message",
+		Err: &net.OpError{Op: "dial", Err: fmt.Errorf("connect: connection refused")}}
+	midRequestFailure := &url.Error{Op: "Post", URL: "http://127.0.0.1:1/session/s1/message",
+		Err: &net.OpError{Op: "read", Err: fmt.Errorf("connection reset by peer")}}
+
+	cases := []struct {
+		name           string
+		state          *opencodeStreamState
+		mr             opencodeMessageResult
+		streamComplete bool
+		want           opencodeToolEvidence
+	}{
+		{
+			name:  "tool part on the stream",
+			state: &opencodeStreamState{toolInvoked: true},
+			want:  opencodeToolsRan,
+		},
+		{
+			name:  "tool part only in the message response",
+			state: &opencodeStreamState{},
+			mr:    opencodeMessageResult{resp: respWithTool, settled: true},
+			want:  opencodeToolsRan,
+		},
+		{
+			// The response lists the turn's parts, so it can prove the
+			// negative the stream no longer can.
+			name:  "message response without a tool part",
+			state: &opencodeStreamState{},
+			mr:    opencodeMessageResult{resp: respWithoutTool, settled: true},
+			want:  opencodeToolsNone,
+		},
+		{
+			// Every tool part of the session crossed a stream that reached
+			// session.idle, so the request's own outcome adds nothing.
+			name:           "healthy stream and a failed message request",
+			state:          &opencodeStreamState{},
+			mr:             opencodeMessageResult{err: midRequestFailure, settled: true},
+			streamComplete: true,
+			want:           opencodeToolsNone,
+		},
+		{
+			// The race: the stream died carrying no tool part, and the
+			// response that would list one has not arrived.
+			name:  "dead stream and a request still in flight",
+			state: &opencodeStreamState{},
+			mr:    opencodeMessageResult{},
+			want:  opencodeToolsUnknown,
+		},
+		{
+			// opencode never received the prompt, so this attempt ran
+			// nothing - the retry (and the server restart behind it) stands.
+			name:  "dead stream and a request that never connected",
+			state: &opencodeStreamState{},
+			mr:    opencodeMessageResult{err: dialFailure, settled: true},
+			want:  opencodeToolsNone,
+		},
+		{
+			// Connected means opencode held the prompt, and holding the
+			// prompt is enough to have run a tool.
+			name:  "dead stream and a request that failed after connecting",
+			state: &opencodeStreamState{},
+			mr:    opencodeMessageResult{err: midRequestFailure, settled: true},
+			want:  opencodeToolsUnknown,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveOpencodeToolEvidence(tc.state, tc.mr, tc.streamComplete); got != tc.want {
+				t.Errorf("evidence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAwaitOpencodeMessage covers the bounded wait itself: an answer that
+// lands late still settles the evidence, and one that never lands leaves the
+// result unsettled rather than empty-and-believed.
+func TestAwaitOpencodeMessage(t *testing.T) {
+	ch := make(chan opencodeMessageResult, 1)
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		ch <- opencodeMessageResult{resp: &opencodeMessageResponse{}, settled: true}
+	}()
+	if mr := awaitOpencodeMessage(ch, time.Second); !mr.settled || mr.resp == nil {
+		t.Errorf("expected the late answer to settle the result, got %+v", mr)
+	}
+
+	if mr := awaitOpencodeMessage(make(chan opencodeMessageResult), 5*time.Millisecond); mr.settled {
+		t.Errorf("expected an unsettled result when nothing answers, got %+v", mr)
+	}
+
+	// The non-blocking peek is what the wait exists to back up.
+	if mr := pollOpencodeMessage(make(chan opencodeMessageResult)); mr.settled {
+		t.Errorf("expected the peek to report nothing yet, got %+v", mr)
+	}
+}
+
+// opencodeSlowMessageServer serves a first turn whose SSE stream dies after
+// the caller-supplied events and whose message request answers only once that
+// stream is already gone - the interleaving the non-blocking receive cannot
+// see through. An empty answer never arrives at all. Later attempts get a
+// healthy stream and a successful turn, so a replay is visible as a second
+// session.
+func opencodeSlowMessageServer(t *testing.T, events, answer string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var sessions, streams atomic.Int32
+	streamDead := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprintf(w, `{"id":"s%d"}`, sessions.Add(1))
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if streams.Add(1) == 1 {
+				fmt.Fprint(w, events)
+				killResponseStream(t, w)
+				close(streamDead)
+				return
+			}
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			select {
+			case <-streamDead:
+			case <-release:
+			case <-r.Context().Done():
+			}
+			if answer == "" {
+				// The turn's record never arrives, so the client's only
+				// observation of the first attempt is the dead stream.
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+				return
+			}
+			fmt.Fprint(w, answer)
+
+		case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
+			fmt.Fprint(w, structuredSuccessBody)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	// Registered after the close, so it runs before it: Close waits for a
+	// handler still parked on an unanswered request.
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	return server, &sessions
+}
+
+// withFastEvidenceWait shortens the bounded wait for a failed turn's message
+// response, so a test modelling a turn that never answers does not sit out
+// the production budget. Returns a restore func, like withFastBackoff.
+func withFastEvidenceWait(t *testing.T) func() {
+	t.Helper()
+	prev := opencodeEvidenceWait
+	opencodeEvidenceWait = 20 * time.Millisecond
+	return func() { opencodeEvidenceWait = prev }
+}
+
+// TestOpencodeAgent_InFlightMessageResponseWithholdsTheRetry is the race the
+// tool-activity gate had left: a stream that dies after opencode ran a tool
+// but before the tool event arrives leaves NO evidence at classification
+// time - the stream carries no tool part, and the message response that
+// would list one is still in flight. Reading that silence as "no tools ran"
+// retries in a fresh session and replays the tool.
+func TestOpencodeAgent_InFlightMessageResponseWithholdsTheRetry(t *testing.T) {
+	defer withFastBackoff(t)()
+	defer withFastEvidenceWait(t)()
+
+	server, sessions := opencodeSlowMessageServer(t, stepFinishEvent, "")
+
+	result, err := runOpencodeAgainst(t, server)
+	if err == nil {
+		t.Fatalf("expected the unverifiable turn to fail closed, got result %+v", result)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("sessions = %d, want no replay session while the turn is unverified", got)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "opencode events:") {
+		t.Errorf("expected the stream failure to survive the refusal, got %q", msg)
+	}
+	if !strings.Contains(msg, "not retried: could not verify the failed turn ran no tools") {
+		t.Errorf("expected the error to name the unverified turn, got %q", msg)
+	}
+}
+
+// TestOpencodeAgent_LateMessageResponseWithoutToolsStillRetries is the other
+// side of the same wait: the response arrives only after the stream is gone,
+// and it is what PROVES the turn ran no tool. The blip the retry exists for
+// still costs one retry rather than the whole round.
+func TestOpencodeAgent_LateMessageResponseWithoutToolsStillRetries(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sessions := opencodeSlowMessageServer(t, stepFinishEvent, structuredSuccessBody)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if result == nil || result.Output == nil {
+		t.Fatalf("expected structured output, got %+v", result)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Errorf("sessions = %d, want exactly one retry session", got)
+	}
+}
+
+// TestOpencodeAgent_LateMessageResponseWithToolPartWithholdsTheRetry is the
+// case the race actually hid: the tool part exists, but only in a response
+// that arrives after the stream died. Waiting for it turns an unverifiable
+// turn into a known one, and the refusal says so.
+func TestOpencodeAgent_LateMessageResponseWithToolPartWithholdsTheRetry(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sessions := opencodeSlowMessageServer(t, stepFinishEvent,
+		`{"info":{"id":"msg1","role":"assistant"},"parts":[{"type":"tool"}]}`)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err == nil {
+		t.Fatalf("expected the turn that ran a tool to fail closed, got result %+v", result)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("sessions = %d, want no replay session after tool activity", got)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "not retried: the failed turn already ran tools") {
+		t.Errorf("expected the late tool part to be read as tool activity, got %q", msg)
 	}
 }
