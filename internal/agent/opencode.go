@@ -159,31 +159,35 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	streamCancel()
 
 	if err != nil {
-		// Check if message request failed
+		// Check if message request failed. Its response is kept either way:
+		// a stream that died before the tool part arrived leaves the message
+		// body as the only record that the turn ran one.
+		var msgResp *opencodeMessageResponse
 		select {
 		case mr := <-msgCh:
+			msgResp = mr.resp
 			if mr.err != nil {
 				if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-					return nil, thinkingConflict(state, nil, mr.err)
+					return nil, thinkingConflict(state, msgResp, mr.err)
 				}
-				return nil, fmt.Errorf("opencode message: %w", mr.err)
+				return nil, opencodeTurnFailure(state, msgResp, fmt.Errorf("opencode message: %w", mr.err))
 			}
 		default:
 		}
 		a.abortSession(baseURL, sessionID)
 		if nativeFormat && errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
-			return nil, thinkingConflict(state, nil, nil)
+			return nil, thinkingConflict(state, msgResp, nil)
 		}
-		return nil, fmt.Errorf("opencode events: %w", err)
+		return nil, opencodeTurnFailure(state, msgResp, fmt.Errorf("opencode events: %w", err))
 	}
 
 	// Wait for message response
 	mr := <-msgCh
 	if mr.err != nil {
 		if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-			return nil, thinkingConflict(state, nil, mr.err)
+			return nil, thinkingConflict(state, mr.resp, mr.err)
 		}
-		return nil, fmt.Errorf("opencode message: %w", mr.err)
+		return nil, opencodeTurnFailure(state, mr.resp, fmt.Errorf("opencode message: %w", mr.err))
 	}
 
 	// Update usage and text from message response
@@ -277,7 +281,14 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	if outputText == "" {
 		outputText = state.lastText
 	}
-	return finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
+	result, err := finalizeTextResult("opencode", outputText, opts.JSONSchema, state.usage)
+	if err != nil {
+		// A parse failure quotes the model's own output, so whether it looks
+		// transient to the shared classifier is decided by text the model
+		// wrote. It takes the same gate as the rest.
+		return nil, opencodeTurnFailure(state, mr.resp, err)
+	}
+	return result, nil
 }
 
 func isThinkingToolChoiceConflict(e *opencodeMessageError) bool {

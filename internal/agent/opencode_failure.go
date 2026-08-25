@@ -104,6 +104,14 @@ func classifyOpencodeTransient(err error) (string, bool) {
 		}
 		return "", false
 	}
+	// Everything else - a dropped SSE stream, a failed message request, an
+	// unparseable turn, a thinking conflict - reaches the shared substring
+	// classifier with no verdict from opencode, and that classifier reads
+	// only text. The marker is the one place the tool activity survives, so
+	// it is checked before the fall-through rather than at each call site.
+	if errors.Is(err, errOpencodeToolsAlreadyRan) {
+		return "", false
+	}
 	return classifyTransient(err)
 }
 
@@ -131,4 +139,50 @@ func opencodeTurnRanTools(state *opencodeStreamState, resp *opencodeMessageRespo
 		}
 	}
 	return false
+}
+
+// opencodeToolActivityFailure wraps a failure from a turn that had already
+// invoked a tool, for every path that carries no retryability verdict of its
+// own: a dropped SSE stream ("opencode events:"), an HTTP failure on the
+// message request, a response the turn left unparseable. Those reach the
+// shared substring classifier, which reads an "unexpected EOF" or a 503 in
+// the text and retries - and the retry is the same FRESH session
+// classifyOpencodeTransient refuses on the message path, replaying every
+// tool the failed turn already ran. Marking the error where the tool
+// activity is still in hand is what lets one classifier decision cover them
+// all, instead of each path deciding for itself and the next one added
+// forgetting to.
+type opencodeToolActivityFailure struct{ err error }
+
+// Unwrap reports the marker alongside the cause, so errors.Is finds both the
+// original failure and errOpencodeToolsAlreadyRan - the same marker the
+// prompt-only structured-output fallback already gates on.
+func (e *opencodeToolActivityFailure) Unwrap() []error {
+	return []error{e.err, errOpencodeToolsAlreadyRan}
+}
+
+func (e *opencodeToolActivityFailure) Error() string {
+	msg := e.err.Error()
+	// Same convention as opencodeMessageFailure: name the withheld retry
+	// only where there would have been one, so it never reads as an
+	// explanation for a failure that was never going to be retried.
+	// Classifying the cause here cannot recurse - the wrapper is not part of
+	// it.
+	if _, retryable := classifyTransient(e.err); retryable {
+		msg += " (not retried: the failed turn already ran tools)"
+	}
+	return msg
+}
+
+// opencodeTurnFailure marks err as belonging to a turn that already ran a
+// tool. Every non-message-failure error return in runOnceWithFormat from the
+// point the prompt is sent onwards goes through it, because whether the
+// shared classifier will find a transient needle in the text - a provider
+// blip, a network drop, or a 503 quoted in an output snippet - is not
+// knowable at the call site.
+func opencodeTurnFailure(state *opencodeStreamState, resp *opencodeMessageResponse, err error) error {
+	if err == nil || !opencodeTurnRanTools(state, resp) {
+		return err
+	}
+	return &opencodeToolActivityFailure{err: err}
 }

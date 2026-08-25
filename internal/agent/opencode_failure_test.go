@@ -367,3 +367,143 @@ func TestOpencodeAgent_ThinkingConflictAfterToolActivityDoesNotFallBack(t *testi
 		t.Errorf("expected the error to explain the withheld fallback, got %q", err)
 	}
 }
+
+// killResponseStream ends an in-flight response the way a dropped connection
+// does: the chunked body stops without its terminating chunk, so the client's
+// next read fails with an unexpected EOF rather than a clean end of stream.
+func killResponseStream(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		t.Fatal("response writer does not support flushing")
+	}
+	flusher.Flush()
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("response writer does not support hijacking")
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+	conn.Close()
+}
+
+// opencodeStreamDeathServer serves a first turn whose SSE stream dies
+// mid-flight after replaying events, and a healthy turn on every later
+// attempt. It reports how many sessions were created, which is the fact the
+// gate is about: a retry is a fresh session that replays the whole prompt.
+func opencodeStreamDeathServer(t *testing.T, events string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var sessions, streams atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprintf(w, `{"id":"s%d"}`, sessions.Add(1))
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if streams.Add(1) == 1 {
+				fmt.Fprint(w, events)
+				killResponseStream(t, w)
+				return
+			}
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case strings.HasSuffix(r.URL.Path, "/message") && r.Method == http.MethodPost:
+			fmt.Fprint(w, structuredSuccessBody)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, &sessions
+}
+
+// TestOpencodeAgent_SSEFailureAfterToolActivityIsNotRetried is the same
+// replay hole on the path that never reaches opencode's own retryability
+// verdict. A dropped event stream is reported as "opencode events:
+// unexpected EOF", which the shared substring classifier reads as transient
+// and retries in a FRESH session - replaying every tool the failed turn
+// already ran. The tool part arrives on the stream before it dies, so the
+// retry is refused.
+func TestOpencodeAgent_SSEFailureAfterToolActivityIsNotRetried(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sessions := opencodeStreamDeathServer(t, toolPartEvent)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err == nil {
+		t.Fatalf("expected the dropped stream to fail closed, got result %+v", result)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("sessions = %d, want no replay session after tool activity", got)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "opencode events:") {
+		t.Errorf("expected the stream failure to survive the refusal, got %q", msg)
+	}
+	if !strings.Contains(msg, "not retried: the failed turn already ran tools") {
+		t.Errorf("expected the error to explain why it was not retried, got %q", msg)
+	}
+}
+
+// TestOpencodeAgent_SSEFailureWithoutToolActivityStillRetries pins the other
+// side: a stream that drops before the model acted is exactly the blip the
+// retry exists for, and still costs one retry rather than the whole round.
+func TestOpencodeAgent_SSEFailureWithoutToolActivityStillRetries(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	server, sessions := opencodeStreamDeathServer(t, stepFinishEvent)
+
+	result, err := runOpencodeAgainst(t, server)
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if result == nil || result.Output == nil {
+		t.Fatalf("expected structured output, got %+v", result)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Errorf("sessions = %d, want exactly one retry session", got)
+	}
+}
+
+// TestOpencodeTurnFailure_GatesTheSharedClassifier covers the paths that
+// carry no verdict from opencode. The classifier sees only text there, so
+// the marker is what stands between a dropped stream and a replayed tool.
+func TestOpencodeTurnFailure_GatesTheSharedClassifier(t *testing.T) {
+	ranTools := &opencodeStreamState{toolInvoked: true}
+	streamDrop := fmt.Errorf("opencode events: unexpected EOF")
+
+	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(ranTools, nil, streamDrop)); retry {
+		t.Error("a dropped stream after tool activity must not be retried")
+	}
+	if msg := opencodeTurnFailure(ranTools, nil, streamDrop).Error(); !strings.Contains(msg, "not retried: the failed turn already ran tools") {
+		t.Errorf("expected the withheld retry to be named, got %q", msg)
+	}
+
+	// The blip the retry exists for is untouched by the gate.
+	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(&opencodeStreamState{}, nil, streamDrop)); !retry {
+		t.Error("a dropped stream before any tool ran must still be retried")
+	}
+
+	// A tool part reaching only the message response is the same evidence.
+	respRanTools := &opencodeMessageResponse{Parts: []opencodeMessagePart{{Type: "tool"}}}
+	if _, retry := classifyOpencodeTransient(opencodeTurnFailure(&opencodeStreamState{}, respRanTools, streamDrop)); retry {
+		t.Error("a tool part in the message response must also withhold the retry")
+	}
+
+	// A failure that was never retryable keeps its wording, so the suffix
+	// stays a reliable signal that a retry was withheld.
+	parseFailure := fmt.Errorf("opencode output parse: invalid character 'N'")
+	if msg := opencodeTurnFailure(ranTools, nil, parseFailure).Error(); msg != parseFailure.Error() {
+		t.Errorf("expected a non-retryable failure to render unchanged, got %q", msg)
+	}
+
+	// The thinking-conflict trigger reaches the retry loop by the same route.
+	if _, retry := classifyOpencodeTransient(thinkingConflict(ranTools, nil, fmt.Errorf("connection reset by peer"))); retry {
+		t.Error("a thinking conflict after tool activity must not be retried")
+	}
+}
