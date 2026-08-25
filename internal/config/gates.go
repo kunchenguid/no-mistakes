@@ -12,7 +12,9 @@ const (
 	MaxGates = 16
 	// MaxGateNameLen bounds a gate name so the derived step name stays short
 	// enough for the step tables, the PR body, and the attestation payload.
-	MaxGateNameLen = 40
+	// types owns the bound because it also owns the step-name encoding the
+	// bound exists to keep short.
+	MaxGateNameLen = types.MaxCustomGateLabelLen
 	// MaxGateInstructionsBytes bounds an agent gate's injected prompt for the
 	// same reason MaxReviewPathInstructionsBytes bounds path_instructions: an
 	// oversized prompt fails the agent invocation outright instead of degrading.
@@ -65,32 +67,37 @@ func validGateName(name string) error {
 	if len(name) > MaxGateNameLen {
 		return fmt.Errorf("is %d characters, at most %d are allowed", len(name), MaxGateNameLen)
 	}
-	for i, r := range name {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		case r == '-' && i > 0 && i < len(name)-1:
-		default:
-			return fmt.Errorf("must be lowercase letters, digits, and inner hyphens only")
-		}
+	// types.ValidCustomGateLabel is the single owner of the syntax, because the
+	// same rule is what makes the derived step name safe to use as a filename.
+	if !types.ValidCustomGateLabel(name) {
+		return fmt.Errorf("must be lowercase letters, digits, and inner hyphens only")
 	}
 	return nil
 }
 
-// validateGates fails the config closed on a gates list the pipeline could not
-// honor deterministically. Like validateReviewRaw this deliberately also runs
-// on the PUSHED copy even though EffectiveRepoConfig discards a pushed gates
-// block: the trusted-copy read aborts every run whose default-branch
-// .no-mistakes.yaml fails these checks, so a branch carrying an invalid block
-// has to fail here, before it merges, rather than brick the pipeline afterwards.
+// validateGates normalizes each gate in place and fails the config closed on a
+// gates list the pipeline could not honor deterministically. Like
+// validateReviewRaw this deliberately also runs on the PUSHED copy even though
+// EffectiveRepoConfig discards a pushed gates block: the trusted-copy read
+// aborts every run whose default-branch .no-mistakes.yaml fails these checks,
+// so a branch carrying an invalid block has to fail here, before it merges,
+// rather than brick the pipeline afterwards.
+//
+// Normalization is part of validation rather than a separate pass so the two
+// can never disagree: a quoted `name: " arch "` used to validate as "arch"
+// while Gate.StepName kept the raw spelling, putting a padded name into the
+// step tables, the attestation, and every command an operator has to type.
 func validateGates(gates []Gate) error {
 	if len(gates) > MaxGates {
 		return fmt.Errorf("gates has %d entries, at most %d are allowed", len(gates), MaxGates)
 	}
 	seen := make(map[string]int, len(gates))
-	for i, gate := range gates {
-		name := strings.TrimSpace(gate.Name)
+	for i := range gates {
+		raw := gates[i].Name
+		gates[i].Name = strings.TrimSpace(raw)
+		gate, name := gates[i], gates[i].Name
 		if err := validGateName(name); err != nil {
-			return fmt.Errorf("gates[%d].name %q %w", i, gate.Name, err)
+			return fmt.Errorf("gates[%d].name %q %w", i, raw, err)
 		}
 		if types.IsCoreStepName(types.StepName(name)) {
 			return fmt.Errorf("gates[%d].name %q is a core step name; an extra gate must not shadow a core step", i, name)

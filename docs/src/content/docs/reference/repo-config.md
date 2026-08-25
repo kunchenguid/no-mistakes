@@ -396,7 +396,11 @@ Gates are inserted into the run's step sequence and never replace, reorder, or r
 
 #### Failure
 
-A failing gate parks the run for a decision instead of auto-fixing: the pipeline cannot know what fixing an arbitrary repository check means, so the finding is the author's call. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
+A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
+
+Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and its own requirement - the command that must exit `0`, or the rule an agent gate states - and re-runs its check, so the next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
+
+Each gate keeps its own step log under the step name `gate.<anchor>.<name>`, so a gate declared as `name: mutation-budget` with `after: test` is read with `no-mistakes axi logs --step gate.test.mutation-budget`.
 
 Because a gate can only add a verdict, a repository that configures gates makes a pass mean *more* than the core pipeline, never less. There is no way to switch a core step off here; to skip one for a single run, use the per-run [`--skip`](/reference/cli/) instead.
 

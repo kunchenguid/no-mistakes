@@ -26,13 +26,78 @@ func (s *CustomGateStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutc
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
-	if s.Gate.IsAgent() {
-		return s.executeAgent(sctx)
+	fixSummary, err := s.runFixTurn(sctx)
+	if err != nil {
+		return nil, err
 	}
-	return s.executeCommand(sctx)
+	if s.Gate.IsAgent() {
+		return s.executeAgent(sctx, fixSummary)
+	}
+	return s.executeCommand(sctx, fixSummary)
 }
 
-func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+// runFixTurn repairs the worktree when the gate's park was answered with `fix`,
+// and returns the agent's commit summary. The caller then re-runs the gate's
+// own check, so a re-parked verdict describes the repaired worktree rather than
+// the unchanged one that produced the previous findings.
+//
+// This is the same fix protocol Test and Lint use, and a gate needs it for the
+// same reason: without it, answering `fix` costs a full extra execution that
+// provably cannot change the verdict. The gate's identity carries the intent -
+// the command that must exit 0, or the repository rule an agent gate states -
+// because a bare finding does not say what passing would mean.
+func (s *CustomGateStep) runFixTurn(sctx *pipeline.StepContext) (string, error) {
+	if !sctx.Fixing {
+		return "", nil
+	}
+	baseSHA := resolveBranchBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+
+	requirement := fmt.Sprintf("This gate passes only when the following command exits 0:\n%s", strings.TrimSpace(s.Gate.Command))
+	if s.Gate.IsAgent() {
+		requirement = fmt.Sprintf("This gate passes only when the change satisfies the repository's rule below:\n%s", config.RenderedInstructions(s.Gate.Instructions))
+	}
+
+	prompt := fmt.Sprintf(
+		`Fix the violations reported by the repository gate %q.
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+
+%s
+
+Rules:
+- Make the smallest correct root-cause fix that satisfies the gate.
+- Do not refactor beyond what is needed for that root-cause fix.
+- Do not weaken, disable, or narrow the gate itself to make it pass.
+- Re-run or re-check the gate's own requirement above before finishing, and nothing broader.
+- Return JSON with a single "summary" field when you are done.
+- The summary must be one concise sentence fragment suitable for a git commit subject.
+- Keep the summary under 10 words.%s`,
+		s.Gate.Name,
+		sctx.Run.Branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		requirement,
+		executionContextPromptSection()+roundHistoryPromptSection(sctx)+userIntentPromptSection(sctx),
+	)
+	if sctx.PreviousFindings != "" {
+		prompt += `
+
+Previous gate findings to address:
+` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
+	}
+
+	return executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		LogMessage:      fmt.Sprintf("asking agent to satisfy gate %q...", s.Gate.Name),
+		Prompt:          prompt,
+		ErrorPrefix:     fmt.Sprintf("agent fix gate %q", s.Gate.Name),
+		FallbackSummary: fmt.Sprintf("satisfy %s gate", s.Gate.Name),
+	})
+}
+
+func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext, fixSummary string) (*pipeline.StepOutcome, error) {
 	command := strings.TrimSpace(s.Gate.Command)
 	sctx.Log(fmt.Sprintf("running gate %q: %s", s.Gate.Name, command))
 	output, exitCode, err := runStepShellCommand(sctx, command)
@@ -40,7 +105,7 @@ func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext) (*pipeline.S
 		return nil, fmt.Errorf("run gate %q command: %w", s.Gate.Name, err)
 	}
 	if exitCode == 0 {
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 	}
 
 	projectedOutput := logConfiguredCommandOutput(sctx, output, s.Name())
@@ -56,17 +121,20 @@ func (s *CustomGateStep) executeCommand(sctx *pipeline.StepContext) (*pipeline.S
 	findingsJSON, _ := json.Marshal(findings)
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
-		// A repository-declared gate has no auto-fix budget of its own, and the
-		// pipeline cannot know what fixing an arbitrary check means. Parking for
-		// a human decision is the fail-closed direction: an unclassifiable
-		// finding is the author's call, never the gate's.
+		// A gate must never repair on the pipeline's own initiative: it states a
+		// repository rule, so deciding that the change should be altered to
+		// satisfy it is the author's call, not the pipeline's. Answering the park
+		// with `fix` IS that authorization, and runFixTurn services it - being
+		// non-auto-fixable is about who decides, not about whether a repair is
+		// possible.
 		AutoFixable: false,
 		Findings:    string(findingsJSON),
 		ExitCode:    exitCode,
+		FixSummary:  fixSummary,
 	}, nil
 }
 
-func (s *CustomGateStep) executeAgent(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *CustomGateStep) executeAgent(sctx *pipeline.StepContext, fixSummary string) (*pipeline.StepOutcome, error) {
 	baseSHA := resolveBranchBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	sctx.Log(fmt.Sprintf("running agent gate %q...", s.Gate.Name))
 
@@ -104,7 +172,7 @@ Rules:
 		CWD:        sctx.WorkDir,
 		JSONSchema: findingsSchema,
 		OnChunk:    sctx.LogChunk,
-		Purpose:    "gate:" + s.Gate.Name,
+		Purpose:    string(s.Name()),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent gate %q: %w", s.Gate.Name, err)
@@ -115,7 +183,7 @@ Rules:
 		return nil, fmt.Errorf("agent gate %q: %w", s.Gate.Name, err)
 	}
 	if len(findings.Items) == 0 {
-		return &pipeline.StepOutcome{}, nil
+		return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 	}
 
 	// Every finding an extra gate raises is the author's call: the gate states
@@ -126,8 +194,11 @@ Rules:
 	findingsJSON, _ := json.Marshal(findings)
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
-		AutoFixable:   false,
-		Findings:      string(findingsJSON),
+		// See executeCommand: not auto-fixable is about who authorizes a repair,
+		// and runFixTurn services an authorized one.
+		AutoFixable: false,
+		Findings:    string(findingsJSON),
+		FixSummary:  fixSummary,
 	}, nil
 }
 

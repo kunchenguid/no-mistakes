@@ -119,12 +119,49 @@ func TestParseRepoConfig_RejectsInvalidGates(t *testing.T) {
 	}
 }
 
+// A quoted name used to validate trimmed but reach Gate.StepName raw, so the
+// padded spelling landed in step_results, the attestation, and every command
+// an operator has to type. Normalization now happens with validation.
+func TestParseRepoConfig_TrimsGateNameBeforeItBecomesAStepName(t *testing.T) {
+	cfg, err := parseRepoConfig([]byte("gates:\n  - name: \"  arch  \"\n    after: review\n    command: make arch\n"))
+	if err != nil {
+		t.Fatalf("parseRepoConfig() = %v", err)
+	}
+	if got := cfg.Gates[0].Name; got != "arch" {
+		t.Fatalf("gate name = %q, want the trimmed %q", got, "arch")
+	}
+	if got := cfg.Gates[0].StepName(); got != types.StepName("gate.review.arch") {
+		t.Fatalf("gate step name = %q, want gate.review.arch", got)
+	}
+	if !cfg.Gates[0].StepName().IsCustomGate() {
+		t.Fatal("the derived step name did not decode as a gate")
+	}
+}
+
+// The length bound documents the DERIVED step name, so it has to be applied to
+// the value that actually becomes one.
+func TestValidateGates_TrimmedNameSatisfiesTheLengthBound(t *testing.T) {
+	name := strings.Repeat("x", MaxGateNameLen)
+	gates := []Gate{{Name: "  " + name + "  ", After: types.StepTest, Command: "x"}}
+	if err := validateGates(gates); err != nil {
+		t.Fatalf("validateGates() = %v, want a padded but in-bounds name to pass", err)
+	}
+	if gates[0].Name != name {
+		t.Fatalf("gate name = %q, want it trimmed in place", gates[0].Name)
+	}
+
+	over := []Gate{{Name: "  " + strings.Repeat("x", MaxGateNameLen+1) + "  ", After: types.StepTest, Command: "x"}}
+	if err := validateGates(over); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("validateGates() = %v, want a length error for an over-long trimmed name", err)
+	}
+}
+
 func TestParseRepoConfig_ParsesGates(t *testing.T) {
 	cfg, err := parseRepoConfig([]byte("gates:\n  - name: mutation-budget\n    after: test\n    command: make mutation\n"))
 	if err != nil {
 		t.Fatalf("parseRepoConfig() = %v", err)
 	}
-	if len(cfg.Gates) != 1 || cfg.Gates[0].StepName() != types.StepName("gate:test:mutation-budget") {
-		t.Fatalf("gates = %+v, want one gate named gate:test:mutation-budget", cfg.Gates)
+	if len(cfg.Gates) != 1 || cfg.Gates[0].StepName() != types.StepName("gate.test.mutation-budget") {
+		t.Fatalf("gates = %+v, want one gate named gate.test.mutation-budget", cfg.Gates)
 	}
 }
