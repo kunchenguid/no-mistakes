@@ -446,8 +446,8 @@ func TestPiParser_CapturesFirstValidSessionHeader(t *testing.T) {
 	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if pp.sessionID != sessionID {
-		t.Fatalf("session ID = %q, want first valid %q", pp.sessionID, sessionID)
+	if pp.sessionIDString() != sessionID {
+		t.Fatalf("session ID = %q, want first valid %q", pp.sessionIDString(), sessionID)
 	}
 }
 

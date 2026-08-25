@@ -40,18 +40,22 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
-	// DefaultAgentTimeout bounds one pipeline agent invocation that does not
-	// install a more specific deadline, so a stalled agent cannot leave a run
-	// active forever. Review and Test keep their own knobs; this is the
-	// default-by-construction budget for every other step.
+	// DefaultAgentTimeout is the silence budget for one pipeline agent
+	// invocation that does not install a more specific deadline: the
+	// invocation is killed only after this long with no reported activity
+	// (stdout bytes, native process lifecycle, or a bound adapter-native
+	// session), so a stalled agent cannot leave a run active forever while a
+	// healthy long turn is never cut off mid-work. Review and Test keep
+	// their own knobs; this is the default-by-construction budget for every
+	// other step.
 	DefaultAgentTimeout = 30 * time.Minute
-	// DefaultReviewAgentTimeout bounds one review round, including its optional
-	// review-fix and rereview turns, so a stalled agent cannot leave a run
-	// active forever.
+	// DefaultReviewAgentTimeout is the per-turn silence budget for the Review
+	// step's agent turns: the optional review-fix turn and the rereview turn
+	// each get their own fresh budget measured from that turn's own activity.
 	DefaultReviewAgentTimeout = 30 * time.Minute
-	// DefaultTestAgentTimeout bounds one Test-step agent invocation, including
-	// the post-test evidence-gathering turn and a Test-repair turn, so a stalled
-	// agent cannot leave a run active forever.
+	// DefaultTestAgentTimeout is the per-invocation silence budget for one
+	// Test-step agent invocation: the post-test evidence-gathering turn and a
+	// Test-repair turn each get their own budget of this size.
 	DefaultTestAgentTimeout = 30 * time.Minute
 	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
 	// daemon socket that exists but is not accepting connections.

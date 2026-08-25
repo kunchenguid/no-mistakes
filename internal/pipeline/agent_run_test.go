@@ -91,9 +91,12 @@ func TestRunAgent_SuccessfulOutputUnchanged(t *testing.T) {
 	want := json.RawMessage(`{"summary":"ok"}`)
 	ag := &hangingAgent{
 		name: "ok",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			if _, ok := ctx.Deadline(); !ok {
-				t.Fatal("successful invocation ran without a deadline")
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The invocation is bounded by the silence watchdog, not a fixed
+			// deadline: it must hand the adapter an activity sink so stdout,
+			// lifecycle, and session evidence can re-arm the clock.
+			if opts.OnActivity == nil {
+				t.Fatal("successful invocation ran without a liveness sink")
 			}
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("live invocation context: %v", err)

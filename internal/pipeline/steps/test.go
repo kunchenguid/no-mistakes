@@ -1,9 +1,7 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -76,21 +74,19 @@ Rules:
 Previous test findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		fixCtx, cancelFix, fixTimeout := testAgentContext(sctx)
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
 			ErrorPrefix:     "agent fix tests",
 			FallbackSummary: "fix test failures",
-			AgentContext:    fixCtx,
+			AgentBudget:     testAgentBudget(sctx),
 			AfterAgentRun: func(*agent.Result) error {
 				newTestsFromFix = detectNewTestFiles(ctx, sctx.WorkDir)
 				return nil
 			},
 		})
-		cancelFix()
 		if err != nil {
-			return nil, testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
+			return nil, testAgentError(err, "agent fix tests")
 		}
 		fixSummary = summary
 	}
@@ -150,8 +146,7 @@ Previous test findings to address:
 		if testCmd != "" {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
-		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
-		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
+		result, err := sctx.RunAgentBudget(ctx, testAgentBudget(sctx), agent.RunOpts{
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 
@@ -208,10 +203,8 @@ Rules:
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
 		})
-		runErr := testAgentError(evidenceCtx, evidenceTimeout, "agent run tests", err)
-		cancelEvidence()
-		if runErr != nil {
-			return nil, runErr
+		if err != nil {
+			return nil, testAgentError(err, "agent run tests")
 		}
 
 		var findings Findings
@@ -279,23 +272,24 @@ Rules:
 	return &pipeline.StepOutcome{Findings: string(findingsJSON), FixSummary: fixSummary}, nil
 }
 
-func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
+// testAgentBudget resolves the Test step's per-invocation silence budget: a
+// positive test_agent_timeout wins, otherwise the default. Each agent turn
+// (evidence gathering, Test repair) gets its own full budget measured from
+// that turn's own activity.
+func testAgentBudget(sctx *pipeline.StepContext) time.Duration {
 	timeout := config.DefaultTestAgentTimeout
 	if sctx != nil && sctx.Config != nil && sctx.Config.TestAgentTimeout > 0 {
 		timeout = sctx.Config.TestAgentTimeout
 	}
-	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errTestAgentTimeout)
-	return ctx, cancel, timeout
+	return timeout
 }
 
-var errTestAgentTimeout = errors.New("test agent timeout")
-
-func testAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
-	if timeout > 0 && errors.Is(context.Cause(ctx), errTestAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s (test agent silent for %s): %w", prefix, timeout, timeout, context.Cause(ctx))
+// testAgentError renders a test-turn failure, re-labeling the shared silence
+// watchdog's timeout with the test-specific diagnostic (preserving its
+// budget and liveness evidence).
+func testAgentError(err error, prefix string) error {
+	if ate := pipeline.AsAgentTimeout(err); ate != nil {
+		return ate.StepError(prefix, "test agent")
 	}
-	if err != nil {
-		return fmt.Errorf("%s: %w", prefix, err)
-	}
-	return nil
+	return fmt.Errorf("%s: %w", prefix, err)
 }

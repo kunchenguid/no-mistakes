@@ -91,7 +91,7 @@ type StepContext struct {
 // independent of the session that prescribed the fixes under review - goes
 // through RunAgent and stays session-isolated.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	return sctx.runAgent(sctx.Ctx, opts, role)
+	return sctx.runAgent(sctx.Ctx, 0, opts, role)
 }
 
 // StepOutcome is the result of executing a pipeline step.

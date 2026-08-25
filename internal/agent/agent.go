@@ -32,6 +32,13 @@ type RunOpts struct {
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+	// OnActivity reports coarse liveness evidence (bytes on the stdout pipe,
+	// native process lifecycle, bound adapter-native session advancement) to
+	// the pipeline's per-invocation silence watchdog. It carries kinds only,
+	// never content. Adapters that report nothing behave exactly as before:
+	// the watchdog then measures silence from invocation start, matching the
+	// legacy fixed-deadline behavior.
+	OnActivity func(ActivityKind)
 	// Session, when non-nil, asks a session-capable adapter (see
 	// SessionResumer) to start or resume a durable native session. Adapters
 	// without session support ignore it and run cold; the caller detects the
