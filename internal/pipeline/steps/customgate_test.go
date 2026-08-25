@@ -71,8 +71,9 @@ func TestCustomGateStep_CommandPassRunsClean(t *testing.T) {
 	}
 }
 
-// A failing gate parks for a human rather than auto-fixing: the pipeline cannot
-// know what fixing an arbitrary repository check means.
+// A failing gate parks for a human rather than auto-fixing: a repair must be
+// authorized, so the pipeline never starts one on its own initiative. The
+// fix-round tests below cover the authorized path.
 func TestCustomGateStep_CommandFailureParksForHuman(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "mock"}, dir, baseSHA, headSHA, config.Commands{})

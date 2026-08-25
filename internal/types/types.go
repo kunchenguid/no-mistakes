@@ -183,39 +183,44 @@ func CustomGateStepName(anchor StepName, name string) StepName {
 	return StepName(CustomGateStepPrefix + string(anchor) + CustomGateStepSeparator + name)
 }
 
-// IsCustomGate reports whether the step is a repository-declared extra gate.
-func (s StepName) IsCustomGate() bool {
-	_, ok := s.CustomGateAnchor()
-	return ok
-}
-
-// CustomGateAnchor returns the core step a custom gate runs after. It reports
-// false for a core step, and for any name whose encoded anchor is not itself a
-// core step or whose label is not well-formed, so a malformed name can never
-// be ordered, or turned into a log path, as if it were valid.
-func (s StepName) CustomGateAnchor() (StepName, bool) {
+// decodeCustomGate reverses CustomGateStepName and is the single owner of that
+// decoding: IsCustomGate, CustomGateAnchor, and CustomGateLabel all answer from
+// here, so the separator handling lives in one place and the three can never
+// disagree about whether a name is a gate. It reports false for a core step,
+// and for any name whose encoded anchor is not itself a core step or whose
+// label is not well-formed, so a malformed name can never be ordered, or turned
+// into a log path, as if it were valid.
+func decodeCustomGate(s StepName) (StepName, string, bool) {
 	rest, ok := strings.CutPrefix(string(s), CustomGateStepPrefix)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
 	anchor, label, ok := strings.Cut(rest, CustomGateStepSeparator)
 	if !ok || !ValidCustomGateLabel(label) {
-		return "", false
+		return "", "", false
 	}
 	if !IsCoreStepName(StepName(anchor)) {
-		return "", false
+		return "", "", false
 	}
-	return StepName(anchor), true
+	return StepName(anchor), label, true
+}
+
+// IsCustomGate reports whether the step is a repository-declared extra gate.
+func (s StepName) IsCustomGate() bool {
+	_, _, ok := decodeCustomGate(s)
+	return ok
+}
+
+// CustomGateAnchor returns the core step a custom gate runs after.
+func (s StepName) CustomGateAnchor() (StepName, bool) {
+	anchor, _, ok := decodeCustomGate(s)
+	return anchor, ok
 }
 
 // CustomGateLabel returns the repository-declared name of a custom gate, or
 // empty for a core step or a malformed gate name.
 func (s StepName) CustomGateLabel() string {
-	if _, ok := s.CustomGateAnchor(); !ok {
-		return ""
-	}
-	rest, _ := strings.CutPrefix(string(s), CustomGateStepPrefix)
-	_, label, _ := strings.Cut(rest, CustomGateStepSeparator)
+	_, label, _ := decodeCustomGate(s)
 	return label
 }
 
