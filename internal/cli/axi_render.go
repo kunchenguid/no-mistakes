@@ -440,6 +440,24 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 // gateFields renders the active approval gate: the awaiting step, its findings
 // table, and the next-step commands an agent can run to clear it.
 func gateFields(gate stepView) []toon.Field {
+	return gateFieldsWithHelp(gate, []string{
+		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
+		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
+		"Run `no-mistakes axi respond --action skip` to skip this step",
+		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, "")),
+		"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
+		preserveGateFixCommitsGuidance,
+	})
+}
+
+func foreignRunGateFields(gate stepView, runID string) []toon.Field {
+	return gateFieldsWithHelp(gate, []string{
+		fmt.Sprintf("This gate belongs to run %s on another branch; answer it from that run's own worktree/branch", runID),
+		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, runID)),
+	})
+}
+
+func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	parsed, _ := types.ParseFindingsJSON(gate.FindingsJSON)
 	gfields := []toon.Field{
 		{Key: "step", Value: gate.Name},
@@ -471,15 +489,15 @@ func gateFields(gate stepView) []toon.Field {
 
 	return []toon.Field{
 		{Key: "gate", Value: toon.NewObject(gfields...)},
-		{Key: "help", Value: []string{
-			"Run `no-mistakes axi respond --action approve` to accept this step and continue",
-			"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
-			"Run `no-mistakes axi respond --action skip` to skip this step",
-			fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to read the full step log", gate.Name),
-			"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
-			preserveGateFixCommitsGuidance,
-		}},
+		{Key: "help", Value: help},
 	}
+}
+
+func axiLogsFullCommand(step, runID string) string {
+	if runID != "" {
+		return fmt.Sprintf("no-mistakes axi logs --run %s --step %s --full", runID, step)
+	}
+	return fmt.Sprintf("no-mistakes axi logs --step %s --full", step)
 }
 
 // truncate shortens s to limit runes, appending a disclosure of the full size

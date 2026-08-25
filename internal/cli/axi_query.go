@@ -89,7 +89,8 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	// this worktree's. Only positive evidence marks it: an undeterminable
 	// branch cannot contradict the id the caller asked for.
 	runKey := "run"
-	if branch != "" && run.Branch != branch {
+	foreignRun := branch != "" && run.Branch != branch
+	if foreignRun {
 		runKey = "other_branch_run"
 		fields = append(fields, toon.Field{Key: "current_branch", Value: branch})
 	}
@@ -98,7 +99,11 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 		fields = append(fields, *syncField)
 	}
 	if gate, ok := rv.awaitingStep(); ok {
-		fields = append(fields, gateFields(gate)...)
+		if foreignRun {
+			fields = append(fields, foreignRunGateFields(gate, run.ID)...)
+		} else {
+			fields = append(fields, gateFields(gate)...)
+		}
 	} else if terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeFor(rv.Status)})
 		if run.Error != nil && *run.Error != "" {
@@ -260,6 +265,9 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 		return "", emitError(cmd, 1, err.Error())
 	}
 	if run == nil {
+		if runID != "" {
+			return "", emitError(cmd, 1, fmt.Sprintf("run %q not found", runID))
+		}
 		help := noRunLogsHelp()
 		if branch == "" {
 			help = []string{"This worktree has no current branch (detached HEAD), so no run can be attributed to it; inspect a specific run with `no-mistakes axi logs --run <id> --step <step>`, or check out a branch first"}
@@ -292,10 +300,14 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 	shown := lines
 	if !full && len(lines) > logTailLines {
 		shown = lines[len(lines)-logTailLines:]
+		selectedRunID := ""
+		if runID != "" {
+			selectedRunID = run.ID
+		}
 		fields = append(fields,
 			toon.Field{Key: "lines", Value: fmt.Sprintf("%d of %d total (tail)", len(shown), len(lines))},
 			toon.Field{Key: "log", Value: logRows(shown)},
-			toon.Field{Key: "help", Value: []string{fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to see the entire log", step)}},
+			toon.Field{Key: "help", Value: []string{fmt.Sprintf("Run `%s` to see the entire log", axiLogsFullCommand(step, selectedRunID))}},
 		)
 		emitDoc(cmd, fields...)
 		return fingerprint, nil

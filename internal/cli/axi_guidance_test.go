@@ -53,6 +53,8 @@ var canonicalBranchSyncPhrases = []string{
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
 
+const canonicalUnknownBranchRunRelationship = "An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship."
+
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
 // agent-driving guidance stays in sync across its three surfaces: the skill
 // body, the published agents guide, and the live axi help string. The earlier
@@ -156,6 +158,18 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	}
 }
 
+func TestAxiStatusUnknownBranchRunRelationshipGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"installed skill": skill.Markdown(),
+		"CLI reference":   readCLIReference(t),
+	}
+	for name, content := range surfaces {
+		if !strings.Contains(content, canonicalUnknownBranchRunRelationship) {
+			t.Errorf("%s is missing the explicit-run unknown-branch relationship contract", name)
+		}
+	}
+}
+
 func TestGateStepBoundaryGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -242,6 +256,16 @@ func readAgentsGuide(t *testing.T) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read agents guide %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func readCLIReference(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "docs", "src", "content", "docs", "reference", "cli.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read CLI reference %s: %v", path, err)
 	}
 	return string(data)
 }

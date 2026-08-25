@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -155,6 +157,61 @@ func TestAxiStatusExplicitRunIDStillInspectsAnotherBranchesRun(t *testing.T) {
 	}
 }
 
+func TestAxiStatusForeignRunGateHelpCannotMutateCurrentBranch(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/mine")
+	chdir(t, repoDir)
+
+	mine, err := database.InsertRun(repo.ID, "feature/mine", "head-mine", "base")
+	if err != nil {
+		t.Fatalf("insert current-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(mine.ID, types.RunRunning); err != nil {
+		t.Fatalf("start current-branch run: %v", err)
+	}
+	mineStep, err := database.InsertStepResult(mine.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert current-branch step: %v", err)
+	}
+	if err := database.UpdateStepStatus(mineStep.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("park current-branch step: %v", err)
+	}
+
+	other, err := database.InsertRun(repo.ID, "feature/other", "head-other", "base")
+	if err != nil {
+		t.Fatalf("insert other-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
+		t.Fatalf("start other-branch run: %v", err)
+	}
+	otherStep, err := database.InsertStepResult(other.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert other-branch step: %v", err)
+	}
+	if err := database.UpdateStepStatus(otherStep.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("park other-branch step: %v", err)
+	}
+	if err := database.SetStepFindings(otherStep.ID, findingsJSON(t, nil, "other branch gate")); err != nil {
+		t.Fatalf("set other-branch findings: %v", err)
+	}
+
+	out := axiStatusOutput(t, other.ID)
+	for _, want := range []string{
+		"other_branch_run:",
+		"gate:",
+		"other branch gate",
+		"own worktree/branch",
+		"axi logs --run " + other.ID + " --step review --full",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("foreign-run gate status missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "axi respond") {
+		t.Fatalf("foreign-run gate status offered a branch-scoped mutation command:\n%s", out)
+	}
+}
+
 // TestResolveRunDoesNotFallBackToAnotherBranch pins the cause at its owner:
 // with the caller's branch known and no run on it, resolution reports no run
 // rather than the repository's most recent run on some other branch.
@@ -209,6 +266,73 @@ func TestAxiLogsDoesNotReadAnotherBranchesRunLogs(t *testing.T) {
 	}
 	if !strings.Contains(got, "--run") {
 		t.Fatalf("axi logs should point at deliberate --run inspection:\n%s", got)
+	}
+}
+
+func TestAxiLogsExplicitRunTailHelpKeepsRunID(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/mine")
+	chdir(t, repoDir)
+
+	other, err := database.InsertRun(repo.ID, "feature/other", "head-other", "base")
+	if err != nil {
+		t.Fatalf("insert other-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
+		t.Fatalf("start other-branch run: %v", err)
+	}
+	logDir := p.RunLogDir(other.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "review.log"), []byte(strings.Repeat("line\n", logTailLines+1)), 0o644); err != nil {
+		t.Fatalf("write review log: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if _, err := runAxiLogs(cmd, "review", other.ID, false); err != nil {
+		t.Fatalf("axi logs explicit run: %v\n%s", err, out.String())
+	}
+	want := "axi logs --run " + other.ID + " --step review --full"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("explicit-run tail help lost selected run identity %q:\n%s", want, out.String())
+	}
+}
+
+func TestAxiLogsUnknownExplicitRunIDReportsNotFound(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/mine")
+	chdir(t, repoDir)
+
+	mine, err := database.InsertRun(repo.ID, "feature/mine", "head-mine", "base")
+	if err != nil {
+		t.Fatalf("insert current-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(mine.ID, types.RunRunning); err != nil {
+		t.Fatalf("start current-branch run: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if _, err := runAxiLogs(cmd, "review", "missing-run", false); err == nil {
+		t.Fatalf("axi logs unexpectedly found missing explicit run:\n%s", out.String())
+	}
+	var doc struct {
+		Error string `toon:"error"`
+	}
+	if err := toon.UnmarshalString(out.String(), &doc); err != nil {
+		t.Fatalf("decode axi logs error: %v\n%s", err, out.String())
+	}
+	if doc.Error != `run "missing-run" not found` {
+		t.Fatalf("error = %q, want exact explicit-run not-found error", doc.Error)
+	}
+	if strings.Contains(out.String(), "no run found for this branch") || strings.Contains(out.String(), "axi run --intent") {
+		t.Fatalf("missing explicit run was reported as current-branch absence:\n%s", out.String())
 	}
 }
 

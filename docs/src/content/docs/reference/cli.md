@@ -165,7 +165,8 @@ When `--run` is omitted, show this branch's run: its active run, else its most r
 Resolution is scoped to the current branch and never falls back to another branch's run, because one clone commonly has several worktrees on different branches.
 When the current branch has no run of its own - including a detached `HEAD`, which owns no branch and so reports `current_branch: unknown` - the output carries no `run:` object at all.
 It reports `current_branch`, `runs_on_current_branch: 0` where a branch is known, and the recent-runs table, so an unrelated run can never be read as this worktree's.
-With `--run <id>`, inspect exactly that run regardless of branch; when its branch differs from the current branch, it is rendered under `other_branch_run:` instead of `run:`, alongside a top-level `current_branch`, so a parser keyed on `run:` never picks up a run that is not this worktree's.
+With `--run <id>`, inspect exactly that run regardless of branch; when its branch differs from a known current branch, it is rendered under `other_branch_run:` instead of `run:`, alongside a top-level `current_branch`, so a parser keyed on `run:` never picks up a run proven to be on another branch.
+An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship.
 
 ```sh
 no-mistakes axi status
