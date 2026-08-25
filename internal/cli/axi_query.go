@@ -113,7 +113,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 // own: the current branch has never had one, or the branch itself cannot be
 // determined. It never substitutes some other branch's run. It names the branch
 // it looked for, lists the repository's recent runs so a deliberate
-// `--run <id>` inspection is one step away, and says how to start a run here.
+// `--run <id>` inspection is one step away, and provides next-step help.
 func emitNoRunForCaller(cmd *cobra.Command, env *axiEnv, branch string, runs []*db.Run) (string, error) {
 	branchDisplay := branch
 	if branchDisplay == "" {
@@ -125,12 +125,14 @@ func emitNoRunForCaller(cmd *cobra.Command, env *axiEnv, branch string, runs []*
 	}
 	fields = append(fields, runsFields(runs, recentRunsHomeLimit)...)
 
-	help := []string{startRunHelp()}
+	var help []string
 	switch {
 	case branch == "":
-		help = append(help, "This worktree has no current branch (detached HEAD), so no run can be attributed to it; inspect a specific run with `no-mistakes axi status --run <id>`")
+		help = append(help, "This worktree has no current branch (detached HEAD), so no run can be attributed to it; inspect a specific run with `no-mistakes axi status --run <id>`, or check out a branch first")
 	case len(runs) > 0:
-		help = append(help, "No run exists for this branch; every run listed above is on another branch - inspect one deliberately with `no-mistakes axi status --run <id>`")
+		help = append(help, startRunHelp(), "No run exists for this branch; every run listed above is on another branch - inspect one deliberately with `no-mistakes axi status --run <id>`")
+	default:
+		help = append(help, startRunHelp())
 	}
 	fields = append(fields, toon.Field{Key: "help", Value: help})
 	emitDoc(cmd, fields...)
@@ -258,8 +260,12 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 		return "", emitError(cmd, 1, err.Error())
 	}
 	if run == nil {
+		help := noRunLogsHelp()
+		if branch == "" {
+			help = []string{"This worktree has no current branch (detached HEAD), so no run can be attributed to it; inspect a specific run with `no-mistakes axi logs --run <id> --step <step>`, or check out a branch first"}
+		}
 		return "", emitError(cmd, 1, "no run found for this branch to read logs from",
-			noRunLogsHelp()...)
+			help...)
 	}
 	steps, err := env.d.GetStepsByRun(run.ID)
 	if err != nil {

@@ -264,3 +264,40 @@ func TestAxiStatusBranchLookupFailureIsNotDetachedHEAD(t *testing.T) {
 		t.Fatalf("axi status reported a branch lookup failure as no-run detached HEAD:\n%s", got)
 	}
 }
+
+func TestAxiDetachedHEADHelpOffersOnlyValidActions(t *testing.T) {
+	repoDir, _, _, _ := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "--detach")
+	chdir(t, repoDir)
+
+	t.Run("status", func(t *testing.T) {
+		out := axiStatusOutput(t, "")
+		for _, want := range []string{"current_branch: unknown", "no current branch", "axi status --run <id>", "check out a branch"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("detached status missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "axi run --intent") {
+			t.Fatalf("detached status suggested starting a run:\n%s", out)
+		}
+	})
+
+	t.Run("logs", func(t *testing.T) {
+		var out bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.Background())
+		cmd.SetOut(&out)
+		if _, err := runAxiLogs(cmd, "review", "", false); err == nil {
+			t.Fatalf("detached logs unexpectedly found a run:\n%s", out.String())
+		}
+		got := out.String()
+		for _, want := range []string{"no current branch", "axi logs --run <id> --step <step>", "check out a branch"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("detached logs help missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "axi run --intent") {
+			t.Fatalf("detached logs suggested starting a run:\n%s", got)
+		}
+	})
+}
