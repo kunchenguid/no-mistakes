@@ -361,6 +361,59 @@ These checks run on whichever copy of the file is parsed, including the pushed b
 
 Like `document.instructions`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands): a value present only on a pushed branch is ignored, so a contributor cannot inject instructions into the review that gates them.
 
+### gates
+
+Extra repository-declared checks that run inside the pipeline, in addition to the core steps.
+
+| | |
+|---|---|
+| Type | `object[]` with `name` (`string`), `after` (`string`), and exactly one of `command` (`string`) or `instructions` (`string`, multiline) |
+| Default | Empty (core pipeline only) |
+
+Use this for a validation pass that does not fit an existing step - a mutation-testing budget, a complexity ceiling, an architectural fitness function - so it runs before the branch is pushed rather than only in remote CI:
+
+```yaml
+gates:
+  - name: mutation-budget
+    after: test
+    command: "make mutation"
+  - name: arch-fitness
+    after: lint
+    instructions: |
+      No package under internal/ may import internal/cli.
+```
+
+A gate with `command` runs that command in the run worktree and passes on exit code 0.
+A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings; it reports only, and never modifies the worktree.
+
+#### Placement
+
+`after` names the core step the gate runs immediately after. Valid anchors are `rebase`, `review`, `test`, `document`, and `lint`.
+
+The delivery tail (`push`, `pr`, `ci`) cannot be anchored: a gate that ran after push would be validating a branch the world can already see. `intent` cannot be anchored either, because it establishes the acceptance criteria the later gates check against.
+
+Gates are inserted into the run's step sequence and never replace, reorder, or remove a core step. Two gates sharing an anchor run in the order they appear in the file. A gate shares its anchor's step order, so a restart that resets from the anchor resets the gate with it.
+
+#### Failure
+
+A failing gate parks the run for a decision instead of auto-fixing: the pipeline cannot know what fixing an arbitrary repository check means, so the finding is the author's call. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
+
+Because a gate can only add a verdict, a repository that configures gates makes a pass mean *more* than the core pipeline, never less. There is no way to switch a core step off here; to skip one for a single run, use the per-run [`--skip`](/reference/cli/) instead.
+
+#### Limits and validation
+
+`name` must be lowercase letters, digits, and inner hyphens, at most 40 characters, unique within the file, and not a core step name.
+
+At most 16 gates are allowed, and an `instructions` value may not exceed 16,384 bytes, because it shares the agent prompt's budget and an oversized prompt fails the invocation outright. Merge-conflict markers are removed from `instructions` exactly as for [`review.path_instructions`](#reviewpath_instructions), and a value left empty once they are removed is rejected.
+
+A malformed entry fails when the config is parsed, so the run aborts before any gate starts. These checks run on whichever copy of the file is parsed, including the pushed branch's, so a broken gate surfaces before it merges and becomes the trusted copy.
+
+#### Trust
+
+A gate either executes shell on the daemon host or steers a gate agent, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands).
+
+That opt-in deliberately does not extend here. It covers a pushed branch re-running its own suite through `commands.*`; a gate instead defines what validating the branch *means*, and a contributor must not be able to author the check that clears them.
+
 ### Command process lifetime
 
 All configured `commands.*` entries are scoped to their step.

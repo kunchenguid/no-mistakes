@@ -97,7 +97,12 @@ func (s StepName) Value() (driver.Value, error) {
 }
 
 // StepOrder returns the fixed execution order for a step (1-indexed).
+// A custom gate shares its anchor's order: it runs immediately after that core
+// step, and a restart that resets from the anchor must reset the gate with it.
 func (s StepName) Order() int {
+	if anchor, ok := s.CustomGateAnchor(); ok {
+		return anchor.Order()
+	}
 	switch s {
 	case StepIntent:
 		return 1
@@ -125,6 +130,61 @@ func (s StepName) Order() int {
 // AllSteps returns all pipeline steps in execution order.
 func AllSteps() []StepName {
 	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
+}
+
+// CustomGateStepPrefix marks a step name as a repository-declared extra gate
+// rather than one of the fixed core steps.
+const CustomGateStepPrefix = "gate:"
+
+// CustomGateStepName encodes a gate's anchor into its step name so Order can
+// place the gate without consulting the configuration that declared it.
+func CustomGateStepName(anchor StepName, name string) StepName {
+	return StepName(CustomGateStepPrefix + string(anchor) + ":" + name)
+}
+
+// IsCustomGate reports whether the step is a repository-declared extra gate.
+func (s StepName) IsCustomGate() bool {
+	_, ok := s.CustomGateAnchor()
+	return ok
+}
+
+// CustomGateAnchor returns the core step a custom gate runs after. It reports
+// false for a core step, and for any name whose encoded anchor is not itself a
+// core step, so a malformed name can never be ordered as if it were valid.
+func (s StepName) CustomGateAnchor() (StepName, bool) {
+	rest, ok := strings.CutPrefix(string(s), CustomGateStepPrefix)
+	if !ok {
+		return "", false
+	}
+	anchor, label, ok := strings.Cut(rest, ":")
+	if !ok || label == "" {
+		return "", false
+	}
+	if !IsCoreStepName(StepName(anchor)) {
+		return "", false
+	}
+	return StepName(anchor), true
+}
+
+// CustomGateLabel returns the repository-declared name of a custom gate, or
+// empty for a core step.
+func (s StepName) CustomGateLabel() string {
+	rest, ok := strings.CutPrefix(string(s), CustomGateStepPrefix)
+	if !ok {
+		return ""
+	}
+	_, label, _ := strings.Cut(rest, ":")
+	return label
+}
+
+// IsCoreStepName reports whether the name is one of the fixed core steps.
+func IsCoreStepName(s StepName) bool {
+	for _, step := range AllSteps() {
+		if step == s {
+			return true
+		}
+	}
+	return false
 }
 
 // StepStatus represents the lifecycle state of a pipeline step.
