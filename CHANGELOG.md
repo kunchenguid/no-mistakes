@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.59.0](https://github.com/kunchenguid/no-mistakes/compare/v1.58.1...v1.59.0) (2026-08-25)
+
+
+### Features
+
+* **forgecontext:** route provider identity per repository with pinned logins ([#548](https://github.com/kunchenguid/no-mistakes/issues/548)) ([cc8d52a](https://github.com/kunchenguid/no-mistakes/commit/cc8d52a5126016a6f5fd4856ea185d1b00b92992))
+
+
+### Bug Fixes
+
+* **agent:** surface opencode's failed-turn error instead of empty output ([#772](https://github.com/kunchenguid/no-mistakes/issues/772)) ([cd5f5ba](https://github.com/kunchenguid/no-mistakes/commit/cd5f5ba286d4bc8d3623e1dcae11d75f593cd10b))
+
 ## [1.58.1](https://github.com/kunchenguid/no-mistakes/compare/v1.58.0...v1.58.1) (2026-08-23)
 
 
