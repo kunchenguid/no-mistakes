@@ -55,7 +55,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	defer env.close()
 
 	branch := currentBranchForRunResolve(cmd.Context())
-	run, err := resolveRun(env, runID, branch)
+	run, runs, err := resolveRun(env, runID, branch)
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error())
 	}
@@ -64,7 +64,13 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 		if runID != "" {
 			return "", emitError(cmd, 1, fmt.Sprintf("run %q not found", runID))
 		}
-		return emitNoRunForCaller(cmd, env, branch)
+		if branch == "" {
+			runs, err = env.d.GetRunsByRepo(env.repo.ID)
+			if err != nil {
+				return "", emitError(cmd, 1, fmt.Sprintf("list runs: %v", err))
+			}
+		}
+		return emitNoRunForCaller(cmd, env, branch, runs)
 	}
 
 	steps, err := env.d.GetStepsByRun(run.ID)
@@ -105,11 +111,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 // determined. It never substitutes some other branch's run. It names the branch
 // it looked for, lists the repository's recent runs so a deliberate
 // `--run <id>` inspection is one step away, and says how to start a run here.
-func emitNoRunForCaller(cmd *cobra.Command, env *axiEnv, branch string) (string, error) {
-	runs, err := env.d.GetRunsByRepo(env.repo.ID)
-	if err != nil {
-		return "", emitError(cmd, 1, fmt.Sprintf("list runs: %v", err))
-	}
+func emitNoRunForCaller(cmd *cobra.Command, env *axiEnv, branch string, runs []*db.Run) (string, error) {
 	branchDisplay := branch
 	if branchDisplay == "" {
 		branchDisplay = "unknown"
@@ -244,7 +246,7 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 	}
 	defer env.close()
 
-	run, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
+	run, _, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error())
 	}
@@ -315,34 +317,34 @@ func logRows(lines []string) []logRow {
 // its own another branch's run under exactly the key a run of the caller's own
 // gets - so a terminal run read as though the caller's own work had failed.
 // Inspecting a run that is not this branch's is what `--run <id>` is for.
-func resolveRun(env *axiEnv, runID, branch string) (*db.Run, error) {
+func resolveRun(env *axiEnv, runID, branch string) (*db.Run, []*db.Run, error) {
 	if runID != "" {
 		run, err := env.d.GetRun(runID)
 		if err != nil {
-			return nil, fmt.Errorf("get run: %w", err)
+			return nil, nil, fmt.Errorf("get run: %w", err)
 		}
-		return run, nil
+		return run, nil, nil
 	}
 	if branch == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	active, err := env.d.GetActiveRun(env.repo.ID, branch)
 	if err != nil {
-		return nil, fmt.Errorf("get active run: %w", err)
+		return nil, nil, fmt.Errorf("get active run: %w", err)
 	}
 	if active != nil {
-		return active, nil
+		return active, nil, nil
 	}
 	runs, err := env.d.GetRunsByRepo(env.repo.ID)
 	if err != nil {
-		return nil, fmt.Errorf("list runs: %w", err)
+		return nil, nil, fmt.Errorf("list runs: %w", err)
 	}
 	for _, run := range runs {
 		if run.Branch == branch {
-			return run, nil
+			return run, runs, nil
 		}
 	}
-	return nil, nil
+	return nil, runs, nil
 }
 
 func currentBranchForRunResolve(ctx context.Context) string {

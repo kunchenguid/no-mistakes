@@ -172,7 +172,7 @@ func TestResolveRunDoesNotFallBackToAnotherBranch(t *testing.T) {
 		t.Fatalf("start run: %v", err)
 	}
 
-	got, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/mine")
+	got, _, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/mine")
 	if err != nil {
 		t.Fatalf("resolve run: %v", err)
 	}
@@ -209,5 +209,36 @@ func TestAxiLogsDoesNotReadAnotherBranchesRunLogs(t *testing.T) {
 	}
 	if !strings.Contains(got, "--run") {
 		t.Fatalf("axi logs should point at deliberate --run inspection:\n%s", got)
+	}
+}
+
+func TestAxiStatusNoRunRenderingUsesResolutionSnapshot(t *testing.T) {
+	database := openTestDB(t)
+	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+
+	got, runs, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/mine")
+	if err != nil {
+		t.Fatalf("resolve run: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("resolved run = %#v, want no run", got)
+	}
+
+	inserted, err := database.InsertRun(repo.ID, "feature/mine", "head-mine", "base")
+	if err != nil {
+		t.Fatalf("insert current-branch run: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if _, err := emitNoRunForCaller(cmd, &axiEnv{d: database, repo: repo}, "feature/mine", runs); err != nil {
+		t.Fatalf("render no-run status: %v", err)
+	}
+	if strings.Contains(out.String(), inserted.ID) {
+		t.Fatalf("no-run rendering included a run created after resolution:\n%s", out.String())
 	}
 }

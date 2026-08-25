@@ -883,7 +883,7 @@ func TestResolveRunPrefersCurrentBranchLatestRun(t *testing.T) {
 		t.Fatalf("run other run: %v", err)
 	}
 
-	got, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/current")
+	got, _, err := resolveRun(&axiEnv{d: database, repo: repo}, "", "feature/current")
 	if err != nil {
 		t.Fatalf("resolve run: %v", err)
 	}
