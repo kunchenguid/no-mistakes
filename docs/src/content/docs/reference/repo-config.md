@@ -422,7 +422,9 @@ A gate either executes shell on the daemon host or steers a gate agent, so it is
 
 That opt-in deliberately does not extend here. It covers a pushed branch re-running its own suite through `commands.*`; a gate instead defines what validating the branch *means*, so a contributor must not be able to declare, retarget, or delete the check that clears them.
 
-What that boundary protects is the gate's *declaration*, not the repository files a `command` gate goes on to invoke. The command runs in the run worktree, which is checked out at the pushed head, so a contributor who can edit the script or make target it calls can still change what it actually checks - the same property `commands.test` and `commands.lint` have. An `instructions` gate is not exposed that way: its rule comes from the trusted copy and the agent judges the change against it. When a contributor must not be able to weaken a gate, state it as `instructions`, or point `command` at logic that does not live in the repository.
+What that boundary protects is the gate's *declaration*, not the repository files a `command` gate goes on to invoke. The command runs in the run worktree, which is checked out at the pushed head, so a contributor who can edit the script or make target it calls can still change what it actually checks - the same property `commands.test` and `commands.lint` have. An `instructions` gate is harder to weaken, because its rule comes from the trusted copy and the agent judges the change against it - but that agent runs in the same worktree, so with [`disable_project_settings`](#disable_project_settings) left at its default the branch's own `AGENTS.md`, `CLAUDE.md`, or harness project settings reach it alongside the trusted rule and can still steer the verdict.
+
+So when a contributor must not be able to weaken a gate, state it as `instructions` *and* set `disable_project_settings: true` on the trusted copy, or point `command` at logic that does not live in the repository.
 
 ### Command process lifetime
 
