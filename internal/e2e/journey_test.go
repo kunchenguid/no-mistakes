@@ -45,8 +45,8 @@ import (
 func TestUserJourney(t *testing.T) {
 	// Subtests run sequentially: each one calls t.Setenv to point env
 	// vars at its own temp dirs, and t.Setenv is incompatible with
-	// t.Parallel. Three serial runs cost ~30s total on a warm cache.
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
+	// t.Parallel. Keep the package timeout sized for all serial runs.
+	for _, agentName := range []string{"claude", "codex", "grok", "opencode", "antigravity"} {
 		agentName := agentName
 		t.Run(agentName, func(t *testing.T) {
 			runHappyPath(t, agentName)
@@ -113,7 +113,7 @@ func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
 
 func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity"} {
 		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
 			t.Fatalf("remove fake %s agent: %v", name, err)
 		}
@@ -593,17 +593,28 @@ func assertDoctor(t *testing.T, h *Harness) {
 		"Agents",
 		"claude",
 		"codex",
+		"grok",
 		"rovodev",
 		"opencode",
 		"pi",
+		"antigravity",
 		"not found",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output should contain %q, got:\n%s", want, out)
 		}
 	}
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
-		if !strings.Contains(out, filepath.Join(h.BinDir, agentName)) {
+	// Doctor reports each agent's probed binary path; antigravity probes
+	// the "agy" binary name rather than the agent name.
+	fakePaths := map[string]string{
+		"claude":      "claude",
+		"codex":       "codex",
+		"grok":        "grok",
+		"opencode":    "opencode",
+		"antigravity": "agy",
+	}
+	for agentName, binName := range fakePaths {
+		if !strings.Contains(out, filepath.Join(h.BinDir, binName)) {
 			t.Errorf("doctor output should report fake %s path, got:\n%s", agentName, out)
 		}
 	}

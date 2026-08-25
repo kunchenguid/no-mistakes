@@ -8,13 +8,120 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-review-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 20 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected hanging review agent to fail the run")
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "review agent silent for 20ms") {
+		var got string
+		if run.Error != nil {
+			got = *run.Error
+		}
+		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	}
+}
+
+// TestReviewStep_EachRoundGetsItsOwnAgentBudget pins the documented
+// review_agent_timeout contract: the deadline bounds ONE review round -
+// its optional fix turn plus the rereview turn share a single budget - and
+// every later auto-fix round is derived fresh from the step's parent context.
+// Without the fresh derivation, a step context reused across rounds would
+// carry round 1's already-spent deadline into round 2 and fail a healthy agent.
+func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	const timeout = time.Hour
+	type call struct {
+		fixTurn  bool
+		deadline time.Time
+	}
+	var calls []call
+
+	findings := `{"findings":[{"file":"a.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}]}`
+	ag := &mockAgent{
+		name: "budget-probe",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			dl, ok := ctx.Deadline()
+			if !ok {
+				t.Errorf("agent call %d ran with no deadline", len(calls)+1)
+			}
+			isFix := strings.Contains(opts.Prompt, "Investigate previous review findings")
+			calls = append(calls, call{fixTurn: isFix, deadline: dl})
+			if isFix {
+				return &agent.Result{Output: json.RawMessage("fixed it")}, nil
+			}
+			// Round 1 raises an auto-fixable finding; later rounds are clean.
+			if len(calls) == 1 {
+				return &agent.Result{Output: json.RawMessage(findings)}, nil
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = timeout
+	sctx.Config.AutoFix.Review = 1
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// round 1: review. round 2: fix + rereview.
+	if len(calls) != 3 {
+		t.Fatalf("agent calls = %d, want 3 (review, fix, rereview); got %+v", len(calls), calls)
+	}
+	if calls[0].fixTurn || !calls[1].fixTurn || calls[2].fixTurn {
+		t.Fatalf("turn order = %+v, want review, fix, rereview", calls)
+	}
+
+	// The fix turn and the rereview turn of round 2 share one round budget.
+	if !calls[1].deadline.Equal(calls[2].deadline) {
+		t.Errorf("round 2 fix and rereview deadlines differ (%v vs %v); one round must share one budget",
+			calls[1].deadline, calls[2].deadline)
+	}
+	// Round 2 is derived fresh, so its budget starts after round 1's.
+	if !calls[1].deadline.After(calls[0].deadline) {
+		t.Errorf("round 2 deadline %v is not later than round 1 deadline %v; the round budget leaked across rounds",
+			calls[1].deadline, calls[0].deadline)
+	}
+	// Each round's budget is the configured timeout, not a shrinking remainder.
+	if remaining := time.Until(calls[2].deadline); remaining <= timeout/2 {
+		t.Errorf("round 2 budget remaining %v is far below the configured %v; the round did not get a full budget",
+			remaining, timeout)
+	}
+}
 
 func TestReviewStep_FixMode(t *testing.T) {
 	t.Parallel()

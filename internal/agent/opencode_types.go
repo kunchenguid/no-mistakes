@@ -17,12 +17,13 @@ type opencodeStreamEventPayload struct {
 }
 
 type opencodeStreamEventProperties struct {
-	SessionID string             `json:"sessionID,omitempty"`
-	Field     string             `json:"field,omitempty"`
-	Delta     string             `json:"delta,omitempty"`
-	PartID    string             `json:"partID,omitempty"`
-	Part      *opencodeEventPart `json:"part,omitempty"`
-	Info      *opencodeEventInfo `json:"info,omitempty"`
+	SessionID string                `json:"sessionID,omitempty"`
+	Field     string                `json:"field,omitempty"`
+	Delta     string                `json:"delta,omitempty"`
+	PartID    string                `json:"partID,omitempty"`
+	Part      *opencodeEventPart    `json:"part,omitempty"`
+	Info      *opencodeEventInfo    `json:"info,omitempty"`
+	Error     *opencodeMessageError `json:"error,omitempty"`
 }
 
 type opencodeEventPart struct {
@@ -81,7 +82,8 @@ type opencodeMessageInfo struct {
 //
 // opencode serializes every NamedError as {"name": ..., "data": {...}}, so
 // the payload fields live under Data; the flat Message/Retries copies are
-// kept only as a fallback for older wire shapes.
+// kept only as a fallback for older wire shapes. Data also preserves the
+// provider details that identify the narrow thinking/tool-choice fallback.
 type opencodeMessageError struct {
 	Name string                    `json:"name"`
 	Data *opencodeMessageErrorData `json:"data,omitempty"`
@@ -89,6 +91,51 @@ type opencodeMessageError struct {
 	// Legacy flat shape, superseded by Data.
 	Message string `json:"message,omitempty"`
 	Retries *int   `json:"retries,omitempty"`
+
+	// rawData is the verbatim `data` payload. The typed Data above reads the
+	// fields we act on; this keeps the provider-specific extras beside them,
+	// because thinking/tool_choice detection scans the payload as text and a
+	// decode into the typed struct would silently drop whatever it has no
+	// field for.
+	rawData json.RawMessage
+}
+
+func (e *opencodeMessageError) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		Name    string          `json:"name"`
+		Data    json.RawMessage `json:"data,omitempty"`
+		Message string          `json:"message,omitempty"`
+		Retries *int            `json:"retries,omitempty"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	e.Name = wire.Name
+	e.Message = wire.Message
+	e.Retries = wire.Retries
+	e.rawData = wire.Data
+	e.Data = nil
+	if len(wire.Data) > 0 {
+		var data opencodeMessageErrorData
+		// A `data` that is not the expected object still reaches the text
+		// scan through rawData; only the typed reads lose it.
+		if err := json.Unmarshal(wire.Data, &data); err == nil {
+			e.Data = &data
+		}
+	}
+	return nil
+}
+
+// providerText is every place a provider's own wording can land, as text.
+func (e *opencodeMessageError) providerText() []string {
+	if e == nil {
+		return nil
+	}
+	text := []string{e.Name, e.Message}
+	if len(e.rawData) > 0 {
+		text = append(text, string(e.rawData))
+	}
+	return text
 }
 
 // opencodeMessageErrorData is the payload opencode nests under the error

@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -27,6 +28,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // orphanProcessMinAge is the age floor for the startup orphan-process sweep.
@@ -100,7 +102,7 @@ func Run() (retErr error) {
 	defer d.Close()
 	logStartupPhase("database", databaseStarted)
 
-	return runWithOptionsLocked(p, d, nil, startupStarted)
+	return runWithOptionsLocked(p, d, globalCfg, nil, startupStarted)
 }
 
 func prepareDaemonEnvironment() error {
@@ -181,10 +183,28 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}
 	defer lock.Release()
 
-	return runWithOptionsLocked(p, d, stepFactory, startupStarted)
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	return runWithOptionsLocked(p, d, globalCfg, stepFactory, startupStarted)
 }
 
-func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
+// runWithOptionsLocked takes the global configuration its caller already loaded,
+// so startup reads and validates config.yaml exactly once. Re-reading it per
+// consumer would let one startup act on two different documents, and every later
+// read needs a fallback for a failure the caller has already refused to start on.
+func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConfig, stepFactory StepFactory, startupStarted time.Time) error {
+	// Refuse an unusable worktree placement before anything walks, sweeps, or
+	// removes a directory under it. This is the second half of worktree_roots
+	// validation: internal/config checks every entry it can judge without
+	// knowing NM_HOME, and this process is the one that knows.
+	layout, err := validatedWorktreeLayout(d, p, globalCfg)
+	if err != nil {
+		return err
+	}
+
 	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
 	if err != nil {
 		return fmt.Errorf("open managed server log: %w", err)
@@ -227,7 +247,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	slog.Info("daemon process launched", "pid", pidRecord.PID)
 
 	// Recovery remains exclusive and completes before IPC is bound.
-	recoverOnStartup(d, p, mgr)
+	recoverOnStartup(d, p, mgr, layout)
 
 	srv := ipc.NewServer()
 
@@ -363,7 +383,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktrees.Layout) {
 	orphanStarted := time.Now()
 	reapOrphanedServers(p)
 	logStartupPhase("orphan_servers", orphanStarted)
@@ -398,6 +418,12 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("parked_runs", parkedStarted, "preserved", len(plans))
 
+	// Read while the runs that were executing when this daemon started still say
+	// so: recovery below turns them terminal, and they are the ones whose
+	// worktree may already be gone with something still standing in it.
+	activeWorktrees := activeRecordedRunWorktrees(d, p)
+	preserveStaleRunHeads(d, p, preserved)
+
 	staleStarted := time.Now()
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
@@ -413,12 +439,15 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
+	reportUnusableWorktreeRoots(d, layout)
+	leftover := leftoverRecordedRunWorktrees(d, p)
+
 	orphanProcStarted := time.Now()
-	sweepOrphanRunProcesses(d, p)
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftover, activeWorktrees))
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	worktreeStarted := time.Now()
-	cleanupOrphanWorktrees(d, p)
+	cleanupOrphanWorktrees(d, p, leftover)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 
 	// Evidence is reaped after stale-run recovery for the same reason worktrees
@@ -440,6 +469,68 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	mgr.resumeRecoveredRuns(plans)
 }
 
+func preserveStaleRunHeads(d *db.DB, p *paths.Paths, excluded map[string]struct{}) {
+	active, err := d.ActiveRunWorktrees()
+	if err != nil {
+		slog.Warn("failed to list active run heads before crash recovery", "error", err)
+		return
+	}
+	for _, wt := range active {
+		if _, skip := excluded[wt.RunID]; skip {
+			continue
+		}
+		run, err := d.GetRun(wt.RunID)
+		if err != nil || run == nil {
+			continue
+		}
+		workDir := worktrees.RecordedDir(p, wt.Dir, wt.RepoID, wt.RunID)
+		if _, err := os.Stat(workDir); err != nil {
+			continue
+		}
+		preserveRunHead(d, workDir, run)
+	}
+}
+
+func preserveRunHead(d *db.DB, workDir string, run *db.Run) (string, bool) {
+	if d == nil || run == nil || strings.TrimSpace(workDir) == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		slog.Warn("failed to read managed worktree head before terminalization", "run", run.ID, "error", err)
+		return "", false
+	}
+	recorded := strings.TrimSpace(run.HeadSHA)
+	if recorded == "" || head != recorded && !isGitAncestor(ctx, workDir, recorded, head) {
+		slog.Warn("managed worktree head is not a verified descendant before terminalization", "run", run.ID, "recorded", recorded, "observed", head)
+		return "", false
+	}
+	published := ""
+	if run.LastPushedSHA != nil {
+		published = *run.LastPushedSHA
+	} else if run.SubmittedHeadSHA != nil {
+		published = *run.SubmittedHeadSHA
+	}
+	if head != published {
+		if err := custody.PreserveRecoveryHead(ctx, workDir, run.ID, head); err != nil {
+			slog.Warn("failed to anchor managed worktree head before terminalization", "run", run.ID, "head", head, "error", err)
+			return "", false
+		}
+	}
+	if err := d.RecordRunTerminalHeadEvidence(run.ID, head); err != nil {
+		slog.Warn("failed to record managed worktree head before terminalization", "run", run.ID, "head", head, "error", err)
+		return "", false
+	}
+	return head, true
+}
+
+func isGitAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
+	_, err := git.Run(ctx, dir, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
+}
+
 // sweepOrphanRunProcesses terminates processes still standing in a run
 // worktree that no run owns any more. A predecessor daemon's group teardown
 // cannot reach a child that left its process group (see internal/procreap),
@@ -447,15 +538,207 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 // again - it just keeps burning CPU and holding a deleted worktree open. This
 // runs after stale-run recovery so every run's status is settled, and before
 // worktree cleanup so the directories are freed of their holders first.
-func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
+//
+// Reach outside the default worktrees tree is exactly the recorded run
+// worktrees, never a configured root: signalling in an operator's own directory
+// is limited to the directories our own run rows name, matching what cleanup
+// there may remove, and a placement the operator has since reconfigured away is
+// still swept because the run recorded it.
+func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, worktrees []procreap.Worktree) {
+	ctx := context.Background()
+	wtRoot := p.WorktreesDir()
+	pathByRun := make(map[string]string, len(worktrees))
+	for _, wt := range worktrees {
+		pathByRun[wt.RunID] = wt.Dir
+	}
 	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: p.WorktreesDir(),
+		WorktreesRoot: wtRoot,
+		Worktrees:     worktrees,
 		MinAge:        orphanProcessMinAge,
-		RunActive: func(_, runID string) bool {
-			skip, _ := skipWorktreeCleanup(d, runID)
+		RunActive: func(repoID, runID string) bool {
+			wtPath := pathByRun[runID]
+			if wtPath == "" {
+				wtPath = filepath.Join(wtRoot, repoID, runID)
+			}
+			skip, _ := skipWorktreeCleanup(ctx, d, runID, wtPath)
 			return skip
 		},
 	}, "daemon_startup")
+}
+
+// sweepableWorktrees is the procreap view of the run worktrees outside the
+// default tree, and the bound on how many of them the sweep carries.
+//
+// Every entry becomes a path matcher tested against every candidate process, so
+// the cost is per entry, not per directory that exists - and run rows are never
+// pruned, so the full recorded history would make each restart of a long-lived
+// install slower than the last. Two sets are enough to reach every process the
+// sweep can legitimately reach, and both are bounded by the present rather than
+// by history:
+//
+//   - leftover: a recorded worktree still on disk. Anything standing in one is
+//     reachable through it, and cleanup is about to try to remove it anyway.
+//   - active: the recorded worktree of a run that was executing when this
+//     daemon started, whose directory may already be gone while a process that
+//     escaped its process group still holds it as its cwd. A run that reached a
+//     terminal state has had that sweep run against its own worktree already.
+func sweepableWorktrees(sets ...[]db.RunWorktree) []procreap.Worktree {
+	var out []procreap.Worktree
+	seen := make(map[string]bool)
+	for _, set := range sets {
+		for _, wt := range set {
+			if seen[wt.Dir] {
+				continue
+			}
+			seen[wt.Dir] = true
+			out = append(out, procreap.Worktree{Dir: wt.Dir, RepoID: wt.RepoID, RunID: wt.RunID})
+		}
+	}
+	return out
+}
+
+// leftoverRecordedRunWorktrees returns the run worktrees this machine placed
+// outside <NM_HOME>/worktrees that are still on disk, as the runs that created
+// them recorded them (see internal/worktrees). It is what startup cleanup
+// removes there, so cleanup depends on no configuration at all: an operator who
+// edits or drops a worktree_roots entry after a crash would otherwise hide a
+// directory a run is still recorded as owning, and nothing would ever name it
+// again.
+//
+// Only rows whose directory is still there survive, so everything DOWNSTREAM -
+// the canonical-path comparison, the process sweep, the removals - is
+// proportional to what is actually left over, which is normally nothing.
+//
+// The filter itself is not: run rows are never pruned, so this pays one os.Stat
+// per run this machine has ever placed outside the default tree, on every
+// startup, before the socket is bound. That cost is accepted rather than bounded.
+// A cheaper set cannot be had from the run status here, because this runs AFTER
+// crash recovery has already turned the runs that left directories behind
+// terminal - the status that would filter them out is the status that identifies
+// them. Bounding it by age instead would trade a stat-per-row for a directory
+// nobody ever removes, which is the failure this exists to prevent.
+func leftoverRecordedRunWorktrees(d *db.DB, p *paths.Paths) []db.RunWorktree {
+	recorded, err := d.RunWorktreesOutside(p.WorktreesDir())
+	if err != nil {
+		slog.Warn("failed to list recorded run worktrees; skipping placements outside the default worktrees directory", "error", err)
+		return nil
+	}
+	return outsideDefaultWorktreesTree(p, onDisk(recorded))
+}
+
+// activeRecordedRunWorktrees returns the recorded placements of the runs that
+// are still active, whose directories are deliberately NOT required to exist
+// (see db.ActiveRunWorktreesOutside). Call it before crash recovery settles run
+// statuses.
+func activeRecordedRunWorktrees(d *db.DB, p *paths.Paths) []db.RunWorktree {
+	recorded, err := d.ActiveRunWorktreesOutside(p.WorktreesDir())
+	if err != nil {
+		slog.Warn("failed to list active run worktrees; skipping placements outside the default worktrees directory", "error", err)
+		return nil
+	}
+	return outsideDefaultWorktreesTree(p, recorded)
+}
+
+// onDisk keeps the recorded placements that still name a directory.
+func onDisk(recorded []db.RunWorktree) []db.RunWorktree {
+	out := make([]db.RunWorktree, 0, len(recorded))
+	for _, wt := range recorded {
+		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
+			continue
+		}
+		out = append(out, wt)
+	}
+	return out
+}
+
+// outsideDefaultWorktreesTree drops placements that are in the default tree
+// after all, which the query's byte-prefix test cannot decide for a second
+// spelling of the same directory (/var and /private/var). The default tree is
+// discovered by walking it, so a row that belongs to it must not be handled
+// twice.
+func outsideDefaultWorktreesTree(p *paths.Paths, recorded []db.RunWorktree) []db.RunWorktree {
+	worktreesDir := p.WorktreesDir()
+	out := make([]db.RunWorktree, 0, len(recorded))
+	for _, wt := range recorded {
+		if worktrees.Contains(worktreesDir, wt.Dir) {
+			continue
+		}
+		out = append(out, wt)
+	}
+	return out
+}
+
+// validatedWorktreeLayout is the one worktree placement startup resolves, and it
+// fails startup when that placement is one this machine cannot host (see
+// worktrees.CheckPlacement for which placements those are and why). Refusing to
+// start is the same treatment an unreadable global config already gets, and
+// for the same reason: the daemon's first act is crash recovery, which walks
+// and removes directories, so a placement it would misread must be rejected
+// before that runs rather than warned about afterwards.
+//
+// Because the layout it returns is the validated one, every later startup
+// consumer is handed it rather than rebuilding one from another read of the same
+// file - which would have to carry a fallback for a failure this function has
+// already refused to start on.
+//
+// This is where the registered repositories are known, so it is the only layer
+// that can judge a root placed inside a checkout other than the one whose runs
+// it holds. A repository registered after such a root was configured is caught
+// here on the next startup.
+func validatedWorktreeLayout(d *db.DB, p *paths.Paths, globalCfg *config.GlobalConfig) (*worktrees.Layout, error) {
+	layout := worktrees.New(p, globalCfg.WorktreeRoots)
+	checkouts, err := registeredCheckouts(d)
+	if err != nil {
+		return nil, fmt.Errorf("list registered checkouts for worktree placement: %w", err)
+	}
+	if err := layout.Validate(checkouts...); err != nil {
+		return nil, fmt.Errorf("configured worktree placement is unusable: %w", err)
+	}
+	return layout, nil
+}
+
+// registeredCheckouts lists the working paths of every registered repository, so
+// placement validation can name a checkout a configured root would dirty. A
+// failure to read them is fatal to the caller's guard: an unreadable repository
+// list means the guard cannot see the set it protects, and a guard that cannot
+// see its set must refuse rather than silently validate against nothing — the
+// database has already opened and migrated by the time any caller runs, so the
+// failure is never routine.
+func registeredCheckouts(d *db.DB) ([]string, error) {
+	if d == nil {
+		return nil, nil
+	}
+	return d.RepoWorkingPaths()
+}
+
+// reportUnusableWorktreeRoots names configured placements that will not do
+// what the operator expects. A worktree_roots key is matched against a
+// registered checkout path, so a stale key left behind by a moved or ejected
+// checkout - or one that differs from the recorded path in a way this
+// filesystem does not consider equal, such as letter case - silently places
+// nothing, which has no other symptom than runs continuing to appear under
+// NM_HOME. That is the one placement worth only a log line: a root that does
+// not work at all already refused startup (see
+// validatedWorktreeLayout and worktrees.Layout.Validate).
+func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
+	checkouts := layout.Checkouts()
+	if len(checkouts) == 0 {
+		return
+	}
+	repos, err := d.GetRepos()
+	if err != nil {
+		slog.Warn("failed to list repositories while checking configured worktree roots", "error", err)
+		return
+	}
+	registered := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		registered[worktrees.Canonical(repo.WorkingPath)] = true
+	}
+	for _, checkout := range checkouts {
+		if !registered[checkout] {
+			slog.Warn("worktree_roots entry matches no registered repository; its runs use the default placement", "checkout", checkout)
+		}
+	}
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -467,20 +750,60 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
 // RecoverStaleRuns, so in the normal single-daemon path every run this loop
 // sees has already been resolved to a terminal status; it is factored out
 // separately so it can also be exercised - and its DB-aware skip behavior
-// verified - independent of stale-run recovery's side effects.
-func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
+// verified - independent of stale-run recovery's side effects. Worktrees the
+// operator placed outside this tree are named by recordedOrphanWorktrees, which
+// never walks a directory it does not own.
+//
+// Every directory it is going to remove is swept in ONE process snapshot before
+// any of them is removed. The sweep-before-removal invariant is what matters
+// (see procreap.SweepRunWorktrees), not that each directory gets a snapshot of
+// its own: reading the process table is the expensive part, a scoped sweep has
+// no age floor so every process on the machine is a candidate, and this whole
+// pass runs before the daemon binds its socket, against the startup budget. A
+// crash that leaves several directories behind would otherwise make the daemon
+// slower to start the more there is to clean up.
+func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
+	ctx := context.Background()
+	removable, repoDirs := defaultTreeOrphanWorktrees(d, p)
+	removable = append(removable, recordedOrphanWorktrees(d, p, leftover)...)
+
+	sweepable := make([]procreap.Worktree, 0, len(removable))
+	for _, wt := range removable {
+		sweepable = append(sweepable, procreap.Worktree{Dir: wt.dir, RepoID: wt.repoID, RunID: wt.runID})
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
+
+	for _, wt := range removable {
+		removeOrphanWorktree(ctx, wt)
+	}
+	for _, dir := range repoDirs {
+		os.Remove(dir)
+	}
+}
+
+// orphanWorktree is one run worktree directory startup cleanup has decided it
+// may remove, resolved before anything is swept or removed.
+type orphanWorktree struct {
+	gateDir string
+	dir     string
+	repoID  string
+	runID   string
+}
+
+// defaultTreeOrphanWorktrees walks <NM_HOME>/worktrees, which no-mistakes owns
+// outright, and returns the run worktrees no run still owns plus the repository
+// directories to drop once they are empty.
+func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWorktree, repoDirs []string) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
-		return // directory may not exist yet
+		return nil, nil // directory may not exist yet
 	}
-	ctx := context.Background()
 	for _, repoEntry := range entries {
 		if !repoEntry.IsDir() {
 			continue
 		}
 		repoPath := filepath.Join(wtRoot, repoEntry.Name())
-		gateDir := p.RepoDir(repoEntry.Name())
 		runEntries, err := os.ReadDir(repoPath)
 		if err != nil {
 			continue
@@ -489,23 +812,69 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 			if !runEntry.IsDir() {
 				continue
 			}
-			runID := runEntry.Name()
-			wtPath := filepath.Join(repoPath, runID)
-			if skip, reason := skipWorktreeCleanup(d, runID); skip {
-				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
-				continue
+			wt := orphanWorktree{
+				gateDir: p.RepoDir(repoEntry.Name()),
+				dir:     filepath.Join(repoPath, runEntry.Name()),
+				repoID:  repoEntry.Name(),
+				runID:   runEntry.Name(),
 			}
-			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
-				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
-				if err := os.RemoveAll(wtPath); err != nil {
-					slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
-				}
-			} else {
-				slog.Info("removed orphaned worktree", "path", wtPath)
+			if removableOrphanWorktree(d, wt) {
+				removable = append(removable, wt)
 			}
 		}
-		// Remove empty repo dir.
-		os.Remove(repoPath)
+		repoDirs = append(repoDirs, repoPath)
+	}
+	return removable, repoDirs
+}
+
+// recordedOrphanWorktrees names the leftover worktrees of runs the operator
+// placed outside <NM_HOME>/worktrees (see worktree_roots in the global config).
+//
+// That directory belongs to the operator, not to no-mistakes: it holds the
+// mise.local.toml, .envrc, or scratch checkout that motivated pointing runs at
+// it in the first place, and it can hold a run-shaped directory this daemon
+// never created - another tool's, or one left by a repository that used to
+// point here. So unlike the default tree, which is discovered by walking, this
+// names only the exact directories run records name, which is the same rule
+// eject applies (see gate.removeRepoWorktrees): nothing there is enumerated,
+// and a directory no run recorded is never even looked at. Whether a named
+// directory may go is still the active-run guard (see skipWorktreeCleanup).
+func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) []orphanWorktree {
+	var removable []orphanWorktree
+	for _, wt := range leftover {
+		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
+			continue
+		}
+		candidate := orphanWorktree{gateDir: p.RepoDir(wt.RepoID), dir: wt.Dir, repoID: wt.RepoID, runID: wt.RunID}
+		if removableOrphanWorktree(d, candidate) {
+			removable = append(removable, candidate)
+		}
+	}
+	return removable
+}
+
+// removableOrphanWorktree reports whether cleanup may take this directory,
+// which is the active-run guard (see skipWorktreeCleanup). A directory it
+// spares is neither swept nor removed.
+func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
+	if skip, reason := skipWorktreeCleanup(context.Background(), d, wt.runID, wt.dir); skip {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
+		return false
+	}
+	return true
+}
+
+// removeOrphanWorktree removes one run worktree directory its caller has
+// already decided on and swept (see cleanupOrphanWorktrees).
+func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) {
+	gateDir, wtPath := wt.gateDir, wt.dir
+	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
+		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
+		if err := os.RemoveAll(wtPath); err != nil {
+			slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
+		}
+	} else {
+		slog.Info("removed orphaned worktree", "path", wtPath)
 	}
 }
 
@@ -519,13 +888,33 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 // run row before creating the worktree directory, so on a single daemon a
 // "no matching run" directory is never one whose insert simply hasn't landed
 // yet - it is safe to remove immediately.
-func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
+//
+// A run marked RunCIMonitorInterrupted (the daemon restarted while monitoring
+// CI for an already-open PR, issue #361) is terminal and would otherwise leak
+// its checkout on every future restart. Such a worktree is reclaimed like any
+// other terminal-run leftover EXCEPT when it may hold unpushed work: a CI
+// auto-fix commits locally before pushing (see steps/ci_fix.go), so a crash in
+// that window leaves the only copy of the fix commit in this checkout. We
+// reclaim only when the worktree HEAD equals the head the run already pushed -
+// run.HeadSHA advances solely after a verified push, so a match proves nothing
+// local is unpushed - and fail safe to preservation on any mismatch or
+// unreadable HEAD so recoverable commits are never discarded.
+func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
 		return true, fmt.Sprintf("failed to look up run %s: %v", runID, err)
 	}
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
+	}
+	if run != nil && run.Status == types.RunCIMonitorInterrupted {
+		head, err := git.HeadSHA(ctx, wtPath)
+		if err != nil {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree head unreadable (%v); preserving", runID, err)
+		}
+		if strings.TrimSpace(head) != run.HeadSHA {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree may hold unpushed commits; preserving", runID)
+		}
 	}
 	return false, ""
 }
@@ -539,6 +928,8 @@ type gateMigrationStats struct {
 }
 
 var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
+
+var sweepRunWorktrees = procreap.SweepRunWorktrees
 
 // migrateGateConfigs discovers gates from authoritative DB records plus legacy
 // directories with the strict <id>.git shape. Every unstamped candidate is

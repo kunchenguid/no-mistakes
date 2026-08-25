@@ -5,6 +5,7 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -71,12 +72,12 @@ func TestEvalJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL CASE SETS") || !strings.Contains(out, "diversified:") {
+	if !strings.Contains(out, "eval case sets") || !strings.Contains(out, "Diversified holdout") || !strings.Contains(out, "local-only") {
 		t.Fatalf("sets output = %q", out)
 	}
 	t.Logf("eval sets output:\n%s", out)
 
-	out, err = h.Run("eval", "run", "--cases", "all", "--candidate", "claude+claude-opus-4-7", "--repeats", "1")
+	out, err = h.Run("eval", "run", "--cases", "all", "--candidate", "claude,model=claude-opus-4-7,effort=high", "--repeats", "1")
 	if err != nil {
 		report, reportErr := h.Run("eval", "report")
 		t.Fatalf("eval run: %v\n%s\neval report after failure (%v):\n%s", err, out, reportErr, report)
@@ -89,16 +90,26 @@ func TestEvalJourney(t *testing.T) {
 	if len(invocations) == 0 {
 		t.Fatal("expected replay agent invocation")
 	}
-	replayCWD := invocations[len(invocations)-1].CWD
+	replay := invocations[len(invocations)-1]
+	replayCWD := replay.CWD
 	if !strings.Contains(replayCWD, "nm-eval-replay-") || strings.HasPrefix(replayCWD, h.NMHome) {
 		t.Fatalf("replay used non-isolated worktree %q (source NM_HOME %q)", replayCWD, h.NMHome)
+	}
+	// The candidate's model and effort must reach the harness itself, in this
+	// harness's own spelling. Without this the candidate label would describe a
+	// tuning the replayed agent never actually ran under.
+	replayArgs := strings.Join(replay.Args, " ")
+	for _, want := range []string{"--model claude-opus-4-7", "--effort high"} {
+		if !strings.Contains(replayArgs, want) {
+			t.Fatalf("replay agent argv %q does not carry %q", replayArgs, want)
+		}
 	}
 
 	out, err = h.Run("eval", "report")
 	if err != nil {
 		t.Fatalf("eval report: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude+claude-opus-4-7") || !strings.Contains(out, "unlabeled / pending") || !strings.Contains(out, "queued unmatched candidate findings: 1") {
+	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude,model=claude-opus-4-7,effort=high") || !strings.Contains(out, "unlabeled / pending") || !strings.Contains(out, "queued unmatched candidate findings: 1") {
 		t.Fatalf("report output = %q", out)
 	}
 	t.Logf("eval report output:\n%s", out)
@@ -151,6 +162,7 @@ func TestEvalAutoCaptureJourney(t *testing.T) {
 
 	// Collection runs after the pipeline reports its outcome, so the run being
 	// finished is not yet proof the case exists.
+	collected := regexp.MustCompile(`all\s+1 case\(s\)`)
 	var out string
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -159,12 +171,12 @@ func TestEvalAutoCaptureJourney(t *testing.T) {
 		if err != nil {
 			t.Fatalf("eval sets: %v\n%s", err, out)
 		}
-		if strings.Contains(out, "all: 1 cases") || time.Now().After(deadline) {
+		if collected.MatchString(out) || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if !strings.Contains(out, "all: 1 cases") {
+	if !collected.MatchString(out) {
 		t.Fatalf("no eval case was collected without an explicit capture; sets output = %q", out)
 	}
 	t.Logf("eval sets output after an ordinary run:\n%s", out)

@@ -10,6 +10,8 @@ The `eval` commands do not start or use the shared daemon, alter a gate, emit re
 
 Replay does invoke the selected agent normally, so that agent may send the restored code and review context to its configured model provider. The local-only guarantee concerns eval storage and transport added by no-mistakes, not the selected agent's ordinary provider traffic.
 
+When `eval sets`, `eval report`, or `eval run` resolves repository fingerprints into display names, it consults `state.sqlite` only if that pipeline database already exists and opens it read-only. The display lookup never creates or migrates pipeline state; without a readable database, the dashboards fall back to fingerprints.
+
 ## How cases are collected
 
 Cases arrive on their own. When an eligible run finishes, its decided Review passes are frozen into the local corpus - one case per pass. Collection happens after the pipeline has already reported its outcome, so it can never change or fail the run; a problem is logged and nothing else.
@@ -34,6 +36,8 @@ no-mistakes eval miss ingest <run-id> \
 
 `--finding` is repeatable. The command captures the run if needed (recapture is a no-op, so existing labels survive), then writes false-negative gold onto the last completed non-blocking review pass. Duplicate finding IDs are no-ops. A parked or blocking review is refused: that class found something, so it is not a post-PR miss.
 
+`id` and `description` are required. `severity` defaults to `error` and must be one of `error`, `warning`, or `info` - it becomes gold and then a composition stratum, so an unrecognized value is refused rather than shown as an invented finding type. `action`, if given, must be one of `auto-fix`, `ask-user`, or `no-op`; gold carries no action, so a valid one is accepted and dropped rather than silently changing what is stored.
+
 The ingest payload is the source of truth. Eval does not scrape GitHub review comments and does not read an external markdown ledger. The curator (a human, or an automation that already vetted the miss) supplies the structured finding.
 
 Automatic collection and `eval capture` do the same freeze, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place. `eval miss ingest` can still attach confirmed post-PR-miss gold afterwards.
@@ -46,7 +50,7 @@ A case includes:
 - agent-neutral global configuration and the effective repository configuration frozen at capture
 - the original run, step, review-round, decision, and local invocation-metric records
 - a manifest with commit pins, changed-file counts, build identity, and a hash of the redacted remote URL
-- a local `labels.json` file that stores finding-level gold and queued unmatched candidate findings
+- a local `labels.json` file that stores finding-level gold; queued unmatched candidate findings are counted from the recorded replays themselves, so replays never rewrite a case's labels
 
 The manifest never stores a remote URL. Capture is read-only against the existing local database and gate. It does not fetch from the network.
 
@@ -61,10 +65,10 @@ Capture writes gold from the **recorded gate decision** for a review round - wha
 - A finding the pipeline selected for auto-fix on a run whose PR **merged** is **true-positive** gold (`recorded-auto-fix-merged`): the decision to fix it is the evidence, so a fix a later round re-raised or rewrote is still labeled. Closed-not-merged and still-open runs stay unlabeled until the merge is observed.
 - A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`), **not selected for fix**, and then **shipped in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). This is a deliberate operator judgement: a finding you approve and ship without fixing is a false positive in your own corpus. It needs both halves - a recorded gate decision for the round and the merge - and informational `no-op` findings are never labeled this way.
 - A confirmed post-PR miss ingested with `eval miss ingest` is also **false-negative** gold (`recorded-post-pr-miss`): review passed green, and a later vetted finding showed a real defect.
-- Skip and approve-with-findings **without a merge** stay **unlabeled / pending** until later adjudication, and so does any round whose gate decision was never recorded (an unknown or aborted resolution), merged or not. Absence of a decision is never read as a judgement.
+- Skip, approve-with-findings, and abort **without a merge** stay **unlabeled / pending** until later adjudication, and so does any legacy or unresolved round whose gate decision was never recorded, merged or not. Absence of a decision is never read as a judgement.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -84,7 +88,11 @@ Finding-level gold uses `labels.json` schema version 2. There is no migration fr
 no-mistakes eval sets
 ```
 
-The command shows counts, finding-level gold coverage, unlabeled / pending cases, queued candidate findings, and composition by repository fingerprint, dominant language, change-size bucket, source severity, and finding type.
+The command renders a dashboard headlined by the **diversified holdout** - the official gold-only set - showing its size, pin and cap state, finding-level gold as a confusion-matrix table (raised / missed against real issue / not an issue; true negatives are never counted, because a correctly silent review leaves no gold), and stratum composition (repository, dominant language, change-size bucket, source severity, finding type). A case stores only the fingerprint of its upstream URL, so the repository column resolves each locally registered repository to its upstream namespace/name, then its working-directory name or repository ID; an unresolved case falls back to its short fingerprint. The other sets appear as a compact footnote with their counts, gold coverage, unlabeled / pending cases, and queued candidate findings.
+
+The headline includes an instant **self-score**: the recorded source reviews of the diversified set scored against their own gold with the same matcher a replayed candidate faces. It is computed from the already-captured case files - no replay, agent invocation, or network - and is the baseline a candidate has to beat. Recall, precision bounds, and F1 follow the report's semantics, including withholding F1 when no false-positive gold exists.
+
+`eval sets` is safe to re-run: inspecting the sets materializes the diversified pins, and a second read returns the same summaries without repinning anything.
 
 Four logical sets are available to replay:
 
@@ -102,11 +110,15 @@ Do not fit matcher thresholds or review product prompts against `diversified`. T
 ```sh
 no-mistakes eval run \
   --cases diversified \
-  --candidate codex+gpt-5.4 \
+  --candidate codex,model=gpt-5.4,effort=low \
   --repeats 3
 ```
 
-A candidate is always explicit: `agent+model`. The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
+A candidate is `agent,model=<model>[,effort=<level>]`. The fields are the same harness-neutral knobs [`agent_config`](/no-mistakes/reference/global-config/#agent_config) exposes to the pipeline, and they resolve through the same per-harness mapping, so a candidate can express exactly what a real run can. `model` is mandatory - a comparison that inherited whatever default the harness happened to resolve would not be reproducible - while `effort` is optional and one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+
+Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
+
+The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
 
 Replay scores each candidate finding against that gold:
 
@@ -119,7 +131,13 @@ Matching is a documented cascade of strengths: the same finding ID, the same fil
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
-`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor` and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
+
+The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, and `agent_config` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
+
+The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+
+The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 
 ## Report results
 
@@ -139,7 +157,7 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero.
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero. It is a pure read: repeated reports over unchanged recorded evaluations produce identical text output.
 
 ## Current boundary
 

@@ -7,15 +7,17 @@
 //	go run ./cmd/recordfixture claude   --out internal/e2e/fixtures/claude
 //	go run ./cmd/recordfixture codex    --out internal/e2e/fixtures/codex
 //	go run ./cmd/recordfixture opencode --out internal/e2e/fixtures/opencode
+//	go run ./cmd/recordfixture antigravity --out internal/e2e/fixtures/antigravity
 //
 // Each agent gets a small set of fixture files (one per pipeline-step
 // flavour: review with structured output, plain text, etc). The fake
-// agent in cmd/fakeagent replays these byte-for-byte at runtime.
+// agent in cmd/fakeagent replays the recorded wire envelopes and patches
+// scenario-dependent response fields where needed.
 //
-// The recorder keeps no schema knowledge of its own — it just shells out
-// to the real CLI and tees stdout/stderr/SSE/HTTP responses to disk. If
-// the real wire format drifts upstream, re-recording produces the new
-// fixture and the fake's replay automatically reflects it.
+// The recorder keeps no schema knowledge of its own — it shells out to each
+// real CLI and captures that CLI's wire output to disk. If the real wire
+// format drifts upstream, re-recording produces the new fixture and the
+// fake's replay automatically reflects it.
 package main
 
 import (
@@ -59,15 +61,17 @@ func run() int {
 		return recordCodex(ctx, out, args)
 	case "opencode":
 		return recordOpencode(ctx, out, args)
+	case "antigravity":
+		return recordAntigravity(ctx, out, args)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown agent %q (want claude|codex|opencode)\n", agent)
+		fmt.Fprintf(os.Stderr, "unknown agent %q (want claude|codex|opencode|antigravity)\n", agent)
 		usage()
 		return 2
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: recordfixture <claude|codex|opencode> --out <dir> [--bin <path>]")
+	fmt.Fprintln(os.Stderr, "usage: recordfixture <claude|codex|opencode|antigravity> --out <dir> [--bin <path>]")
 	fmt.Fprintln(os.Stderr, "captures real agent output as e2e fixture files. burns real API quota.")
 }
 

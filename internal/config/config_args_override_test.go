@@ -31,6 +31,9 @@ agent_args_override:
   opencode:
     - --model
     - gpt-5
+  grok:
+    - --model
+    - operator-selected
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -46,6 +49,7 @@ agent_args_override:
 		"codex":    {"-m", "gpt-5.4", "-c", `service_tier="priority"`, "-c", `model_reasoning_effort="low"`},
 		"rovodev":  {"--profile", "work"},
 		"opencode": {"--model", "gpt-5"},
+		"grok":     {"--model", "operator-selected"},
 	}
 	for agent, want := range cases {
 		got := cfg.AgentArgsOverride[agent]
@@ -118,6 +122,39 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"opencode", "--hostname"},
 		{"opencode", "--port"},
 		{"opencode", "--print-logs"},
+		{"antigravity", "--dangerously-skip-permissions"},
+		{"antigravity", "--print"},
+		{"antigravity", "--json-schema"},
+		{"antigravity", "--output-format"},
+		{"antigravity", "--conversation"},
+		{"antigravity", "-c"},
+		{"antigravity", "--continue"},
+		{"grok", "--prompt-file"},
+		{"grok", "--output-format"},
+		{"grok", "--json-schema"},
+		{"grok", "--system-prompt-override"},
+		{"grok", "--system-prompt"},
+		{"grok", "--agent"},
+		{"grok", "--agents"},
+		{"grok", "--resume"},
+		{"grok", "--verbatim"},
+		{"grok", "--cwd"},
+		{"grok", "--restore-code"},
+		{"grok", "--worktree"},
+		{"grok", "--worktree-ref"},
+		{"pi", "--mode"},
+		{"pi", "--mode=json"},
+		{"pi", "--no-session"},
+		{"pi", "-c"},
+		{"pi", "--continue"},
+		{"pi", "--resume"},
+		{"pi", "--resume=session-id"},
+		{"pi", "--session"},
+		{"pi", "--session=session-id"},
+		{"pi", "--session-id"},
+		{"pi", "--session-id=session-id"},
+		{"pi", "--fork"},
+		{"pi", "--fork=session-id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent+"_"+tt.arg, func(t *testing.T) {

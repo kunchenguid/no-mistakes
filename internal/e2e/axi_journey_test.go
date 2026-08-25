@@ -427,6 +427,7 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 			t.Errorf("stranded check missing %q:\n%s", want, checkOut)
 		}
 	}
+	t.Logf("end-user custody dead-end report:\n%s", checkOut)
 
 	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
 	if err != nil {
@@ -437,6 +438,7 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
 		}
 	}
+	t.Logf("end-user guarded recovery result:\n%s", recoverOut)
 	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
 		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
 	}
@@ -467,6 +469,7 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	if !strings.Contains(freshOut, "gate:") {
 		t.Fatalf("fresh pipeline did not start cleanly after recovery:\n%s", freshOut)
 	}
+	t.Logf("end-user fresh-run result after custody return:\n%s", freshOut)
 }
 
 // rebaseCustodyScenario differs from branchSyncScenario in exactly one way that
@@ -981,7 +984,7 @@ func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
 
-	for _, name := range []string{"claude", "codex", "opencode"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode"} {
 		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
 			t.Fatalf("remove fake %s agent: %v", name, err)
 		}

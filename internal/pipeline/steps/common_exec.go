@@ -147,9 +147,13 @@ func missingFromCustomPath(env []string, name string) string {
 // When sctx.Env overrides PATH, the binary is resolved from the overridden PATH
 // so that tests can inject fake binaries without modifying the process environment.
 func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
+	return stepCmdContext(sctx, sctx.Ctx, name, args...)
+}
+
+func stepCmdContext(sctx *pipeline.StepContext, ctx context.Context, name string, args ...string) *exec.Cmd {
 	resolved := name
 	missingFromPath := false
-	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
+	if len(sctx.Env) > 0 && !hasExecutablePathSeparator(name) {
 		if candidate := findInCustomPath(sctx.WorkDir, sctx.Env, name); candidate != "" {
 			resolved = candidate
 		} else if _, ok := envValue(sctx.Env, "PATH"); ok {
@@ -157,16 +161,27 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 			missingFromPath = true
 		}
 	}
-	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
+	cmd := exec.CommandContext(ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
-	if len(sctx.Env) > 0 {
-		cmd.Env = mergeEnv(sctx.Env)
+	if env := stepEnvironment(sctx); env != nil {
+		cmd.Env = env
 	}
 	if missingFromPath {
 		cmd.Err = &exec.Error{Name: name, Err: exec.ErrNotFound}
 	}
 	return cmd
+}
+
+func stepEnvironment(sctx *pipeline.StepContext) []string {
+	var env []string
+	if len(sctx.Env) > 0 {
+		env = mergeEnv(sctx.Env)
+	}
+	if sctx.ForgeContext != nil && !sctx.ForgeContext.Environment.Empty() {
+		env = sctx.ForgeContext.Environment.Apply(env)
+	}
+	return env
 }
 
 // stepGitRun runs git with the StepContext's environment plus the standard
@@ -207,12 +222,24 @@ func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, fo
 // stepCLIAvailable checks whether the provider CLI binary is available,
 // respecting any custom PATH in sctx.Env.
 func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
-	name := provider.CLIName()
+	return stepExecutableAvailable(sctx, provider.CLIName())
+}
+
+func stepExecutableAvailable(sctx *pipeline.StepContext, name string) bool {
 	if name == "" {
 		return false
 	}
+	if hasExecutablePathSeparator(name) {
+		candidate := name
+		if !filepath.IsAbs(candidate) && sctx.WorkDir != "" {
+			candidate = filepath.Join(sctx.WorkDir, candidate)
+		}
+		fi, err := os.Stat(candidate)
+		return err == nil && pathCandidateUsable(runtime.GOOS, candidate, fi)
+	}
 	if len(sctx.Env) == 0 {
-		return scm.CLIAvailable(provider)
+		_, err := exec.LookPath(name)
+		return err == nil
 	}
 	if candidate := findInCustomPath(sctx.WorkDir, sctx.Env, name); candidate != "" {
 		return true
@@ -221,7 +248,12 @@ func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
 	if ok {
 		return false
 	}
-	return scm.CLIAvailable(provider)
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func hasExecutablePathSeparator(name string) bool {
+	return strings.ContainsRune(name, filepath.Separator) || (filepath.Separator != '/' && strings.ContainsRune(name, '/'))
 }
 
 // stepAuthConfigured checks whether the provider CLI is authenticated,
@@ -242,10 +274,17 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 }
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
-	return runShellCommandWithEnv(sctx.Ctx, sctx.WorkDir, sctx.Env, cmdStr)
+	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
 }
 
 func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {
+	if len(env) > 0 {
+		env = mergeEnv(env)
+	}
+	return runShellCommandWithProcessEnv(ctx, dir, env, cmdStr)
+}
+
+func runShellCommandWithProcessEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
@@ -254,8 +293,8 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 	}
 	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = dir
-	if len(env) > 0 {
-		cmd.Env = mergeEnv(env)
+	if env != nil {
+		cmd.Env = env
 	}
 	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if err != nil {

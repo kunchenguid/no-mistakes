@@ -230,10 +230,13 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 			client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
 			client.Close()
 		}
+		// A run reaches its terminal DB state before its goroutine finishes git
+		// worktree cleanup. On process-spawn-bound Windows that cleanup can take
+		// longer than three seconds, so give graceful shutdown its own budget.
 		select {
 		case <-errCh:
-		case <-time.After(3 * time.Second):
-			t.Error("daemon did not stop within 3s")
+		case <-time.After(15 * time.Second):
+			t.Error("daemon did not stop within 15s")
 		}
 	})
 
@@ -357,7 +360,7 @@ func writeMockGHState(t *testing.T, dir, state string) (string, string) {
 	logPath := filepath.Join(dir, "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "gh.bat")
-		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\nset TOKENSTATE=\r\nif defined GH_TOKEN set TOKENSTATE=set\r\necho env:%GH_CONFIG_DIR% token:%TOKENSTATE%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -365,6 +368,7 @@ func writeMockGHState(t *testing.T, dir, state string) (string, string) {
 	}
 	path := filepath.Join(dir, "gh")
 	script := `#!/bin/sh
+printf 'env:%s token:%s\n' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}" >>` + shellQuoteForTest(logPath) + `
 printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status"*|"auth status --hostname "*) exit 0 ;;
@@ -446,4 +450,36 @@ func waitForDaemonReady(t *testing.T, p *paths.Paths) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("daemon at %s never became ready", p.Socket())
+}
+
+// shutdownTestDaemonAndWaitForCleanup turns daemon shutdown into a lifecycle
+// barrier for tests that inspect its filesystem. A run's terminal DB status is
+// persisted before its owner goroutine removes the worktree, while shutdown
+// waits for every run goroutine before removing the socket.
+func shutdownTestDaemonAndWaitForCleanup(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatalf("dial daemon for shutdown: %v", err)
+	}
+	if err := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil); err != nil {
+		client.Close()
+		t.Fatalf("shut down daemon: %v", err)
+	}
+	client.Close()
+
+	// Worktree removal is process-spawn-bound and runs before the socket
+	// disappears, so match the graceful-shutdown budget the run-goroutine
+	// cleanup above already needs on Windows.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.Socket()); os.IsNotExist(err) {
+			return
+		} else if err != nil {
+			t.Fatalf("stat daemon socket during shutdown: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("daemon did not finish cleanup within 15s")
 }

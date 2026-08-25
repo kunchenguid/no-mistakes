@@ -86,6 +86,27 @@ func TestFindPRReturnsBrowsableURL(t *testing.T) {
 	}
 }
 
+func TestFindPRAcceptsEquivalentOrganizationURLForms(t *testing.T) {
+	t.Parallel()
+
+	h := New(azdoTestCmdFactory(map[string]azdoTestResponse{
+		"az repos pr list --source-branch feature --status active --target-branch main --organization https://myorg.visualstudio.com --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: `[{"pullRequestId":42,"status":"active","repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo"}}]` + "\n",
+		},
+	}), func() bool { return true }, "https://myorg.visualstudio.com", testProject, testRepo)
+
+	pr, err := h.FindPR(context.Background(), "feature", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "42" {
+		t.Fatalf("FindPR() = %+v, want PR 42", pr)
+	}
+	if pr.URL != "https://myorg.visualstudio.com/myproject/_git/myrepo/pullrequest/42" {
+		t.Fatalf("FindPR() URL = %q, want configured canonical URL", pr.URL)
+	}
+}
+
 func TestFindPRNoMatch(t *testing.T) {
 	t.Parallel()
 
@@ -123,21 +144,62 @@ func TestFindPRIgnoresStderrChatter(t *testing.T) {
 	}
 }
 
-func TestFindPRReportsParseError(t *testing.T) {
+func TestFindPRRejectsInvalidResponse(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHost(map[string]azdoTestResponse{
-		"az repos pr list --source-branch feature --status active --target-branch main --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
-			stdout: "not json at all\n",
+	valid := `{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo"}}`
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "malformed", output: "not json at all\n"},
+		{name: "missing", output: "\n"},
+		{name: "null", output: "null\n"},
+		{name: "missing identity", output: "[{}]\n"},
+		{name: "later missing identity", output: "[" + valid + ",{}]\n"},
+		{
+			name:   "foreign organization",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/other/myproject/_git/myrepo"}}]` + "\n",
 		},
-	})
+		{
+			name:   "foreign project",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/other/_git/myrepo"}}]` + "\n",
+		},
+		{
+			name:   "foreign repository",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/other"}}]` + "\n",
+		},
+		{
+			name:   "query suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo?view=files"}}]` + "\n",
+		},
+		{
+			name:   "fragment suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo#discussion"}}]` + "\n",
+		},
+		{
+			name:   "pull request suffix",
+			output: `[{"pullRequestId":42,"repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/99"}}]` + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHost(map[string]azdoTestResponse{
+				"az repos pr list --source-branch feature --status active --target-branch main --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+					stdout: tc.output,
+				},
+			})
 
-	pr, err := h.FindPR(context.Background(), "feature", "main")
-	if err == nil {
-		t.Fatalf("FindPR() error = nil, want parse error (must not be silently treated as no-PR)")
-	}
-	if pr != nil {
-		t.Fatalf("FindPR() = %+v, want nil on parse failure", pr)
+			pr, err := h.FindPR(context.Background(), "feature", "main")
+			if err == nil {
+				t.Fatal("FindPR() error = nil, want parse error")
+			}
+			if !strings.Contains(err.Error(), "az repos pr list: parse response") {
+				t.Fatalf("FindPR() error = %v, want provider parse context", err)
+			}
+			if pr != nil {
+				t.Fatalf("FindPR() = %+v, want nil on parse failure", pr)
+			}
+		})
 	}
 }
 

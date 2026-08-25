@@ -35,12 +35,7 @@ var abortStateWaitTimeout = 10 * time.Second
 
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
-	switch types.RunStatus(status) {
-	case types.RunCompleted, types.RunFailed, types.RunCancelled:
-		return true
-	default:
-		return false
-	}
+	return types.RunStatus(status).Terminal()
 }
 
 // outcomeFor maps a terminal run status onto an agent-facing outcome word.
@@ -52,6 +47,8 @@ func outcomeFor(status string) string {
 		return "failed"
 	case types.RunCancelled:
 		return "cancelled"
+	case types.RunCIMonitorInterrupted:
+		return "ci-monitor-interrupted"
 	default:
 		return status
 	}
@@ -257,11 +254,12 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 
 func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 	service := &branchsync.Service{
-		DB:      env.d,
-		Repo:    env.repo,
-		WorkDir: ".",
-		GateDir: env.p.RepoDir(env.repo.ID),
-		Paths:   env.p,
+		DB:            env.d,
+		Repo:          env.repo,
+		WorkDir:       ".",
+		GateDir:       env.p.RepoDir(env.repo.ID),
+		Paths:         env.p,
+		RemoteTimeout: env.cfg.BranchSyncRemoteTimeout,
 	}
 	return service.InspectCached(ctx)
 }
@@ -640,6 +638,16 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		help = append(help, successReportHelp(fixes)...)
 		if hasBranchSync {
 			help = append(help, branchSyncAgentGuidance)
+		}
+		fields = append(fields, toon.Field{Key: "help", Value: help})
+		emitDoc(cmd, fields...)
+		return nil
+	}
+
+	if rv.Status == string(types.RunCIMonitorInterrupted) {
+		help := []string{"The daemon restarted while monitoring CI; the PR remains open and was not marked failed."}
+		if rv.PRURL != "" {
+			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
 		}
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)

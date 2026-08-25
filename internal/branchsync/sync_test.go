@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -199,13 +201,13 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if err := f.db.UpdateRunStatus(active.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
-	// Once the owning run is terminal the same state stops being a dead end:
-	// it stays non-syncable but must offer the guarded custody recovery.
+	// Once the owning run is terminal, inspection must not advertise recovery
+	// unless the recorded head is actually available from the worktree or gate.
 	state = f.service.InspectCached(f.ctx)
-	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+	if state.State != StatePipelineOwned || state.Safety != "blocked_recover_preserved_head_missing" {
 		t.Fatalf("terminal unpublished pipeline head = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
 		t.Fatalf("terminal unpublished pipeline head next action = %#v", state.NextAction)
 	}
 }
@@ -531,6 +533,9 @@ func TestApplyReportsHonestFinalStateWhenPostMergeHookMutatesWorktree(t *testing
 	t.Parallel()
 
 	f := newSyncFixture(t)
+	// Pin hooks to the repo's own dir: an ambient global core.hooksPath
+	// would silently hijack the hook installed below.
+	mustRun(t, f.local, "config", "core.hooksPath", ".git/hooks")
 	hooks := filepath.Join(f.local, ".git", "hooks")
 	hook := filepath.Join(hooks, "post-merge")
 	mustWrite(t, hook, "#!/bin/sh\nprintf hook > hook-output.txt\nexit 1\n")
@@ -825,6 +830,191 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 	state := f.service.Refresh(f.ctx)
 	if state.State != StateBehind || state.Target.Kind != "fork" || state.Remote.ObservedHead != f.pushed {
 		t.Fatalf("state = %#v", state)
+	}
+}
+
+// TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget reproduces the
+// production symptom (JVPT: axi sync reports offline / "could not refresh
+// the configured push target" even though ls-remote and fetch independently
+// succeed) by proving that a slow-but-successful ls-remote no longer shares
+// its context deadline with the subsequent fetch.
+//
+// RemoteTimeout (300ms) is set shorter than the simulated ls-remote delay
+// (400ms) on purpose: had the old code's single context.WithTimeout call
+// still been shared with the fetch, that context's fixed 300ms deadline
+// would already be unconditionally expired - a guaranteed property of
+// context.WithTimeout's timer, not a timing race - by the time the fetch
+// ran, and exec.CommandContext fails closed immediately on an already-done
+// context. The fix creates the fetch's context fresh, after the ls-remote
+// call returns, so it gets its own full 300ms from that later point
+// regardless of how long ls-remote took.
+func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
+	f := newSyncFixture(t)
+
+	f.service.RemoteTimeout = 300 * time.Millisecond
+
+	var lsRemoteDeadline, fetchDeadline time.Time
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		lsRemoteDeadline, _ = ctx.Deadline()
+		time.Sleep(400 * time.Millisecond)
+		return f.pushed, nil
+	}
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
+		fetchDeadline, _ = ctx.Deadline()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Produce the fetch's real observable result without making this
+		// deadline-isolation test depend on platform-specific subprocess
+		// startup time. On Windows, starting the process can legitimately
+		// consume this deliberately tiny test budget even when it is fresh.
+		return gitpkg.FetchRemoteBranchToPrivateRef(context.Background(), dir, remote, branch, localRef)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateBehind || state.Remote.ObservedHead != f.pushed {
+		t.Fatalf("state = %#v, want the fetch to succeed on its own fresh budget instead of inheriting the ls-remote's already-expired deadline", state)
+	}
+	if !fetchDeadline.After(lsRemoteDeadline) {
+		t.Fatalf("fetch context did not get an independent deadline: lsRemote=%v fetch=%v", lsRemoteDeadline, fetchDeadline)
+	}
+}
+
+// TestRefreshGenuineRemoteTimeoutStillReportsOffline proves the fix does not
+// widen the safe fail-closed behavior: an operation that genuinely cannot
+// complete within its own fresh budget must still block as offline, and must
+// never fall through to the fetch step.
+func TestRefreshGenuineRemoteTimeoutStillReportsOffline(t *testing.T) {
+	f := newSyncFixture(t)
+
+	f.service.RemoteTimeout = 80 * time.Millisecond
+	fetchCalled := false
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
+		fetchCalled = true
+		return gitpkg.FetchRemoteBranchToPrivateRef(ctx, dir, remote, branch, localRef)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateOffline || state.Safety != "blocked_offline" || state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+	if fetchCalled {
+		t.Fatal("fetch ran after a genuine ls-remote timeout; a real timeout must never fall through toward synchronization")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.old {
+		t.Fatal("HEAD changed on a genuine remote timeout")
+	}
+}
+
+// TestServiceRemoteTimeoutDefaultsToConfigDefault proves the link between the
+// operator-configurable global default (config.DefaultBranchSyncRemoteTimeout,
+// 60s - the captain-approved replacement for the old hardcoded 15s constant)
+// and what a Service actually uses when a caller does not explicitly set
+// RemoteTimeout, which is the case for every production construction site
+// that fails to load global config and falls back to
+// config.DefaultGlobalConfig().
+func TestServiceRemoteTimeoutDefaultsToConfigDefault(t *testing.T) {
+	var s Service
+	if got := s.remoteTimeout(); got != config.DefaultBranchSyncRemoteTimeout {
+		t.Fatalf("remoteTimeout() = %v, want config.DefaultBranchSyncRemoteTimeout (%v)", got, config.DefaultBranchSyncRemoteTimeout)
+	}
+}
+
+// TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline
+// reproduces the ACTUAL JVPT production failure mode (see
+// data/no-mistakes-jvpt-refresh-root-cause/report.md): ls-remote itself -
+// never a starved fetch - takes longer than its own fresh per-operation
+// budget, because a real private-repo credential helper (git spawning `gh
+// auth git-credential` as a child process) legitimately takes ~19-22s in
+// that environment. This must stay indistinguishable from a genuine
+// unreachable-remote timeout at the State/Safety/Error level (fail-closed
+// either way, and fetch is never invoked), while remaining triggerable
+// purely by ls-remote's own latency against too small a budget.
+func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(t *testing.T) {
+	f := newSyncFixture(t)
+
+	f.service.RemoteTimeout = 100 * time.Millisecond
+	fetchCalled := false
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		select {
+		case <-time.After(200 * time.Millisecond): // legitimate but slow - would succeed given more budget
+			return f.pushed, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
+		fetchCalled = true
+		return gitpkg.FetchRemoteBranchToPrivateRef(ctx, dir, remote, branch, localRef)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateOffline || state.Error != "could not refresh the configured push target; no files or refs were changed" {
+		t.Fatalf("state = %#v, want the ls-remote-specific offline error", state)
+	}
+	if fetchCalled {
+		t.Fatal("fetch ran even though ls-remote itself never returned before its own budget expired")
+	}
+}
+
+// TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote is the
+// companion to the test above: the identical legitimate-but-slow ls-remote
+// latency now succeeds once the configured budget is raised past it,
+// proving the fix actually widens the working envelope (what an operator
+// gets by raising branch_sync_remote_timeout) rather than just relabeling
+// the timeout.
+func TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote(t *testing.T) {
+	f := newSyncFixture(t)
+
+	// Leave enough room for the real local fetch on a loaded Windows runner;
+	// this test varies ls-remote latency, not filesystem or process startup.
+	f.service.RemoteTimeout = 10 * time.Second
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			return f.pushed, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateBehind || state.Remote.ObservedHead != f.pushed {
+		t.Fatalf("state = %#v, want the raised budget to accept the same 200ms latency that failed with a 100ms budget", state)
+	}
+}
+
+// TestRefreshParentCancellationStopsFetchAfterLsRemoteSucceeds guards against
+// a plausible refactor mistake when giving each remote op its own deadline:
+// deriving the fetch's per-op context from context.Background() instead of
+// the caller's ctx, which would silently stop honoring cancellation. An
+// upfront-cancelled context would be caught earlier by inspect()'s own local
+// git calls before ever reaching the remote-op code this fix touches, so
+// this cancels the parent exactly between the two calls - right as
+// ls-remote succeeds - to prove the fetch context is still derived from it.
+func TestRefreshParentCancellationStopsFetchAfterLsRemoteSucceeds(t *testing.T) {
+	f := newSyncFixture(t)
+
+	cancelCtx, cancel := context.WithCancel(f.ctx)
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		live, err := gitpkg.LsRemote(ctx, dir, remote, ref)
+		cancel()
+		return live, err
+	}
+
+	state := f.service.Refresh(cancelCtx)
+	if state.State != StateOffline || state.Changed {
+		t.Fatalf("state = %#v, want a fetch context derived from the now-cancelled parent to fail closed", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.old {
+		t.Fatal("HEAD changed despite a cancelled parent context")
+	}
+	if _, err := gitpkg.Run(context.Background(), f.local, "show-ref", "--verify", "refs/no-mistakes/sync/"+f.run.ID); err == nil {
+		t.Fatal("cancelled refresh created a private fetch ref")
 	}
 }
 

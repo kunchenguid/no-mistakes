@@ -76,6 +76,72 @@ ignore_patterns:
 	}
 }
 
+// TestLoadRepo_BranchSyncRemoteTimeoutIsNotARepoSetting proves
+// branch_sync_remote_timeout is inert in .no-mistakes.yaml: RepoConfig has
+// no matching field, so a pushed branch cannot widen or narrow how long
+// guarded branch synchronization waits before failing closed. It is a
+// global-only operator machine setting (config.GlobalConfig,
+// DefaultBranchSyncRemoteTimeout).
+func TestLoadRepo_BranchSyncRemoteTimeoutIsNotARepoSetting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := `branch_sync_remote_timeout: "999s"`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" || cfg.Commands.Lint != "" || cfg.Commands.Format != "" {
+		t.Fatalf("unrelated repo config fields changed: %#v", cfg)
+	}
+}
+
+// TestLoadRepo_AgentTimeoutIsNotARepoSetting proves agent_timeout is inert in
+// .no-mistakes.yaml: RepoConfig has no matching field, so a pushed branch
+// cannot widen or remove the default per-invocation agent bound. It is a
+// global-only operator machine setting (config.GlobalConfig, DefaultAgentTimeout).
+func TestLoadRepo_AgentTimeoutIsNotARepoSetting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := `agent_timeout: "999s"`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" || cfg.Commands.Lint != "" || cfg.Commands.Format != "" {
+		t.Fatalf("unrelated repo config fields changed: %#v", cfg)
+	}
+}
+
+// TestLoadRepo_TestAgentTimeoutIsNotARepoSetting proves test_agent_timeout is
+// inert in .no-mistakes.yaml: RepoConfig has no matching field, so a pushed
+// branch cannot widen or remove the Test-step evidence-agent bound. It is a
+// global-only operator machine setting (config.GlobalConfig,
+// DefaultTestAgentTimeout).
+func TestLoadRepo_TestAgentTimeoutIsNotARepoSetting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := `test_agent_timeout: "999s"`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" || cfg.Commands.Lint != "" || cfg.Commands.Format != "" {
+		t.Fatalf("unrelated repo config fields changed: %#v", cfg)
+	}
+}
+
 func TestLoadRepo_AgentAcceptsList(t *testing.T) {
 	dir := t.TempDir()
 	data := `agent: [codex, claude]

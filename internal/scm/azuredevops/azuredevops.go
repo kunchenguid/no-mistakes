@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -131,17 +132,97 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err != nil {
 		return nil, fmt.Errorf("az repos pr list: %w", err)
 	}
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
+		return nil, errors.New("az repos pr list: parse response: expected array")
 	}
 	var prs []azPR
-	if err := json.Unmarshal(out, &prs); err != nil {
+	if err := json.Unmarshal(trimmed, &prs); err != nil {
 		return nil, fmt.Errorf("az repos pr list: parse response: %w", err)
+	}
+	if prs == nil {
+		return nil, errors.New("az repos pr list: parse response: expected array")
 	}
 	if len(prs) == 0 {
 		return nil, nil
 	}
+	for i, candidate := range prs {
+		if err := h.validateListedPR(candidate); err != nil {
+			return nil, fmt.Errorf("az repos pr list: parse response: entry %d: %w", i, err)
+		}
+	}
 	return h.toPR(&prs[0]), nil
+}
+
+func (h *Host) validateListedPR(candidate azPR) error {
+	if candidate.PullRequestID <= 0 {
+		return errors.New("missing positive pullRequestId")
+	}
+	org, project, repo, err := parseRepositoryWebURL(candidate.Repository.WebURL)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(azureOrganizationName(org), azureOrganizationName(h.org)) {
+		return fmt.Errorf("repository organization %q does not match configured organization %q", org, h.org)
+	}
+	if !strings.EqualFold(project, h.project) {
+		return fmt.Errorf("repository project %q does not match configured project %q", project, h.project)
+	}
+	if !strings.EqualFold(repo, h.repo) {
+		return fmt.Errorf("repository name %q does not match configured repository %q", repo, h.repo)
+	}
+	if name := strings.TrimSpace(candidate.Repository.Name); name != "" && !strings.EqualFold(name, h.repo) {
+		return fmt.Errorf("repository metadata name %q does not match configured repository %q", name, h.repo)
+	}
+	if name := strings.TrimSpace(candidate.Repository.Project.Name); name != "" && !strings.EqualFold(name, h.project) {
+		return fmt.Errorf("repository metadata project %q does not match configured project %q", name, h.project)
+	}
+	return nil
+}
+
+func parseRepositoryWebURL(raw string) (string, string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", "", "", errors.New("missing valid repository.webUrl")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", "", "", errors.New("repository.webUrl must be HTTP")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
+		return "", "", "", errors.New("repository.webUrl must not contain query or fragment")
+	}
+	segments := splitDecodePath(parsed.EscapedPath())
+	gitIndex := -1
+	for i, segment := range segments {
+		if segment == "_git" {
+			gitIndex = i
+			break
+		}
+	}
+	if gitIndex < 1 || gitIndex+2 != len(segments) {
+		return "", "", "", errors.New("repository.webUrl must end at the repository path")
+	}
+	org, project, repo, ok := ParseRemote(trimmed)
+	if !ok {
+		return "", "", "", errors.New("missing valid repository.webUrl")
+	}
+	return org, project, repo, nil
+}
+
+func azureOrganizationName(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "dev.azure.com" {
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return strings.TrimSuffix(host, ".visualstudio.com")
 }
 
 // runWithDescription runs an az PR command whose description is supplied
@@ -315,7 +396,8 @@ func (h *Host) toPR(raw *azPR) *scm.PR {
 		id = strconv.Itoa(raw.PullRequestID)
 	}
 	return &scm.PR{
-		Number: id,
-		URL:    webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		Number:     id,
+		URL:        webPRURL(h.org, h.project, h.repo, "", id),
+		BaseBranch: strings.TrimPrefix(strings.TrimSpace(raw.TargetRefName), "refs/heads/"),
 	}
 }

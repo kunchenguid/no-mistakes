@@ -12,10 +12,9 @@ import (
 
 func TestCopilotAgent_BuildArgs(t *testing.T) {
 	ca := &copilotAgent{bin: "copilot"}
-	args := ca.buildArgs("fix the bug")
+	args := ca.buildArgs()
 
 	expected := []string{
-		"-p", "fix the bug",
 		"--output-format", "json",
 		"--no-color",
 		"--no-ask-user",
@@ -33,11 +32,10 @@ func TestCopilotAgent_BuildArgs(t *testing.T) {
 
 func TestCopilotAgent_BuildArgs_ExtraArgsFirst(t *testing.T) {
 	ca := &copilotAgent{bin: "copilot", extraArgs: []string{"--model", "gpt-5.4"}}
-	args := ca.buildArgs("fix it")
+	args := ca.buildArgs()
 
 	expected := []string{
 		"--model", "gpt-5.4",
-		"-p", "fix it",
 		"--output-format", "json",
 		"--no-color",
 		"--no-ask-user",
@@ -72,7 +70,7 @@ func TestCopilotAgent_BuildArgs_UserPermissionSuppressesDefault(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ca := &copilotAgent{bin: "copilot", extraArgs: tt.extra}
-			args := ca.buildArgs("p")
+			args := ca.buildArgs()
 
 			count := 0
 			for _, a := range args {
@@ -99,7 +97,7 @@ func TestCopilotAgent_BuildArgs_UserPermissionSuppressesDefault(t *testing.T) {
 
 func TestCopilotAgent_BuildArgs_UserAskUserSuppressesDefault(t *testing.T) {
 	ca := &copilotAgent{bin: "copilot", extraArgs: []string{"--no-ask-user"}}
-	args := ca.buildArgs("p")
+	args := ca.buildArgs()
 
 	count := 0
 	for _, a := range args {
@@ -257,6 +255,42 @@ func writeFakeCopilot(t *testing.T, dir string, jsonlLines []string, exitCode in
 		t.Fatalf("write fake copilot: %v", err)
 	}
 	return bin
+}
+
+func TestCopilotAgent_RunSendsLargePromptOnlyOnStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "copilot")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > argv.txt
+cat > stdin.txt
+printf '%s\n' '{"type":"assistant.message","data":{"content":"done","outputTokens":1}}'
+printf '%s\n' '{"type":"result","exitCode":0}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prompt := strings.Repeat("copilot-prompt-", 512)
+	ca := &copilotAgent{bin: bin}
+	if _, err := ca.Run(context.Background(), RunOpts{Prompt: prompt, CWD: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	argv, err := os.ReadFile(filepath.Join(dir, "argv.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(argv), prompt) || strings.Contains(string(argv), "-p\n") {
+		t.Fatalf("argv must not contain prompt mode or prompt: %q", argv)
+	}
+	stdin, err := os.ReadFile(filepath.Join(dir, "stdin.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdin) != prompt {
+		t.Fatalf("stdin prompt mismatch: got %d bytes, want %d", len(stdin), len(prompt))
+	}
 }
 
 func itoa(n int) string { return strings.TrimSpace(jsonNumber(n)) }

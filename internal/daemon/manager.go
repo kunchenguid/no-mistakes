@@ -14,8 +14,10 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/eval"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -23,9 +25,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
@@ -99,6 +103,7 @@ type recoveredRunPlan struct {
 	cfg     *config.Config
 	agent   agent.Agent
 	steps   []pipeline.Step
+	forge   *forgecontext.Context
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -138,7 +143,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
-	workDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), repo.ID, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
 	}
@@ -163,7 +168,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
+	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve forge profile: %w", err)
+	}
+	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +190,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		cfg:     cfg,
 		agent:   ag,
 		steps:   execSteps,
+		forge:   forgeCtx,
 	}, nil
 }
 
@@ -245,7 +255,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	return cfg, nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error)) (agent.Agent, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
@@ -261,6 +271,8 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
+			Profile:                cfg.AgentProfileFor(name),
+			Environment:            environment,
 		})
 		if err != nil {
 			for _, existing := range created {
@@ -281,6 +293,13 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 	}
 	return ag, nil
+}
+
+func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
+	if ctx == nil {
+		return runenv.Overlay{}
+	}
+	return ctx.Environment
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -323,6 +342,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.relabelEvalRun(context.Background(), plan.cfg, runID)
 		}()
 	})
+	executor.SetForgeContext(plan.forge)
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -347,9 +367,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
-			}
+			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 			// A recovered run is a finished run too. This is the second of the
 			// two completion boundaries, and leaving it out is what let a run
 			// resumed after a daemon restart keep its empty evidence directory
@@ -493,16 +511,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // group the pipeline can name - only the worktree it is standing in still
 // identifies it (see internal/procreap).
 //
-// It runs before the worktree directory is removed, because a process that
-// outlives its worktree holds the deleted directory open through its cwd and
-// can no longer be attributed to any run. No age floor applies: the caller
-// owns this run and has already observed its execution return, so nothing
-// standing in it can still be legitimate work.
-func (m *RunManager) sweepRunWorktreeProcesses(wtDir string) {
-	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: m.paths.WorktreesDir(),
-		Scope:         wtDir,
-	}, "run_cleanup")
+// The run's own worktree is what the sweep is pointed at, so a placement
+// outside the default tree needs no configuration lookup and cannot be hidden
+// by a worktree_roots edit made while the run was executing. The ordering rule
+// and its rationale live on procreap.SweepRunWorktree, which every removal site
+// in every package goes through.
+func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
+	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
 }
 
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
@@ -537,6 +552,21 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	reapEvidence(m.db, root, policy, time.Now())
+}
+
+// removeRunWorktree tears one run's worktree down: it sweeps whatever is still
+// standing in the directory and only then removes it.
+//
+// Every removal of a run worktree this package performs goes through here, and
+// none calls git.WorktreeRemove directly, because the ordering is easy to forget
+// at one site and invisible when forgotten - a run whose setup failed, whose
+// execution returned, or which was resumed after a crash all reach this point by
+// different routes. reason distinguishes the routes in the log.
+func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
+	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
+	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
+		slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
+	}
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -683,9 +713,11 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
 }
 
-// HandleRerun creates a new run for the latest gate head on a branch. An
-// explicit intent overrides the selected run. Otherwise an authoritative
-// intent is inherited byte-for-byte; runs without one infer intent afresh.
+// HandleRerun creates a new run for the latest recoverable head on a branch:
+// normally the gate branch, or the latest terminal run's verified unpublished
+// head while custody remains outstanding. An explicit intent overrides the
+// selected run. Otherwise an authoritative intent is inherited byte-for-byte;
+// runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
@@ -696,7 +728,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	gateDir := m.paths.RepoDir(repo.ID)
-	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve gate head: %w", err)
 	}
@@ -715,13 +747,17 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		if latestForBranch == nil {
 			latestForBranch = run
 		}
-		if run.HeadSHA == headSHA {
+		if run.HeadSHA == gateHead {
 			matchingHead = run
 			break
 		}
 	}
 	if latestForBranch == nil {
 		return "", fmt.Errorf("no previous run for branch %s", branch)
+	}
+	headSHA, err := resolveRerunHead(ctx, gateDir, branch, latestForBranch)
+	if err != nil {
+		return "", err
 	}
 	selectedRun := latestForBranch
 	if previousRunID != "" {
@@ -735,7 +771,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	baseSHA := latestForBranch.BaseSHA
-	if matchingHead != nil {
+	if matchingHead != nil && headSHA == gateHead {
 		baseSHA = matchingHead.BaseSHA
 	}
 
@@ -753,6 +789,47 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+}
+
+func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve gate head: %w", err)
+	}
+	if latest == nil || !latest.Status.Terminal() || latest.CustodyReturnedAt != nil || latest.HeadSHA == gateHead {
+		return gateHead, nil
+	}
+	published := ""
+	if latest.LastPushedSHA != nil {
+		published = *latest.LastPushedSHA
+	} else if latest.SubmittedHeadSHA != nil {
+		published = *latest.SubmittedHeadSHA
+	}
+	if published == latest.HeadSHA || latest.TerminalHeadVerifiedAt == nil {
+		return gateHead, nil
+	}
+	recoveryRef := custody.RecoveryRef(latest.ID)
+	refTarget, refExists, refErr := git.ExactRefTarget(ctx, gateDir, recoveryRef)
+	if refErr != nil {
+		return "", fmt.Errorf("inspect terminal recovery ref for run %s: %w", latest.ID, refErr)
+	}
+	if refExists {
+		preserved, preserveErr := git.Run(ctx, gateDir, "rev-parse", recoveryRef+"^{commit}")
+		if preserveErr != nil {
+			return "", fmt.Errorf("refusing rerun: terminal recovery ref for run %s points at non-commit object %s; inspect with `no-mistakes axi status` and reconcile custody first", latest.ID, refTarget)
+		}
+		if preserved != latest.HeadSHA {
+			return "", fmt.Errorf("refusing rerun: terminal recovery ref for run %s points at %s, not recorded unpublished head %s; inspect with `no-mistakes axi status` and reconcile custody first", latest.ID, preserved, latest.HeadSHA)
+		}
+		return preserved, nil
+	}
+	if preserved, objectErr := git.Run(ctx, gateDir, "rev-parse", latest.HeadSHA+"^{commit}"); objectErr == nil && preserved == latest.HeadSHA {
+		if anchorErr := custody.PreserveRecoveryHead(ctx, gateDir, latest.ID, preserved); anchorErr != nil {
+			return "", fmt.Errorf("preserve terminal head %s before rerun: %w", preserved, anchorErr)
+		}
+		return preserved, nil
+	}
+	return "", fmt.Errorf("refusing rerun from stale gate head %s: terminal run %s recorded unpublished head %s, but that head is unavailable; inspect with `no-mistakes axi status` and reconcile custody first", gateHead, latest.ID, latest.HeadSHA)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -835,14 +912,56 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	// Create worktree from the gate bare repo.
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_global_config")
+		return "", fmt.Errorf("load global config: %w", err)
+	}
+
+	// Create worktree from the gate bare repo, where this repository's
+	// worktree placement says it belongs (see internal/worktrees). This is the
+	// only point at which configuration decides placement: the resolved
+	// directory is recorded on the run before it exists on disk, and every
+	// later consumer reads that record back, so an edit to worktree_roots from
+	// here on is inert for this run.
 	gateDir := m.paths.RepoDir(repo.ID)
-	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
+	checkouts, err := registeredCheckouts(m.db)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("list registered checkouts: %s", err))
+		trackStartFailure("list_registered_checkouts")
+		return "", fmt.Errorf("list registered checkouts: %w", err)
+	}
+	if err := layout.ValidateCheckout(repo.WorkingPath, checkouts...); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("worktree placement: %s", err))
+		trackStartFailure("invalid_worktree_placement")
+		return "", fmt.Errorf("worktree placement: %w", err)
+	}
+	wtDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
+	if err := m.db.SetRunWorktreeDir(run.ID, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record worktree placement: %s", err))
+		trackStartFailure("record_worktree_placement")
+		return "", fmt.Errorf("record worktree placement: %w", err)
+	}
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
+
+	// The worktree exists from here on, so cleanup ownership is armed from here
+	// on: every later setup failure returns through this defer, and the
+	// background goroutine takes ownership only once it is running. Arming it any
+	// later would leave the directory behind - in the operator's own worktree
+	// root, unswept - for whichever failures happen in between.
+	bgOwnsWorktree := false
+	defer func() {
+		if !bgOwnsWorktree {
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
+		}
+	}()
+
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
@@ -869,23 +988,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}
 
-	// Track whether the background goroutine takes ownership of worktree cleanup.
-	// If setup fails before the goroutine launches, we must clean up here.
-	bgOwnsWorktree := false
-	defer func() {
-		if !bgOwnsWorktree {
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
-			}
-		}
-	}()
-
-	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_global_config")
-		return "", fmt.Errorf("load global config: %w", err)
-	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
@@ -938,6 +1040,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			return "", err
 		}
 	}
+	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("resolve forge profile: %s", err))
+		trackStartFailure("resolve_forge_profile")
+		return "", fmt.Errorf("resolve forge profile: %w", err)
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
@@ -958,6 +1066,8 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 				DisableProjectSettings: cfg.DisableProjectSettings,
+				Profile:                cfg.AgentProfileFor(name),
+				Environment:            forgeEnvironment(forgeCtx),
 			})
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
@@ -997,6 +1107,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
@@ -1044,7 +1155,14 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				}
 				addRunPerformanceSummary(m.db, run.ID, fields)
 				telemetry.Track("run", fields)
-				if dbErr := m.db.UpdateRunErrorStatus(run.ID, errMsg, types.RunFailed); dbErr != nil {
+				verifiedHead, verified := preserveRunHead(m.db, wtDir, run)
+				var dbErr error
+				if verified {
+					dbErr = m.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, errMsg, types.RunFailed, verifiedHead)
+				} else {
+					dbErr = m.db.UpdateRunErrorStatus(run.ID, errMsg, types.RunFailed)
+				}
+				if dbErr != nil {
 					slog.Error("failed to update run after panic", "run_id", run.ID, "error", dbErr)
 				}
 			}
@@ -1052,11 +1170,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(wtDir)
-			// Clean up worktree.
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
-			}
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
 			m.cleanupRunEvidence(cfg, run.ID)
 			// Remove tracking.
 			m.mu.Lock()

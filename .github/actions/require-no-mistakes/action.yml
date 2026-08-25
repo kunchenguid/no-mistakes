@@ -1,0 +1,96 @@
+name: Require no-mistakes
+description: >-
+  Verify that a pull request body declares a no-mistakes pipeline run: the body
+  carries the signature line and a v1 pipeline-step attestation bound to the
+  current PR head, with review, test, and document all completed.
+
+inputs:
+  pr-body:
+    description: >-
+      Pull request body to judge. Defaults to the body in the workflow event
+      payload, so an ordinary pull_request-triggered caller passes nothing.
+    required: false
+    default: ""
+  pr-head-sha:
+    description: >-
+      Commit the forge currently has as the PR head. The attestation must bind
+      to it. Defaults to the event payload's pull_request.head.sha.
+    required: false
+    default: ""
+  pr-head-ref:
+    description: >-
+      PR head branch name, matched against exempt-head-branches. Defaults to the
+      event payload's pull_request.head.ref.
+    required: false
+    default: ""
+  pr-author:
+    description: >-
+      PR author login, matched against exempt-authors. Defaults to the event
+      payload's pull_request.user.login.
+    required: false
+    default: ""
+  pr-number:
+    description: >-
+      PR number, used only in log output. Defaults to the event payload's
+      pull_request.number.
+    required: false
+    default: ""
+  exempt-authors:
+    description: >-
+      Newline- or comma-separated author logins that bypass the gate, for the
+      automation accounts a repository cannot route through the pipeline (for
+      example github-actions[bot] raising the release-please PR). Empty by
+      default: exemptions are opt-in per repository.
+    required: false
+    default: ""
+  exempt-bot-authors:
+    description: >-
+      When true, every author login ending in '[bot]' bypasses the gate. Broader
+      than exempt-authors and off by default.
+    required: false
+    default: "false"
+  exempt-head-branches:
+    description: >-
+      Newline- or comma-separated glob patterns; a PR whose head branch matches
+      one bypasses the gate. Intended for structural automation branches such as
+      'release-please--*'.
+    required: false
+    default: ""
+
+outputs:
+  compliant:
+    description: "true only when the PR body structurally satisfies the pipeline gate; false for exemptions."
+    value: ${{ steps.verify.outputs.compliant }}
+  exempt:
+    description: "true when the PR bypassed the gate through a configured exemption."
+    value: ${{ steps.verify.outputs.exempt }}
+  exempt-reason:
+    description: "Human-readable reason the PR was exempt; empty when it was judged."
+    value: ${{ steps.verify.outputs.exempt-reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify no-mistakes signature and pipeline attestation
+      id: verify
+      shell: bash
+      env:
+        PR_BODY: ${{ inputs.pr-body }}
+        PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+        PR_HEAD_REF: ${{ inputs.pr-head-ref }}
+        PR_AUTHOR: ${{ inputs.pr-author }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        NM_EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
+        NM_EXEMPT_BOT_AUTHORS: ${{ inputs.exempt-bot-authors }}
+        NM_EXEMPT_HEAD_BRANCHES: ${{ inputs.exempt-head-branches }}
+      run: |
+        set -eu
+        if command -v python3 >/dev/null 2>&1; then
+          PY=python3
+        elif command -v python >/dev/null 2>&1; then
+          PY=python
+        else
+          echo "::error::python interpreter not found; cannot parse pipeline attestation." >&2
+          exit 1
+        fi
+        "$PY" "${GITHUB_ACTION_PATH}/verify.py"

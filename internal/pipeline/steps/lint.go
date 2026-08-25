@@ -69,7 +69,7 @@ Rules:
 Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
-		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+		result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 			Prompt:     prompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,

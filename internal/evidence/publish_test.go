@@ -45,6 +45,9 @@ func newRepoWithRemote(t *testing.T) (remote, work string) {
 	work = filepath.Join(root, "work")
 
 	runGit(t, root, "init", "--bare", "--initial-branch=main", remote)
+	// Pin hooks to the repo's own dir: an ambient global core.hooksPath
+	// would silently bypass hooks installed into the bare remote below.
+	runGit(t, remote, "config", "core.hooksPath", "hooks")
 	runGit(t, root, "init", "--initial-branch=main", work)
 	runGit(t, work, "config", "user.name", "Evidence Test")
 	runGit(t, work, "config", "user.email", "evidence@example.com")

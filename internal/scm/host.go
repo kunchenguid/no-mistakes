@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -66,9 +67,9 @@ func stripPort(host string) string {
 }
 
 // ExtractPRNumber returns the trailing numeric segment from a PR/MR URL.
-// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Bitbucket
-// (/pull-requests/N), and Azure DevOps (/pullrequest/N) URLs; all of them
-// end in a digit path segment.
+// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Forgejo
+// (/pulls/N), Bitbucket (/pull-requests/N), and Azure DevOps (/pullrequest/N)
+// URLs; all of them end in a digit path segment.
 func ExtractPRNumber(prURL string) (string, error) {
 	trimmed := strings.TrimRight(prURL, "/")
 	parts := strings.Split(trimmed, "/")
@@ -89,6 +90,14 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// HeadSHA scopes provider check discovery to the exact commit currently
+	// being certified. Providers that expose CI outside the PR check rollup
+	// use it to include those runs.
+	HeadSHA string
+	// BaseBranch is the forge's actual target branch for this PR. It is
+	// authoritative once a PR exists and protects resumed CI repair from a
+	// later configuration change.
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -146,10 +155,18 @@ type Check struct {
 	// provider reported no state.
 	State       string
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
-	// Link is the provider's details URL for this check. It identifies the job
-	// behind the check, so a rerun can target that job instead of the whole PR.
-	// Empty when the provider reported no link.
+	// Link is the provider's details URL for this check. It may identify an
+	// individual job or a provider-side workflow run for targeted reruns. Empty
+	// when the provider reported no link.
 	Link string
+	// PreRunFailure marks a check the provider failed before the repository's own
+	// steps ran - its setup/action-resolution phase failed (e.g. a GitHub Actions
+	// action-download outage), so no repository step executed. It is an
+	// infrastructure outcome, not a verdict on the code, and the CI step treats it
+	// as re-runnable rather than a code failure. A PreRunFailureDetector sets it;
+	// it can never be true for a genuine test or lint failure, whose job cleared
+	// setup and failed a later step.
+	PreRunFailure bool
 }
 
 // Failing reports whether the check is in a failed bucket.
@@ -163,12 +180,37 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	MergedProof     bool
 }
 
-// ErrUnsupported is returned by optional Host methods that the provider
-// cannot fulfil. Callers should gate calls on Capabilities rather than
-// relying on this error, but implementations return it as a fallback.
-var ErrUnsupported = errors.New("operation not supported by this provider")
+var (
+	// ErrUnsupported is returned by optional Host methods that the provider
+	// cannot fulfil. Callers should gate calls on Capabilities rather than
+	// relying on this error, but implementations return it as a fallback.
+	ErrUnsupported = errors.New("operation not supported by this provider")
+	// ErrHeadChanged rejects results for a different PR head than the run is
+	// monitoring. It prevents a late status or already-merged race from proving
+	// the wrong commit.
+	ErrHeadChanged = errors.New("pull request head changed")
+)
+
+// MergedProof is provider evidence that a specific PR head was merged.
+type MergedProof struct {
+	Merged         bool
+	Number         string
+	URL            string
+	HeadSHA        string
+	MergeCommitSHA string
+	MergedAt       time.Time
+	MergedBy       string
+}
+
+// MergedProofHost is implemented by hosts that can prove which exact PR head
+// was merged. The expected head must be checked even when the PR is already
+// merged, because merge and monitor polling can race.
+type MergedProofHost interface {
+	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+}
 
 // Host is the provider-agnostic interface to a PR-hosting service.
 // Transport (CLI vs HTTP API) is an implementation detail.
@@ -180,7 +222,11 @@ type Host interface {
 	// error explaining why it is not (missing CLI, unauthenticated, etc).
 	Available(ctx context.Context) error
 
-	// FindPR returns the open PR for the source branch, or nil if none exists.
+	// FindPR returns the open PR for the source branch, or nil only when a
+	// successfully decoded and validated PR listing contains no matching PR. It
+	// returns an error for lookup, response-decoding, or validation failures
+	// (including empty, malformed, null, or incoherent payloads) so callers do
+	// not create a duplicate PR after an indeterminate lookup.
 	FindPR(ctx context.Context, branch, base string) (*PR, error)
 	CreatePR(ctx context.Context, branch, base string, content PRContent) (*PR, error)
 	UpdatePR(ctx context.Context, pr *PR, content PRContent) (*PR, error)
@@ -197,7 +243,37 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
-// CheckRerunner re-runs the provider-side job behind a failed check without
+// PRBaseBranchReader is implemented by providers that can read the target
+// branch of an existing PR by its durable identity. CI uses it when a run is
+// resumed after repository configuration changes.
+type PRBaseBranchReader interface {
+	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
+}
+
+// PreRunFailureDetector reports which failed checks the provider failed before
+// the repository's own steps ran - a setup/action-resolution outcome (for GitHub
+// Actions, an action-download outage) rather than a verdict on the code. It
+// reads the provider's own step-level conclusions, never log text, so a flagged
+// check is one whose job never executed a repository step. A genuine test or
+// lint failure can never be flagged, because that job cleared setup and failed a
+// later step: this is what keeps the transient-rerun path from masking real
+// failures.
+//
+// Like CheckRerunner it is optional: a backend whose provider exposes no
+// step-level phase simply does not implement it, and the CI step consults it
+// only when transient reruns are enabled.
+type PreRunFailureDetector interface {
+	// PreRunFailures returns a slice parallel to checks: entry i is true when
+	// checks[i] failed before any repository step ran. Check names are not unique
+	// on a PR, so the result is positional rather than name-keyed - a same-named
+	// genuine failure must never inherit another check's infrastructure flag. It
+	// must fail closed - leaving false any check whose phase it cannot determine -
+	// so an unreadable job stays a genuine failure rather than being masked as
+	// infrastructure.
+	PreRunFailures(ctx context.Context, checks []Check) ([]bool, error)
+}
+
+// CheckRerunner re-runs the provider-side work behind a failed check without
 // changing the commit under test. It is deliberately a separate interface
 // rather than a Host method: a backend whose provider exposes no rerun
 // primitive simply does not implement it, and callers type-assert
@@ -206,6 +282,58 @@ type Host interface {
 type CheckRerunner interface {
 	// RerunCheck asks the provider to run check again for the same commit. It
 	// returns an error when the request could not be made, including when the
-	// check names no job the provider can re-run.
+	// check names no job or workflow run the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
+}
+
+// RepoPath extracts a repository path from a git remote or web URL. Nested
+// namespaces are preserved. Azure DevOps remotes use project/repository.
+func RepoPath(remoteURL string) string {
+	raw := strings.TrimSpace(remoteURL)
+	if raw == "" {
+		return ""
+	}
+
+	host := ExtractHost(raw)
+	switch {
+	case strings.Contains(raw, "://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+		raw = u.Path
+	case strings.Contains(raw, ":"):
+		colon := strings.IndexByte(raw, ':')
+		if colon <= 0 || strings.Contains(raw[:colon], "/") {
+			return ""
+		}
+		raw = raw[colon+1:]
+	}
+
+	parts := strings.Split(strings.Trim(raw, "/"), "/")
+	clean := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	parts = clean
+	if len(parts) == 0 {
+		return ""
+	}
+
+	isAzureDevOps := host == "dev.azure.com" || host == "ssh.dev.azure.com" || strings.HasSuffix(host, ".visualstudio.com")
+	if isAzureDevOps {
+		for i, part := range parts {
+			if strings.EqualFold(part, "_git") && i > 0 && i+1 < len(parts) {
+				return parts[i-1] + "/" + strings.TrimSuffix(parts[i+1], ".git")
+			}
+		}
+	}
+	if (host == "ssh.dev.azure.com" || host == "vs-ssh.visualstudio.com") && len(parts) >= 4 && strings.EqualFold(parts[0], "v3") {
+		return parts[len(parts)-2] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".git")
+	}
+	parts[len(parts)-1] = strings.TrimSuffix(parts[len(parts)-1], ".git")
+	return strings.Join(parts, "/")
 }

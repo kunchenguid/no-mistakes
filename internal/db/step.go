@@ -25,9 +25,18 @@ type StepResult struct {
 	LastActivity   *string
 	AgentPID       *int
 	AutoFixLimit   *int
+	CIFixAttempts  int
 }
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
+
+func (d *DB) readableStepResultColumns() string {
+	if d.hasColumn("step_results", "ci_fix_attempts") {
+		return stepResultColumns + ", ci_fix_attempts"
+	}
+	// Read-only preflight can inspect a database before migrations run.
+	return stepResultColumns + ", 0 AS ci_fix_attempts"
+}
 
 // InsertStepResult creates a new step result record.
 func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResult, error) {
@@ -52,8 +61,8 @@ func (d *DB) InsertStepResult(runID string, stepName types.StepName) (*StepResul
 func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
-		`SELECT `+stepResultColumns+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit)
+		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -66,7 +75,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 // GetStepsByRun returns all step results for a run, in execution order.
 func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+stepResultColumns+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
+		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get steps by run: %w", err)
@@ -75,12 +84,26 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
 	}
 	return steps, rows.Err()
+}
+
+func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
+	_, err := d.sql.Exec(`
+		UPDATE step_results
+		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
+			findings_json = NULL, error = NULL, started_at = NULL,
+			completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
+			agent_pid = NULL, auto_fix_limit = NULL
+		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
+	if err != nil {
+		return fmt.Errorf("reset steps for revalidation: %w", err)
+	}
+	return nil
 }
 
 // UpdateStepStatus updates a step's status.
@@ -162,6 +185,13 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 func (d *DB) SetStepAutoFixLimit(id string, autoFixLimit int) error {
 	if _, err := d.sql.Exec(`UPDATE step_results SET auto_fix_limit = ? WHERE id = ?`, autoFixLimitDBValue(autoFixLimit), id); err != nil {
 		return fmt.Errorf("set step auto-fix limit: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) SetCIFixAttempts(id string, attempts int) error {
+	if _, err := d.sql.Exec(`UPDATE step_results SET ci_fix_attempts = ? WHERE id = ?`, attempts, id); err != nil {
+		return fmt.Errorf("set CI fix attempts: %w", err)
 	}
 	return nil
 }

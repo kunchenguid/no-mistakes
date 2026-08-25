@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,47 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
+func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error) {
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return 0, errors.New("expected absolute GitLab merge request URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return 0, errors.New("expected HTTP GitLab merge request URL")
+	}
+	if expectedHost != "" && !strings.EqualFold(parsed.Hostname(), expectedHost) {
+		return 0, fmt.Errorf("URL host %q does not match GitLab host %q", parsed.Hostname(), expectedHost)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
+		return 0, errors.New("expected GitLab /group/project/-/merge_requests/number URL")
+	}
+	projectSegments := segments[:len(segments)-3]
+	for _, segment := range projectSegments {
+		if segment == "" || segment == "." || segment == ".." {
+			return 0, errors.New("expected unambiguous GitLab project path")
+		}
+	}
+	actualProject := strings.Join(projectSegments, "/")
+	expectedProject = strings.Trim(strings.TrimSpace(expectedProject), "/")
+	if expectedProject != "" && !strings.EqualFold(actualProject, expectedProject) {
+		return 0, fmt.Errorf("URL project %q does not match GitLab project %q", actualProject, expectedProject)
+	}
+	number, err := strconv.Atoi(segments[len(segments)-1])
+	if err != nil || number <= 0 {
+		return 0, errors.New("expected positive GitLab merge request number")
+	}
+	escapedSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(escapedSegments) != len(segments) || escapedSegments[len(escapedSegments)-1] != strconv.Itoa(number) {
+		return 0, errors.New("expected canonical GitLab merge request number path")
+	}
+	if parsed.ForceQuery || parsed.RawQuery != "" || strings.Contains(trimmed, "#") {
+		return 0, errors.New("expected GitLab merge request URL without query or fragment")
+	}
+	return number, nil
+}
+
 type mrPayload struct {
 	IID                 int    `json:"iid"`
 	WebURL              string `json:"web_url"`
@@ -146,6 +188,7 @@ type mrPayload struct {
 	HasConflicts        bool   `json:"has_conflicts"`
 	DetailedMergeStatus string `json:"detailed_merge_status"`
 	MergeStatus         string `json:"merge_status"`
+	TargetBranch        string `json:"target_branch"`
 }
 
 func (p mrPayload) toPR() *scm.PR {
@@ -153,7 +196,7 @@ func (p mrPayload) toPR() *scm.PR {
 	if url == "" {
 		url = strings.TrimSpace(p.URL)
 	}
-	pr := &scm.PR{URL: url}
+	pr := &scm.PR{URL: url, BaseBranch: strings.TrimSpace(p.TargetBranch)}
 	if p.IID > 0 {
 		pr.Number = fmt.Sprintf("%d", p.IID)
 	}
@@ -177,16 +220,35 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, errors.New("parse glab mr list JSON: no JSON found")
 	}
 	var mrs []mrPayload
-	if err := json.Unmarshal(trimmed, &mrs); err != nil || len(mrs) == 0 {
+	if err := json.Unmarshal(trimmed, &mrs); err != nil {
+		return nil, fmt.Errorf("parse glab mr list JSON: %w", err)
+	}
+	if mrs == nil {
+		return nil, errors.New("parse glab mr list JSON: expected array")
+	}
+	if len(mrs) == 0 {
 		return nil, nil
+	}
+	for i, candidate := range mrs {
+		url := strings.TrimSpace(candidate.WebURL)
+		if url == "" {
+			url = strings.TrimSpace(candidate.URL)
+		}
+		if url == "" {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d missing merge request URL", i)
+		}
+		number, err := parseMergeRequestURL(url, h.host, h.projectPath)
+		if err != nil {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d invalid merge request URL: %w", i, err)
+		}
+		if candidate.IID != 0 && candidate.IID != number {
+			return nil, fmt.Errorf("parse glab mr list JSON: entry %d IID %d does not match URL number %d", i, candidate.IID, number)
+		}
 	}
 	pr := mrs[0].toPR()
-	if pr.URL == "" {
-		return nil, nil
-	}
 	return pr, nil
 }
 

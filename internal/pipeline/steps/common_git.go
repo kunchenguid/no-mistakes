@@ -2,7 +2,10 @@ package steps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -173,7 +176,33 @@ func resolveUpstreamURL(sctx *pipeline.StepContext) string {
 	return sctx.Repo.UpstreamURL
 }
 
+// fetchUpstreamTimeout bounds a single upstream fetch. Abort convergence alone
+// does not rescue a fetch that hangs with nothing to cancel it: an SSH fetch can
+// sit indefinitely on a dead connection while the run context stays live. The
+// deadline is attributed with ErrFetchTimeout so the caller can say why it gave
+// up rather than logging a bare context error.
+// Overridable so tests can drive the deadline without waiting it out.
+var fetchUpstreamTimeout = 120 * time.Second
+
+// ErrFetchTimeout marks a fetch that exceeded fetchUpstreamTimeout.
+var ErrFetchTimeout = errors.New("upstream fetch timed out")
+
 func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+	// Respect a deadline the caller already set rather than extending it.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, fetchUpstreamTimeout, ErrFetchTimeout)
+		defer cancel()
+	}
+
+	err := fetchRunUpstreamBranchInner(ctx, sctx, branch)
+	if err != nil && errors.Is(context.Cause(ctx), ErrFetchTimeout) {
+		return fmt.Errorf("%w after %s: %v", ErrFetchTimeout, fetchUpstreamTimeout, err)
+	}
+	return err
+}
+
+func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
 	upstreamURL := resolveUpstreamURL(sctx)
 	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
 	if err == nil && upstreamURL == originURL {

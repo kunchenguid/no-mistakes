@@ -47,12 +47,13 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent runner** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, `pi`, or `copilot`, or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
+- **One supported agent runner** - `claude`, `codex`, `grok`, `acli` (Rovo Dev), `opencode`, `pi`, `copilot`, or `agy` (Antigravity), or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
+  - `tea` CLI (Gitea)
 
 Run `no-mistakes doctor` to check native agents, ACP aliases such as `cursor`, provider tools, and whether the configured global runner can start a validation gate.
 Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
@@ -100,5 +101,7 @@ no-mistakes daemon stop
 rm -f ~/.local/bin/no-mistakes /usr/local/bin/no-mistakes
 rm -rf ~/.no-mistakes
 ```
+
+If you configured [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots), also delete the run worktree directories it placed outside `~/.no-mistakes`.
 
 On macOS, also remove `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`. On Linux, also remove `~/.config/systemd/user/no-mistakes-daemon-*.service`. On Windows, remove the `no-mistakes-daemon-*` Task Scheduler task.

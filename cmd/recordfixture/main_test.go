@@ -165,3 +165,154 @@ func TestCaptureCodexPlacesForwardedFlagsBeforePrompt(t *testing.T) {
 		t.Fatalf("expected output file: %v", err)
 	}
 }
+
+func TestCaptureAgyPlacesForwardedFlagsBeforePromptAndSchemaLast(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	argsPath := filepath.Join(tmp, "args.txt")
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '%s\n' \"$@\" > \"$ARGS_FILE\"",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = strings.Join([]string{
+			"@echo off",
+			"setlocal",
+			"if exist \"%ARGS_FILE%\" del \"%ARGS_FILE%\"",
+			":loop",
+			"if \"%~1\"==\"\" goto done",
+			">> \"%ARGS_FILE%\" echo(%~1",
+			"shift",
+			"goto loop",
+			":done",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}",
+		}, "\r\n")
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	t.Setenv("ARGS_FILE", argsPath)
+	err := captureAgy(t.Context(), binPath,
+		[]string{"--model", "gemini-flash"},
+		"prompt text",
+		outPath,
+		[]string{"--json-schema", `{"type":"object"}`},
+	)
+	if err != nil {
+		t.Fatalf("captureAgy: %v", err)
+	}
+
+	argvRaw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(argvRaw)), "\n")
+	for i := range argv {
+		argv[i] = strings.TrimSuffix(argv[i], "\r")
+	}
+	schemaArg := `{"type":"object"}`
+	if runtime.GOOS == "windows" {
+		// The fake agent is a .cmd batch script: Go escapes the embedded
+		// quotes as \" per the Windows command-line convention, and cmd.exe
+		// %~1 expansion hands those backslashes through verbatim instead of
+		// undoing them. Real agy parses argv with CommandLineToArgvW and sees
+		// the unescaped JSON; only this batch harness records the escaped
+		// form. Flag order is identical on every platform.
+		schemaArg = `{\"type\":\"object\"}`
+	}
+	want := []string{
+		"--model", "gemini-flash", "--dangerously-skip-permissions", "--print",
+		"prompt text", "--json-schema", schemaArg, "--output-format", "stream-json",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read captured output: %v", err)
+	}
+	if !strings.Contains(string(data), `"event":"result"`) {
+		t.Fatalf("captured output missing stdout: %q", data)
+	}
+}
+
+func TestCaptureAgyRejectsErrorThenSuccessResult(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	if err := os.WriteFile(outPath, []byte("existing fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\n'",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = strings.Join([]string{
+			"@echo off",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}",
+			"echo {\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\"}}",
+		}, "\r\n")
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	err := captureAgy(t.Context(), binPath, nil, "prompt text", outPath, nil)
+	if err == nil {
+		t.Fatal("captureAgy() error = nil, want trailing-success capture with an ERROR result rejected")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing fixture\n" {
+		t.Fatalf("destination = %q, want existing fixture preserved", data)
+	}
+}
+
+func TestCaptureAgyRejectsErrorResultWithoutReplacingFixture(t *testing.T) {
+	tmp := t.TempDir()
+	outPath := filepath.Join(tmp, "out.jsonl")
+	if err := os.WriteFile(outPath, []byte("existing fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	binName := "agy"
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"printf '{\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\n'",
+	}, "\n")
+	if runtime.GOOS == "windows" {
+		binName = "agy.cmd"
+		script = "@echo off\r\necho {\"event\":\"result\",\"result\":{\"status\":\"ERROR\"}}\r\n"
+	}
+	binPath := filepath.Join(tmp, binName)
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+
+	if err := captureAgy(t.Context(), binPath, nil, "prompt text", outPath, nil); err == nil {
+		t.Fatal("captureAgy() error = nil, want ERROR result rejection")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing fixture\n" {
+		t.Fatalf("destination = %q, want existing fixture preserved", data)
+	}
+	if _, err := os.Stat(outPath + ".recording"); !os.IsNotExist(err) {
+		t.Fatalf("staging file error = %v, want missing staging file", err)
+	}
+}

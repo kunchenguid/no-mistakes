@@ -1,14 +1,84 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestPreserveStaleRunHeadsAnchorsCrashWorkBeforeTerminalization(t *testing.T) {
+	t.Parallel()
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	source := filepath.Join(t.TempDir(), "source")
+	gitCmd(t, "", "init", source)
+	gitCmd(t, source, "config", "user.email", "test@test.com")
+	gitCmd(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "file.txt"), []byte("submitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", "file.txt")
+	gitCmd(t, source, "commit", "-m", "submitted")
+	submitted := gitOutput(t, source, "rev-parse", "HEAD")
+
+	repo, err := d.InsertRepoWithID("crash-repo", source, "https://example.com/owner/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature/crash", submitted, submitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	gitCmd(t, "", "init", "--bare", gate)
+	gitCmd(t, source, "push", gate, "HEAD:refs/heads/feature/crash")
+	managed := p.WorktreeDir(repo.ID, run.ID)
+	if err := gitpkg.WorktreeAdd(context.Background(), gate, managed, submitted); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, managed, "config", "user.email", "test@test.com")
+	gitCmd(t, managed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(managed, "fix.txt"), []byte("pipeline fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, managed, "add", "fix.txt")
+	gitCmd(t, managed, "commit", "-m", "pipeline fix")
+	preserved := gitOutput(t, managed, "rev-parse", "HEAD")
+
+	preserveStaleRunHeads(d, p, nil)
+	if got := gitOutput(t, gate, "rev-parse", custody.RecoveryRef(run.ID)); got != preserved {
+		t.Fatalf("startup recovery anchor = %s, want %s", got, preserved)
+	}
+	if _, err := d.RecoverStaleRunsExcept("daemon crashed during execution", nil); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != types.RunFailed || terminal.HeadSHA != preserved || terminal.TerminalHeadVerifiedAt == nil {
+		t.Fatalf("crash-terminalized run = status %s head %s verified %#v", terminal.Status, terminal.HeadSHA, terminal.TerminalHeadVerifiedAt)
+	}
+	if got := gitOutput(t, gate, "rev-parse", "refs/heads/feature/crash"); got != submitted {
+		t.Fatalf("startup preservation moved gate branch = %s, want %s", got, submitted)
+	}
+}
 
 // TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree is the regression test
 // for the second half of the duplicate-daemon wedge: startup cleanup used to
@@ -69,7 +139,7 @@ func TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p)
+	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(activeWT); err != nil {
 		t.Fatalf("active run worktree must survive cleanup, got: %v", err)

@@ -149,8 +149,9 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 		return err
 	}
 
-	// Table 2: per-round token deltas next to the raw (cumulative for resumed
-	// sessions) counters, so a cumulative counter cannot be misread as per-round.
+	// Table 2: per-round token deltas next to the raw counters (cumulative
+	// across a resumed session for codex; per-invocation for pi), so a
+	// cumulative counter cannot be misread as per-round.
 	fmt.Fprintln(w)
 	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tSESSION\tΔ IN (round)\tΔ OUT\tΔ CACHE RD\tIN (raw)\tOUT (raw)\tCACHE RD (raw)\tCACHE WR\tFRESH IN\tREASON")
@@ -288,32 +289,31 @@ func renderStatsDashboard(stats *db.Stats) string {
 }
 
 func renderStatsBox(lines []string) string {
+	return renderTitledBox(" git push no-mistakes ", statsBoxWidth, lines)
+}
+
+// renderTitledBox draws the shared dashboard frame: a rounded box with an
+// eyebrow title in the top border, the idiom every static CLI dashboard
+// (stats, eval sets, eval run) renders with. Lines wider than the box are
+// truncated.
+func renderTitledBox(eyebrow string, boxWidth int, lines []string) string {
 	var b strings.Builder
-	eyebrow := " git push no-mistakes "
-	b.WriteString("╭─" + eyebrow + strings.Repeat("─", statsBoxWidth-3-lipgloss.Width(eyebrow)) + "╮\n")
+	b.WriteString("╭─" + eyebrow + strings.Repeat("─", boxWidth-3-lipgloss.Width(eyebrow)) + "╮\n")
 	for _, line := range lines {
-		b.WriteString(renderStatsBoxLine(line))
+		b.WriteString(renderBoxLine(line, boxWidth-4))
 		b.WriteByte('\n')
 	}
-	b.WriteString("╰" + strings.Repeat("─", statsBoxWidth-2) + "╯")
+	b.WriteString("╰" + strings.Repeat("─", boxWidth-2) + "╯")
 	return b.String()
 }
 
-func renderStatsBoxLine(line string) string {
+func renderBoxLine(line string, contentWidth int) string {
 	width := lipgloss.Width(line)
-	if width > statsContentWidth {
-		line = truncateStatsLine(line, statsContentWidth)
+	if width > contentWidth {
+		line = truncateStatsLine(line, contentWidth)
 		width = lipgloss.Width(line)
 	}
-	return "│ " + line + strings.Repeat(" ", statsContentWidth-width) + " │"
-}
-
-func centerStatsLine(line string) string {
-	width := lipgloss.Width(line)
-	if width >= statsContentWidth {
-		return line
-	}
-	return strings.Repeat(" ", (statsContentWidth-width)/2) + line
+	return "│ " + line + strings.Repeat(" ", contentWidth-width) + " │"
 }
 
 func centeredStatsBlock(lines []string) []string {

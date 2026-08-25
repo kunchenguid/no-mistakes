@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -380,5 +383,63 @@ func TestDocumentStep_NoStructuredOutput_RequiresApproval(t *testing.T) {
 	}
 	if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
 		t.Fatalf("expected 1 ask-user finding, got %+v", findings.Items)
+	}
+}
+
+func TestDocumentStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-document-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update docs"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&DocumentStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected hanging document agent to fail the run")
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "agent timed out after 20ms") {
+		var got string
+		if run.Error != nil {
+			got = *run.Error
+		}
+		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	}
+}
+
+func TestDocumentStep_SuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "late-document-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# late\n"), 0o644); err != nil {
+				return nil, err
+			}
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+		t.Fatalf("late successful return error = %v, want timeout", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
 	}
 }

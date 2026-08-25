@@ -24,6 +24,7 @@ type Store struct {
 	cases           string
 	db              *sql.DB
 	diversifiedSize int
+	repoNames       map[string]string
 }
 
 // Open creates the local eval registry. The eval CLI, AutoCapture, and
@@ -167,6 +168,27 @@ func (s *Store) SetDiversifiedSize(n int) {
 		n = config.DefaultEvalDiversifiedSize
 	}
 	s.diversifiedSize = n
+}
+
+// SetRepoNames teaches the store how to display the repository fingerprints
+// its cases carry (see RepoDisplayNames). It is display-only: an unresolved
+// fingerprint still renders, just as its short opaque form.
+func (s *Store) SetRepoNames(names map[string]string) {
+	if s == nil {
+		return
+	}
+	s.repoNames = names
+}
+
+// repoDisplay renders one case's repository identity for a dashboard: the
+// resolved name when known, else the short fingerprint, never blank.
+func (s *Store) repoDisplay(fingerprint string) string {
+	if s != nil {
+		if name := strings.TrimSpace(s.repoNames[fingerprint]); name != "" {
+			return name
+		}
+	}
+	return shortFingerprint(fingerprint)
 }
 
 func (s *Store) caseDir(id string) string { return filepath.Join(s.cases, id) }
@@ -405,6 +427,37 @@ func (s *Store) updateCaseGoldCount(id string, n int) error {
 	return nil
 }
 
+// pendingFindingCounts sums the queued unmatched candidate findings per case
+// from the recorded completed replays. The evaluations table is the single
+// owner of that count: deriving it here (instead of incrementing a stored
+// counter inside labels.json on every replay) keeps replay from ever rewriting
+// a case's labels, so re-running the same eval run cannot double-append corpus
+// state. Legacy stored counters carry the same information - every historical
+// increment corresponded to one persisted evaluation row - so they are ignored.
+func (s *Store) pendingFindingCounts() (map[string]int, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("eval registry is closed")
+	}
+	rows, err := s.db.Query(`SELECT case_id, COALESCE(SUM(pending), 0) FROM evaluations WHERE status = 'completed' GROUP BY case_id`)
+	if err != nil {
+		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var caseID string
+		var pending int
+		if err := rows.Scan(&caseID, &pending); err != nil {
+			return nil, fmt.Errorf("scan queued candidate findings: %w", err)
+		}
+		out[caseID] = pending
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sum queued candidate findings: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) pinCount() (int, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("eval registry is closed")
@@ -571,13 +624,35 @@ func readJSON(path string, dest any) error {
 	return nil
 }
 
+// writeJSON publishes the file atomically (write-then-rename in the same
+// directory), so a crash mid-write can never leave a half-written labels or
+// manifest file that would corrupt the case on the next read.
 func writeJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return err
 	}
 	return nil

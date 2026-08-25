@@ -7,9 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
@@ -199,5 +203,67 @@ func TestLintStep_NoConfiguredLint_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "only unresolved") {
 		t.Error("expected no-config lint prompt to report only unresolved issues")
+	}
+}
+
+func TestLintStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "hanging-lint-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"fix lint"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&LintStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected hanging lint agent to fail the run")
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "agent timed out after 20ms") {
+		var got string
+		if run.Error != nil {
+			got = *run.Error
+		}
+		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	}
+}
+
+func TestLintStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	ag := &mockAgent{
+		name: "late-lint-fix-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "lint-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix lint issues"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.AgentTimeout = 20 * time.Millisecond
+
+	if _, err := (&LintStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
+		t.Fatalf("late successful return error = %v, want timeout", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain", "--", "lint-fix.txt"); got != "?? lint-fix.txt" {
+		t.Fatalf("lint-fix.txt status = %q, want uncommitted", got)
 	}
 }

@@ -3,7 +3,17 @@ run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ git
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # Body-bearing events only. The verdict is a pure function of
+    # pull_request.body, so a push carries no new body to judge - but it does
+    # move the head SHA. The pipeline pushes (Push step) before it writes the
+    # deterministic "## Pipeline" section (PR step), so a `synchronize` trigger
+    # pinned a FAILURE check run to the new head for a body the same run was
+    # about to fix. GitHub keeps that failure next to the later `edited` SUCCESS
+    # rather than replacing it, and `gh pr checks` collapses same-named check
+    # runs by startedAt alone, so the pipeline's own CI monitor could read the
+    # stale failure and park the run red forever (PR #773). No ruleset requires
+    # this status check, so no head SHA needs a run of its own.
+    types: [opened, edited, reopened]
     branches:
       - main
     # Never create a run for a release-please PR. The job-level author exemption
@@ -19,7 +29,7 @@ permissions:
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events
 # an immutable per-event group so first-time-fork approvals can never collapse
-# opened/edited checks. Keep synchronize/reopened coalescing as before.
+# opened/edited checks. Keep reopened coalescing as before.
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true
@@ -32,34 +42,21 @@ jobs:
     # - github-actions[bot] opens the release-please PR via GITHUB_TOKEN
     # - dependabot[bot] opens dependency update PRs
     # Other authors (human or bot) must raise PRs through `git push no-mistakes`.
+    #
+    # These stay job-level rather than moving to the action's `exempt-authors`
+    # input on purpose: an in-job exemption still requires the run to start, and
+    # a GITHUB_TOKEN PR's run is created in action_required and never starts. A
+    # skipped job is also what every ruleset in the fleet already sees for these
+    # authors, so keeping the condition here preserves the exact verdict shape.
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       github.event.pull_request.user.login != 'release-please[bot]'
     steps:
-      - name: Verify no-mistakes signature in PR body
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -eu
-          marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
-          if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
-            echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
-            exit 0
-          fi
-          {
-            echo "::error::This PR was not raised through no-mistakes."
-            echo
-            echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
-            echo "That pipeline runs the required review/test/lint/CI steps and writes a"
-            echo "deterministic '## Pipeline' section into the PR body containing:"
-            echo
-            echo "    $marker"
-            echo
-            echo "See CONTRIBUTING.md for setup and the full workflow."
-            echo
-            echo "PR author: ${PR_AUTHOR}"
-          } >&2
-          exit 1
+      # Pinned to the immutable commit that published the action, never @main:
+      # main is editable by the very pull request this gate is judging. A pull
+      # request that changes the action is still TESTED here (the repository's
+      # own Go tests execute verify.py from the PR head), but it cannot certify
+      # itself through the required check.
+      - name: Verify no-mistakes signature and pipeline attestation
+        uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)

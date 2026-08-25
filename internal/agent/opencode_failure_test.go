@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -314,5 +315,55 @@ func TestOpencodeAgent_ToolPartInTheMessageResponseAlsoBlocksRetry(t *testing.T)
 	}
 	if *sent != 1 {
 		t.Errorf("expected 1 message request after tool activity, got %d", *sent)
+	}
+}
+
+// TestOpencodeAgent_ThinkingConflictAfterToolActivityDoesNotFallBack applies
+// the same gate to the prompt-only structured-output fallback. That fallback
+// is also a second attempt in a fresh session, and a session.error can arrive
+// at any point in a turn, so a conflict reported after the model already ran
+// a tool would replay that tool's side effects.
+func TestOpencodeAgent_ThinkingConflictAfterToolActivityDoesNotFallBack(t *testing.T) {
+	var sessions atomic.Int32
+	var eventStreams atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			if eventStreams.Add(1) == 1 {
+				fmt.Fprint(w, toolPartEvent)
+				fmt.Fprint(w, `data: {"payload":{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"APIError","data":{"message":"tool_choice 'required' is incompatible with thinking enabled"}}}}}`+"\n\n")
+				return
+			}
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"}}`)
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":\"fallback ran anyway\"}"}]}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`),
+	})
+	if err == nil {
+		t.Fatalf("expected the conflict to fail closed, got result %+v", result)
+	}
+	if got := sessions.Load(); got != 1 {
+		t.Fatalf("sessions = %d, want no fallback session after tool activity", got)
+	}
+	if !strings.Contains(err.Error(), "already ran tools") {
+		t.Errorf("expected the error to explain the withheld fallback, got %q", err)
 	}
 }

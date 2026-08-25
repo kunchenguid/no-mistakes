@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
+    worktree_dir            TEXT,
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity_at INTEGER,
     last_activity    TEXT,
     agent_pid        INTEGER,
-    auto_fix_limit   INTEGER
+    auto_fix_limit   INTEGER,
+    ci_fix_attempts  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -186,6 +188,16 @@ var migrationStatements = []string{
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	// The directory this run's worktree was created in. It is durable because
+	// placement comes from operator configuration (worktree_roots) that may be
+	// edited while a run exists: recording it makes such an edit inert for
+	// runs already in flight instead of retargeting their resume, diff, and
+	// cleanup at a directory they were never created in. Nullable for rows
+	// written before the column existed, which resolve to the default
+	// <NM_HOME>/worktrees placement at read time - the only one they can have,
+	// since this column shipped with the setting that moves it
+	// (worktrees.RecordedDir).
+	`ALTER TABLE runs ADD COLUMN worktree_dir TEXT`,
 	// Build identity is nullable for historical records. New runs record the
 	// version and embedded build SHA used by the running binary.
 	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,
@@ -213,6 +225,7 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
+	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,

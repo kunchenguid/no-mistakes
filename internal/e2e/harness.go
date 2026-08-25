@@ -42,17 +42,17 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string // claude / codex / opencode
+	agentName         string // claude / codex / grok / opencode / antigravity
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
 	daemonOwn         *e2edaemon.Ownership
 }
 
 // SetupOpts controls per-test setup.
 type SetupOpts struct {
-	// Agent picks which fake the harness wires up: "claude", "codex", or
-	// "opencode". The other two binaries are still on PATH (so `auto`
-	// detection finds the requested one first via config), but only the
-	// chosen one is exercised.
+	// Agent picks which fake the harness wires up: "claude", "codex", "grok",
+	// "opencode", or "antigravity". The other binaries are still on PATH (so
+	// `auto` detection finds the requested one first via config), but only
+	// the chosen one is exercised.
 	Agent string
 
 	// Scenario is an optional path to a YAML scenario file. If empty the
@@ -111,14 +111,17 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	}
 	h.writeLoginShellPathSeed()
 
-	// Symlink each agent name to the same fake binary. Codex and Claude
-	// dispatch by argv[0] basename; opencode the same. Symlinks (not
-	// copies) keep the build cheap on subsequent tests. The `gh` symlink
-	// is a guard rail: BinDir is prepended to PATH, so any stray invocation
-	// of gh by the pipeline (e.g. PR/CI on a misconfigured origin) hits
-	// the fakeagent stub instead of a real, authenticated system gh.
-	for _, name := range []string{"claude", "codex", "opencode", "gh"} {
-		linkPath := filepath.Join(h.BinDir, name)
+	// Symlink each agent name to the same fake binary. Native agents dispatch
+	// by argv[0] basename; opencode does the same. Symlinks (not
+	// copies) keep the build cheap on subsequent tests. The `gh` and `tea`
+	// symlinks are a guard rail: BinDir is prepended to PATH, so any stray
+	// invocation of gh/tea by the pipeline (e.g. PR/CI on a misconfigured
+	// origin) hits the fakeagent stub instead of a real, authenticated
+	// system CLI. antigravity gets a second link under its probed binary
+	// name "agy" (internal/cli/doctor.go searches that name, not the agent
+	// name).
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh", "tea"} {
+		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)
 		}
@@ -136,8 +139,9 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	}
 	// Point the fake at recorded real-agent fixtures by default. When
 	// the directory contains <agent>/structured.{jsonl,*}, the fake
-	// replays those bytes verbatim instead of generating synthetic
-	// output. This is what makes the e2e a real wire-format check.
+	// replays those recorded wire envelopes instead of generating synthetic
+	// output, patching scenario-dependent fields where the adapter needs to.
+	// This is what makes the e2e a real wire-format check.
 	fixtureRoot, err := defaultFixtureRoot()
 	if err != nil {
 		t.Fatalf("fixture root: %v", err)
@@ -452,12 +456,7 @@ func (h *Harness) WorktreeRefSHA(ref string) string {
 func (h *Harness) WaitForRun(branch string, timeout time.Duration) *ipc.RunInfo {
 	h.t.Helper()
 	return h.waitForRunStatus(branch, timeout, func(status types.RunStatus) bool {
-		switch status {
-		case types.RunCompleted, types.RunFailed, types.RunCancelled:
-			return true
-		default:
-			return false
-		}
+		return status.Terminal()
 	}, "finish")
 }
 

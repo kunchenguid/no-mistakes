@@ -1,9 +1,12 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -22,6 +25,7 @@ type fixExecutionOptions struct {
 	ErrorPrefix             string
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
+	AgentContext            context.Context
 	// SessionRole, when set, runs the fix turn in that durable review-loop
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
@@ -115,6 +119,62 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	return nil
 }
 
+// commitPipelineCorrection creates a pipeline-authored correction commit with
+// hook verification bypassed, and is the single owner of that bypass.
+//
+// A correction commit is machine-authored: the pipeline records the change its
+// own agents or its own formatter produced, inside the throwaway run
+// worktree. That worktree is freshly carved from the bare gate repo, so tracked
+// hooks that depend on generated untracked runtime files cannot run there - the
+// canonical case is a repository whose shared config sets core.hooksPath=.husky
+// while a tracked .husky hook sources the generated .husky/_/husky.sh that no
+// install step ever created in this worktree. The hook exits nonzero, the
+// correction commit fails, and the whole run dies on setup state that says
+// nothing about the change under review.
+//
+// --no-verify alone is not enough, because Git gates only pre-commit and
+// commit-msg on it and always runs prepare-commit-msg (builtin/commit.c
+// prepare_to_commit), so a repository carrying a legacy .husky
+// prepare-commit-msg hook - commitizen and ticket-prefix setups are the common
+// ones - still fails the exact commit this helper exists to complete. Pointing
+// core.hooksPath at a freshly created empty directory for this one invocation
+// covers the whole commit hook family; --no-verify is kept so the intent stays
+// explicit at the call. The override lives only in this process argument list
+// and the directory is removed afterwards, so nothing persists in the
+// repository, the user's configuration, or the daemon's environment.
+//
+// Reach is deliberately narrow. Only commitAgentFixes (Review, Test, Document,
+// Lint) and the Push step's leftover-worktree commit route here, because those
+// are the two commits the pipeline authors from its own agents' and formatter's
+// output.
+// CI repair commits, the generic git runner, and every user-authored commit keep
+// hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
+// remain the authoritative quality checks for what these commits contain.
+func commitPipelineCorrection(ctx context.Context, workDir, message string, logf func(string)) error {
+	return commitPipelineCorrectionWithCleanup(ctx, workDir, message, logf, os.RemoveAll)
+}
+
+func commitPipelineCorrectionWithCleanup(
+	ctx context.Context,
+	workDir, message string,
+	logf func(string),
+	cleanup func(string) error,
+) error {
+	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-correction-hooks-")
+	if err != nil {
+		return fmt.Errorf("prepare hook-free commit environment: %w", err)
+	}
+	_, commitErr := git.Run(ctx, workDir, "-c", "core.hooksPath="+emptyHooksDir, "commit", "--no-verify", "-m", message)
+	if cleanupErr := cleanup(emptyHooksDir); cleanupErr != nil {
+		if logf != nil {
+			logf(fmt.Sprintf("warning: failed to remove temporary hook-free commit directory %s: %v", emptyHooksDir, cleanupErr))
+		} else {
+			slog.Warn("failed to remove temporary hook-free commit directory", "path", emptyHooksDir, "error", cleanupErr)
+		}
+	}
+	return commitErr
+}
+
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
@@ -138,7 +198,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
@@ -212,13 +272,11 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Purpose:    purpose,
 		Workload:   opts.Workload,
 	}
-	var result *agent.Result
-	var err error
-	if opts.SessionRole != "" {
-		result, err = sctx.RunAgentSession(opts.SessionRole, runOpts)
-	} else {
-		result, err = sctx.Agent.Run(sctx.Ctx, runOpts)
+	agentCtx := sctx.Ctx
+	if opts.AgentContext != nil {
+		agentCtx = opts.AgentContext
 	}
+	result, err := sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
 	}

@@ -3,17 +3,21 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -377,6 +381,21 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 }
 
+func TestStepExecutableAvailable_ResolvesRelativePathFromWorkDir(t *testing.T) {
+	t.Parallel()
+
+	workDir := fakeCLIBinDir(t)
+	linkTestBinary(t, workDir, "forgejo-axi")
+	name := "." + string(filepath.Separator) + "forgejo-axi"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	sctx := &pipeline.StepContext{Ctx: context.Background(), WorkDir: workDir}
+	if !stepExecutableAvailable(sctx, name) {
+		t.Fatalf("expected configured executable %q to resolve from the step worktree", name)
+	}
+}
+
 func TestStepCLIAvailable_IgnoresNonExecutableFromCustomPath(t *testing.T) {
 	t.Parallel()
 
@@ -604,6 +623,228 @@ func TestCommitAgentFixes_PersistsUncertifiedRangeForReview(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_BypassesMissingLegacyHuskyRuntime(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+
+	hooksDir := filepath.Join(dir, ".husky")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte("#!/usr/bin/env sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".husky/pre-commit")
+	gitCmd(t, dir, "commit", "-m", "add legacy Husky hook")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "core.hooksPath", ".husky")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(opts.CWD, "agent-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"apply review fix"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	if _, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{FallbackSummary: "apply review fix"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "agent-fix.txt" {
+		t.Fatalf("committed files = %q, want agent-fix.txt", got)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("expected clean worktree after correction commit, got %q", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sctx.Run.HeadSHA {
+		t.Fatalf("HEAD = %q, want recorded correction commit %q", got, sctx.Run.HeadSHA)
+	}
+	if _, err := os.Stat(filepath.Join(hooksDir, "_", "husky.sh")); !os.IsNotExist(err) {
+		t.Fatalf("legacy Husky runtime unexpectedly exists: %v", err)
+	}
+}
+
+func TestCommitPipelineCorrection_ReportsCleanupFailureWithoutMaskingCommit(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "correction.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "correction.txt")
+
+	cleanupFailure := errors.New("cleanup denied")
+	var cleanedPath, warning string
+	var removeErr error
+	err := commitPipelineCorrectionWithCleanup(
+		context.Background(),
+		dir,
+		"no-mistakes(test): apply correction",
+		func(line string) { warning = line },
+		func(path string) error {
+			cleanedPath = path
+			removeErr = os.RemoveAll(path)
+			return cleanupFailure
+		},
+	)
+	if err != nil {
+		t.Fatalf("successful correction commit was masked by cleanup failure: %v", err)
+	}
+	if removeErr != nil {
+		t.Fatalf("test cleanup failed: %v", removeErr)
+	}
+	if cleanedPath == "" {
+		t.Fatal("cleanup was not attempted")
+	}
+	if !strings.Contains(warning, cleanedPath) || !strings.Contains(warning, cleanupFailure.Error()) {
+		t.Fatalf("cleanup warning = %q, want path %q and error %q", warning, cleanedPath, cleanupFailure)
+	}
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "correction.txt" {
+		t.Fatalf("committed files = %q, want correction.txt", got)
+	}
+}
+
+func TestCommitAgentFixes_BypassesLegacyHuskyPrepareCommitMsgHook(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+
+	hooksDir := filepath.Join(dir, ".husky")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "prepare-commit-msg"), []byte("#!/usr/bin/env sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".husky/prepare-commit-msg")
+	gitCmd(t, dir, "commit", "-m", "add legacy Husky prepare-commit-msg hook")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "core.hooksPath", ".husky")
+
+	// Git runs prepare-commit-msg even with --no-verify, so this control pins
+	// that the flag alone cannot complete a correction commit here.
+	if err := os.WriteFile(filepath.Join(dir, "probe.txt"), []byte("probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "probe.txt")
+	if out, err := runGitDirect(dir, "commit", "--no-verify", "-m", "probe"); err == nil {
+		t.Fatalf("expected --no-verify alone to fail on the legacy prepare-commit-msg hook, got success:\n%s", out)
+	}
+	gitCmd(t, dir, "reset", "HEAD", "probe.txt")
+	if err := os.Remove(filepath.Join(dir, "probe.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(opts.CWD, "agent-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"apply review fix"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	if _, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{FallbackSummary: "apply review fix"}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantMessage, err := sctx.Config.Commit.RenderFixMessage(types.StepReview, "apply review fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, dir, "log", "-1", "--format=%B"); got != wantMessage {
+		t.Fatalf("commit message = %q, want %q", got, wantMessage)
+	}
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "agent-fix.txt" {
+		t.Fatalf("committed files = %q, want agent-fix.txt", got)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("expected clean worktree after correction commit, got %q", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sctx.Run.HeadSHA {
+		t.Fatalf("HEAD = %q, want recorded correction commit %q", got, sctx.Run.HeadSHA)
+	}
+
+	// The suppression is scoped to that one invocation: the repository still
+	// carries its own hooks configuration, and a commit outside the helper -
+	// the generic runner every excluded path uses - is still hook-verified.
+	if got := gitCmd(t, dir, "config", "--get", "core.hooksPath"); got != ".husky" {
+		t.Fatalf("core.hooksPath = %q, want the repository's own .husky", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "excluded.txt"), []byte("excluded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), dir, "add", "excluded.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git.Run(context.Background(), dir, "commit", "-m", "excluded path commit"); err == nil {
+		t.Fatalf("expected the generic git runner to stay hook-verified, got success:\n%s", out)
+	}
+}
+
+func TestCommitAgentFixes_BypassesCompleteCommitHookFamilyOnlyForCorrection(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+
+	hooksDir := filepath.Join(dir, ".husky")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookLog := filepath.Join(dir, "hook-family.log")
+	hookNames := []string{"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"}
+	for _, hookName := range hookNames {
+		body := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q >> hook-family.log\n", hookName)
+		if err := os.WriteFile(filepath.Join(hooksDir, hookName), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", ".husky")
+	gitCmd(t, dir, "commit", "-m", "add commit hook family")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "core.hooksPath", ".husky")
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	if err := commitAgentFixes(sctx, types.StepTest, "apply test fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(hookLog); !os.IsNotExist(err) {
+		t.Fatalf("pipeline correction commit ran repository hooks: %v", err)
+	}
+	if got := gitCmd(t, dir, "show", "--format=", "--name-only", "HEAD"); got != "agent-fix.txt" {
+		t.Fatalf("committed files = %q, want agent-fix.txt", got)
+	}
+
+	if got := gitCmd(t, dir, "config", "--get", "core.hooksPath"); got != ".husky" {
+		t.Fatalf("core.hooksPath = %q, want the repository's own .husky", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user-change.txt"), []byte("user change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), dir, "add", "user-change.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git.Run(context.Background(), dir, "commit", "-m", "user-authored commit"); err != nil {
+		t.Fatalf("hook-verified commit failed: %v\n%s", err, out)
+	}
+	gotHookLog, err := os.ReadFile(hookLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHookLog := strings.Join(hookNames, "\n") + "\n"
+	if string(gotHookLog) != wantHookLog {
+		t.Fatalf("hook family execution = %q, want %q", gotHookLog, wantHookLog)
+	}
+}
+
 func TestCommitAgentFixes_LintDoesNotPersistUncertifiedRange(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -647,6 +888,67 @@ func TestCommitAgentFixes_DocumentDoesNotPersistUncertifiedRange(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("document persist = %#v, want no uncertified range", got)
+	}
+}
+
+func TestStepCmd_AppliesRunForgeEnvironmentAfterInjectedEnvironment(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"GH_TOKEN=injected",
+			"GH_CONFIG_DIR=/injected",
+			"KEEP=value",
+		},
+		ForgeContext: &forgecontext.Context{Environment: runenv.Overlay{
+			Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
+			Unset: []string{"GH_TOKEN"},
+		}},
+	}
+
+	cmd := stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env"))
+	values := make(map[string]string)
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if _, exists := values["GH_TOKEN"]; exists {
+		t.Fatal("injected GH_TOKEN survived run forge environment")
+	}
+	if values["GH_CONFIG_DIR"] != "/profiles/personal" {
+		t.Fatalf("GH_CONFIG_DIR = %q, want /profiles/personal", values["GH_CONFIG_DIR"])
+	}
+	if values["KEEP"] != "value" {
+		t.Fatalf("unrelated value = %q, want value", values["KEEP"])
+	}
+}
+
+func TestStepCmdPreservesAmbientMultiAccountSelectionWithoutProfiles(t *testing.T) {
+	profileDir := t.TempDir()
+	hosts := "github.com:\n    users:\n        personal:\n        work:\n    user: work\n"
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte(hosts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"GH_CONFIG_DIR=" + profileDir,
+			"GH_TOKEN=ambient-active-account-token",
+		},
+	}
+
+	values := make(map[string]string)
+	for _, entry := range stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env")).Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["GH_CONFIG_DIR"] != profileDir || values["GH_TOKEN"] != "ambient-active-account-token" {
+		t.Fatalf("profile-free run changed ambient GitHub account selection: %#v", values)
 	}
 }
 

@@ -215,6 +215,51 @@ func TestCompleteStepWithStatus(t *testing.T) {
 	}
 }
 
+func TestResetStepsFromPreservesSkippedSteps(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/gate", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "main", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	push, err := d.InsertStepResult(run.ID, types.StepPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CompleteStepWithStatus(review.ID, types.StepStatusCompleted, 0, 10, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CompleteStepWithStatus(push.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.ResetStepsFrom(run.ID, types.StepReview.Order()); err != nil {
+		t.Fatal(err)
+	}
+
+	gotReview, err := d.GetStepResult(review.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotReview.Status != types.StepStatusPending {
+		t.Fatalf("review status = %s, want %s", gotReview.Status, types.StepStatusPending)
+	}
+	gotPush, err := d.GetStepResult(push.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPush.Status != types.StepStatusSkipped {
+		t.Fatalf("push status = %s, want %s", gotPush.Status, types.StepStatusSkipped)
+	}
+}
+
 func TestUpdateStepStatusWithDuration(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

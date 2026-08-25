@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
@@ -19,6 +23,26 @@ func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
+	var cancel context.CancelFunc
+	var timeout time.Duration
+	var restoreContext func()
+	startReviewTimeout := func() {
+		if cancel != nil {
+			return
+		}
+		parentCtx := sctx.Ctx
+		ctx, cancel, timeout = reviewAgentContext(sctx)
+		sctx.Ctx = ctx
+		restoreContext = func() {
+			cancel()
+			sctx.Ctx = parentCtx
+		}
+	}
+	defer func() {
+		if restoreContext != nil {
+			restoreContext()
+		}
+	}()
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -59,6 +83,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// regression tests guard the wording, not the runtime.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
+		startReviewTimeout()
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -110,7 +135,7 @@ Previous review findings to address:
 			Workload:                workload,
 		})
 		if err != nil {
-			return nil, err
+			return nil, reviewAgentError(ctx, timeout, "agent fix", err)
 		}
 		fixSummary = summary
 	}
@@ -147,6 +172,7 @@ Previous review findings to address:
 
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
+	startReviewTimeout()
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -249,7 +275,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -259,7 +285,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("agent review: %w", err)
+		return nil, reviewAgentError(ctx, timeout, "agent review", err)
 	}
 
 	// Parse structured findings
@@ -375,4 +401,22 @@ func sanitizePromptMultilineText(text string) string {
 		lines[i] = strings.Join(strings.Fields(lines[i]), " ")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func reviewAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := config.DefaultReviewAgentTimeout
+	if sctx != nil && sctx.Config != nil && sctx.Config.ReviewAgentTimeout > 0 {
+		timeout = sctx.Config.ReviewAgentTimeout
+	}
+	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errReviewAgentTimeout)
+	return ctx, cancel, timeout
+}
+
+var errReviewAgentTimeout = errors.New("review agent timeout")
+
+func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
+	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
+		return fmt.Errorf("%s timed out after %s (review agent silent for %s): %w", prefix, timeout, timeout, err)
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }
