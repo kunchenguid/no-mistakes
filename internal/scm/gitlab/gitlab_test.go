@@ -226,7 +226,7 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 		"glab mr list --source-branch " + branch + " --target-branch main --output json": {
 			stdout: fmt.Sprintf(`[{"web_url":%q}]`+"\n", url),
 		},
-		"glab mr update 42 --title updated --description body --yes": {
+		"glab mr update 42 --title updated --description body": {
 			stdout: "updated\n",
 		},
 	}), nil, "", "")
@@ -245,6 +245,31 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 		t.Fatalf("FindPR() URL = %q, want %q", pr.URL, url)
 	}
 
+	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "updated", Body: "body"})
+	if err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if updated != pr {
+		t.Fatalf("UpdatePR() returned unexpected PR: %+v", updated)
+	}
+}
+
+// TestUpdatePRDoesNotPassUnsupportedYesFlag guards against reintroducing
+// -y/--yes on `glab mr update`: unlike `glab mr create`, glab v1.5x's
+// `mr update` has no such flag, so passing it fails the whole command with
+// "unknown flag: --yes" and every UpdatePR call errors. The fake CmdFactory
+// below matches by exact command string, so a regression here would hit the
+// "unexpected command" fallback and surface as an UpdatePR error.
+func TestUpdatePRDoesNotPassUnsupportedYesFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr update 7 --title updated --description body": {
+			stdout: "updated\n",
+		},
+	}), nil, "", "")
+
+	pr := &scm.PR{Number: "7"}
 	updated, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "updated", Body: "body"})
 	if err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)

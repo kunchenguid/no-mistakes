@@ -282,10 +282,12 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	if id == "" && pr != nil {
 		id = pr.URL
 	}
+	// Unlike `glab mr create`, `glab mr update` (glab v1.5x) has no
+	// -y/--yes confirmation-skip flag at all; passing it fails the whole
+	// command with "unknown flag: --yes", so every UpdatePR call errored.
 	cmd := h.cmd(ctx, "glab", "mr", "update", id,
 		"--title", content.Title,
 		"--description", content.Body,
-		"--yes",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("glab mr update: %s: %w", strings.TrimSpace(string(out)), err)
