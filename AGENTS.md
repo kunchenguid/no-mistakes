@@ -207,6 +207,15 @@ Safest local verification sequence after non-trivial changes:
 - `runs.awaiting_agent_since` is non-nil **iff** a step is actually parked at an `awaiting_approval`/`fix_review` gate: the executor sets it on gate entry, clears it when `waitForApproval` returns, and `RecoverStaleRuns` clears it on crash recovery. It is observability only (rendered as `awaiting_agent: parked <duration>` in `axi status`) and never changes gate resolution, auto-resume, or the `--yes` default.
 - Tests: `internal/db/run_test.go`, `internal/pipeline/executor_approval_test.go`, `internal/cli/axi_test.go`, e2e `TestAxiParkedAwaitingAgentSignal`.
 
+**AXI Run Resolution Is Branch-Scoped (`resolveRun`)**
+
+- `axi status` and `axi logs` resolve an implicit run from the caller's current branch only: its active run, else its most recent one, else nothing.
+There is deliberately no repo-wide "most recent run" fallback - one clone routinely has several worktrees on different branches, and that fallback reported one worktree's terminal run to every other worktree under the same `run:` key a run of the caller's own gets, which reads as "your work failed" while the real pipeline is mid-flight.
+A detached HEAD owns no branch, so it resolves nothing either.
+- Deliberate cross-branch inspection is `--run <id>`, and when that run's branch differs from the caller's, `axi status` renders it under `other_branch_run:` plus a top-level `current_branch:` - reusing the home view's `other_branch_active_run` vocabulary - so a consumer keyed on `run:` can never pick up a run that is provably not this worktree's.
+The rationale lives in the `resolveRun` doc comment (`internal/cli/axi_query.go`).
+- Regressions: `TestAxiStatusNeverReportsAnotherBranchesRunAsThisWorktrees`, `TestAxiStatusReportsThisBranchesOwnRun`, `TestAxiStatusExplicitRunIDStillInspectsAnotherBranchesRun`, `TestResolveRunDoesNotFallBackToAnotherBranch`, `TestAxiLogsDoesNotReadAnotherBranchesRunLogs`.
+
 **Review-Loop Agent Sessions (`internal/pipeline/sessions.go`)**
 
 - Per run, the review loop keeps ONE durable fixer session across review-fix turns, and EVERY review turn (initial review and every full rereview) runs session-free. A rereview certifies fixes implementing the previous review turn's findings, so resuming any review session seats the prescriber as certifier - the mechanism that let one fix round ship wrong code plus the test blessing it with zero findings. Cross-round review context travels only in the explicit sanitized round history; the fixer session is never lent to review turns, no other step uses sessions, and sessions are keyed strictly by run. The rereview prompt reframes fix-round changes as pipeline-authored code under the author-grade adversarial standard (`fixRoundProvenanceClause`); the same clause is emitted on a later run's initial review when a persisted uncertified range is bound. Prior findings, fix summaries, and same-round tests are claims, not evidence.
