@@ -165,3 +165,72 @@ func TestParseRepoConfig_ParsesGates(t *testing.T) {
 		t.Fatalf("gates = %+v, want one gate named gate.test.mutation-budget", cfg.Gates)
 	}
 }
+
+// A run carries its gates for its whole lifetime, so what MarshalGates writes
+// has to come back as the same executable gate list - anchor, kind, and body -
+// after a daemon restart.
+func TestMarshalGates_RoundTripsAGateList(t *testing.T) {
+	gates := []Gate{
+		{Name: "mutation-budget", After: types.StepTest, Command: "make mutation"},
+		{Name: "arch-fitness", After: types.StepReview, Instructions: "No package under internal/ may import internal/cli."},
+	}
+	payload, err := MarshalGates(gates)
+	if err != nil {
+		t.Fatalf("MarshalGates() = %v", err)
+	}
+	decoded, err := ParseGates(payload)
+	if err != nil {
+		t.Fatalf("ParseGates() = %v", err)
+	}
+	if len(decoded) != len(gates) {
+		t.Fatalf("decoded %d gates, want %d", len(decoded), len(gates))
+	}
+	for i, gate := range gates {
+		if decoded[i] != gate {
+			t.Errorf("gate %d = %+v, want %+v", i, decoded[i], gate)
+		}
+		if decoded[i].IsAgent() != gate.IsAgent() {
+			t.Errorf("gate %d agent-ness = %v, want %v", i, decoded[i].IsAgent(), gate.IsAgent())
+		}
+		if decoded[i].StepName() != gate.StepName() {
+			t.Errorf("gate %d step name = %q, want %q", i, decoded[i].StepName(), gate.StepName())
+		}
+	}
+}
+
+// An empty list and an absent pin have to be the same thing, so a run that
+// declared no gates reads back exactly like a run written before gates existed.
+func TestMarshalGates_NoGatesEncodesAsNoPin(t *testing.T) {
+	payload, err := MarshalGates(nil)
+	if err != nil {
+		t.Fatalf("MarshalGates() = %v", err)
+	}
+	if payload != "" {
+		t.Fatalf("MarshalGates(nil) = %q, want the empty pin", payload)
+	}
+	gates, err := ParseGates("")
+	if err != nil {
+		t.Fatalf("ParseGates(\"\") = %v, want the core pipeline", err)
+	}
+	if len(gates) != 0 {
+		t.Fatalf("ParseGates(\"\") = %+v, want no gates", gates)
+	}
+}
+
+// A stored pin is revalidated on the way back in, so a payload this build
+// cannot honor fails its reader instead of quietly running a gate anchored
+// somewhere the pipeline refuses to anchor one.
+func TestParseGates_RejectsAPinThisBuildCannotHonor(t *testing.T) {
+	for _, tc := range []struct{ name, payload string }{
+		{"not json", `{`},
+		{"anchor outside the delivery boundary", `[{"name":"arch-fitness","after":"push","command":"true"}]`},
+		{"neither command nor instructions", `[{"name":"arch-fitness","after":"review"}]`},
+		{"name that would not be a safe step name", `[{"name":"arch fitness","after":"review","command":"true"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if gates, err := ParseGates(tc.payload); err == nil {
+				t.Fatalf("ParseGates() = %+v, want an error naming the fault", gates)
+			}
+		})
+	}
+}

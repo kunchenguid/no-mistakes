@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS runs (
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
     terminal_head_verified_at INTEGER,
+    gates_json              TEXT,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -283,6 +284,14 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
+	// The repository-declared extra gates this run resolved at creation. It is
+	// durable for the same reason worktree_dir is: the gates come from the
+	// trusted default branch, which may gain or lose one while a run is parked,
+	// and recovery re-deriving them would rebuild a step sequence the run never
+	// executed - failing an otherwise healthy parked run as a crash. NULL and
+	// empty both mean the bare core pipeline, which is the only sequence a row
+	// written before this column existed can have had.
+	`ALTER TABLE runs ADD COLUMN gates_json TEXT`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
 	// Non-nil exactly when a human answered ActionApprove on a step whose gate

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -35,10 +36,10 @@ func GateAnchors() []types.StepName {
 // anchor core step. A gate can only ADD a verdict to a run: it cannot skip,
 // reorder, or replace a core step, and a failing gate fails the run closed.
 type Gate struct {
-	Name         string         `yaml:"name"`
-	After        types.StepName `yaml:"after"`
-	Command      string         `yaml:"command"`
-	Instructions string         `yaml:"instructions"`
+	Name         string         `yaml:"name" json:"name"`
+	After        types.StepName `yaml:"after" json:"after"`
+	Command      string         `yaml:"command" json:"command,omitempty"`
+	Instructions string         `yaml:"instructions" json:"instructions,omitempty"`
 }
 
 // IsAgent reports whether the gate is agent-driven rather than a command.
@@ -140,6 +141,44 @@ func gateAnchorText() string {
 		names = append(names, string(anchor))
 	}
 	return strings.Join(names, ", ")
+}
+
+// MarshalGates encodes a run's resolved gate list so the run can carry it for
+// its whole lifetime. Configuration decides a run's gates exactly once, at run
+// creation, exactly as it decides worktree placement once (see
+// worktrees.RecordedDir): the trusted default branch may gain or lose a gate
+// while a run is parked, and re-resolving it later would hand recovery a step
+// sequence the run never executed. An empty list encodes as the empty string,
+// so a run that pinned no gates is indistinguishable from a run written before
+// this was pinned at all - both mean the bare core pipeline.
+func MarshalGates(gates []Gate) (string, error) {
+	if len(gates) == 0 {
+		return "", nil
+	}
+	data, err := json.Marshal(gates)
+	if err != nil {
+		return "", fmt.Errorf("encode gates: %w", err)
+	}
+	return string(data), nil
+}
+
+// ParseGates decodes a gate list pinned to a run. It revalidates the decoded
+// gates through the same rules the config parser applies, so a payload that no
+// longer describes a gate list this build can honor fails its reader closed
+// with a reason instead of silently degrading the run to the core pipeline -
+// the one thing an absent pin legitimately means.
+func ParseGates(payload string) ([]Gate, error) {
+	if strings.TrimSpace(payload) == "" {
+		return nil, nil
+	}
+	var gates []Gate
+	if err := json.Unmarshal([]byte(payload), &gates); err != nil {
+		return nil, fmt.Errorf("decode gates: %w", err)
+	}
+	if err := validateGates(gates); err != nil {
+		return nil, err
+	}
+	return gates, nil
 }
 
 func copyGates(gates []Gate) []Gate {
