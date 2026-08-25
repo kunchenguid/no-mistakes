@@ -92,6 +92,6 @@ See [Configuration](/no-mistakes/guides/configuration/).
 
 - The step order.
 - Skipping specific steps permanently - per-run skips are allowed, but the pipeline itself always has all nine.
-- Adding new steps.
+- Removing or replacing a core step. A repository can add extra [`gates`](/no-mistakes/reference/repo-config/#gates) after one, which only ever adds to what a pass means.
 
 This is intentional. The pipeline is opinionated so that "passed the gate" means the same thing across repos.
