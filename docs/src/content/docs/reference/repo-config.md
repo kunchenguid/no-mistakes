@@ -168,6 +168,8 @@ Declare that this repository intentionally has no CI.
 
 When `true`, no-mistakes omits the CI step before pipeline scheduling. It does not construct a CI monitor or forge client and makes no provider request to discover checks. Use this only when the repository intentionally has no hosted CI; it is not a way to waive registered checks because no-mistakes does not query the forge under this policy.
 
+The resolved value selects the topology of a new run. Once no-mistakes publishes that run's complete schedule, the schedule is immutable: changing `no_ci` while the run is parked cannot add or remove CI on a later daemon restart. A run that recorded CI resumes ordinary monitoring, including the rule that an empty check list is not ready; a run that recorded no CI keeps CI omitted with no forge activity.
+
 Absence of this field or an explicit `false` means CI is expected. The CI step is scheduled normally, and a zero-length check result stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence.
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.

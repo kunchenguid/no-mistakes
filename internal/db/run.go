@@ -35,7 +35,12 @@ type Run struct {
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
-	ReviewApprovedHeadSHA  *string
+	ReviewApprovedHeadSHA *string
+	// ScheduledSteps is the run's final execution topology. ScheduleKnown is
+	// false until the complete list is atomically published; once true, the list
+	// is immutable and recovery must not reinterpret it through current config.
+	// StepLegacyOmittedCI is a durable compatibility identity and is never an
+	// instruction to construct ordinary CI.
 	ScheduledSteps         []types.StepName
 	ScheduleKnown          bool
 	Status                 types.RunStatus

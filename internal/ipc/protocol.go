@@ -259,8 +259,11 @@ type RunInfo struct {
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both
 	// are observability only and clear the moment the agent responds.
-	AwaitingAgent             bool             `json:"awaiting_agent,omitempty"`
-	AwaitingAgentSince        *int64           `json:"awaiting_agent_since,omitempty"`
+	AwaitingAgent      bool   `json:"awaiting_agent,omitempty"`
+	AwaitingAgentSince *int64 `json:"awaiting_agent_since,omitempty"`
+	// ScheduleTopologySupported distinguishes a new daemon with a not-yet-final
+	// schedule from a legacy daemon that does not publish topology. Once
+	// ScheduleKnown is true, ScheduledSteps is the authoritative display order.
 	ScheduleTopologySupported bool             `json:"schedule_topology_supported,omitempty"`
 	ScheduleKnown             bool             `json:"schedule_known,omitempty"`
 	ScheduledSteps            []types.StepName `json:"scheduled_steps,omitempty"`
