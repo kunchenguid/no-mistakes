@@ -242,3 +242,25 @@ func TestAxiStatusNoRunRenderingUsesResolutionSnapshot(t *testing.T) {
 		t.Fatalf("no-run rendering included a run created after resolution:\n%s", out.String())
 	}
 }
+
+func TestAxiStatusBranchLookupFailureIsNotDetachedHEAD(t *testing.T) {
+	repoDir, _, _, _ := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	if _, err := runAxiStatus(cmd, ""); err == nil {
+		t.Fatalf("axi status succeeded after branch lookup failed:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "context canceled") {
+		t.Fatalf("axi status did not surface the branch lookup failure:\n%s", got)
+	}
+	if strings.Contains(got, "detached HEAD") || strings.Contains(got, "runs_on_current_branch") {
+		t.Fatalf("axi status reported a branch lookup failure as no-run detached HEAD:\n%s", got)
+	}
+}

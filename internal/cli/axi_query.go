@@ -54,7 +54,10 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	}
 	defer env.close()
 
-	branch := currentBranchForRunResolve(cmd.Context())
+	branch, branchErr := currentBranchForRunResolve(cmd.Context())
+	if branchErr != nil && runID == "" {
+		return "", emitError(cmd, 1, branchErr.Error())
+	}
 	run, runs, err := resolveRun(env, runID, branch)
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error())
@@ -246,7 +249,11 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 	}
 	defer env.close()
 
-	run, _, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
+	branch, branchErr := currentBranchForRunResolve(cmd.Context())
+	if branchErr != nil && runID == "" {
+		return "", emitError(cmd, 1, branchErr.Error())
+	}
+	run, _, err := resolveRun(env, runID, branch)
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error())
 	}
@@ -308,8 +315,8 @@ func logRows(lines []string) []logRow {
 // resolveRun picks the run to inspect: an explicit ID, else the caller's
 // current-branch active run, else that branch's most recent run. It returns
 // (nil, nil) when the caller's branch has no run of its own, and when the
-// branch cannot be determined at all - a detached HEAD owns no branch, so no
-// run can be attributed to it.
+// caller has a detached HEAD - a detached HEAD owns no branch, so no run can
+// be attributed to it.
 //
 // It deliberately does NOT fall back to the repository's active or most recent
 // run on some other branch. One clone commonly has several worktrees sitting on
@@ -347,12 +354,18 @@ func resolveRun(env *axiEnv, runID, branch string) (*db.Run, []*db.Run, error) {
 	return nil, runs, nil
 }
 
-func currentBranchForRunResolve(ctx context.Context) string {
+func currentBranchForRunResolve(ctx context.Context) (string, error) {
 	branch, err := git.CurrentBranch(ctx, ".")
-	if err != nil || branch == "HEAD" {
-		return ""
+	if err != nil {
+		return "", fmt.Errorf("determine current branch: %w", err)
 	}
-	return branch
+	if branch == "HEAD" {
+		return "", nil
+	}
+	if branch == "" {
+		return "", fmt.Errorf("determine current branch: git returned an empty branch name")
+	}
+	return branch, nil
 }
 
 func splitLogLines(s string) []string {
