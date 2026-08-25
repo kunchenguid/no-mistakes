@@ -100,9 +100,9 @@ func (m *RunManager) stepsForConfig(cfg *config.Config) []pipeline.Step {
 	return steps.AllStepsForConfig(cfg)
 }
 
-func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pipeline.Step, error) {
+func (m *RunManager) pipelineForRecoveredRun(cfg *config.Config, run *db.Run) ([]pipeline.Step, *config.Config, error) {
 	if m.steps != nil {
-		return m.steps(), nil
+		return m.steps(), cfg, nil
 	}
 	recordedCI := false
 	legacyOmittedCI := false
@@ -119,7 +119,7 @@ func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pi
 	} else {
 		recorded, err := m.db.GetStepsByRun(run.ID)
 		if err != nil {
-			return nil, fmt.Errorf("get recovered steps: %w", err)
+			return nil, nil, fmt.Errorf("get recovered steps: %w", err)
 		}
 		for _, result := range recorded {
 			if result.StepName == types.StepCI {
@@ -133,9 +133,14 @@ func (m *RunManager) stepsForRecoveredRun(cfg *config.Config, run *db.Run) ([]pi
 	// whose topology was never recorded, but it must not reinterpret a known CI
 	// step as omitted after the run has already been scheduled.
 	if run.ScheduleKnown {
-		cfg = nil
+		if recordedCI && !legacyOmittedCI && cfg != nil && cfg.NoCI {
+			recoveredCfg := *cfg
+			recoveredCfg.NoCI = false
+			cfg = &recoveredCfg
+		}
+		return steps.RecoverySteps(nil, recordedCI, legacyOmittedCI), cfg, nil
 	}
-	return steps.RecoverySteps(cfg, recordedCI, legacyOmittedCI), nil
+	return steps.RecoverySteps(cfg, recordedCI, legacyOmittedCI), cfg, nil
 }
 
 func scheduledStepNames(execSteps []pipeline.Step) []types.StepName {
@@ -219,7 +224,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	execSteps, err := m.stepsForRecoveredRun(cfg, run)
+	execSteps, cfg, err := m.pipelineForRecoveredRun(cfg, run)
 	if err != nil {
 		return nil, err
 	}

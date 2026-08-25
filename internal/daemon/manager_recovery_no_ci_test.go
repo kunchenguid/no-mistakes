@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,24 +18,39 @@ import (
 
 func TestRecoveredRunPreservesRecordedNoCITopology(t *testing.T) {
 	tests := []struct {
-		name        string
-		recordedCI  bool
-		currentNoCI bool
-		wantCI      bool
+		name          string
+		recordedCI    bool
+		scheduleKnown bool
+		currentNoCI   bool
+		wantCI        bool
 	}{
 		{name: "legacy CI record under trusted no_ci", recordedCI: true, currentNoCI: true, wantCI: true},
-		{name: "omitted CI after policy is disabled", recordedCI: false, currentNoCI: false, wantCI: false},
+		{name: "omitted CI after policy is disabled", recordedCI: false, scheduleKnown: true, currentNoCI: false, wantCI: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			database, run := parkedRecoveryRun(t, tt.recordedCI)
+			if tt.scheduleKnown {
+				scheduled := types.AllSteps()[:len(types.AllSteps())-1]
+				if err := database.SetRunScheduledSteps(run.ID, scheduled); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				run, err = database.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			cfg := &config.Config{NoCI: tt.currentNoCI}
 			manager := NewRunManager(database, nil, nil)
 
-			execSteps, err := manager.stepsForRecoveredRun(cfg, run)
+			execSteps, recoveredCfg, err := manager.pipelineForRecoveredRun(cfg, run)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !tt.recordedCI && recoveredCfg != cfg {
+				t.Fatal("known omitted-CI schedule unexpectedly replaced its execution config")
 			}
 			if err := pipeline.ValidateRecoveredRun(database, run, execSteps); err != nil {
 				t.Fatalf("recorded topology was not recoverable: %v", err)
@@ -59,9 +75,14 @@ func TestRecoveredLegacyOmittedCISurvivesThreeRestartsWithoutForge(t *testing.T)
 	var execSteps []pipeline.Step
 	for restart, noCI := range []bool{true, false, true} {
 		var err error
-		execSteps, err = manager.stepsForRecoveredRun(&config.Config{NoCI: noCI}, run)
+		currentCfg := &config.Config{NoCI: noCI}
+		var recoveredCfg *config.Config
+		execSteps, recoveredCfg, err = manager.pipelineForRecoveredRun(currentCfg, run)
 		if err != nil {
 			t.Fatalf("restart %d: %v", restart+1, err)
+		}
+		if recoveredCfg != currentCfg || recoveredCfg.NoCI != noCI {
+			t.Fatalf("restart %d changed legacy omitted-CI config: got %#v, want %#v", restart+1, recoveredCfg, currentCfg)
 		}
 		scheduled := scheduledStepNames(execSteps)
 		if got := scheduled[len(scheduled)-1]; got != types.StepLegacyOmittedCI {
@@ -121,7 +142,7 @@ func TestRecoveredLegacyOmittedCISurvivesThreeRestartsWithoutForge(t *testing.T)
 func TestLegacyOmittedCIScheduleSnapshotPresentsCI(t *testing.T) {
 	database, run := parkedRecoveryRunAt(t, true, types.StepReview)
 	manager := NewRunManager(database, nil, nil)
-	execSteps, err := manager.stepsForRecoveredRun(&config.Config{NoCI: true}, run)
+	execSteps, _, err := manager.pipelineForRecoveredRun(&config.Config{NoCI: true}, run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +186,18 @@ func TestRecoveredFinalizedCIScheduleIsNotSkippedByLaterNoCIPolicy(t *testing.T)
 
 	manager := NewRunManager(database, nil, nil)
 	var execSteps []pipeline.Step
+	var recoveredCfg *config.Config
 	for restart, noCI := range []bool{false, true} {
-		execSteps, err = manager.stepsForRecoveredRun(&config.Config{NoCI: noCI}, run)
+		currentCfg := &config.Config{NoCI: noCI}
+		execSteps, recoveredCfg, err = manager.pipelineForRecoveredRun(currentCfg, run)
 		if err != nil {
 			t.Fatalf("restart %d: %v", restart+1, err)
+		}
+		if recoveredCfg.NoCI {
+			t.Fatalf("restart %d recovered ordinary CI with no_ci enabled", restart+1)
+		}
+		if currentCfg.NoCI != noCI {
+			t.Fatalf("restart %d mutated current config to no_ci=%v", restart+1, currentCfg.NoCI)
 		}
 		if got := scheduledStepNames(execSteps)[len(execSteps)-1]; got != types.StepCI {
 			t.Fatalf("restart %d schedule ended in %q, want %q", restart+1, got, types.StepCI)
@@ -185,7 +214,43 @@ func TestRecoveredFinalizedCIScheduleIsNotSkippedByLaterNoCIPolicy(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := pipeline.NewExecutor(database, p, &config.Config{NoCI: true}, nil, execSteps, nil)
+	prURL := "https://github.com/test/repo/pull/42"
+	if err := database.UpdateRunPRURL(run.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	run.PRURL = &prURL
+	var monitorLogs []string
+	monitorCtx, stopMonitor := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopMonitor()
+	_, monitorErr := execSteps[len(execSteps)-1].Execute(&pipeline.StepContext{
+		Ctx:      monitorCtx,
+		Run:      run,
+		Repo:     repo,
+		Config:   recoveredCfg,
+		DB:       database,
+		Log:      func(message string) { monitorLogs = append(monitorLogs, message) },
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	})
+	if !errors.Is(monitorErr, context.DeadlineExceeded) {
+		t.Fatalf("ordinary empty-check monitor error = %v, want deadline", monitorErr)
+	}
+	stored, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CIReadyAt != nil || stored.CIReadyNoCI {
+		t.Fatalf("ordinary empty checks became ready: at=%v declared_no_ci=%v logs=%v", stored.CIReadyAt, stored.CIReadyNoCI, monitorLogs)
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := runToInfo(database, stored, results)
+	if snapshot.CIReady || snapshot.CIReadyNoCI || snapshot.ScheduledSteps[len(snapshot.ScheduledSteps)-1] != types.StepCI {
+		t.Fatalf("ordinary CI snapshot = ready %v declared_no_ci %v schedule %v", snapshot.CIReady, snapshot.CIReadyNoCI, snapshot.ScheduledSteps)
+	}
+	executor := pipeline.NewExecutor(database, p, recoveredCfg, nil, execSteps, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := executor.Resume(ctx, run, repo, ""); err == nil {
@@ -197,6 +262,9 @@ func TestRecoveredFinalizedCIScheduleIsNotSkippedByLaterNoCIPolicy(t *testing.T)
 	}
 	if len(forgeCalls) == 0 {
 		t.Fatal("finalized CI schedule performed no forge call; later no_ci policy reinterpreted durable topology")
+	}
+	if !strings.Contains(string(forgeCalls), "pr checks 42") {
+		t.Fatalf("finalized ordinary CI did not query checks: %q", forgeCalls)
 	}
 }
 
