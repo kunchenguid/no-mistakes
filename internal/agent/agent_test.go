@@ -461,11 +461,18 @@ func TestFinalizeTextResult_WithSchemaParsesBareJSONAfterText(t *testing.T) {
 	}
 }
 
-func TestFinalizeTextResult_WithSchemaPrefersLastBareJSON(t *testing.T) {
-	// If reasoning text embeds a decorative JSON object and the final
-	// answer is a separate object at the end, the final one should win.
+func TestFinalizeTextResult_WithSchemaIgnoresNonMatchingBareJSON(t *testing.T) {
+	// If reasoning text embeds a non-matching JSON object and the final
+	// answer is a schema-valid object, the schema-valid one should be returned.
 	text := `I considered {"foo":"bar"} as one option. Final: {"done":true}`
-	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"done":{"type":"boolean"}
+		},
+		"required":["done"]
+	}`)
+	result, err := finalizeTextResult("codex", text, schema, TokenUsage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -475,6 +482,27 @@ func TestFinalizeTextResult_WithSchemaPrefersLastBareJSON(t *testing.T) {
 	}
 	if output["done"] != true {
 		t.Errorf("expected done=true, got %v", output["done"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaRejectsAmbiguousBareJSON(t *testing.T) {
+	// If multiple bare JSON objects in prose validate against the schema,
+	// reject rather than silently picking the last one and discarding prior verdicts/findings.
+	text := `First verdict: {"findings":["issue 1"],"summary":"first"}. Another candidate: {"findings":[],"summary":"second"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	_, err := finalizeTextResult("codex", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected ambiguous bare JSON to fail")
+	}
+	if !strings.Contains(err.Error(), "multiple bare JSON objects") {
+		t.Fatalf("expected multiple bare JSON objects error, got %v", err)
 	}
 }
 

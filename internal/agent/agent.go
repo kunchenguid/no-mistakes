@@ -345,8 +345,13 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 		return parsed[0], nil
 	}
 
-	if bare, err := lastBareJSONObject(text, validationSchema); err == nil && bare != nil {
-		return bare, nil
+	if bare, err := bareJSONObjects(text, validationSchema); err == nil {
+		if len(bare) > 1 {
+			return nil, fmt.Errorf("multiple bare JSON objects found in output")
+		}
+		if len(bare) == 1 {
+			return bare[0], nil
+		}
 	} else if candidateErr == nil && err != nil {
 		candidateErr = err
 	}
@@ -518,11 +523,10 @@ func indexJSONFenceClose(text string) (int, int) {
 	return -1, -1
 }
 
-// lastBareJSONObject scans text for balanced {...} substrings that parse
-// as JSON and returns the last one found. This handles models that emit
-// reasoning prose followed by a raw JSON answer, with no code fence.
-func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, error) {
-	var last json.RawMessage
+// bareJSONObjects scans text for balanced {...} substrings outside code fences
+// that parse as JSON and validate against the schema.
+func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
+	var valid []json.RawMessage
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
@@ -555,13 +559,12 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 				lastErr = err
 			}
 		} else {
-			last = parsed
-			lastErr = nil
+			valid = append(valid, parsed)
 		}
 		i = end - 1
 	}
-	if last != nil {
-		return last, nil
+	if len(valid) > 0 {
+		return valid, nil
 	}
 	return nil, lastErr
 }
