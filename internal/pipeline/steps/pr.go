@@ -455,6 +455,10 @@ func assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD st
 	return ""
 }
 
+// composeGeneratedSectionsUnbounded is the concise body's attestation choke
+// point: every agent-derived component is neutralized here so only pipelineMD
+// carries a live marker. See appendGeneratedSectionsToCleanBodyWithinLimit for
+// why that neutralization belongs at assembly rather than at each render path.
 func composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, pipelineMD string) string {
 	narrative = neutralizeAttestationMarkers(narrative)
 	riskLine = neutralizeAttestationMarkers(riskLine)
@@ -638,8 +642,10 @@ func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD st
 	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes)
 }
 
-// appendGeneratedSectionsToCleanBodyWithinLimit is the single choke point that
-// decides which attestation comment a body consumer sees.
+// appendGeneratedSectionsToCleanBodyWithinLimit is the legacy assembly's choke
+// point for which attestation comment a body consumer sees.
+// composeGeneratedSectionsUnbounded is its counterpart for the concise
+// narrative body, and neutralizes the same components for the same reason.
 //
 // pipelineMD carries the run's real attestation. Every other component -
 // what-changed, intent, risk, and above all the Testing section, which embeds
