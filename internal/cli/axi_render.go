@@ -452,7 +452,7 @@ func gateFields(gate stepView) []toon.Field {
 
 func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	return gateFieldsWithHelp(gate, []string{
-		fmt.Sprintf("This gate belongs to run %s; answer it from that run's own worktree/branch", runID),
+		fmt.Sprintf("The explicitly selected gate for run %s is inspection-only; no run-scoped response command exists", runID),
 		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, runID)),
 	})
 }

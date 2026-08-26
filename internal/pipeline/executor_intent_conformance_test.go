@@ -1,9 +1,7 @@
 package pipeline
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -77,8 +75,7 @@ func TestExecutor_AutoFixContradictingIntentParksForApproval(t *testing.T) {
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
 
-	done := make(chan error, 1)
-	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// The run must PARK at fix_review (an ask-user finding after a fix cycle),
 	// not silently complete.
@@ -99,13 +96,8 @@ func TestExecutor_AutoFixContradictingIntentParksForApproval(t *testing.T) {
 	}
 
 	// Resolve so the executor goroutine exits cleanly.
-	exec.Respond(types.StepReview, types.ActionApprove, nil)
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("execute: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve fix review: %v", err)
 	}
+	waitExecutorDone(t, done)
 }

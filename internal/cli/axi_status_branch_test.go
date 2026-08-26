@@ -200,7 +200,8 @@ func TestAxiStatusForeignRunGateHelpCannotMutateCurrentBranch(t *testing.T) {
 		"other_branch_run:",
 		"gate:",
 		"other branch gate",
-		"own worktree/branch",
+		"inspection-only",
+		"no run-scoped response command exists",
 		"axi logs --run " + other.ID + " --step review --full",
 	} {
 		if !strings.Contains(out, want) {
@@ -209,6 +210,68 @@ func TestAxiStatusForeignRunGateHelpCannotMutateCurrentBranch(t *testing.T) {
 	}
 	if strings.Contains(out, "axi respond") {
 		t.Fatalf("foreign-run gate status offered a branch-scoped mutation command:\n%s", out)
+	}
+}
+
+func TestAxiStatusExplicitOlderSameBranchRunGateIsInspectionOnly(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/mine")
+	chdir(t, repoDir)
+
+	older, err := database.InsertRun(repo.ID, "feature/mine", "head-older", "base")
+	if err != nil {
+		t.Fatalf("insert older current-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(older.ID, types.RunRunning); err != nil {
+		t.Fatalf("start older current-branch run: %v", err)
+	}
+	olderStep, err := database.InsertStepResult(older.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert older current-branch step: %v", err)
+	}
+	if err := database.UpdateStepStatus(olderStep.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("park older current-branch step: %v", err)
+	}
+	if err := database.SetStepFindings(olderStep.ID, findingsJSON(t, nil, "older run gate")); err != nil {
+		t.Fatalf("set older current-branch findings: %v", err)
+	}
+
+	newer, err := database.InsertRun(repo.ID, "feature/mine", "head-newer", "base")
+	if err != nil {
+		t.Fatalf("insert newer current-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(newer.ID, types.RunRunning); err != nil {
+		t.Fatalf("start newer current-branch run: %v", err)
+	}
+
+	implicit := decodeStatusDoc(t, axiStatusOutput(t, ""))
+	if implicit.Run.ID != newer.ID {
+		t.Fatalf("bare status resolved run %q, want newer active run %s", implicit.Run.ID, newer.ID)
+	}
+
+	out := axiStatusOutput(t, older.ID)
+	doc := decodeStatusDoc(t, out)
+	if doc.Run.ID != older.ID {
+		t.Fatalf("explicit status resolved run %q, want older run %s:\n%s", doc.Run.ID, older.ID, out)
+	}
+	if strings.Contains(out, "axi respond") {
+		t.Fatalf("explicit older-run status offered a bare command that would target newer run %s:\n%s", newer.ID, out)
+	}
+	for _, want := range []string{
+		"gate:",
+		"older run gate",
+		"inspection-only",
+		"no run-scoped response command exists",
+		"axi logs --run " + older.ID + " --step review --full",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("inspection-only explicit status missing %q:\n%s", want, out)
+		}
+	}
+	for _, unsafe := range []string{"answer it", "own worktree/branch"} {
+		if strings.Contains(out, unsafe) {
+			t.Fatalf("inspection-only explicit status included unsafe guidance %q:\n%s", unsafe, out)
+		}
 	}
 }
 
@@ -272,7 +335,8 @@ func TestAxiStatusExplicitRunWithUnknownCallerBranchCannotOfferMutationCommands(
 	for _, want := range []string{
 		"gate:",
 		"other branch gate",
-		"own worktree/branch",
+		"inspection-only",
+		"no run-scoped response command exists",
 		"axi logs --run " + other.ID + " --step review --full",
 	} {
 		if !strings.Contains(out.String(), want) {

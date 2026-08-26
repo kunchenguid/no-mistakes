@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -104,12 +105,15 @@ func TestExecutor_LogChunkThrottlesStepActivityWrites(t *testing.T) {
 		t.Fatalf("install activity counter: %v", err)
 	}
 
+	var chunkDuration time.Duration
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			started := time.Now()
 			for i := 0; i < 100; i++ {
 				sctx.LogChunk(fmt.Sprintf("delta-%03d ", i))
 			}
+			chunkDuration = time.Since(started)
 			return &StepOutcome{ExitCode: 0}, nil
 		},
 	}
@@ -123,8 +127,13 @@ func TestExecutor_LogChunkThrottlesStepActivityWrites(t *testing.T) {
 	if err := counterDB.QueryRow(`SELECT n FROM step_activity_update_count`).Scan(&updates); err != nil {
 		t.Fatalf("read activity update count: %v", err)
 	}
-	if updates > 5 {
-		t.Fatalf("step activity updates = %d, want throttled count <= 5", updates)
+	// Start and completion each update activity once. Streaming may update once
+	// immediately and once per complete throttle interval after that; a fixed
+	// count is invalid when race-enabled Windows CI takes several seconds to
+	// write the chunks under filesystem contention.
+	maxUpdates := int(chunkDuration/stepActivityThrottleInterval) + 3
+	if updates > maxUpdates {
+		t.Fatalf("step activity updates = %d over %s, want throttled count <= %d", updates, chunkDuration, maxUpdates)
 	}
 }
 

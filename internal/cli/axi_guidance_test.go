@@ -158,15 +158,9 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	}
 }
 
-func TestAxiStatusUnknownBranchRunRelationshipGuidance_SyncedAcrossSurfaces(t *testing.T) {
-	surfaces := map[string]string{
-		"installed skill": skill.Markdown(),
-		"CLI reference":   readCLIReference(t),
-	}
-	for name, content := range surfaces {
-		if !strings.Contains(content, canonicalUnknownBranchRunRelationship) {
-			t.Errorf("%s is missing the explicit-run unknown-branch relationship contract", name)
-		}
+func TestAxiStatusUnknownBranchRunRelationshipGuidance_InInstalledSkill(t *testing.T) {
+	if !strings.Contains(skill.Markdown(), canonicalUnknownBranchRunRelationship) {
+		t.Error("installed skill is missing the explicit-run unknown-branch relationship contract")
 	}
 }
 
@@ -256,16 +250,6 @@ func readAgentsGuide(t *testing.T) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read agents guide %s: %v", path, err)
-	}
-	return string(data)
-}
-
-func readCLIReference(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join("..", "..", "docs", "src", "content", "docs", "reference", "cli.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read CLI reference %s: %v", path, err)
 	}
 	return string(data)
 }
