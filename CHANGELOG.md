@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.59.1](https://github.com/kunchenguid/no-mistakes/compare/v1.59.0...v1.59.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **agent:** harden isolated pipeline execution ([#844](https://github.com/kunchenguid/no-mistakes/issues/844)) ([9694fff](https://github.com/kunchenguid/no-mistakes/commit/9694fff3bb451a8a11e6abdf730e2b0d3ce530b3))
+* **scm/gitlab:** drop unsupported --yes flag from glab mr update ([#841](https://github.com/kunchenguid/no-mistakes/issues/841)) ([3781331](https://github.com/kunchenguid/no-mistakes/commit/3781331358040154d56ed438d937efd104ebb512))
+
 ## [1.59.0](https://github.com/kunchenguid/no-mistakes/compare/v1.58.1...v1.59.0) (2026-08-25)
 
 
