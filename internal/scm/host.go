@@ -144,10 +144,18 @@ const (
 	CheckBucketSkip    CheckBucket = "skipping"
 )
 
+type CheckKind string
+
+const (
+	CheckKindRun    CheckKind = "run"
+	CheckKindStatus CheckKind = "status"
+)
+
 // Check is a single CI check result on a PR.
 type Check struct {
 	Name   string
 	Bucket CheckBucket
+	Kind   CheckKind
 	// State is the provider's own outcome string for the check (GitHub
 	// conclusions such as FAILURE, TIMED_OUT, CANCELLED). Buckets collapse
 	// several outcomes into one value, so callers that must tell an

@@ -497,6 +497,7 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 			check := scm.Check{}
 			switch node.Type {
 			case "CheckRun":
+				check.Kind = scm.CheckKindRun
 				check.Name = strings.TrimSpace(node.Name)
 				check.State = strings.ToUpper(strings.TrimSpace(node.Conclusion))
 				if check.State == "" {
@@ -514,6 +515,7 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 					check.StartedAt = parsed
 				}
 			case "StatusContext":
+				check.Kind = scm.CheckKindStatus
 				check.Name = strings.TrimSpace(node.Context)
 				check.State = strings.ToUpper(strings.TrimSpace(node.State))
 				check.Bucket = normalizeCheckBucket("", node.State)
@@ -571,7 +573,7 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 	return checks
 }
 
-// collapseLatestByName collapses same-name checks to the most recently
+// collapseLatestByName collapses same-name check runs to the most recently
 // started one. GitHub's raw commit statusCheckRollup returns every check run
 // ever attached to the commit, including runs a later same-named run has
 // already superseded - e.g. a CI monitor's auto-fix push re-triggers the
@@ -592,6 +594,10 @@ func collapseLatestByName(checks []scm.Check) []scm.Check {
 	index := make(map[string]int, len(checks))
 	collapsed := make([]scm.Check, 0, len(checks))
 	for _, check := range checks {
+		if check.Kind != scm.CheckKindRun {
+			collapsed = append(collapsed, check)
+			continue
+		}
 		if i, ok := index[check.Name]; ok {
 			if checkStartedAfter(check, collapsed[i]) {
 				collapsed[i] = check
@@ -741,7 +747,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			}
 			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
 		}
-		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, StartedAt: startedAt, Link: link})
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, Link: link})
 	}
 	return checks, nil
 }

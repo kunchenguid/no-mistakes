@@ -389,6 +389,39 @@ func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededC
 	}
 }
 
+func TestGetChecksPreservesSameNameStatusContextAndCheckRun(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-26T08:39:44Z","completedAt":"2026-08-26T08:39:50Z","detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"},
+				{"__typename":"StatusContext","context":"build","state":"FAILURE","targetUrl":"https://ci.example.com/build/42"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":1,"workflow_runs":[
+				{"id":102,"name":"build","status":"completed","conclusion":"success","run_started_at":"2026-08-26T08:39:44Z","updated_at":"2026-08-26T08:39:50Z"}
+			]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("GetChecks() returned %d checks, want both same-name records: %+v", len(checks), checks)
+	}
+	if checks[0].Kind != scm.CheckKindRun || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing check run", checks[0])
+	}
+	if checks[1].Kind != scm.CheckKindStatus || checks[1].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[1] = %+v, want failing commit status", checks[1])
+	}
+}
+
 func TestGetChecksKeepsQueuedReplacementOverSupersededFailure(t *testing.T) {
 	t.Parallel()
 
