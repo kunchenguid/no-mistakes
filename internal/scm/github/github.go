@@ -378,6 +378,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			return nil, err
 		}
 		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
+		checks = collapseLatestByName(checks)
 		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
@@ -430,7 +431,7 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 	return checks, nil
 }
 
-const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
+const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt startedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
 
 func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
 	repo := h.repoSlug()
@@ -466,6 +467,7 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 									Status      string `json:"status"`
 									Conclusion  string `json:"conclusion"`
 									CompletedAt string `json:"completedAt"`
+									StartedAt   string `json:"startedAt"`
 									DetailsURL  string `json:"detailsUrl"`
 									Context     string `json:"context"`
 									State       string `json:"state"`
@@ -507,6 +509,9 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 				check.Link = strings.TrimSpace(node.DetailsURL)
 				if parsed, parseErr := time.Parse(time.RFC3339, node.CompletedAt); parseErr == nil {
 					check.CompletedAt = parsed
+				}
+				if parsed, parseErr := time.Parse(time.RFC3339, node.StartedAt); parseErr == nil {
+					check.StartedAt = parsed
 				}
 			case "StatusContext":
 				check.Name = strings.TrimSpace(node.Context)
@@ -557,6 +562,52 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 		}
 	}
 	return checks
+}
+
+// collapseLatestByName collapses same-name checks to the most recently
+// started one. GitHub's raw commit statusCheckRollup returns every check run
+// ever attached to the commit, including runs a later same-named run has
+// already superseded - e.g. a CI monitor's auto-fix push re-triggers the
+// same gate check, and the rollup keeps both the old FAILURE and the new
+// SUCCESS forever. Without this collapse the superseded failure stays
+// visible even after the later run at the same head turns green, which
+// manufactures an unrecoverable auto-fix loop (see AGENTS.md "CI Monitor
+// Lifecycle"). This restores the semantics `gh pr checks` already applies
+// (collapse by startedAt) to the commit-rollup path, which never had it.
+//
+// Must run AFTER appendUnrepresentedWorkflowRuns, never before: that call
+// dedupes by Actions run ID against the FULL uncollapsed rollup. Collapsing
+// first would drop a superseded run's ID out of the "represented" set the
+// union checks against, letting the union re-add the same stale run under
+// its own workflow run name - resurrecting exactly the failure this is
+// meant to hide.
+func collapseLatestByName(checks []scm.Check) []scm.Check {
+	index := make(map[string]int, len(checks))
+	collapsed := make([]scm.Check, 0, len(checks))
+	for _, check := range checks {
+		if i, ok := index[check.Name]; ok {
+			if checkStartedAfter(check, collapsed[i]) {
+				collapsed[i] = check
+			}
+			continue
+		}
+		index[check.Name] = len(collapsed)
+		collapsed = append(collapsed, check)
+	}
+	return collapsed
+}
+
+// checkStartedAfter reports whether a is the newer of the two checks,
+// comparing StartedAt first and falling back to CompletedAt when neither
+// check reported a start time.
+func checkStartedAfter(a, b scm.Check) bool {
+	if !a.StartedAt.IsZero() || !b.StartedAt.IsZero() {
+		if a.StartedAt.Equal(b.StartedAt) {
+			return a.CompletedAt.After(b.CompletedAt)
+		}
+		return a.StartedAt.After(b.StartedAt)
+	}
+	return a.CompletedAt.After(b.CompletedAt)
 }
 
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {

@@ -309,6 +309,86 @@ func TestGetChecksDoesNotDuplicateWorkflowRunsRepresentedByRollup(t *testing.T) 
 	}
 }
 
+// The raw commit statusCheckRollup keeps every check run a commit ever had,
+// including a same-named run a later run has already superseded (e.g. a CI
+// monitor auto-fix push re-triggering the same gate check). Without a
+// latest-wins collapse the stale FAILURE stays visible forever even though a
+// later SUCCESS at the same head replaced it, which manufactures an
+// unrecoverable auto-fix loop. GetChecks must collapse to the newest
+// startedAt so the caller sees zero failing checks.
+func TestGetChecksCollapsesSupersededSameNameCheckToLatestAtOneHead(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-26T08:25:50Z","completedAt":"2026-08-26T08:25:56Z","detailsUrl":"https://github.com/test/repo/actions/runs/101/job/201"},
+				{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-26T08:39:44Z","completedAt":"2026-08-26T08:39:50Z","detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":0,"workflow_runs":[]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "stale"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("GetChecks() returned %d checks, want the superseded run collapsed away: %+v", len(checks), checks)
+	}
+	if got := checks[0]; got.Name != "gate" || got.Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want the latest SUCCESS run to win", got)
+	}
+	for _, c := range checks {
+		if c.Bucket == scm.CheckBucketFail {
+			t.Fatalf("checks = %+v, want zero failing checks after collapse", checks)
+		}
+	}
+}
+
+// Order matters: appendUnrepresentedWorkflowRuns dedupes the Actions-run
+// union against the checks slice by run ID. If collapseLatestByName ran
+// BEFORE that union, the superseded run's ID would drop out of the
+// "represented" set and the union would re-add the exact same stale run
+// under its own workflow run name - resurrecting the failure the collapse
+// was supposed to hide. This test pins the union-then-collapse order: both
+// the superseded and the winning run are independently visible to the
+// workflow-run API (as they would be on a real repo), and the union must
+// recognize both as already represented rather than re-adding either.
+func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededCheck(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-26T08:25:50Z","completedAt":"2026-08-26T08:25:56Z","detailsUrl":"https://github.com/test/repo/actions/runs/101/job/201"},
+				{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-26T08:39:44Z","completedAt":"2026-08-26T08:39:50Z","detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":2,"workflow_runs":[
+				{"id":101,"name":"gate - synchronize - event 1 (run 101)","status":"completed","conclusion":"failure"},
+				{"id":102,"name":"gate - edited - event 2 (run 102)","status":"completed","conclusion":"success"}
+			]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("GetChecks() returned %d checks, want the union to add nothing and the collapse to leave one: %+v", len(checks), checks)
+	}
+	if got := checks[0]; got.Name != "gate" || got.Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want the latest SUCCESS run to win with no resurrected failure", got)
+	}
+}
+
 func TestGetChecksDoesNotTrustUnrelatedWorkflowRunLinks(t *testing.T) {
 	t.Parallel()
 
