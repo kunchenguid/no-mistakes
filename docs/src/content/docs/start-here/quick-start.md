@@ -95,23 +95,47 @@ The TUI shows each step's progress, streams agent output, and pauses for your ap
 
 ## Or let your agent run the gate
 
-If you are already working inside a coding agent like Claude Code, you don't have to switch to the terminal at all.
-`no-mistakes init` installed the `/no-mistakes` skill at user level, available in every repo, so you can ask the agent to do a task and gate it:
+If you are already working inside a coding agent, you don't have to switch to the terminal.
+
+### Set up the agent skill
+
+`no-mistakes init` installs a version-matched global skill rather than adding a copy to each repository:
+
+| Consumer | Installed location | Invoke |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/no-mistakes/SKILL.md` | `/no-mistakes` |
+| Pi | `~/.agents/skills/no-mistakes/SKILL.md` | `/skill:no-mistakes` or a plain-language request to validate with no-mistakes |
+| Codex, OpenCode, and Rovo Dev | `~/.agents/skills/no-mistakes/SKILL.md` | Use the harness's normal skill invocation or ask it to validate with no-mistakes |
+
+The installer follows an existing symlink between the Claude and vendor-neutral skill locations, so one physical copy can serve both. Grok Build is available as a pipeline runner but does not consume this driving skill.
+
+Verify the installation:
+
+```sh
+no-mistakes --version
+no-mistakes doctor
+test -f ~/.agents/skills/no-mistakes/SKILL.md && echo "agent skill installed"
+```
+
+After upgrading or replacing the binary, run `no-mistakes init` again in an initialized repository to refresh the skill from that exact executable. Pi discovers global skills at startup; use `/reload` to refresh an active Pi session.
+
+### Run it from the agent
+
+In Claude Code, ask the agent to implement a task and gate it:
 
 ```
 /no-mistakes add a --json flag to the status command
 ```
 
-Or, if the work is already committed on a feature branch, use bare `/no-mistakes` to validate it:
+The equivalent explicit Pi invocation is:
 
 ```
-/no-mistakes
+/skill:no-mistakes add a --json flag to the status command
 ```
 
-In task-first mode, the agent inspects scope, preserves unrelated work, commits only the task changes on a feature branch, and passes your task text as `--intent`.
-In validate-only mode, it validates the existing committed work.
-Either way, it applies low-risk fixes itself and stops to relay any finding that needs your judgment.
-It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
+If the work is already committed on a feature branch, invoke the skill without a task to validate it. In task-first mode, the agent inspects scope, preserves unrelated work, commits only the task changes on a feature branch, and passes your task text as `--intent`. In validate-only mode, it validates the existing committed work.
+
+Either way, the driving agent applies low-risk fixes itself and stops to relay findings that need your judgment. It drives the same gate as the TUI through `no-mistakes axi`, a non-interactive command surface that uses flags only, prints TOON on stdout, and exposes the same approval gates through `no-mistakes axi respond`.
 
 See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mistakes-as-an-agent) for the full agent workflow.
 
@@ -122,11 +146,11 @@ The pipeline runs these steps in order:
 1. **Intent** - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts
 2. **Rebase** - onto the latest upstream and pushed-branch target
 3. **Review** - AI code review of your diff
-4. **Test** - baseline tests plus evidence checks when intent is known
-5. **Document** - updates docs and reports unresolved gaps
-6. **Lint** - your linters (configured command or agent-detected)
-7. **Push** - to the configured push target
+4. **Test** - run targeted local checks and collect evidence for this change; this is not the repository's full CI suite
+5. **Document** - update docs and report unresolved gaps
+6. **Lint** - run configured lint/static analysis or agent-detected housekeeping
+7. **Push** - deliver the validated commit to the configured push target
 8. **PR** - create or update the pull request
-9. **CI** - poll CI, watch PR mergeability, auto-fix failures
+9. **CI** - monitor the remote checks and workflow runs registered for the exact PR head, then repair actionable failures through a new Review → Test → Document → Lint cycle
 
-Steps that find issues pause for your approval. See the [Pipeline concept page](/no-mistakes/concepts/pipeline/) for the overview and [Pipeline Steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.
+Steps that find issues pause for your approval. A completed local **Test** step means focused change evidence passed; it does not mean remote CI is green. See [Local Test versus remote CI](/no-mistakes/concepts/pipeline/#local-test-versus-remote-ci) for that distinction and [Pipeline Steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.

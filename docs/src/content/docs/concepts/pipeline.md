@@ -45,6 +45,23 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 8 | **PR** | Create or update the pull request | n/a |
 | 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
 
+## Local Test versus remote CI
+
+No-mistakes deliberately separates focused local evidence from broad remote regression:
+
+| | **Test step** | **CI step** |
+| --- | --- | --- |
+| **When** | Before Push, in the disposable run worktree | After Push and PR creation |
+| **What runs** | The optional targeted `commands.test` baseline, followed when needed by the agent's smallest relevant tests or manual evidence checks | The checks and workflow runs that your repository's forge registers for the exact PR head commit |
+| **Scope** | The changed behavior and supplied intent; it is explicitly not a full-suite substitute | Repository-owned broad regression, build, integration, deployment, policy, or other jobs defined by your CI configuration |
+| **Evidence** | Recorded checks, a short testing summary, and optional reviewer-visible artifacts | Provider check conclusions and workflow/job logs; no-mistakes does not redefine what each CI job tests |
+| **Failure handling** | The Test fixer reproduces the focused failure, repairs it, and reruns the targeted baseline/evidence path | The monitor reads failed job logs when supported, asks the agent for a repair, then restarts validation at Review before another Push |
+| **Ready condition** | The targeted local checks and evidence have no unresolved blocking findings | Every registered check/workflow for the current PR head is terminal and green, with known mergeability clear where supported |
+
+An empty provider check list is not a CI pass. It remains not-ready unless the trusted default-branch configuration explicitly sets `no_ci: true`; checks that do appear are still honored. On GitHub, readiness combines the commit's check rollup with Actions workflow runs for the same SHA, including workflows that failed before creating a normal check job.
+
+The generated PR's `## Testing` section summarizes the **local Test step**, not remote CI. The `## Pipeline` section is also a snapshot written when the PR step runs, so its CI record can still be pending. Live CI truth remains in the forge and in the active no-mistakes CI monitor. See [Test](/no-mistakes/reference/pipeline-steps/#test) and [CI](/no-mistakes/reference/pipeline-steps/#ci) for exact commands, polling, readiness, timeout, rerun, and repair behavior.
+
 ## Why these steps, in this order
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.

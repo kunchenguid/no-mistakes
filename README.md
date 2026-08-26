@@ -72,6 +72,19 @@ curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/i
 
 Windows, Go install, and build-from-source instructions are in the [installation guide](https://kunchenguid.github.io/no-mistakes/start-here/installation/).
 
+## Agent Skill Setup
+
+Initialize each repository you want to gate:
+
+```sh
+cd /path/to/your-repo
+no-mistakes init
+```
+
+Besides creating the local gate, `init` installs the version-matched `no-mistakes` skill globally for Claude Code and agents that discover the vendor-neutral `~/.agents/skills` directory, including Pi. Invoke it with `/no-mistakes` in Claude Code or `/skill:no-mistakes` in Pi; you can also ask a skill-aware agent to validate or ship a change with no-mistakes and let it load the skill automatically.
+
+Re-run `no-mistakes init` after upgrading the binary to refresh the installed skill. In an active Pi session, run `/reload` afterward. See [agent skill setup](docs/src/content/docs/start-here/quick-start.md#set-up-the-agent-skill) for paths, supported consumers, and verification.
+
 ## Quick Start
 
 ```sh
