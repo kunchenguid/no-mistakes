@@ -27,7 +27,7 @@ func newAxiStatusCmd() *cobra.Command {
 	var runID string
 	cmd := &cobra.Command{
 		Use:           "status",
-		Short:         "Show the active (or most recent) run in detail",
+		Short:         "Show a current-branch or explicitly selected run in detail",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -40,7 +40,7 @@ func newAxiStatusCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run ID (default: active or most recent)")
+	cmd.Flags().StringVar(&runID, "run", "", "inspect a specific run ID (default: current branch's active or most recent)")
 	return cmd
 }
 
@@ -116,9 +116,9 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 }
 
 // emitNoRunForCaller answers `axi status` when the caller has no run of its
-// own: the current branch has never had one, or the branch itself cannot be
-// determined. It never substitutes some other branch's run. It names the branch
-// it looked for, lists the repository's recent runs so a deliberate
+// own: the current branch has never had one, or the caller has a detached HEAD.
+// It never substitutes some other branch's run. It names the branch it looked
+// for, lists the repository's recent runs so a deliberate
 // `--run <id>` inspection is one step away, and provides next-step help.
 func emitNoRunForCaller(cmd *cobra.Command, env *axiEnv, branch string, runs []*db.Run) (string, error) {
 	branchDisplay := branch
@@ -232,7 +232,7 @@ func newAxiLogsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&step, "step", "", "step name: intent, rebase, review, test, document, lint, push, pr, ci (required)")
-	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: active or most recent)")
+	cmd.Flags().StringVar(&runID, "run", "", "run ID (default: current branch's active or most recent)")
 	cmd.Flags().BoolVar(&full, "full", false, "show the entire log instead of the tail")
 	return cmd
 }
@@ -332,10 +332,10 @@ func logRows(lines []string) []logRow {
 }
 
 // resolveRun picks the run to inspect: an explicit ID, else the caller's
-// current-branch active run, else that branch's most recent run. It returns
-// (nil, nil) when the caller's branch has no run of its own, and when the
-// caller has a detached HEAD - a detached HEAD owns no branch, so no run can
-// be attributed to it.
+// current-branch active run, else that branch's most recent run. It returns a
+// nil run when the caller's branch has no run of its own, and when the caller
+// has a detached HEAD - a detached HEAD owns no branch, so no run can be
+// attributed to it.
 //
 // It deliberately does NOT fall back to the repository's active or most recent
 // run on some other branch. One clone commonly has several worktrees sitting on

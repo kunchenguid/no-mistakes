@@ -173,9 +173,9 @@ no-mistakes axi status
 no-mistakes axi status --run <id>
 ```
 
-| Flag    | Type     | Default      | Description               |
-| ------- | -------- | ------------ | ------------------------- |
-| `--run` | `string` | resolved run | Inspect a specific run ID |
+| Flag    | Type     | Default            | Description               |
+| ------- | -------- | ------------------ | ------------------------- |
+| `--run` | `string` | current-branch run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
@@ -249,11 +249,11 @@ no-mistakes axi logs --step review --full
 no-mistakes axi logs --step review --run <id>
 ```
 
-| Flag     | Type     | Default      | Description                             |
-| -------- | -------- | ------------ | --------------------------------------- |
-| `--step` | `string` | (none)       | Step name; required                     |
-| `--run`  | `string` | resolved run | Run ID to inspect                       |
-| `--full` | `bool`   | `false`      | Show the entire log instead of the tail |
+| Flag     | Type     | Default            | Description                             |
+| -------- | -------- | ------------------ | --------------------------------------- |
+| `--step` | `string` | (none)             | Step name; required                     |
+| `--run`  | `string` | current-branch run | Run ID to inspect                       |
+| `--full` | `bool`   | `false`            | Show the entire log instead of the tail |
 
 When `--run` is omitted, the run is resolved the same way as [`axi status`](#no-mistakes-axi-status): this branch's run, never another branch's.
 With `--run <id>`, logs are read from exactly that run regardless of branch.
