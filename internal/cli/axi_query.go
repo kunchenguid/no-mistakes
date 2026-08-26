@@ -99,8 +99,9 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 		fields = append(fields, *syncField)
 	}
 	if gate, ok := rv.awaitingStep(); ok {
-		if foreignRun {
-			fields = append(fields, foreignRunGateFields(gate, run.ID)...)
+		branchScopedCommandsSafe := runID == "" || (branch != "" && run.Branch == branch)
+		if !branchScopedCommandsSafe {
+			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)
 		} else {
 			fields = append(fields, gateFields(gate)...)
 		}

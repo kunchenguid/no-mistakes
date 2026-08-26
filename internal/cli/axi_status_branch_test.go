@@ -212,6 +212,75 @@ func TestAxiStatusForeignRunGateHelpCannotMutateCurrentBranch(t *testing.T) {
 	}
 }
 
+func TestAxiStatusExplicitRunWithUnknownCallerBranchCannotOfferMutationCommands(t *testing.T) {
+	repoDir, _, database, repo := setupAxiQueryRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "feature/mine")
+	chdir(t, repoDir)
+
+	mine, err := database.InsertRun(repo.ID, "feature/mine", "head-mine", "base")
+	if err != nil {
+		t.Fatalf("insert current-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(mine.ID, types.RunRunning); err != nil {
+		t.Fatalf("start current-branch run: %v", err)
+	}
+	mineStep, err := database.InsertStepResult(mine.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert current-branch step: %v", err)
+	}
+	if err := database.UpdateStepStatus(mineStep.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("park current-branch step: %v", err)
+	}
+
+	other, err := database.InsertRun(repo.ID, "feature/other", "head-other", "base")
+	if err != nil {
+		t.Fatalf("insert other-branch run: %v", err)
+	}
+	if err := database.UpdateRunStatus(other.ID, types.RunRunning); err != nil {
+		t.Fatalf("start other-branch run: %v", err)
+	}
+	otherStep, err := database.InsertStepResult(other.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert other-branch step: %v", err)
+	}
+	if err := database.UpdateStepStatus(otherStep.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("park other-branch step: %v", err)
+	}
+	if err := database.SetStepFindings(otherStep.ID, findingsJSON(t, nil, "other branch gate")); err != nil {
+		t.Fatalf("set other-branch findings: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetOut(&out)
+	if _, err := runAxiStatus(cmd, other.ID); err != nil {
+		t.Fatalf("explicit axi status after branch lookup failure: %v\n%s", err, out.String())
+	}
+	doc := decodeStatusDoc(t, out.String())
+	if doc.Run.ID != other.ID {
+		t.Fatalf("explicit run with unknown caller branch must retain run label, got:\n%s", out.String())
+	}
+	if doc.OtherBranchRun.ID != "" {
+		t.Fatalf("status asserted an unproven branch relationship:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "axi respond") {
+		t.Fatalf("explicit run without proven caller-branch ownership offered a mutation command:\n%s", out.String())
+	}
+	for _, want := range []string{
+		"gate:",
+		"other branch gate",
+		"own worktree/branch",
+		"axi logs --run " + other.ID + " --step review --full",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("inspection-only gate status missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // TestResolveRunDoesNotFallBackToAnotherBranch pins the cause at its owner:
 // with the caller's branch known and no run on it, resolution reports no run
 // rather than the repository's most recent run on some other branch.

@@ -450,9 +450,9 @@ func gateFields(gate stepView) []toon.Field {
 	})
 }
 
-func foreignRunGateFields(gate stepView, runID string) []toon.Field {
+func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	return gateFieldsWithHelp(gate, []string{
-		fmt.Sprintf("This gate belongs to run %s on another branch; answer it from that run's own worktree/branch", runID),
+		fmt.Sprintf("This gate belongs to run %s; answer it from that run's own worktree/branch", runID),
 		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, runID)),
 	})
 }
