@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"time"
 
@@ -334,21 +335,33 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	// inline example never shadows a real trailing block, and an unclosed
 	// fence never competes with a closed one. Only when no closed fence
 	// parses do we consult the open candidates.
+	var fenced json.RawMessage
 	if parsed := parseCandidates(closed); len(parsed) > 1 {
 		return nil, fmt.Errorf("multiple JSON code fences found in output")
 	} else if len(parsed) == 1 {
-		return parsed[0], nil
-	}
-	if parsed := parseCandidates(openCands); len(parsed) > 1 {
+		fenced = parsed[0]
+	} else if parsed := parseCandidates(openCands); len(parsed) > 1 {
 		return nil, fmt.Errorf("multiple JSON code fences found in output")
 	} else if len(parsed) == 1 {
-		return parsed[0], nil
+		fenced = parsed[0]
 	}
 
-	if bare, err := lastBareJSONObject(text, validationSchema); err == nil && bare != nil {
+	bare, bareErr := lastBareJSONObject(text, validationSchema)
+	if candidateErr == nil && bareErr != nil {
+		candidateErr = bareErr
+	}
+
+	if fenced != nil && bare != nil {
+		if !jsonEqual(fenced, bare) {
+			return nil, fmt.Errorf("conflicting JSON candidates found in output")
+		}
+		return fenced, nil
+	}
+	if fenced != nil {
+		return fenced, nil
+	}
+	if bare != nil {
 		return bare, nil
-	} else if candidateErr == nil && err != nil {
-		candidateErr = err
 	}
 
 	if candidateErr != nil {
@@ -564,6 +577,20 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 		}
 	}
 	return nil, lastErr
+}
+
+func jsonEqual(a, b json.RawMessage) bool {
+	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
+		return true
+	}
+	var valA, valB any
+	if err := json.Unmarshal(a, &valA); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &valB); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(valA, valB)
 }
 
 // scanBalancedObject returns the exclusive end index of a brace-balanced

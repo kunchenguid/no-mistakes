@@ -847,3 +847,61 @@ func TestLastBareJSONObject_IgnoresIncidentalExamplePrecedingProse(t *testing.T)
 		t.Fatal("expected failure because bare JSON was an incidental example before substantive prose")
 	}
 }
+
+func TestFinalizeTextResult_ConflictingFencedAndBareJSONReturnsError(t *testing.T) {
+	// Greptile review regression: when an agent response contains a schema-valid fenced
+	// verdict and a different schema-valid bare verdict in prose, the conflicting verdict
+	// must be rejected instead of silently picking one format over the other.
+	text := strings.Join([]string{
+		"I completed the review and found an issue:",
+		"```json",
+		`{"findings":[{"id":"BUG1","severity":"error"}],"summary":"bug found"}`,
+		"```",
+		`{"findings":[],"summary":"all clean"}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	_, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error on conflicting fenced and bare JSON verdicts")
+	}
+	if !strings.Contains(err.Error(), "conflicting JSON candidates") && !strings.Contains(err.Error(), "multiple JSON") {
+		t.Fatalf("expected conflicting/multiple JSON candidates error, got: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_IdenticalFencedAndBareJSONSucceeds(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"findings":[],"summary":"all clean"}`,
+		"```",
+		`{"findings":[],"summary":"all clean"}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	result, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if output.Summary != "all clean" {
+		t.Errorf("expected summary='all clean', got %q", output.Summary)
+	}
+}
