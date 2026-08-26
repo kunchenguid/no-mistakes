@@ -1497,16 +1497,27 @@ func (f *recoverFixture) localAnchorRef() string {
 func newTerminalEqualTreeRewriteFixture(t *testing.T) (*recoverFixture, string) {
 	t.Helper()
 	f := newRebasedRecoverFixture(t, types.RunFailed)
-	recorded := f.preserved
-	if err := f.db.UpdateRunErrorStatus(f.run.ID, "terminal worker lost", types.RunFailed); err != nil {
-		t.Fatal(err)
-	}
 	pipeline := filepath.Join(filepath.Dir(f.local), "terminal-rewrite")
 	mustRun(t, filepath.Dir(f.local), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
 	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "--detach", f.submitted)
+	mustWrite(t, filepath.Join(pipeline, "feature.txt"), "pipeline reviewed replacement\n")
+	mustRun(t, pipeline, "commit", "-am", "reviewed pipeline result")
+	recorded := mustRun(t, pipeline, "rev-parse", "HEAD")
 	tree := mustRun(t, pipeline, "rev-parse", recorded+"^{tree}")
 	live := mustRun(t, pipeline, "commit-tree", tree, "-p", "origin/main", "-m", "terminal equal-tree rewrite")
+	mustRun(t, pipeline, "push", "origin", recorded+":refs/no-mistakes/test-recorded")
 	mustRun(t, pipeline, "push", "--force", "origin", live+":refs/heads/feature/recover")
+	mustRun(t, f.gate, "update-ref", "-d", "refs/no-mistakes/test-recorded")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, recorded); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, recorded); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunErrorStatus(f.run.ID, "terminal worker lost", types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
 	f.preserved = live
 	f.run, _ = f.db.GetRun(f.run.ID)
 	return f, recorded
@@ -1524,6 +1535,15 @@ func TestRecoverTerminalUnverifiedEqualTreeRewriteAdoptsLiveGateHead(t *testing.
 	}
 	if got, want := mustRun(t, f.gate, "rev-parse", recorded+"^{tree}"), mustRun(t, f.gate, "rev-parse", f.preserved+"^{tree}"); got != want {
 		t.Fatalf("fixture trees differ: %s != %s", got, want)
+	}
+	if !isAncestor(f.ctx, f.gate, f.submitted, recorded) {
+		t.Fatal("recorded reviewed head does not descend from submitted local head")
+	}
+	if preservedContainsLocalWork(f.ctx, f.gate, f.submitted, f.preserved) {
+		t.Fatal("fixture does not reproduce the direct live-head containment conflict")
+	}
+	if f.run.ReviewApprovedHeadSHA == nil || *f.run.ReviewApprovedHeadSHA != recorded {
+		t.Fatalf("review authority = %#v, want %s", f.run.ReviewApprovedHeadSHA, recorded)
 	}
 	runsBefore := len(mustRuns(t, f.db, f.repo.ID))
 	remoteBefore := mustRun(t, f.remote, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
@@ -1605,7 +1625,7 @@ func assertUnverifiedRecoveryRefusalNoMutation(t *testing.T, f *recoverFixture) 
 		t.Fatalf("refusal changed gate recovery refs: %q != %q", got, gateRefs)
 	}
 	runAfter, err := f.db.GetRun(f.run.ID)
-	if err != nil || runAfter.HeadSHA != runBefore.HeadSHA || runAfter.TerminalHeadVerifiedAt != nil || runAfter.CustodyReturnedAt != nil || runAfter.UpdatedAt != runBefore.UpdatedAt {
+	if err != nil || runAfter.HeadSHA != runBefore.HeadSHA || ptr(runAfter.ReviewApprovedHeadSHA) != ptr(runBefore.ReviewApprovedHeadSHA) || runAfter.TerminalHeadVerifiedAt != nil || runAfter.CustodyReturnedAt != nil || runAfter.UpdatedAt != runBefore.UpdatedAt {
 		t.Fatalf("refusal changed run: before %#v after %#v err %v", runBefore, runAfter, err)
 	}
 	return state
@@ -1643,6 +1663,48 @@ func TestRecoverTerminalUnverifiedRewriteNegativeControls(t *testing.T) {
 		mustRun(t, f.gate, "update-ref", f.anchorRef(), recorded)
 		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_anchor_mismatch" {
 			t.Fatalf("anchor-conflict refusal = %s", state.Safety)
+		}
+	})
+	t.Run("untrusted recorded head", func(t *testing.T) {
+		f, _ := newTerminalEqualTreeRewriteFixture(t)
+		if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, f.submitted); err != nil {
+			t.Fatal(err)
+		}
+		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_unverified_head" {
+			t.Fatalf("untrusted-head refusal = %s", state.Safety)
+		}
+	})
+	t.Run("recorded head does not preserve local", func(t *testing.T) {
+		f, _ := newTerminalEqualTreeRewriteFixture(t)
+		pipeline := filepath.Join(t.TempDir(), "uncontained-recorded")
+		mustRun(t, filepath.Dir(pipeline), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+		configureIdentity(t, pipeline)
+		mustRun(t, pipeline, "checkout", "--detach", "origin/main")
+		mustWrite(t, filepath.Join(pipeline, "feature.txt"), "recorded without local work\n")
+		mustRun(t, pipeline, "add", "feature.txt")
+		mustRun(t, pipeline, "commit", "-m", "uncontained recorded result")
+		recorded := mustRun(t, pipeline, "rev-parse", "HEAD")
+		tree := mustRun(t, pipeline, "rev-parse", "HEAD^{tree}")
+		live := mustRun(t, pipeline, "commit-tree", tree, "-p", "origin/main", "-m", "uncontained live rewrite")
+		mustRun(t, pipeline, "push", "origin", recorded+":refs/no-mistakes/test-recorded")
+		mustRun(t, pipeline, "push", "--force", "origin", live+":refs/heads/feature/recover")
+		mustRun(t, f.gate, "update-ref", "-d", "refs/no-mistakes/test-recorded")
+		if err := f.db.UpdateRunHeadSHA(f.run.ID, recorded); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunReviewApprovedHeadSHA(f.run.ID, recorded); err != nil {
+			t.Fatal(err)
+		}
+		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_unverified_head" {
+			t.Fatalf("uncontained-recorded refusal = %s", state.Safety)
+		}
+	})
+	t.Run("symbolic live branch", func(t *testing.T) {
+		f, _ := newTerminalEqualTreeRewriteFixture(t)
+		mustRun(t, f.gate, "update-ref", "refs/no-mistakes/symbolic-live", f.preserved)
+		mustRun(t, f.gate, "symbolic-ref", "refs/heads/feature/recover", "refs/no-mistakes/symbolic-live")
+		if state := assertUnverifiedRecoveryRefusalNoMutation(t, f); state.Safety != "blocked_recover_unverified_head" {
+			t.Fatalf("symbolic-live refusal = %s", state.Safety)
 		}
 	})
 	t.Run("active run", func(t *testing.T) {
