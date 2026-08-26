@@ -61,14 +61,11 @@ type testingArtifactRenderState struct {
 }
 
 type testingSummaryOptions struct {
-	flavor               prBodyFlavor
-	githubBlobBase       string
-	githubRawBase        string
-	includeTestedDetails bool
-	compactArtifacts     bool
-	summaryParagraph     bool
-	omitOutcome          bool
-	repoRoot             string
+	flavor           prBodyFlavor
+	githubBlobBase   string
+	githubRawBase    string
+	compactArtifacts bool
+	repoRoot         string
 	// evidenceRoot is the run's evidence directory. Together with repoRoot it
 	// is the allowlist for absolute artifact paths an agent reported: a path
 	// under neither is dropped rather than rendered into the PR body. Empty
@@ -170,7 +167,7 @@ func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
-	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
+	return buildTestingSummary(steps, rounds, testingSummaryOptions{})
 }
 
 func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks) string {
@@ -181,8 +178,6 @@ func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[str
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.flavor = prBodyFlavorFor(provider)
 	opts.compactArtifacts = true
-	opts.summaryParagraph = true
-	opts.omitOutcome = true
 	opts.repoRoot = repoRoot
 	opts.evidenceRoot = evidenceRoot
 	opts.evidence = links
@@ -213,27 +208,19 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 
 		var b strings.Builder
 		b.WriteString("## Testing\n\n")
-		wroteSummary := false
 		if testingSummary != "" {
-			rendered := renderTestingSummaryFor(testingSummary, opts.flavor)
-			if rendered != "" {
-				writeTestingSummary(&b, rendered, opts)
-				wroteSummary = true
+			if rendered := renderTestingSummaryFor(testingSummary, opts.flavor); rendered != "" {
+				writeTestingSummary(&b, rendered)
 			}
-		} else if !opts.includeTestedDetails && len(tested) > 0 {
-			writeTestingSummary(&b, compactTestedSummary(len(tested)), opts)
-			wroteSummary = true
 		}
-		if opts.includeTestedDetails {
-			for _, detail := range tested {
-				rendered := renderTestedDetailFor(detail, opts.flavor)
-				if rendered == "" {
-					continue
-				}
-				b.WriteString("- ")
-				b.WriteString(rendered)
-				b.WriteString("\n")
+		for _, detail := range tested {
+			rendered := renderTestedDetailFor(detail, opts.flavor)
+			if rendered == "" {
+				continue
 			}
+			b.WriteString("- ")
+			b.WriteString(rendered)
+			b.WriteString("\n")
 		}
 		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
 		previousArtifact := ""
@@ -251,7 +238,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 			}
 			previousArtifact = rendered
 		}
-		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
+		if outcome := buildTestingOutcomeLine(line, stepRounds); outcome != "" {
 			b.WriteString("- ")
 			b.WriteString(outcome)
 			b.WriteString("\n")
@@ -434,26 +421,7 @@ func needsArtifactBlockSeparator(previous, current string) bool {
 	return previousIsDetails && currentIsBullet || previousIsBullet && currentIsDetails
 }
 
-func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
-	if outcome == "" {
-		return false
-	}
-	return !opts.omitOutcome || !wroteSummary || !strings.Contains(outcome, "✅ passed")
-}
-
-func compactTestedSummary(count int) string {
-	if count == 1 {
-		return "Completed 1 recorded test check."
-	}
-	return fmt.Sprintf("Completed %d recorded test checks.", count)
-}
-
-func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummaryOptions) {
-	if opts.summaryParagraph {
-		b.WriteString(rendered)
-		b.WriteString("\n\n")
-		return
-	}
+func writeTestingSummary(b *strings.Builder, rendered string) {
 	b.WriteString("- Summary: ")
 	b.WriteString(rendered)
 	b.WriteString("\n")
@@ -466,9 +434,8 @@ func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptio
 		return testingSummaryOptions{}
 	}
 	return testingSummaryOptions{
-		githubBlobBase:       "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
-		githubRawBase:        "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
-		includeTestedDetails: false,
+		githubBlobBase: "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
+		githubRawBase:  "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
 	}
 }
 
