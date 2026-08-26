@@ -573,9 +573,10 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 	return checks
 }
 
-// collapseLatestByName collapses same-name check runs to the most recently
-// started one. GitHub's raw commit statusCheckRollup returns every check run
-// ever attached to the commit, including runs a later same-named run has
+// collapseLatestByName collapses orderable same-name check runs to the most
+// recently started one and preserves both when provider metadata cannot
+// establish their order. GitHub's raw commit statusCheckRollup returns every
+// check run ever attached to the commit, including runs a later same-named run has
 // already superseded - e.g. a CI monitor's auto-fix push re-triggers the
 // same gate check, and the rollup keeps both the old FAILURE and the new
 // SUCCESS forever. Without this collapse the superseded failure stays
