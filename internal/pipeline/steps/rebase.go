@@ -403,6 +403,7 @@ Instructions:
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
 	prompt += userIntentPromptSection(sctx)
+	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
 	_, err = sctx.RunAgentContext(ctx, agent.RunOpts{

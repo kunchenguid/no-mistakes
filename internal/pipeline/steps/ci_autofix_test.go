@@ -1107,6 +1107,9 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "user wanted CI autofix to preserve the extracted intent") {
 		t.Errorf("prompt should include extracted user intent, got:\n%s", capturedPrompt)
 	}
+	if !strings.Contains(capturedPrompt, dir) || !strings.Contains(capturedPrompt, "Path contract:") {
+		t.Errorf("prompt should include execution context with workdir, got:\n%s", capturedPrompt)
+	}
 }
 
 func TestCIStep_HangingFixAgentFailsAfterTimeout(t *testing.T) {
