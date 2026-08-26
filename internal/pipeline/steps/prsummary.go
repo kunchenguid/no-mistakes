@@ -653,9 +653,6 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	if label == "" {
 		return ""
 	}
-	if opts.compactArtifacts {
-		return renderCompactTestingArtifact(artifact, opts, encodePRText(label, opts.flavor), state)
-	}
 	target := artifact.URL
 	if target == "" {
 		target = artifactTargetForPath(artifact, opts)

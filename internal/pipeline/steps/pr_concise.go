@@ -208,11 +208,7 @@ func parseAcceptanceCriterionLine(line string) (prAcceptanceCriterion, bool) {
 	if !strings.HasPrefix(upper, "AC") {
 		return prAcceptanceCriterion{}, false
 	}
-	if idx := strings.Index(line, "—"); idx >= 0 {
-		line = strings.TrimSpace(line[idx+len("—"):])
-	} else if idx := strings.Index(line, "-"); idx >= 0 {
-		line = strings.TrimSpace(line[idx+1:])
-	}
+	line = trimAcceptanceCriterionLabel(line)
 	summary, details := line, line
 	if idx := strings.Index(line, ":"); idx > 0 {
 		summary = strings.TrimSpace(line[:idx])
@@ -227,6 +223,28 @@ func parseAcceptanceCriterionLine(line string) (prAcceptanceCriterion, bool) {
 		details = summary
 	}
 	return prAcceptanceCriterion{Summary: summary, Details: details}, true
+}
+
+// trimAcceptanceCriterionLabel removes a leading "ACn" label and the one
+// delimiter that immediately follows it. The delimiter is only recognized in
+// that anchored position: a hyphen or dash anywhere else in the line belongs to
+// the criterion's own words ("non-blocking"), not to its label.
+func trimAcceptanceCriterionLabel(line string) string {
+	rest := line[len("AC"):]
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return line
+	}
+	rest = strings.TrimSpace(rest[digits:])
+	for _, delimiter := range []string{"—", "–", "-", ":", ".", ")"} {
+		if strings.HasPrefix(rest, delimiter) {
+			return strings.TrimSpace(strings.TrimPrefix(rest, delimiter))
+		}
+	}
+	return rest
 }
 
 func normalizeWhatChanged(body, finalDiff string, flavor prBodyFlavor) string {
@@ -340,9 +358,26 @@ func renderConciseRisk(risk string, provider scm.Provider) string {
 	detail := boundedHumanText(risk, maxPRRiskDetailRunes, 0)
 	flavor := prBodyFlavorFor(provider)
 	if flavor == prBodyMarkdown {
-		return encodePRText(visible, flavor) + "\n\n  " + encodePRText(detail, flavor)
+		remainder := riskDetailBeyondVisible(visible, detail)
+		if remainder == "" {
+			return encodePRText(visible, flavor)
+		}
+		return encodePRText(visible, flavor) + "\n\n  " + encodePRText(remainder, flavor)
 	}
 	return encodePRText(visible, flavor) + "\n\n<details>\n<summary>More risk detail</summary>\n\n" + encodePRText(detail, flavor) + "\n\n</details>"
+}
+
+// riskDetailBeyondVisible returns the part of the bounded rationale the visible
+// sentence does not already show. Without a disclosure to hide it, a flavor
+// that renders the detail in the open would otherwise repeat that sentence.
+func riskDetailBeyondVisible(visible, detail string) string {
+	if strings.HasPrefix(detail, visible) {
+		return strings.TrimSpace(detail[len(visible):])
+	}
+	if shown := strings.TrimSuffix(visible, "…"); shown != visible && strings.HasPrefix(detail, shown) {
+		return strings.TrimSpace(detail[len(shown):])
+	}
+	return detail
 }
 
 func boundedMultilineText(text string, maxRunes int) string {

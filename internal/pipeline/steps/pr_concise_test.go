@@ -137,6 +137,41 @@ func TestAssembleConcisePRBody_AzureCapKeepsBalancedStructureAndHonestContextMar
 	}
 }
 
+func TestRenderConcisePRNarrative_FallbackKeepsHyphenatedWordsInsideCriterionText(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{
+		UserIntent:   "Keep gates advisory.\n\nAcceptance criteria:\n- AC1 Keep non-blocking gates: parked findings stay parked.\n- AC2 - Keep well-known defaults: unchanged behaviour.",
+		IntentSource: db.RunIntentSourceAgent,
+	}
+
+	got := renderConcisePRNarrative(prContent{Body: "## What Changed\n\n- Keep gates advisory."}, sctx, scm.ProviderGitHub, "M\tinternal/pipeline/steps/pr.go")
+	for _, want := range []string{"Keep non-blocking gates", "parked findings stay parked.", "Keep well-known defaults", "unchanged behaviour."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fallback criterion lost text to a word-internal hyphen, missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<strong>AC1</strong> — blocking gates") || strings.Contains(got, "<strong>AC2</strong> — known defaults") {
+		t.Fatalf("a word-internal hyphen was treated as the ACn label delimiter:\n%s", got)
+	}
+}
+
+func TestRenderConciseRisk_BitbucketDoesNotRepeatTheVisibleSentence(t *testing.T) {
+	t.Parallel()
+
+	risk := "Medium: the published description renderer changed. Attestation integrity and redaction are unchanged. Provider caps were re-verified."
+	got := renderConciseRisk(risk, scm.ProviderBitbucket)
+
+	if count := strings.Count(got, "the published description renderer changed."); count != 1 {
+		t.Fatalf("Bitbucket risk repeated its visible sentence %d times:\n%s", count, got)
+	}
+	for _, want := range []string{"Attestation integrity and redaction are unchanged.", "Provider caps were re-verified."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Bitbucket risk dropped rationale %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestAssembleConcisePRBody_KeepsTestingWhenOmittingAcceptanceContextMakesRoom(t *testing.T) {
 	t.Parallel()
 
