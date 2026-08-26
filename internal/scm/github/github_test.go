@@ -457,6 +457,40 @@ func TestGetChecksKeepsQueuedReplacementWithEqualStartTime(t *testing.T) {
 	}
 }
 
+func TestGetChecksPreservesUnorderedExternalPendingReplacement(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"CI","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-26T08:25:50Z","completedAt":"2026-08-26T08:25:56Z","detailsUrl":"https://github.com/test/repo/actions/runs/101/job/201"},
+				{"__typename":"CheckRun","name":"CI","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://checks.example.com/runs/replacement"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":1,"workflow_runs":[
+				{"id":101,"name":"CI","status":"completed","conclusion":"failure","run_started_at":"2026-08-26T08:25:50Z","updated_at":"2026-08-26T08:25:56Z"}
+			]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("GetChecks() returned %d checks, want both unordered records: %+v", len(checks), checks)
+	}
+	buckets := map[scm.CheckBucket]int{}
+	for _, check := range checks {
+		buckets[check.Bucket]++
+	}
+	if buckets[scm.CheckBucketFail] != 1 || buckets[scm.CheckBucketPending] != 1 {
+		t.Fatalf("GetChecks() buckets = %v, want one failure and one pending replacement", buckets)
+	}
+}
+
 func TestGetChecksUsesWorkflowRunStartTimeWhenCollapsingSameNameChecks(t *testing.T) {
 	t.Parallel()
 

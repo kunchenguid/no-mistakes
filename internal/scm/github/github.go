@@ -599,9 +599,13 @@ func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
 			continue
 		}
 		if i, ok := index[check.Name]; ok {
-			if h.checkStartedAfter(check, collapsed[i]) {
-				collapsed[i] = check
+			if after, ordered := h.checkStartedAfter(check, collapsed[i]); ordered {
+				if after {
+					collapsed[i] = check
+				}
+				continue
 			}
+			collapsed = append(collapsed, check)
 			continue
 		}
 		index[check.Name] = len(collapsed)
@@ -610,24 +614,24 @@ func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
 	return collapsed
 }
 
-// checkStartedAfter reports whether a is the newer of the two checks,
-// comparing start time, Actions run identity, pending state, then completion.
-func (h *Host) checkStartedAfter(a, b scm.Check) bool {
-	if !a.StartedAt.Equal(b.StartedAt) {
-		return a.StartedAt.After(b.StartedAt)
+// checkStartedAfter reports whether a is newer and whether the available
+// provider metadata establishes an order between the checks.
+func (h *Host) checkStartedAfter(a, b scm.Check) (bool, bool) {
+	if !a.StartedAt.IsZero() && !b.StartedAt.IsZero() && !a.StartedAt.Equal(b.StartedAt) {
+		return a.StartedAt.After(b.StartedAt), true
 	}
 	if aID, aErr := strconv.ParseUint(h.actionsRunID(a.Link), 10, 64); aErr == nil {
 		if bID, bErr := strconv.ParseUint(h.actionsRunID(b.Link), 10, 64); bErr == nil && aID != bID {
-			return aID > bID
+			return aID > bID, true
 		}
 	}
-	if a.Bucket == scm.CheckBucketPending && b.Bucket != scm.CheckBucketPending {
-		return true
+	if a.StartedAt.IsZero() != b.StartedAt.IsZero() {
+		return false, false
 	}
-	if b.Bucket == scm.CheckBucketPending && a.Bucket != scm.CheckBucketPending {
-		return false
+	if !a.CompletedAt.IsZero() && !b.CompletedAt.IsZero() && !a.CompletedAt.Equal(b.CompletedAt) {
+		return a.CompletedAt.After(b.CompletedAt), true
 	}
-	return a.CompletedAt.After(b.CompletedAt)
+	return false, false
 }
 
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
