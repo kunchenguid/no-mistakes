@@ -556,12 +556,11 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 	for _, run := range runs {
 		runID := h.actionsRunID(run.Link)
 		if indices := represented[runID]; runID != "" && len(indices) > 0 {
-			if !run.StartedAt.IsZero() {
-				for _, i := range indices {
-					if checks[i].StartedAt.IsZero() {
-						checks[i].StartedAt = run.StartedAt
-					}
+			for _, i := range indices {
+				if checks[i].StartedAt.IsZero() && !run.StartedAt.IsZero() {
+					checks[i].StartedAt = run.StartedAt
 				}
+				checks[i].WorkflowID = run.WorkflowID
 			}
 			continue
 		}
@@ -573,10 +572,11 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 	return checks
 }
 
-// collapseLatestByName collapses orderable same-name check runs to the most
-// recently started one and preserves both when provider metadata cannot
-// establish their order. GitHub's raw commit statusCheckRollup returns every
-// check run ever attached to the commit, including runs a later same-named run has
+// collapseLatestByName collapses orderable same-name reruns of one workflow
+// to the most recently started one. Independent workflows and records whose
+// provider metadata cannot establish an order remain visible. GitHub's raw
+// commit statusCheckRollup returns every check run ever attached to the commit,
+// including runs a later same-named run has
 // already superseded - e.g. a CI monitor's auto-fix push re-triggers the
 // same gate check, and the rollup keeps both the old FAILURE and the new
 // SUCCESS forever. Without this collapse the superseded failure stays
@@ -592,27 +592,38 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 // its own workflow run name - resurrecting exactly the failure this is
 // meant to hide.
 func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
-	index := make(map[string]int, len(checks))
 	collapsed := make([]scm.Check, 0, len(checks))
 	for _, check := range checks {
-		if check.Kind != scm.CheckKindRun {
-			collapsed = append(collapsed, check)
-			continue
-		}
-		if i, ok := index[check.Name]; ok {
-			if after, ordered := h.checkStartedAfter(check, collapsed[i]); ordered {
-				if after {
-					collapsed[i] = check
-				}
+		keep := true
+		for i := 0; i < len(collapsed); {
+			other := collapsed[i]
+			if !sameCheckReplacementGroup(check, other) {
+				i++
 				continue
 			}
-			collapsed = append(collapsed, check)
-			continue
+			after, ordered := h.checkStartedAfter(check, other)
+			if !ordered {
+				i++
+				continue
+			}
+			if !after {
+				keep = false
+				break
+			}
+			collapsed = append(collapsed[:i], collapsed[i+1:]...)
 		}
-		index[check.Name] = len(collapsed)
-		collapsed = append(collapsed, check)
+		if keep {
+			collapsed = append(collapsed, check)
+		}
 	}
 	return collapsed
+}
+
+func sameCheckReplacementGroup(a, b scm.Check) bool {
+	if a.Kind != scm.CheckKindRun || b.Kind != scm.CheckKindRun || a.Name != b.Name {
+		return false
+	}
+	return a.WorkflowID == b.WorkflowID
 }
 
 // checkStartedAfter reports whether a is newer and whether the available
@@ -670,6 +681,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 	}
 	type workflowRun struct {
 		ID           int64  `json:"id"`
+		WorkflowID   int64  `json:"workflow_id"`
 		Name         string `json:"name"`
 		DisplayName  string `json:"display_title"`
 		Status       string `json:"status"`
@@ -759,7 +771,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			}
 			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
 		}
-		checks = append(checks, scm.Check{Name: name, Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, Link: link})
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, Kind: scm.CheckKindRun, State: state, CompletedAt: completedAt, StartedAt: startedAt, WorkflowID: run.WorkflowID, Link: link})
 	}
 	return checks, nil
 }

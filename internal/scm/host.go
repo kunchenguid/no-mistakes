@@ -168,6 +168,10 @@ type Check struct {
 	// commit rollup that keeps every run a commit ever had) down to the
 	// latest one; zero when the provider did not report it.
 	StartedAt time.Time
+	// WorkflowID identifies the provider workflow that emitted the check. It
+	// distinguishes independent same-name workflows while allowing reruns of
+	// one workflow to use latest-wins ordering. Zero when unavailable.
+	WorkflowID int64
 	// Link is the provider's details URL for this check. It may identify an
 	// individual job or a provider-side workflow run for targeted reruns. Empty
 	// when the provider reported no link.

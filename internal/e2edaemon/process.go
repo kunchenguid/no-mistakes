@@ -15,10 +15,9 @@ func processAlive(pid int) (bool, error) {
 	return processAliveOS(pid)
 }
 
-// ProcessAlive reports whether pid is still a live process. It is a single
-// cheap OS probe (no `ps` subprocess), which is what lets a test observe
-// process state at the instant a command returns rather than milliseconds
-// later.
+// ProcessAlive reports whether pid is still a live process. Exited zombies do
+// not count as live: they no longer hold the daemon singleton lock even though
+// a signal-zero probe still finds their unreaped process-table entry.
 func ProcessAlive(pid int) (bool, error) {
 	return processAlive(pid)
 }
