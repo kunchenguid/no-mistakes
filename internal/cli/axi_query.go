@@ -99,6 +99,11 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 		fields = append(fields, *syncField)
 	}
 	if gate, ok := rv.awaitingStep(); ok {
+		// The label above and the commands below deliberately use different
+		// evidence rules. An unknown caller branch cannot prove that the run is
+		// foreign, so the label stays `run:`; it also cannot prove that a bare
+		// `axi respond` would target this run, so explicit selection without a
+		// known same-branch match remains inspection-only.
 		branchScopedCommandsSafe := runID == "" || (branch != "" && run.Branch == branch)
 		if !branchScopedCommandsSafe {
 			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)

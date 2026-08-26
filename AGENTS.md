@@ -212,9 +212,10 @@ Safest local verification sequence after non-trivial changes:
 - `axi status` and `axi logs` resolve an implicit run from the caller's current branch only: its active run, else its most recent one, else nothing.
 There is deliberately no repo-wide "most recent run" fallback - one clone routinely has several worktrees on different branches, and that fallback reported one worktree's terminal run to every other worktree under the same `run:` key a run of the caller's own gets, which reads as "your work failed" while the real pipeline is mid-flight.
 A detached HEAD owns no branch, so it resolves nothing either.
-- Deliberate cross-branch inspection is `--run <id>`, and when that run's branch differs from the caller's, `axi status` renders it under `other_branch_run:` plus a top-level `current_branch:` - reusing the home view's `other_branch_active_run` vocabulary - so a consumer keyed on `run:` can never pick up a run that is provably not this worktree's.
-The rationale lives in the `resolveRun` doc comment (`internal/cli/axi_query.go`).
-- Regressions: `TestAxiStatusNeverReportsAnotherBranchesRunAsThisWorktrees`, `TestAxiStatusReportsThisBranchesOwnRun`, `TestAxiStatusExplicitRunIDStillInspectsAnotherBranchesRun`, `TestResolveRunDoesNotFallBackToAnotherBranch`, `TestAxiLogsDoesNotReadAnotherBranchesRunLogs`.
+- Deliberate cross-branch inspection is `--run <id>`. When the caller's branch is known and differs, `axi status` renders the selected run under `other_branch_run:` plus a top-level `current_branch:` - reusing the home view's `other_branch_active_run` vocabulary - so a consumer keyed on `run:` cannot pick up a run proven to be on another branch. An explicit run selected while the caller's branch is unknown stays under `run:` because no branch relationship is proven.
+- Labels and commands use separate evidence rules: branch-scoped `axi respond` help is safe only for implicit resolution or an explicit run proven to belong to the caller's branch. A foreign run, or an explicit run selected while the caller's branch is unknown, keeps its gate visible but offers observation-only help with `--run <id>` retained in every log command.
+The rationale lives in the `resolveRun` doc comment and the status-rendering comments (`internal/cli/axi_query.go`).
+- Regressions: `internal/cli/axi_status_branch_test.go` covers branch-scoped resolution, positive-evidence labels, observation-only gate help, branch lookup failures, detached-HEAD help, snapshot consistency, explicit-ID errors, and run-scoped log continuations; `TestAxiStatusUnknownBranchRunRelationshipGuidance_SyncedAcrossSurfaces` pins the published relationship wording.
 
 **Review-Loop Agent Sessions (`internal/pipeline/sessions.go`)**
 
