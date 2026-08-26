@@ -214,3 +214,41 @@ func TestResolveForcePushDecision_RefusesOutOfBandEvenWithBase(t *testing.T) {
 		t.Fatalf("expected forcePushWouldDiscardError, got %T: %v", err, err)
 	}
 }
+
+// Issue #837: When an earlier generation of the pipeline pushed generation N
+// (e.g. featureSHA), and a mid-run base advance triggers a conflict rebase that
+// drops or folds duplicate fix hunks, pushing the rewritten head must be allowed
+// because the remote still points at the run's own prior pushed generation (lastSeen).
+func TestResolveForcePushDecision_AllowsPushWhenRemoteEqualsPriorPipelinePushedGeneration(t *testing.T) {
+	t.Parallel()
+	dir, gitRun, remote, featureSHA := newForcePushFixture(t)
+
+	// Upstream main advances with a change that supersedes the feature commit.
+	os.WriteFile(filepath.Join(dir, "main_advance.txt"), []byte("advanced"), 0o644)
+	gitCmd(t, dir, "checkout", "main")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main advance")
+	gitCmd(t, dir, "push", "origin", "main")
+	newBase := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// The branch is rebased onto the new main, and during conflict resolution
+	// the old feature commit is dropped/folded into a new commit.
+	gitCmd(t, dir, "checkout", "feature")
+	gitCmd(t, dir, "reset", "--hard", newBase)
+	os.WriteFile(filepath.Join(dir, "feature_v2.txt"), []byte("v2 work"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature v2")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// lastSeen is the pipeline's prior pushed generation (featureSHA).
+	// Because the remote still equals featureSHA (no out-of-band human pushes arrived),
+	// this force-push is an authorized update of the pipeline's own prior output.
+	d, err := resolveForcePushDecision(gitRun, remote, "refs/heads/feature", newHead, featureSHA, newBase)
+	if err != nil {
+		t.Fatalf("expected force-push to succeed for prior pipeline pushed generation, got %v", err)
+	}
+	if d.newBranch || d.upToDate || d.remoteSHA != featureSHA {
+		t.Fatalf("expected guarded force-push anchored to %s, got %#v", featureSHA, d)
+	}
+}
+

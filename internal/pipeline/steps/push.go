@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -82,11 +83,12 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
 	// The lease is anchored to the remote-tracking ref the rebase step freshly
-	// fetched (the exact commit this branch was rebased against), so a push that
-	// would clobber an out-of-band or stale-mirror commit fails loudly instead
-	// of silently dropping it. A bare --force-with-lease offers no protection
-	// when pushing to a URL (no remote-tracking refs), so the anchor is explicit.
-	lastSeen := lastFetchedBranchTip(ctx, sctx.WorkDir, branch, usingFork)
+	// fetched (the exact commit this branch was rebased against) or the run's
+	// own recorded prior push generation, so a push that would clobber an
+	// out-of-band or stale-mirror commit fails loudly instead of silently dropping it.
+	// A bare --force-with-lease offers no protection when pushing to a URL (no
+	// remote-tracking refs), so the anchor is explicit.
+	lastSeen := lastKnownBranchTip(ctx, sctx, branch, usingFork)
 	gitRun := func(args ...string) (string, error) { return git.Run(ctx, sctx.WorkDir, args...) }
 	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
 	if err != nil {
@@ -183,4 +185,25 @@ func shortObjectID(value string) string {
 		return value[:12]
 	}
 	return value
+}
+
+// lastKnownBranchTip returns the commit SHA the pipeline last observed or
+// produced for this branch on the remote. It checks the current run's recorded
+// pushed head, then prior pipeline runs for the same repo and branch, and
+// finally falls back to the worktree's remote-tracking ref.
+func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch string, fork bool) string {
+	if sctx.Run != nil && sctx.Run.LastPushedSHA != nil && strings.TrimSpace(*sctx.Run.LastPushedSHA) != "" {
+		return strings.TrimSpace(*sctx.Run.LastPushedSHA)
+	}
+	if sctx.DB != nil && sctx.Repo != nil {
+		runs, err := sctx.DB.GetRunsByRepo(sctx.Repo.ID)
+		if err == nil {
+			for _, r := range runs {
+				if r.Branch == branch && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
+					return strings.TrimSpace(*r.LastPushedSHA)
+				}
+			}
+		}
+	}
+	return lastFetchedBranchTip(ctx, sctx.WorkDir, branch, fork)
 }
