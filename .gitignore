@@ -33,3 +33,10 @@ demo_raw.gif
 .env
 .env.local
 .no-mistakes/evidence/
+
+# Agent scratch HOME inside a run worktree
+# The CI-repair agent reproduces a failing check locally by pointing HOME at a
+# directory in the worktree, which fills it with Go module and OS caches. The
+# repair commit stages with `git add -A`, so without this entry those caches are
+# committed and pushed onto the pull request branch.
+.ci-local-home/
