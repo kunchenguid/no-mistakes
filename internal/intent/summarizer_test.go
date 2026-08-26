@@ -145,6 +145,9 @@ func TestAgentDisambiguator_UsesSanitizedTranscriptPacketFiles(t *testing.T) {
 		if opts.CWD != "/work/dir" {
 			t.Fatalf("CWD = %q, want /work/dir", opts.CWD)
 		}
+		if !strings.Contains(opts.Prompt, "/work/dir") || !strings.Contains(opts.Prompt, "Path contract:") {
+			t.Fatalf("prompt should include the exact worktree path contract:\n%s", opts.Prompt)
+		}
 		if strings.Contains(opts.Prompt, "please add foo") {
 			t.Fatalf("prompt should not embed transcript text:\n%s", opts.Prompt)
 		}

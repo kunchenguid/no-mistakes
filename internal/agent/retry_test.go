@@ -139,20 +139,27 @@ func TestClassifyTransient_Negative(t *testing.T) {
 	}
 }
 
-func TestRunWithRetry_DoesNotRetryFreeUsageLimit(t *testing.T) {
+func TestRunWithRetry_DoesNotRetryQuotaExhaustion(t *testing.T) {
 	defer withFastBackoff(t)()
 
-	calls := 0
-	quotaErr := errors.New("API rate limit reached with HTTP 429: FreeUsageLimit exceeded")
-	_, err := runWithRetry(context.Background(), "antigravity", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
-		calls++
-		return nil, quotaErr
-	})
-	if !errors.Is(err, quotaErr) {
-		t.Fatalf("expected quota error to propagate, got %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("expected one call for quota exhaustion, got %d", calls)
+	for _, message := range []string{
+		"API rate limit reached with HTTP 429: FreeUsageLimit exceeded",
+		"API request failed with HTTP 429: insufficient_quota",
+	} {
+		t.Run(message, func(t *testing.T) {
+			calls := 0
+			quotaErr := errors.New(message)
+			_, err := runWithRetry(context.Background(), "antigravity", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+				calls++
+				return nil, quotaErr
+			})
+			if !errors.Is(err, quotaErr) {
+				t.Fatalf("expected quota error to propagate, got %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("expected one call for quota exhaustion, got %d", calls)
+			}
+		})
 	}
 }
 

@@ -162,6 +162,8 @@ var terminalNeedles = []struct {
 	{"freeusagelimit", "free usage limit"},
 	{"free usage limit", "free usage limit"},
 	{"free_usage_limit", "free usage limit"},
+	{"insufficient quota", "insufficient quota"},
+	{"insufficient_quota", "insufficient quota"},
 	{"quota exceeded", "quota exceeded"},
 	{"quota_exceeded", "quota exceeded"},
 	{"quota exhausted", "quota exhausted"},
