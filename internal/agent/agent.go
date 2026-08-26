@@ -376,8 +376,8 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	}
 
 	trimmedText := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmedText, "{") && !strings.Contains(text, "```") {
-		return nil, fmt.Errorf("ended its turn with prose instead of the required JSON object (output snippet: %q)", outputSnippet(text))
+	if !strings.HasPrefix(trimmedText, "{") {
+		return nil, fmt.Errorf("ended its turn with prose instead of the required JSON object")
 	}
 	return nil, rawErr
 }

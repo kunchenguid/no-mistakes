@@ -933,3 +933,14 @@ func TestFinalizeTextResult_IdenticalFencedAndBareJSONSucceeds(t *testing.T) {
 		t.Errorf("expected summary='all clean', got %q", output.Summary)
 	}
 }
+
+func TestFinalizeTextResult_ProseWithNonJSONFenceReturnsEndedWithProseError(t *testing.T) {
+	text := "I ran tests and they passed:\n```bash\ngo test ./...\n```\nAll done."
+	_, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error for prose turn ending")
+	}
+	if !strings.Contains(err.Error(), "ended its turn with prose instead of the required JSON object") {
+		t.Fatalf("expected ended with prose error, got: %v", err)
+	}
+}
