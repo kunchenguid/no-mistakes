@@ -80,11 +80,6 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			errMsg:  `antigravity reported error: invalid tool call error (invalid_args)`,
 			wantSub: "tool call",
 		},
-		{
-			name:    "free usage limit",
-			errMsg:  `API rate limit reached: FreeUsageLimit exceeded`,
-			wantSub: "usage limit",
-		},
 	}
 
 	for _, tc := range cases {
@@ -125,6 +120,14 @@ func TestClassifyTransient_Negative(t *testing.T) {
 			name:   "schema validation",
 			errMsg: `JSON output missing required field "summary"`,
 		},
+		{
+			name:   "free usage limit",
+			errMsg: `API rate limit reached with HTTP 429: FreeUsageLimit exceeded`,
+		},
+		{
+			name:   "quota exhausted",
+			errMsg: `provider error: quota_exhausted`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -133,6 +136,23 @@ func TestClassifyTransient_Negative(t *testing.T) {
 				t.Errorf("expected non-transient for %q, got %q", tc.errMsg, label)
 			}
 		})
+	}
+}
+
+func TestRunWithRetry_DoesNotRetryFreeUsageLimit(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	calls := 0
+	quotaErr := errors.New("API rate limit reached with HTTP 429: FreeUsageLimit exceeded")
+	_, err := runWithRetry(context.Background(), "antigravity", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		return nil, quotaErr
+	})
+	if !errors.Is(err, quotaErr) {
+		t.Fatalf("expected quota error to propagate, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one call for quota exhaustion, got %d", calls)
 	}
 }
 

@@ -153,7 +153,19 @@ var transientNeedles = []struct {
 	// emits one malformed call; the step work is usually already complete.
 	{"declaring permissions", "agy permission declaration"},
 	{"invalid tool call", "invalid tool call"},
+}
+
+var terminalNeedles = []struct {
+	needle string
+	label  string
+}{
 	{"freeusagelimit", "free usage limit"},
+	{"free usage limit", "free usage limit"},
+	{"free_usage_limit", "free usage limit"},
+	{"quota exceeded", "quota exceeded"},
+	{"quota_exceeded", "quota exceeded"},
+	{"quota exhausted", "quota exhausted"},
+	{"quota_exhausted", "quota exhausted"},
 }
 
 // classifyTransient reports whether an error message looks like a transient
@@ -167,6 +179,11 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())
+	for _, sig := range terminalNeedles {
+		if strings.Contains(msg, sig.needle) {
+			return sig.label, false
+		}
+	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
 			return sig.label, true

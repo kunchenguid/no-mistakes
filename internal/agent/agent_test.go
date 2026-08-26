@@ -782,9 +782,9 @@ func TestFinalizeTextResult_WithSchemaParsesProseQuotingFenceExampleThenClosedBl
 }
 
 func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObject(t *testing.T) {
-	// Models routinely end a turn with a narration sentence around the JSON
+	// Models routinely end a turn with a narration sentence before the JSON
 	// object without markdown code fences.
-	text := "I have completed testing and found no issues.\n{\"findings\":[],\"summary\":\"clean test run\"}\nHope this helps!"
+	text := "I have completed testing and found no issues.\n{\"findings\":[],\"summary\":\"clean test run\"}"
 	result, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -801,8 +801,16 @@ func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObject(t *testing.T)
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaRejectsBareJSONBeforeTrailingProse(t *testing.T) {
+	text := `Example: {"findings":[],"summary":"clean"}. I found a bug in the diff.`
+	_, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected trailing prose after bare JSON to fail")
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObjectWithBracesInStrings(t *testing.T) {
-	text := "Done with verification.\n{\"findings\":[],\"summary\":\"fixed {unmatched brace} in pattern\"}\nAll good."
+	text := "Done with verification.\n{\"findings\":[],\"summary\":\"fixed {unmatched brace} in pattern\"}"
 	result, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -931,6 +939,27 @@ func TestFinalizeTextResult_IdenticalFencedAndBareJSONSucceeds(t *testing.T) {
 	}
 	if output.Summary != "all clean" {
 		t.Errorf("expected summary='all clean', got %q", output.Summary)
+	}
+}
+
+func TestFinalizeTextResult_ConflictingLargeIntegerVerdictsReturnError(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"value":9007199254740992}`,
+		"```",
+		`{"value":9007199254740993}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"value":{"type":"integer"}},
+		"required":["value"]
+	}`)
+	_, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected distinct large integer verdicts to conflict")
+	}
+	if !strings.Contains(err.Error(), "conflicting JSON candidates") {
+		t.Fatalf("expected conflicting JSON candidates error, got %v", err)
 	}
 }
 

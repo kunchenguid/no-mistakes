@@ -581,15 +581,15 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		}
 		i = end - 1
 	}
-	var concluding []json.RawMessage
-	for _, candidate := range valid {
-		trailing := strings.TrimSpace(text[candidate.endIndex:])
-		if trailing == "" || (len(trailing) < 80 && !strings.Contains(trailing, "\n")) {
-			concluding = append(concluding, candidate.obj)
+	if len(valid) > 1 {
+		objects := make([]json.RawMessage, 0, len(valid))
+		for _, candidate := range valid {
+			objects = append(objects, candidate.obj)
 		}
+		return objects, nil
 	}
-	if len(concluding) > 0 {
-		return concluding, nil
+	if len(valid) == 1 && strings.TrimSpace(text[valid[0].endIndex:]) == "" {
+		return []json.RawMessage{valid[0].obj}, nil
 	}
 	return nil, lastErr
 }
@@ -598,11 +598,12 @@ func jsonEqual(a, b json.RawMessage) bool {
 	if bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b)) {
 		return true
 	}
-	var valA, valB any
-	if err := json.Unmarshal(a, &valA); err != nil {
+	valA, err := decodeJSONValue(a)
+	if err != nil {
 		return false
 	}
-	if err := json.Unmarshal(b, &valB); err != nil {
+	valB, err := decodeJSONValue(b)
+	if err != nil {
 		return false
 	}
 	return reflect.DeepEqual(valA, valB)
