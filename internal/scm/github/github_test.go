@@ -328,7 +328,10 @@ func TestGetChecksCollapsesSupersededSameNameCheckToLatestAtOneHead(t *testing.T
 			]`),
 		},
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
-			stdout: `[{"total_count":0,"workflow_runs":[]}]` + "\n",
+			stdout: `[{"total_count":2,"workflow_runs":[
+				{"id":101,"workflow_id":1001,"name":"gate","status":"completed","conclusion":"failure","run_started_at":"2026-08-26T08:25:50Z"},
+				{"id":102,"workflow_id":1001,"name":"gate","status":"completed","conclusion":"success","run_started_at":"2026-08-26T08:39:44Z"}
+			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
 
@@ -371,8 +374,8 @@ func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededC
 		},
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
 			stdout: `[{"total_count":2,"workflow_runs":[
-				{"id":101,"name":"gate - synchronize - event 1 (run 101)","status":"completed","conclusion":"failure"},
-				{"id":102,"name":"gate - edited - event 2 (run 102)","status":"completed","conclusion":"success"}
+				{"id":101,"workflow_id":1001,"name":"gate - synchronize - event 1 (run 101)","status":"completed","conclusion":"failure"},
+				{"id":102,"workflow_id":1001,"name":"gate - edited - event 2 (run 102)","status":"completed","conclusion":"success"}
 			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
@@ -420,6 +423,38 @@ func TestGetChecksPreservesIndependentSameNameWorkflows(t *testing.T) {
 	}
 	if buckets[scm.CheckBucketPass] != 1 || buckets[scm.CheckBucketFail] != 1 {
 		t.Fatalf("GetChecks() buckets = %v, want independent passing and failing workflows", buckets)
+	}
+}
+
+func TestGetChecksPreservesIndependentSameNameExternalCheckRuns(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-26T08:25:50Z","completedAt":"2026-08-26T08:25:56Z","detailsUrl":"https://ci-one.example.com/build/42"},
+				{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-26T08:39:44Z","completedAt":"2026-08-26T08:39:50Z","detailsUrl":"https://ci-two.example.com/build/99"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":0,"workflow_runs":[]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("GetChecks() returned %d checks, want both independent external checks: %+v", len(checks), checks)
+	}
+	buckets := map[scm.CheckBucket]int{}
+	for _, check := range checks {
+		buckets[check.Bucket]++
+	}
+	if buckets[scm.CheckBucketPass] != 1 || buckets[scm.CheckBucketFail] != 1 {
+		t.Fatalf("GetChecks() buckets = %v, want independent passing and failing external checks", buckets)
 	}
 }
 
@@ -505,8 +540,8 @@ func TestGetChecksKeepsQueuedReplacementWithEqualStartTime(t *testing.T) {
 		},
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
 			stdout: `[{"total_count":2,"workflow_runs":[
-				{"id":101,"name":"CI","status":"completed","conclusion":"failure","created_at":"2026-08-26T08:25:45Z","updated_at":"2026-08-26T08:25:56Z"},
-				{"id":102,"name":"CI","status":"queued","conclusion":null,"created_at":"2026-08-26T08:25:50Z","updated_at":"2026-08-26T08:25:50Z"}
+				{"id":101,"workflow_id":1001,"name":"CI","status":"completed","conclusion":"failure","created_at":"2026-08-26T08:25:45Z","updated_at":"2026-08-26T08:25:56Z"},
+				{"id":102,"workflow_id":1001,"name":"CI","status":"queued","conclusion":null,"created_at":"2026-08-26T08:25:50Z","updated_at":"2026-08-26T08:25:50Z"}
 			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
@@ -582,8 +617,9 @@ func TestGetChecksUsesWorkflowRunStartTimeWhenCollapsingSameNameChecks(t *testin
 					]`),
 				},
 				"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
-					stdout: `[{"total_count":1,"workflow_runs":[
-						{"id":102,"name":"CI","status":"completed","conclusion":"failure",` + tc.timestamp + `,"updated_at":"2026-08-26T08:39:50Z"}
+					stdout: `[{"total_count":2,"workflow_runs":[
+						{"id":101,"workflow_id":1001,"name":"CI","status":"completed","conclusion":"success","run_started_at":"2026-08-26T08:25:50Z","updated_at":"2026-08-26T08:25:56Z"},
+						{"id":102,"workflow_id":1001,"name":"CI","status":"completed","conclusion":"failure",` + tc.timestamp + `,"updated_at":"2026-08-26T08:39:50Z"}
 					]}]` + "\n",
 				},
 			}), nil, "", "test/repo")

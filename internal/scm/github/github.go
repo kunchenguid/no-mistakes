@@ -623,7 +623,11 @@ func sameCheckReplacementGroup(a, b scm.Check) bool {
 	if a.Kind != scm.CheckKindRun || b.Kind != scm.CheckKindRun || a.Name != b.Name {
 		return false
 	}
-	return a.WorkflowID == b.WorkflowID
+	// A missing workflow identity cannot prove that same-name checks are
+	// reruns of one requirement. External check providers commonly have no
+	// matching Actions workflow run, so collapsing two zero identities could
+	// hide an independent failure.
+	return a.WorkflowID != 0 && a.WorkflowID == b.WorkflowID
 }
 
 // checkStartedAfter reports whether a is newer and whether the available
