@@ -412,19 +412,16 @@ func TestBuildTestingSummaryForPR_OmitsRecordedTestDetails(t *testing.T) {
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "## Testing\n\nValidated the CLI doctor path and config loading; both passed.") {
-		t.Fatalf("expected natural-language testing summary as a paragraph, got:\n%s", md)
+	if !strings.Contains(md, "✅ **Test** - passed · 2 recorded checks\n\nValidated the CLI doctor path and config loading; both passed.") {
+		t.Fatalf("expected compact status/count line followed by the natural-language summary, got:\n%s", md)
 	}
-	if strings.Contains(md, "- Summary:") {
-		t.Fatalf("did not expect PR testing summary to render as a Summary bullet, got:\n%s", md)
+	if strings.Contains(md, "- Summary:") || strings.Contains(md, "Outcome:") {
+		t.Fatalf("did not expect legacy Summary or Outcome rows, got:\n%s", md)
 	}
 	for _, command := range []string{"go test ./internal/cli", "make e2e"} {
 		if strings.Contains(md, command) {
-			t.Fatalf("did not expect raw recorded command %q in PR testing summary, got:\n%s", command, md)
+			t.Fatalf("did not expect raw recorded command %q in the PR Testing section, got:\n%s", command, md)
 		}
-	}
-	if strings.Contains(md, "Outcome:") {
-		t.Fatalf("did not expect outcome row in PR testing summary, got:\n%s", md)
 	}
 }
 
@@ -441,17 +438,14 @@ func TestBuildTestingSummaryForPR_SummarizesBaselineOnlyTests(t *testing.T) {
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "## Testing\n\nCompleted 1 recorded test check.") {
-		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
+	if !strings.Contains(md, "## Testing\n\n✅ **Test** - passed · 1 recorded check") {
+		t.Fatalf("expected compact baseline status/count line, got:\n%s", md)
 	}
-	if strings.Contains(md, "- Summary:") {
-		t.Fatalf("did not expect compact baseline summary to render as a Summary bullet, got:\n%s", md)
+	if strings.Contains(md, "- Summary:") || strings.Contains(md, "Outcome:") {
+		t.Fatalf("did not expect legacy Summary or Outcome rows, got:\n%s", md)
 	}
 	if strings.Contains(md, "go test ./...") {
-		t.Fatalf("did not expect raw recorded command in PR testing summary, got:\n%s", md)
-	}
-	if strings.Contains(md, "Outcome:") {
-		t.Fatalf("did not expect outcome row in PR testing summary, got:\n%s", md)
+		t.Fatalf("did not expect the raw command in the concise PR Testing section, got:\n%s", md)
 	}
 }
 
@@ -468,11 +462,11 @@ func TestBuildTestingSummaryForPR_KeepsFailedOutcomeForCompactTestedSummary(t *t
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "Completed 1 recorded test check.") {
-		t.Fatalf("expected compact baseline test summary as a paragraph, got:\n%s", md)
+	if !strings.Contains(md, "❌ **Test** - failed · 1 recorded check") {
+		t.Fatalf("expected failed status and compact check count to remain visible, got:\n%s", md)
 	}
-	if !strings.Contains(md, "Outcome: ❌ failed across 1 run (300ms)") {
-		t.Fatalf("expected failed outcome to remain visible, got:\n%s", md)
+	if strings.Contains(md, "Outcome:") {
+		t.Fatalf("did not expect the legacy duplicate Outcome row, got:\n%s", md)
 	}
 }
 
@@ -489,8 +483,8 @@ func TestBuildTestingSummaryForPR_KeepsOutcomeForArtifactOnlyEvidence(t *testing
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "Outcome:") {
-		t.Fatalf("expected artifact-only evidence to keep outcome fallback, got:\n%s", md)
+	if !strings.Contains(md, "✅ **Test** - passed · 1 evidence item") {
+		t.Fatalf("expected artifact-only evidence to keep the visible Test status and count, got:\n%s", md)
 	}
 	if !strings.Contains(md, "Evidence: Rendered PR markdown") {
 		t.Fatalf("expected artifact evidence to render, got:\n%s", md)
@@ -530,8 +524,8 @@ func TestBuildTestingSummaryForPR_KeepsInlineCodeProseAsPlainText(t *testing.T) 
 	if strings.Contains(md, "<code>") {
 		t.Fatalf("prose summary with inline code spans should not be wrapped in <code>, got:\n%s", md)
 	}
-	if !strings.Contains(md, summary) {
-		t.Fatalf("expected prose summary rendered verbatim, got:\n%s", md)
+	if !strings.Contains(md, "explicit &#96;/shutdown&#96;, idle timeout, and &#96;stop&#96; command logic") {
+		t.Fatalf("expected inline-code punctuation to stay readable as encoded prose, got:\n%s", md)
 	}
 }
 
@@ -653,8 +647,12 @@ func TestBuildTestingSummaryForPR_ArtifactContentCannotSpoofFoldBoundary(t *test
 			if strings.Contains(md, "\n### Fake Heading") {
 				t.Fatalf("embedded artifact content was not escaped, spoofs the PR-body fold-boundary marker:\n%s", md)
 			}
-			if !strings.Contains(md, "line one") || !strings.Contains(md, "line two") {
-				t.Fatalf("expected the artifact content to stay intact:\n%s", md)
+			if tc.provider == scm.ProviderGitHub {
+				if !strings.Contains(md, "line one") || !strings.Contains(md, "line two") {
+					t.Fatalf("expected GitHub artifact content to stay intact behind disclosure:\n%s", md)
+				}
+			} else if strings.Contains(md, "line one") || strings.Contains(md, "line two") {
+				t.Fatalf("Bitbucket concise view must omit unlinked raw artifact content:\n%s", md)
 			}
 		})
 	}
@@ -673,8 +671,8 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://github.com/example/widgets/blob/abc123/artifacts/checkout.png)") {
-		t.Fatalf("expected screenshot path to render as compact GitHub blob link, got:\n%s", md)
+	if !strings.Contains(md, "[![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)](https://github.com/example/widgets/blob/abc123/artifacts/checkout.png)") {
+		t.Fatalf("expected screenshot path to render as an inline image linked to the GitHub blob, got:\n%s", md)
 	}
 	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/abc123/artifacts/server.log)") {
 		t.Fatalf("expected log path to render as GitHub blob URL, got:\n%s", md)
@@ -682,9 +680,9 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	if !strings.Contains(md, "<details>\n<summary>Evidence: Placement rectangle evidence</summary>") || !strings.Contains(md, "```text\n{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}\n```") {
 		t.Fatalf("expected content artifact to render in collapsible details, got:\n%s", md)
 	}
-	for _, broken := range []string{"![Checkout screenshot]", "raw.githubusercontent.com", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
+	for _, broken := range []string{"](artifacts/checkout.png)", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
-			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
+			t.Fatalf("did not expect broken relative artifact rendering %q, got:\n%s", broken, md)
 		}
 	}
 }
@@ -701,14 +699,19 @@ func TestBuildTestingSummaryForPR_SeparatesMixedEvidenceBlocks(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil)
 
-	for _, want := range []string{
-		"</details>\n\n- Evidence: [Linked first]",
-		"- Evidence: [Linked first](https://example.com/first.log)\n\n<details>",
-		"</details>\n\n- Evidence: [Linked second]",
-		"- Evidence: [Linked second](https://example.com/second.log)\n- Evidence: [Linked third]",
-	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("expected mixed evidence boundary %q, got:\n%s", want, md)
+	if !strings.Contains(md, "<summary>Additional evidence — 5 items</summary>") {
+		t.Fatalf("expected one collapsed overflow evidence group, got:\n%s", md)
+	}
+	positions := []int{
+		strings.Index(md, "Evidence: Inline first"),
+		strings.Index(md, "[Linked first](https://example.com/first.log)"),
+		strings.Index(md, "Evidence: Inline second"),
+		strings.Index(md, "[Linked second](https://example.com/second.log)"),
+		strings.Index(md, "[Linked third](https://example.com/third.log)"),
+	}
+	for i, position := range positions {
+		if position < 0 || i > 0 && position <= positions[i-1] {
+			t.Fatalf("mixed evidence did not preserve order: %v\n%s", positions, md)
 		}
 	}
 }
@@ -729,12 +732,10 @@ func TestBuildTestingSummaryForPR_BitbucketCloudOmitsHTMLAndKeepsEvidence(t *tes
 
 	for _, want := range []string{
 		"## Testing",
+		"✅ **Test** - passed · 2 evidence items",
 		"Evidence was collected.",
-		"### Evidence: Placement rectangle evidence",
-		"```text\n{\"button\":{\"top\":169}}\n```",
 		"[Checkout recording](https://example.com/checkout.mp4)",
-		"### Evidence: Server log",
-		"```text\nPOST /checkout 200\n```",
+		"Server log (local file:",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in Bitbucket testing summary, got:\n%s", want, md)
@@ -760,8 +761,8 @@ func TestBuildTestingSummaryForPR_BitbucketKeepsHTMLMentioningSummaryAsProse(t *
 
 	md := BuildTestingSummaryForPRWithProvider(steps, rounds, "https://bitbucket.org/example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderBitbucket)
 
-	if !strings.Contains(md, "## Testing\n\n"+summary) {
-		t.Fatalf("expected Bitbucket testing summary to stay prose, got:\n%s", md)
+	if !strings.Contains(md, "✅ **Test** - passed\n\nBitbucket render is clean of \\<details\\>, \\<summary\\>, \\<code\\>, \\<video\\>") {
+		t.Fatalf("expected Bitbucket testing summary to stay escaped prose after the compact status line, got:\n%s", md)
 	}
 	if strings.Contains(md, "```") || strings.Contains(md, "`"+summary+"`") {
 		t.Fatalf("Bitbucket testing summary must not be wrapped as code just because it mentions HTML tags, got:\n%s", md)

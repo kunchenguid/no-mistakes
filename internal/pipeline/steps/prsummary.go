@@ -204,6 +204,9 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		testingSummary := collectTestingSummary(sr, stepRounds)
 		tested := collectTestingDetails(sr, stepRounds)
 		artifacts := collectTestingArtifacts(sr, stepRounds, opts)
+		if opts.compactArtifacts {
+			return buildConcisePRTestingSummary(line, testingSummary, tested, artifacts, opts)
+		}
 		if testingSummary == "" && len(tested) == 0 && len(artifacts) == 0 {
 			return "## Testing\n\n- " + line
 		}
@@ -257,6 +260,146 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		return strings.TrimSpace(b.String())
 	}
 
+	return ""
+}
+
+type conciseTestingArtifactUnit struct {
+	text         string
+	linkText     string
+	inlineVisual bool
+}
+
+func buildConcisePRTestingSummary(statusLine, summary string, tested []string, artifacts []types.TestArtifact, opts testingSummaryOptions) string {
+	units := renderConciseTestingArtifactUnits(artifacts, opts)
+	var b strings.Builder
+	b.WriteString("## Testing\n\n")
+	b.WriteString(statusLine)
+	if len(tested) > 0 {
+		b.WriteString(fmt.Sprintf(" · %d recorded check%s", len(tested), pluralSuffix(len(tested))))
+	}
+	if len(units) > 0 {
+		b.WriteString(fmt.Sprintf(" · %d evidence item%s", len(units), pluralSuffix(len(units))))
+	}
+	b.WriteString("\n\n")
+
+	visibleSummary := boundedHumanText(summary, 320, 2)
+	fullSummary := boundedHumanText(summary, 1200, 0)
+	if visibleSummary != "" {
+		b.WriteString(encodePRText(visibleSummary, opts.flavor))
+		b.WriteString("\n\n")
+	}
+	if opts.flavor == prBodyHTML && fullSummary != "" && fullSummary != visibleSummary {
+		b.WriteString("<details>\n<summary>More testing detail</summary>\n\n")
+		b.WriteString(encodePRText(fullSummary, opts.flavor))
+		b.WriteString("\n\n</details>\n\n")
+	}
+	if opts.flavor == prBodyMarkdown {
+		limit := min(len(units), 8)
+		for _, unit := range units[:limit] {
+			b.WriteString(unit.text)
+			if !strings.HasSuffix(unit.text, "\n") {
+				b.WriteString("\n")
+			}
+		}
+		if omitted := len(units) - limit; omitted > 0 {
+			b.WriteString(fmt.Sprintf("%d additional evidence item%s omitted from this concise provider view.\n", omitted, pluralSuffix(omitted)))
+		}
+		return strings.TrimSpace(b.String())
+	}
+
+	inlineVisuals := 0
+	var pending []conciseTestingArtifactUnit
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		b.WriteString(fmt.Sprintf("<details>\n<summary>Additional evidence — %d item%s</summary>\n\n", len(pending), pluralSuffix(len(pending))))
+		for _, unit := range pending {
+			b.WriteString(unit.text)
+			if !strings.HasSuffix(unit.text, "\n") {
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("\n</details>\n\n")
+		pending = pending[:0]
+	}
+	for _, unit := range units {
+		if unit.inlineVisual && inlineVisuals < 2 {
+			flushPending()
+			b.WriteString(unit.text)
+			if !strings.HasSuffix(unit.text, "\n") {
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+			inlineVisuals++
+			continue
+		}
+		if unit.inlineVisual && unit.linkText != "" {
+			unit.text = unit.linkText
+			unit.inlineVisual = false
+		}
+		pending = append(pending, unit)
+	}
+	flushPending()
+	return strings.TrimSpace(b.String())
+}
+
+func renderConciseTestingArtifactUnits(artifacts []types.TestArtifact, opts testingSummaryOptions) []conciseTestingArtifactUnit {
+	state := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
+	units := make([]conciseTestingArtifactUnit, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		label := boundedHumanText(artifact.Label, 100, 1)
+		if label == "" {
+			continue
+		}
+		if opts.flavor == prBodyMarkdown {
+			if text := renderBitbucketConciseArtifact(artifact, opts, label); text != "" {
+				units = append(units, conciseTestingArtifactUnit{text: text})
+			}
+			continue
+		}
+		if source, raw := trustedInlineVisualTargets(artifact, opts); source != "" && raw != "" {
+			alt := markdownAltText(escapeMarkdownInlineText(label))
+			units = append(units, conciseTestingArtifactUnit{
+				text:         fmt.Sprintf("[![%s](%s)](%s)\n", alt, raw, source),
+				linkText:     fmt.Sprintf("- Evidence: [%s](%s)\n", escapeMarkdownInlineText(label), source),
+				inlineVisual: true,
+			})
+			continue
+		}
+		rendered := renderCompactTestingArtifact(artifact, opts, escapeMarkdownInlineText(label), &state)
+		if strings.TrimSpace(rendered) != "" {
+			units = append(units, conciseTestingArtifactUnit{text: rendered})
+		}
+	}
+	return units
+}
+
+func trustedInlineVisualTargets(artifact types.TestArtifact, opts testingSummaryOptions) (source, raw string) {
+	if artifact.Path == "" || !isImageArtifact(artifact.Kind, artifact.Path) {
+		return "", ""
+	}
+	pathOnly := artifact
+	pathOnly.URL = ""
+	source = artifactLinkTargetForPath(pathOnly, opts)
+	raw = artifactTargetForPath(pathOnly, opts)
+	if source == "" || raw == "" || source == artifact.Path || raw == artifact.Path {
+		return "", ""
+	}
+	return source, raw
+}
+
+func renderBitbucketConciseArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string) string {
+	target := artifact.URL
+	if target == "" {
+		target = artifactLinkTargetForPath(artifact, opts)
+	}
+	if target != "" {
+		return fmt.Sprintf("- Evidence: [%s](%s)\n", encodePRText(label, opts.flavor), target)
+	}
+	if localPath := localArtifactPath(artifact.Path, opts); localPath != "" {
+		return renderLocalArtifactLine(encodePRText(label, opts.flavor), localPath, opts.flavor)
+	}
 	return ""
 }
 

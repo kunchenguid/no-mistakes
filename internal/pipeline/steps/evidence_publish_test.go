@@ -111,8 +111,8 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png"
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot]("+wantLink+")") {
-		t.Fatalf("expected the PR body to link the evidence branch, got:\n%s", md)
+	if !strings.Contains(md, "]("+wantLink+")") || !strings.Contains(md, "![Checkout screenshot]") {
+		t.Fatalf("expected the PR body to show and link the published screenshot, got:\n%s", md)
 	}
 	if !strings.Contains(md, "https://github.com/example/widgets/blob/"+tip+"/.no-mistakes/evidence/feature/add-login/cli-run.txt") {
 		t.Fatalf("expected the log artifact to link the evidence branch, got:\n%s", md)

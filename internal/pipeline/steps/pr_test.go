@@ -863,7 +863,7 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 	ghLog := string(logData)
 
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed ✅\n\n## Pipeline"
+	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n🔧 **Test** - 1 issue found → auto-fixed ✅\n\n## Pipeline"
 	if !strings.Contains(ghLog, wantOrder) {
 		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
 	}
@@ -925,6 +925,7 @@ func TestUnwrapNestedPRBody(t *testing.T) {
 		{name: "invalid JSON starting with brace", body: "{not valid json", want: "{not valid json"},
 		{name: "valid JSON but empty nested body", body: `{"title":"fix: stuff","body":""}`, want: `{"title":"fix: stuff","body":""}`},
 		{name: "nested JSON body is unwrapped", body: `{"title":"fix: stuff","body":"## Summary\n\n- real body"}`, want: "## Summary\n\n- real body"},
+		{name: "nested JSON ignores malformed optional overview", body: `{"title":"fix: stuff","body":"## What Changed\n\n- real body","intent":{"wrong":"type"},"acceptance_criteria":"wrong"}`, want: "## What Changed\n\n- real body"},
 		{name: "nested JSON body with whitespace", body: `{"title":"fix: stuff","body":"  ## Summary  "}`, want: "## Summary"},
 	}
 	for _, tt := range tests {
@@ -1531,7 +1532,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	for _, want := range []string{
 		"## Intent",
 		"Keep generated sections visible.",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
+		"Complete acceptance context omitted to fit the provider description limit.",
 		"## What Changed",
 		"essential summary survives",
 		"## Risk Assessment",
@@ -1677,6 +1678,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
+		scm.ProviderGitHub,
 		0,
 	)
 
@@ -1942,8 +1944,10 @@ func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(capturedPrompt, "## What Changed") {
-		t.Errorf("expected prompt to instruct agent to write ## What Changed, got:\n%s", capturedPrompt)
+	for _, want := range []string{"## What Changed", "Intent field: at most two short sentences", "Acceptance criteria field:", "exactly a \"## What Changed\" section"} {
+		if !strings.Contains(capturedPrompt, want) {
+			t.Errorf("expected prompt to contain %q, got:\n%s", want, capturedPrompt)
+		}
 	}
 }
 
@@ -2162,9 +2166,9 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	if !strings.Contains(ghLog, "fix: Improve pipeline header UX") {
 		t.Fatal("expected user-facing agent title to be prefixed with fix:, got: " + ghLog)
 	}
-	// The agent's body should be preserved, not replaced with fallback
-	if !strings.Contains(ghLog, "## Summary") {
-		t.Fatal("expected agent body to be preserved, got: " + ghLog)
+	// The agent's change bullet should be preserved under the normalized heading.
+	if !strings.Contains(ghLog, "## What Changed\n\n- improvements") {
+		t.Fatal("expected agent body to be normalized without losing its bullet, got: " + ghLog)
 	}
 }
 
@@ -2471,7 +2475,7 @@ func TestPRStep_AgentBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 	}
 
 	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
-	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {
+	if !strings.Contains(content.Body, "no-mistakes-pipeline-attestation\\:v1") || !strings.Contains(content.Body, foreignSHA) {
 		t.Fatalf("agent-authored attestation was neither neutralized nor kept readable:\n%s", content.Body)
 	}
 }
@@ -2490,10 +2494,10 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		pipelineAttestationCommentClosingToken
 
 	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0)
+	content := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, scm.ProviderGitHub, 0)
 
 	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
-	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {
+	if !strings.Contains(content.Body, "no-mistakes-pipeline-attestation\\:v1") || !strings.Contains(content.Body, foreignSHA) {
 		t.Fatalf("fallback-embedded attestation was neither neutralized nor kept readable:\n%s", content.Body)
 	}
 }

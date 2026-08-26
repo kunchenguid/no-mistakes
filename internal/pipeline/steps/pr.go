@@ -21,17 +21,32 @@ import (
 type PRStep struct{}
 
 type prContent struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title              string                  `json:"title"`
+	Body               string                  `json:"body"`
+	Intent             string                  `json:"intent,omitempty"`
+	AcceptanceCriteria []prAcceptanceCriterion `json:"acceptance_criteria,omitempty"`
 }
 
 var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"title": {"type": "string", "description": "Conventional commit PR title, e.g. fix(scope): short description"},
-		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## What Changed. Plain text, NOT JSON."}
+		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## What Changed and containing 1-3 concise bullets. Plain text, NOT JSON."},
+		"intent": {"type": "string", "description": "The user-facing outcome in at most two short sentences; empty only when no user intent is available."},
+		"acceptance_criteria": {
+			"type": "array",
+			"description": "Three to seven grouped, human-readable acceptance criteria derived only from user intent; empty when no user intent is available.",
+			"items": {
+				"type": "object",
+				"properties": {
+					"summary": {"type": "string", "description": "One brief human-readable criterion summary."},
+					"details": {"type": "string", "description": "Concise detail preserving the material rules and edge cases grouped under this criterion."}
+				},
+				"required": ["summary", "details"]
+			}
+		}
 	},
-	"required": ["title", "body"]
+	"required": ["title", "body", "intent", "acceptance_criteria"]
 }`)
 
 const (
@@ -94,7 +109,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
+		updated, err := host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
@@ -109,7 +124,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent(content))
+	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent{Title: content.Title, Body: content.Body})
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +203,9 @@ Rules:
 %s
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
-- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Intent field: at most two short sentences describing the user's intended outcome, not implementation detail. Derive it only from User intent below; return an empty string when no user intent is available.
+- Acceptance criteria field: group the User intent into 3-7 brief, human-readable criteria when intent is available. Each summary must fit on one short line; details retain the material rules, constraints, failure behavior, and edge cases under that criterion. Do not invent criteria from the diff. Return an empty array when no user intent is available.
+- Body: exactly a "## What Changed" section in GitHub-flavored markdown with 1-3 concise top-level bullet points describing the concrete final branch changes (what code/behavior shifted), not motivation. Do not include any other section. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Derive every body claim from the final diff. Inspect it directly when the paths and statuses below do not provide enough detail.
 - Do not invent tests or behavior.
 
@@ -208,16 +225,14 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+		return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, provider, bodyLimit), nil
 	}
 
-	var content prContent
 	if result.Output != nil {
-		if err := json.Unmarshal(result.Output, &content); err == nil {
+		if content, err := decodePRContent(result.Output); err == nil {
 			content.Title = strings.TrimSpace(content.Title)
 			content.Body = strings.TrimSpace(content.Body)
 			content.Body = unwrapNestedPRBody(content.Body)
-			content.Body = stripGeneratedSections(content.Body)
 			content.Body = neutralizeAttestationMarkers(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
@@ -225,17 +240,18 @@ Final diff paths and statuses:
 				if content.Title != originalTitle {
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
+				content.Body = renderConcisePRNarrative(content, sctx, provider, finalDiff)
 				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
+					content.Body = assemblePRBodyWithoutIntent(content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
 				} else {
-					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+					content.Body = buildPRBodyWithoutIntent(content.Body, riskLine, testingMD, pipelineMD)
 				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, provider, bodyLimit), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -260,6 +276,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 	}
 
 	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
+	riskLine = renderConciseRisk(riskLine, provider)
 	testingMD = BuildTestingSummaryForPRWithProvider(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider)
 	return pipelineMD, riskLine, testingMD
 }
@@ -270,8 +287,8 @@ func unwrapNestedPRBody(body string) string {
 	if len(body) == 0 || body[0] != '{' {
 		return body
 	}
-	var nested prContent
-	if err := json.Unmarshal([]byte(body), &nested); err != nil {
+	nested, err := decodePRContent(json.RawMessage(body))
+	if err != nil {
 		return body
 	}
 	if strings.TrimSpace(nested.Body) != "" {
@@ -316,6 +333,229 @@ func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD
 		}
 	}
 	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, bodyLimit)
+}
+
+// assemblePRBodyWithoutIntent composes an already-rendered concise narrative.
+// Unlike assemblePRBody it does not prepend the raw source intent, because the
+// narrative already contains the bounded Intent and acceptance disclosures.
+func assemblePRBodyWithoutIntent(narrative, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+	full := composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, pipelineMD)
+	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
+		return full
+	}
+	priorityPipeline := fullLatestPipelineUpdate(pipelineMD)
+	if priorityPipeline == "" || scm.PRBodyLen(priorityPipeline) > bodyLimit {
+		priorityPipeline = minimumPipelineRetainingLatestUpdate(pipelineMD)
+	}
+	if priorityPipeline == "" {
+		priorityPipeline = pipelineSectionHeader(pipelineMD)
+	}
+	fitsWithPriorityPipeline := func(candidateTesting string) bool {
+		prefix := composeGeneratedSectionsUnbounded(narrative, riskLine, candidateTesting, "")
+		separator := 0
+		if prefix != "" && priorityPipeline != "" {
+			separator = scm.PRBodyLen("\n\n")
+		}
+		return scm.PRBodyLen(prefix)+separator+scm.PRBodyLen(priorityPipeline) <= bodyLimit
+	}
+	if fitsWithPriorityPipeline(testingMD) {
+		return assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD, bodyLimit, false)
+	}
+	return assemblePRBodyCoreWithoutIntent(narrative, riskLine, "", pipelineMD, bodyLimit, false)
+}
+
+func assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD string, bodyLimit int, byteLimit bool) string {
+	prefix := composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, "")
+	if pipelineMD == "" {
+		return truncateBalancedNarrative(prefix, bodyLimit, byteLimit)
+	}
+	header, _ := splitPipelineSectionHeader(pipelineMD)
+	measure := scm.PRBodyLen
+	if byteLimit {
+		measure = func(text string) int { return len(text) }
+	}
+	headerLen := measure(header)
+	if header == "" || headerLen > bodyLimit {
+		return truncateBalancedNarrative(prefix+"\n\n"+pipelineMD, bodyLimit, byteLimit)
+	}
+	minimumPipeline := fullLatestPipelineUpdate(pipelineMD)
+	if minimumPipeline == "" || measure(minimumPipeline) > bodyLimit {
+		minimumPipeline = minimumPipelineRetainingLatestUpdate(pipelineMD)
+	}
+	if minimumPipeline == "" || measure(minimumPipeline) > bodyLimit {
+		minimumPipeline = header
+	}
+	separator := "\n\n"
+	prefixBudget := bodyLimit - measure(minimumPipeline) - measure(separator)
+	if prefixBudget <= 0 {
+		return minimumPipeline
+	}
+	prefix = truncateBalancedNarrative(prefix, prefixBudget, byteLimit)
+	if measure(prefix) > prefixBudget {
+		prefix = ""
+		separator = ""
+	}
+	pipelineBudget := bodyLimit - measure(prefix) - measure(separator)
+	truncateBudget := pipelineBudget
+	for truncateBudget > 0 {
+		pipeline := truncatePipelineSectionWithinUnits(pipelineMD, truncateBudget, measure)
+		_, renderedUpdates := splitPipelineSectionHeader(pipeline)
+		if countPipelineUpdateUnits(parsePipelineUpdateGroups(renderedUpdates)) == 0 && measure(minimumPipeline) <= pipelineBudget {
+			pipeline = minimumPipeline
+		}
+		if measure(pipeline) <= pipelineBudget {
+			return prefix + separator + pipeline
+		}
+		truncateBudget -= measure(pipeline) - pipelineBudget
+	}
+	return prefix + separator + header
+}
+
+func buildPRBodyWithoutIntent(narrative, riskLine, testingMD, pipelineMD string) string {
+	full := composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, pipelineMD)
+	if len(full) <= maxPullRequestBodyBytes {
+		return full
+	}
+	priorityPipeline := fullLatestPipelineUpdate(pipelineMD)
+	if priorityPipeline == "" || len(priorityPipeline) > maxPullRequestBodyBytes {
+		priorityPipeline = minimumPipelineRetainingLatestUpdate(pipelineMD)
+	}
+	if priorityPipeline == "" {
+		priorityPipeline = pipelineSectionHeader(pipelineMD)
+	}
+	fitsWithPriorityPipeline := func(candidateNarrative, candidateTesting string) bool {
+		prefix := composeGeneratedSectionsUnbounded(candidateNarrative, riskLine, candidateTesting, "")
+		separator := 0
+		if prefix != "" && priorityPipeline != "" {
+			separator = len("\n\n")
+		}
+		return len(prefix)+separator+len(priorityPipeline) <= maxPullRequestBodyBytes
+	}
+	if fitsWithPriorityPipeline(narrative, testingMD) {
+		return assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD)
+	}
+	if testingMD != "" && fitsWithPriorityPipeline(narrative, "") {
+		return assemblePRBodyWithinByteLimit(narrative, riskLine, "", pipelineMD)
+	}
+	narrative = omitCompleteAcceptanceContext(narrative)
+	if testingMD != "" && fitsWithPriorityPipeline(narrative, testingMD) {
+		return assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD)
+	}
+	return assemblePRBodyWithinByteLimit(narrative, riskLine, "", pipelineMD)
+}
+
+func assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD string) string {
+	limit := maxPullRequestBodyBytes
+	for limit > 0 {
+		body := assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD, limit, true)
+		if len(body) <= maxPullRequestBodyBytes {
+			return body
+		}
+		limit -= len(body) - maxPullRequestBodyBytes
+	}
+	return ""
+}
+
+func composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, pipelineMD string) string {
+	narrative = neutralizeAttestationMarkers(narrative)
+	riskLine = neutralizeAttestationMarkers(riskLine)
+	testingMD = neutralizeAttestationMarkers(testingMD)
+	prefix := narrative + generatedEssentialSections(riskLine, testingMD)
+	if pipelineMD == "" {
+		return prefix
+	}
+	if prefix == "" {
+		return pipelineMD
+	}
+	return prefix + "\n\n" + pipelineMD
+}
+
+func truncateBalancedNarrative(narrative string, maxUnits int, byteLimit bool) string {
+	measure := scm.PRBodyLen
+	if byteLimit {
+		measure = func(text string) int { return len(text) }
+	}
+	if measure(narrative) <= maxUnits {
+		return narrative
+	}
+	narrative = omitCompleteAcceptanceContext(narrative)
+	if measure(narrative) <= maxUnits {
+		return narrative
+	}
+	narrative = compactAcceptanceCriteriaDetails(narrative)
+	if measure(narrative) <= maxUnits {
+		return narrative
+	}
+	// Remaining disclosures are atomic. Remove complete trailing blocks before
+	// applying a line-boundary clamp to disclosure-free prose.
+	for strings.Count(narrative, "<details>") > 0 {
+		start := strings.LastIndex(narrative, "<details>")
+		end := strings.Index(narrative[start:], "</details>")
+		if end < 0 {
+			narrative = strings.TrimSpace(narrative[:start])
+			continue
+		}
+		end = start + end + len("</details>")
+		candidate := strings.TrimSpace(narrative[:start] + narrative[end:])
+		if measure(candidate) < measure(narrative) {
+			narrative = candidate
+		}
+		if measure(narrative) <= maxUnits {
+			return narrative
+		}
+	}
+	if byteLimit {
+		return truncateTextAtLineBoundary(narrative, maxUnits, essentialPRBodyTruncationMarker())
+	}
+	return scm.ClampPRBody(narrative, maxUnits)
+}
+
+func compactAcceptanceCriteriaDetails(narrative string) string {
+	const summaryPrefix = "<summary><strong>AC"
+	for {
+		summaryAt := strings.Index(narrative, summaryPrefix)
+		if summaryAt < 0 {
+			return narrative
+		}
+		start := strings.LastIndex(narrative[:summaryAt], "<details>")
+		summaryEndRel := strings.Index(narrative[summaryAt:], "</summary>")
+		if start < 0 || summaryEndRel < 0 {
+			return narrative
+		}
+		summaryEnd := summaryAt + summaryEndRel + len("</summary>")
+		closeRel := strings.Index(narrative[summaryEnd:], "</details>")
+		if closeRel < 0 {
+			return narrative
+		}
+		end := summaryEnd + closeRel + len("</details>")
+		inner := strings.TrimSuffix(strings.TrimPrefix(narrative[summaryAt:summaryEnd], "<summary>"), "</summary>")
+		narrative = narrative[:start] + "- " + inner + narrative[end:]
+	}
+}
+
+func omitCompleteAcceptanceContext(narrative string) string {
+	const summary = "<summary><strong>Complete acceptance context</strong></summary>"
+	const marker = "Complete acceptance context omitted to fit the provider description limit."
+	summaryAt := strings.Index(narrative, summary)
+	if summaryAt >= 0 {
+		start := strings.LastIndex(narrative[:summaryAt], "<details>")
+		endRel := strings.Index(narrative[summaryAt:], "</details>")
+		if start >= 0 && endRel >= 0 {
+			end := summaryAt + endRel + len("</details>")
+			return strings.TrimSpace(narrative[:start]) + "\n\n" + marker + "\n\n" + strings.TrimSpace(narrative[end:])
+		}
+	}
+	const markdownHeading = "### Complete acceptance context"
+	start := strings.Index(narrative, markdownHeading)
+	if start < 0 {
+		return narrative
+	}
+	endRel := strings.Index(narrative[start+len(markdownHeading):], "\n## ")
+	if endRel < 0 {
+		return strings.TrimSpace(narrative[:start]) + "\n\n" + marker
+	}
+	end := start + len(markdownHeading) + endRel + 1
+	return strings.TrimSpace(narrative[:start]) + "\n\n" + marker + "\n\n" + strings.TrimSpace(narrative[end:])
 }
 
 func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int) string {
@@ -553,6 +793,52 @@ func truncatePipelineSection(pipelineMD string, maxBytes int) string {
 	}
 
 	return pipelineOmissionSectionWithinLimit(header, totalUnits, maxBytes)
+}
+
+func truncatePipelineSectionWithinUnits(pipelineMD string, maxUnits int, measure func(string) int) string {
+	if maxUnits <= 0 {
+		return ""
+	}
+	if measure(pipelineMD) <= maxUnits {
+		return pipelineMD
+	}
+	header, updates := splitPipelineSectionHeader(pipelineMD)
+	groups := parsePipelineUpdateGroups(updates)
+	totalUnits := countPipelineUpdateUnits(groups)
+	if totalUnits == 0 {
+		if measure(header) <= maxUnits {
+			return header
+		}
+		return ""
+	}
+	for omitted := 1; omitted < totalUnits; omitted++ {
+		candidate := renderPipelineWithOmittedUpdates(header, groups, omitted)
+		if measure(candidate) <= maxUnits {
+			return candidate
+		}
+	}
+	minimum := minimumPipelineRetainingLatestUpdate(pipelineMD)
+	if minimum != "" && measure(minimum) <= maxUnits {
+		return minimum
+	}
+	omission := minimumPipelineOmissionSection(pipelineMD)
+	if measure(omission) <= maxUnits {
+		return omission
+	}
+	if measure(header) <= maxUnits {
+		return header
+	}
+	return ""
+}
+
+func fullLatestPipelineUpdate(pipelineMD string) string {
+	header, updates := splitPipelineSectionHeader(pipelineMD)
+	groups := parsePipelineUpdateGroups(updates)
+	totalUnits := countPipelineUpdateUnits(groups)
+	if totalUnits == 0 {
+		return ""
+	}
+	return renderPipelineWithOmittedUpdates(header, groups, totalUnits-1)
 }
 
 func minimumPipelineOmissionSection(pipelineMD string) string {
@@ -1143,21 +1429,16 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
-	title := "chore: update pull request"
-	diffSummary := strings.TrimSpace(finalDiff)
-	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
-	if diffSummary == "" {
-		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, provider scm.Provider, bodyLimit int) prContent {
+	content := prContent{
+		Title: "chore: update pull request",
+		Body:  "## What Changed",
 	}
-	body = neutralizeAttestationMarkers(body)
+	content.Body = renderConcisePRNarrative(content, sctx, provider, finalDiff)
 	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit)
+		content.Body = assemblePRBodyWithoutIntent(content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
 	} else {
-		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+		content.Body = buildPRBodyWithoutIntent(content.Body, riskLine, testingMD, pipelineMD)
 	}
-	return prContent{
-		Title: title,
-		Body:  body,
-	}
+	return content
 }
