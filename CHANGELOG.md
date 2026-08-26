@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.59.2](https://github.com/kunchenguid/no-mistakes/compare/v1.59.1...v1.59.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* **cli:** scope AXI run resolution to the current branch ([#850](https://github.com/kunchenguid/no-mistakes/issues/850)) ([10cb727](https://github.com/kunchenguid/no-mistakes/commit/10cb7270405d2dac5dafc50272c5886fa895b223))
+* **pipeline:** recognize push provenance to allow pushing rebased pipeline generations ([#852](https://github.com/kunchenguid/no-mistakes/issues/852)) ([539f09a](https://github.com/kunchenguid/no-mistakes/commit/539f09a3ec81b73eeabc13380a08ca14d275e55f))
+* **scm:** collapse superseded GitHub check runs ([#855](https://github.com/kunchenguid/no-mistakes/issues/855)) ([a59d667](https://github.com/kunchenguid/no-mistakes/commit/a59d6675a18d15cd44076a4c27786814a7a0ad15))
+
 ## [1.59.1](https://github.com/kunchenguid/no-mistakes/compare/v1.59.0...v1.59.1) (2026-08-26)
 
 
