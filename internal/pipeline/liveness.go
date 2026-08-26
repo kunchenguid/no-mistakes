@@ -29,28 +29,50 @@ import (
 type invocationLiveness struct {
 	mu   sync.Mutex
 	last time.Time
-	seen map[agent.ActivityKind]time.Time
+	seq  uint64
+	seen map[agent.ActivityKind]activityMark
+}
+
+// activityMark is one kind's latest observation: when it happened and its
+// place in this invocation's record sequence. The sequence makes the
+// evidence ordering a total order even when two kinds share one clock
+// reading, which a coarse platform timer can produce for back-to-back
+// records.
+type activityMark struct {
+	at  time.Time
+	seq uint64
 }
 
 func newInvocationLiveness() *invocationLiveness {
 	return &invocationLiveness{
 		last: time.Now(),
-		seen: make(map[agent.ActivityKind]time.Time),
+		seen: make(map[agent.ActivityKind]activityMark),
 	}
 }
 
 func (l *invocationLiveness) record(kind agent.ActivityKind) {
+	l.recordAt(kind, time.Now())
+}
+
+// recordAt is the single activity-mutation path: record passes the current
+// time, and tests pass explicit instants to construct the exact clock ties a
+// coarse platform timer can produce implicitly.
+func (l *invocationLiveness) recordAt(kind agent.ActivityKind, at time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
-	l.last = now
-	l.seen[kind] = now
+	l.seq++
+	if at.After(l.last) {
+		l.last = at
+	}
+	l.seen[kind] = activityMark{at: at, seq: l.seq}
 }
 
 // evidence renders the per-kind activity summary for the timeout diagnostic.
 // It names evidence classes and ages only - never content, paths, or session
 // payloads - so operators can distinguish stdout-active, session-active, and
-// genuinely quiet invocations.
+// genuinely quiet invocations. Kinds render most recent first; an exact
+// clock tie breaks in record order (the later record is the genuinely more
+// recent activity), so the ordering is deterministic on every platform.
 func (l *invocationLiveness) evidence() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -61,13 +83,19 @@ func (l *invocationLiveness) evidence() string {
 		label string
 		age   time.Duration
 		at    time.Time
+		seq   uint64
 	}
 	now := time.Now()
 	parts := make([]kindAge, 0, len(l.seen))
-	for kind, at := range l.seen {
-		parts = append(parts, kindAge{label: agent.ActivityKindLabel(kind), age: now.Sub(at).Round(time.Millisecond), at: at})
+	for kind, mark := range l.seen {
+		parts = append(parts, kindAge{label: agent.ActivityKindLabel(kind), age: now.Sub(mark.at).Round(time.Millisecond), at: mark.at, seq: mark.seq})
 	}
-	sort.Slice(parts, func(i, j int) bool { return parts[i].at.After(parts[j].at) })
+	sort.Slice(parts, func(i, j int) bool {
+		if !parts[i].at.Equal(parts[j].at) {
+			return parts[i].at.After(parts[j].at)
+		}
+		return parts[i].seq > parts[j].seq
+	})
 	rendered := make([]string, 0, len(parts))
 	for _, part := range parts {
 		rendered = append(rendered, fmt.Sprintf("%s %s ago", part.label, part.age))

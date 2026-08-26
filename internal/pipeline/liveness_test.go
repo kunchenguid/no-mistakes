@@ -103,6 +103,34 @@ func TestLivenessEvidence_NamesEveryKindSeen(t *testing.T) {
 	}
 }
 
+func TestLivenessEvidence_OrdersByRecencyAndBreaksClockTiesInRecordOrder(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-time.Minute)
+	l := newInvocationLiveness()
+	l.recordAt(agent.ActivityStdout, base)
+	l.recordAt(agent.ActivityLifecycle, base.Add(2*time.Second))
+	// A coarse platform timer (Windows CI) can stamp two back-to-back records
+	// with one clock reading; the later record is the genuinely more recent
+	// activity, and the tie must resolve the same way on every render.
+	l.recordAt(agent.ActivitySession, base.Add(2*time.Second))
+
+	assertOrder := func(evidence string) {
+		t.Helper()
+		sessionIdx := strings.Index(evidence, "pi session events")
+		lifecycleIdx := strings.Index(evidence, "process lifecycle")
+		stdoutIdx := strings.Index(evidence, "stdout bytes")
+		if sessionIdx < 0 || lifecycleIdx < 0 || stdoutIdx < 0 {
+			t.Fatalf("evidence = %q, want every recorded kind named", evidence)
+		}
+		if !(sessionIdx < lifecycleIdx && lifecycleIdx < stdoutIdx) {
+			t.Fatalf("evidence = %q, want the tied later record first and the genuinely older kind last", evidence)
+		}
+	}
+	assertOrder(l.evidence())
+	// The ordering is a deterministic total order: repeated renders agree.
+	assertOrder(l.evidence())
+}
+
 func TestAgentTimeoutError_MessageAndStepLabel(t *testing.T) {
 	t.Parallel()
 	ate := &AgentTimeoutError{Budget: 30 * time.Minute, Evidence: "last activity: pi session events 30m0s ago"}
