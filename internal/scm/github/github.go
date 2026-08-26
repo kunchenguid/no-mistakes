@@ -597,7 +597,7 @@ func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
 		keep := true
 		for i := 0; i < len(collapsed); {
 			other := collapsed[i]
-			if !sameCheckReplacementGroup(check, other) {
+			if !h.sameCheckReplacementGroup(check, other) {
 				i++
 				continue
 			}
@@ -619,15 +619,18 @@ func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
 	return collapsed
 }
 
-func sameCheckReplacementGroup(a, b scm.Check) bool {
+func (h *Host) sameCheckReplacementGroup(a, b scm.Check) bool {
 	if a.Kind != scm.CheckKindRun || b.Kind != scm.CheckKindRun || a.Name != b.Name {
 		return false
 	}
-	// A missing workflow identity cannot prove that same-name checks are
-	// reruns of one requirement. External check providers commonly have no
-	// matching Actions workflow run, so collapsing two zero identities could
-	// hide an independent failure.
-	return a.WorkflowID != 0 && a.WorkflowID == b.WorkflowID
+	// Only distinct runs of the same known workflow establish rerun identity.
+	// Missing workflow/run identities may be independent external checks, while
+	// equal run identities may be independent same-name jobs within one run.
+	// Collapsing either case could hide a failing requirement.
+	aRunID := h.actionsRunID(a.Link)
+	bRunID := h.actionsRunID(b.Link)
+	return a.WorkflowID != 0 && a.WorkflowID == b.WorkflowID &&
+		aRunID != "" && bRunID != "" && aRunID != bRunID
 }
 
 // checkStartedAfter reports whether a is newer and whether the available
