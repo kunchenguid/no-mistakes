@@ -657,4 +657,53 @@ func TestPushStep_AllowsForcePushOnRerunOverPriorRunPushedGeneration(t *testing.
 	}
 }
 
+func TestLastKnownBranchTip_BranchRefNormalization(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.LastPushedSHA = nil
+
+	sha1 := "1111111111111111111111111111111111111111"
+	priorRun1, err := sctx.DB.InsertRun(sctx.Repo.ID, "refs/heads/feature", sha1, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunPushBinding(priorRun1.ID, db.PushBinding{
+		HeadSHA:           sha1,
+		TargetKind:        "upstream",
+		TargetFingerprint: "fingerprint",
+		Ref:               "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := lastKnownBranchTip(sctx.Ctx, sctx, "feature", false); got != sha1 {
+		t.Fatalf("lastKnownBranchTip with query 'feature' = %q, want %q", got, sha1)
+	}
+	if got := lastKnownBranchTip(sctx.Ctx, sctx, "refs/heads/feature", false); got != sha1 {
+		t.Fatalf("lastKnownBranchTip with query 'refs/heads/feature' = %q, want %q", got, sha1)
+	}
+
+	sha2 := "2222222222222222222222222222222222222222"
+	priorRun2, err := sctx.DB.InsertRun(sctx.Repo.ID, "unprefixed-branch", sha2, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateRunPushBinding(priorRun2.ID, db.PushBinding{
+		HeadSHA:           sha2,
+		TargetKind:        "upstream",
+		TargetFingerprint: "fingerprint",
+		Ref:               "unprefixed-branch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := lastKnownBranchTip(sctx.Ctx, sctx, "unprefixed-branch", false); got != sha2 {
+		t.Fatalf("lastKnownBranchTip with query 'unprefixed-branch' = %q, want %q", got, sha2)
+	}
+	if got := lastKnownBranchTip(sctx.Ctx, sctx, "refs/heads/unprefixed-branch", false); got != sha2 {
+		t.Fatalf("lastKnownBranchTip with query 'refs/heads/unprefixed-branch' = %q, want %q", got, sha2)
+	}
+}
+
 

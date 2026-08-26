@@ -199,7 +199,7 @@ func lastKnownBranchTip(ctx context.Context, sctx *pipeline.StepContext, branch 
 		runs, err := sctx.DB.GetRunsByRepo(sctx.Repo.ID)
 		if err == nil {
 			for _, r := range runs {
-				if r.Branch == branch && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
+				if strings.TrimPrefix(r.Branch, "refs/heads/") == strings.TrimPrefix(branch, "refs/heads/") && r.LastPushedSHA != nil && strings.TrimSpace(*r.LastPushedSHA) != "" {
 					return strings.TrimSpace(*r.LastPushedSHA)
 				}
 			}
