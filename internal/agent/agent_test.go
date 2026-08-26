@@ -772,3 +772,54 @@ func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObject(t *testing.T)
 		t.Errorf("expected summary=%q, got %q", "clean test run", output.Summary)
 	}
 }
+
+func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObjectWithBracesInStrings(t *testing.T) {
+	text := "Done with verification.\n{\"findings\":[],\"summary\":\"fixed {unmatched brace} in pattern\"}\nAll good."
+	result, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []any  `json:"findings"`
+		Summary  string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.Summary != "fixed {unmatched brace} in pattern" {
+		t.Errorf("expected summary=%q, got %q", "fixed {unmatched brace} in pattern", output.Summary)
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaPreservesSchemaErrorOnProseWrappedJSON(t *testing.T) {
+	text := "I checked the diff and here is my review:\n{\"unexpected_field\":\"value\"}\nThanks."
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	_, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	if strings.Contains(err.Error(), "ended its turn with prose") {
+		t.Fatalf("schema error was masked as prose turn ending: %v", err)
+	}
+	if !strings.Contains(err.Error(), "violates schema") && !strings.Contains(err.Error(), "missing required") {
+		t.Fatalf("expected schema violation error, got: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_ProseWithoutJSONReturnsEndedWithProseError(t *testing.T) {
+	text := "I have completed testing and found no issues. Everything passes."
+	_, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected error for prose turn ending")
+	}
+	if !strings.Contains(err.Error(), "ended its turn with prose instead of the required JSON object") {
+		t.Fatalf("expected ended with prose error, got: %v", err)
+	}
+}
