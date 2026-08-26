@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -210,9 +211,9 @@ func parseAcceptanceCriterionLine(line string) (prAcceptanceCriterion, bool) {
 	}
 	line = trimAcceptanceCriterionLabel(line)
 	summary, details := line, line
-	if idx := strings.Index(line, ":"); idx > 0 {
+	if idx := strings.Index(line, ": "); idx > 0 {
 		summary = strings.TrimSpace(line[:idx])
-		details = strings.TrimSpace(line[idx+1:])
+		details = strings.TrimSpace(line[idx+len(": "):])
 	}
 	summary = boundedHumanText(summary, maxPRAcSummaryRunes, 1)
 	details = boundedHumanText(details, maxPRAcDetailRunes, 0)
@@ -449,20 +450,39 @@ func truncateAtWordBoundary(text string, maxRunes int) string {
 	return strings.TrimSpace(string(runes[:cut])) + "…"
 }
 
+// encodePRText redacts before it escapes. safepath recognizes a home path by
+// its separators and its account segment, and both flavors rewrite those bytes
+// - "\" becomes "&#92;" or "\\", and a metacharacter inside the account name
+// ("dana_lee") becomes "&#95;" or "\_" - so text that is escaped first is text
+// the boundary scrub in redactPRContent can no longer match. Redacting here is
+// idempotent and only shrinks, so redactPRContent keeps its final say.
+//
+// The placeholder safepath inserts is held aside while escaping runs, because
+// "~" is itself an escaped metacharacter and the redaction is worthless if it
+// publishes as "&#126;". Only the placeholder is held: a tilde the author wrote
+// is escaped exactly as before.
 func encodePRText(text string, flavor prBodyFlavor) string {
+	const authorTildeSentinel = "\ue001"
+	const placeholderSentinel = "\ue002"
 	text = neutralizeAttestationMarkers(strings.TrimSpace(text))
+	text = strings.ReplaceAll(text, safepath.Placeholder, authorTildeSentinel)
+	text = safepath.RedactText(text)
+	text = strings.ReplaceAll(text, safepath.Placeholder, placeholderSentinel)
+	text = strings.ReplaceAll(text, authorTildeSentinel, safepath.Placeholder)
 	if flavor == prBodyMarkdown {
 		text = escapePipelineFoldMarkers(escapeMarkdownFence(text))
 		text = strings.ReplaceAll(text, "\\", "\\\\")
 		text = escapeMarkdownStructuralLines(text)
-		return escapeMarkdownMetacharacters(text, "\\")
+		text = escapeMarkdownMetacharacters(text, "\\")
+		return strings.ReplaceAll(text, placeholderSentinel, safepath.Placeholder)
 	}
 	const hashSentinel = "\ue000"
 	text = strings.ReplaceAll(text, "#", hashSentinel)
 	text = html.EscapeString(text)
 	text = strings.ReplaceAll(text, hashSentinel, "&#35;")
 	text = escapeMarkdownMetacharacters(text, "entity")
-	return escapeHTMLMarkdownStructuralLines(text)
+	text = escapeHTMLMarkdownStructuralLines(text)
+	return strings.ReplaceAll(text, placeholderSentinel, safepath.Placeholder)
 }
 
 func renderBitbucketAcceptanceCriterion(index int, criterion prAcceptanceCriterion) string {

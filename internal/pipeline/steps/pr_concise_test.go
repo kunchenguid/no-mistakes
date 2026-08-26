@@ -156,6 +156,50 @@ func TestRenderConcisePRNarrative_FallbackKeepsHyphenatedWordsInsideCriterionTex
 	}
 }
 
+func TestRenderConcisePRNarrative_RedactsHomePathsThatEscapingWouldHideFromTheBoundary(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{
+		UserIntent:   `Keep the worktree under C:\Users\bob\.no-mistakes\worktrees\run usable.`,
+		IntentSource: db.RunIntentSourceAgent,
+	}
+	content := prContent{
+		Intent:             `Evidence is written beneath /Users/dana_lee/src/no-mistakes.`,
+		AcceptanceCriteria: []prAcceptanceCriterion{{Summary: "Keep operator paths private", Details: `Never publish C:\Users\bob\.no-mistakes or /Users/dana_lee/src.`}},
+		Body:               "## What Changed\n\n- Redact operator paths.",
+	}
+
+	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
+		narrative := renderConcisePRNarrative(content, sctx, provider, "M\tinternal/pipeline/steps/pr.go")
+		got := redactPRContent(prContent{Body: narrative}).Body
+		for _, leak := range []string{"bob", "dana", "lee", "Users"} {
+			if strings.Contains(got, leak) {
+				t.Fatalf("provider %s published operator identity %q:\n%s", provider, leak, got)
+			}
+		}
+		if !strings.Contains(got, "Evidence is written beneath") {
+			t.Fatalf("provider %s lost the surrounding prose:\n%s", provider, got)
+		}
+	}
+}
+
+func TestRenderConcisePRNarrative_FallbackKeepsURLColonsInsideCriterionText(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{
+		UserIntent:   "Keep documentation current.\n\nAcceptance criteria:\n- AC1 — Docs live at https://example.test/x: keep them current.",
+		IntentSource: db.RunIntentSourceAgent,
+	}
+
+	got := renderConcisePRNarrative(prContent{Body: "## What Changed\n\n- Update the documentation."}, sctx, scm.ProviderGitHub, "M\tinternal/pipeline/steps/pr.go")
+	if !strings.Contains(got, "<summary><strong>AC1</strong> — Docs live at https://example.test/x</summary>") {
+		t.Fatalf("fallback criterion summary was split at a URL scheme colon:\n%s", got)
+	}
+	if !strings.Contains(got, "keep them current.") {
+		t.Fatalf("fallback criterion lost its detail text:\n%s", got)
+	}
+}
+
 func TestRenderConciseRisk_BitbucketDoesNotRepeatTheVisibleSentence(t *testing.T) {
 	t.Parallel()
 
