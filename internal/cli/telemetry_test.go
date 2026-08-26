@@ -151,9 +151,9 @@ func TestReadSurfaceTelemetryOptOutDoesNotPersistGate(t *testing.T) {
 
 func TestStatusFingerprintIncludesDisplayedRunHead(t *testing.T) {
 	run := &db.Run{ID: "run-1", Branch: "feature/test", Status: "running", HeadSHA: "head-one"}
-	before := statusFingerprint("repo", "running", run)
+	before := statusFingerprint("repo", "running", run, "cached: main 01234567 (clean; synchronized)")
 	run.HeadSHA = "head-two"
-	if after := statusFingerprint("repo", "running", run); before == after {
+	if after := statusFingerprint("repo", "running", run, "cached: main 01234567 (clean; synchronized)"); before == after {
 		t.Fatal("changing the displayed head must change the status fingerprint")
 	}
 }
