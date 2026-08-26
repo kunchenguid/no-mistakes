@@ -705,5 +705,3 @@ func TestLastKnownBranchTip_BranchRefNormalization(t *testing.T) {
 		t.Fatalf("lastKnownBranchTip with query 'refs/heads/unprefixed-branch' = %q, want %q", got, sha2)
 	}
 }
-
-

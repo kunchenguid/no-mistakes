@@ -251,4 +251,3 @@ func TestResolveForcePushDecision_AllowsPushWhenRemoteEqualsPriorPipelinePushedG
 		t.Fatalf("expected guarded force-push anchored to %s, got %#v", featureSHA, d)
 	}
 }
-
