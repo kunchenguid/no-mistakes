@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -606,7 +607,51 @@ func jsonEqual(a, b json.RawMessage) bool {
 	if err != nil {
 		return false
 	}
-	return reflect.DeepEqual(valA, valB)
+	return jsonValuesEqual(valA, valB)
+}
+
+func jsonValuesEqual(a, b any) bool {
+	switch valueA := a.(type) {
+	case json.Number:
+		valueB, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
+		numberA, ok := new(big.Rat).SetString(valueA.String())
+		if !ok {
+			return false
+		}
+		numberB, ok := new(big.Rat).SetString(valueB.String())
+		if !ok {
+			return false
+		}
+		return numberA.Cmp(numberB) == 0
+	case map[string]any:
+		valueB, ok := b.(map[string]any)
+		if !ok || len(valueA) != len(valueB) {
+			return false
+		}
+		for key, childA := range valueA {
+			childB, ok := valueB[key]
+			if !ok || !jsonValuesEqual(childA, childB) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		valueB, ok := b.([]any)
+		if !ok || len(valueA) != len(valueB) {
+			return false
+		}
+		for i := range valueA {
+			if !jsonValuesEqual(valueA[i], valueB[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // scanBalancedObject returns the exclusive end index of a brace-balanced

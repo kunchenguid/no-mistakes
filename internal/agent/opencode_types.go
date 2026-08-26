@@ -131,7 +131,7 @@ func (e *opencodeMessageError) providerText() []string {
 	if e == nil {
 		return nil
 	}
-	text := []string{e.Name, e.Message}
+	text := []string{e.Name, e.message()}
 	if len(e.rawData) > 0 {
 		text = append(text, string(e.rawData))
 	}

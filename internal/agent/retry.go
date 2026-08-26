@@ -164,6 +164,7 @@ var terminalNeedles = []struct {
 	{"free_usage_limit", "free usage limit"},
 	{"insufficient quota", "insufficient quota"},
 	{"insufficient_quota", "insufficient quota"},
+	{"exceeded your current quota", "quota exceeded"},
 	{"quota exceeded", "quota exceeded"},
 	{"quota_exceeded", "quota exceeded"},
 	{"quota exhausted", "quota exhausted"},
@@ -181,10 +182,8 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, sig := range terminalNeedles {
-		if strings.Contains(msg, sig.needle) {
-			return sig.label, false
-		}
+	if isTerminalRetryError(msg) {
+		return "", false
 	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
@@ -195,4 +194,13 @@ func classifyTransient(err error) (string, bool) {
 		return "http " + m, true
 	}
 	return "", false
+}
+
+func isTerminalRetryError(msg string) bool {
+	for _, sig := range terminalNeedles {
+		if strings.Contains(msg, sig.needle) {
+			return true
+		}
+	}
+	return false
 }

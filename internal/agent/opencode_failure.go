@@ -19,6 +19,7 @@ type opencodeMessageFailure struct {
 	retries    int
 	retryable  bool
 	structured bool
+	terminal   bool
 
 	// toolActivity records that the failed turn already invoked at least one
 	// tool, which withdraws the retry however retryable opencode called the
@@ -37,6 +38,7 @@ func newOpencodeMessageFailure(e *opencodeMessageError, toolActivity bool) error
 		retries:      e.retries(),
 		retryable:    e.retryable(),
 		structured:   e.IsStructuredOutput(),
+		terminal:     isTerminalRetryError(strings.ToLower(strings.Join(e.providerText(), "\n"))),
 		toolActivity: toolActivity,
 	}
 }
@@ -101,7 +103,7 @@ func classifyOpencodeTransient(err error) (string, bool) {
 		// as far as running a tool fails closed and the operator decides.
 		// The failure this retry exists for - a provider blip that kills the
 		// turn before the model acts - is untouched by the gate.
-		if failure.retryable && !failure.toolActivity {
+		if failure.retryable && !failure.terminal && !failure.toolActivity {
 			return failure.label(), true
 		}
 		return "", false

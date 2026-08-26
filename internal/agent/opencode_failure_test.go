@@ -186,6 +186,13 @@ func TestClassifyOpencodeTransient(t *testing.T) {
 			wantRetry: false,
 		},
 		{
+			name: "retryable quota exhaustion",
+			err: &opencodeMessageError{Name: "APIError", Data: &opencodeMessageErrorData{
+				Message: "insufficient_quota", StatusCode: 429, IsRetryable: &retryable,
+			}},
+			wantRetry: false,
+		},
+		{
 			name:      "no flag falls back to the status class",
 			err:       &opencodeMessageError{Name: "APIError", Data: &opencodeMessageErrorData{StatusCode: 502}},
 			wantRetry: true,

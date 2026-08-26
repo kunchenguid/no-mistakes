@@ -963,6 +963,31 @@ func TestFinalizeTextResult_ConflictingLargeIntegerVerdictsReturnError(t *testin
 	}
 }
 
+func TestFinalizeTextResult_IdenticalNumericSpellingSucceeds(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"confidence":1}`,
+		"```",
+		`{"confidence":1.0}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"confidence":{"type":"number"}},
+		"required":["confidence"]
+	}`)
+	result, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("expected equivalent numeric verdicts to succeed, got %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to unmarshal output: %v", err)
+	}
+	if output["confidence"] != float64(1) {
+		t.Fatalf("confidence = %v, want 1", output["confidence"])
+	}
+}
+
 func TestFinalizeTextResult_ProseWithNonJSONFenceReturnsEndedWithProseError(t *testing.T) {
 	text := "I ran tests and they passed:\n```bash\ngo test ./...\n```\nAll done."
 	_, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})

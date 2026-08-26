@@ -145,6 +145,7 @@ func TestRunWithRetry_DoesNotRetryQuotaExhaustion(t *testing.T) {
 	for _, message := range []string{
 		"API rate limit reached with HTTP 429: FreeUsageLimit exceeded",
 		"API request failed with HTTP 429: insufficient_quota",
+		"API request failed with HTTP 429: You exceeded your current quota",
 	} {
 		t.Run(message, func(t *testing.T) {
 			calls := 0
