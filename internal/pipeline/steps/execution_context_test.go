@@ -6,7 +6,7 @@ import (
 )
 
 func TestExecutionContextPromptSection_Mentions(t *testing.T) {
-	got := executionContextPromptSection()
+	got := executionContextPromptSection(t.TempDir())
 	for _, want := range []string{
 		"isolated git worktree",
 		"pointer file",
@@ -22,7 +22,10 @@ func TestExecutionContextPromptSection_Mentions(t *testing.T) {
 // It must be task-neutral - words like "review" or "lint" leak the wrong
 // framing into other steps.
 func TestExecutionContextPromptSection_TaskNeutral(t *testing.T) {
-	got := executionContextPromptSection()
+	// The injected workDir is a t.TempDir path whose name embeds this test's
+	// own name; neutrality applies to the static template, so scan without it.
+	dir := t.TempDir()
+	got := strings.Replace(executionContextPromptSection(dir), dir, "<WORKDIR>", -1)
 	for _, banned := range []string{
 		"reviewed",
 		"review",
@@ -39,7 +42,7 @@ func TestExecutionContextPromptSection_TaskNeutral(t *testing.T) {
 }
 
 func TestExecutionContextPromptSection_NewlineSafe(t *testing.T) {
-	got := executionContextPromptSection()
+	got := executionContextPromptSection(t.TempDir())
 	if !strings.HasPrefix(got, "\n") {
 		t.Error("expected leading newline so callers can append cleanly")
 	}

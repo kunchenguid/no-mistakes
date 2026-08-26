@@ -65,6 +65,26 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			errMsg:  `Post "https://api.anthropic.com": net/http: TLS handshake timeout`,
 			wantSub: "tls",
 		},
+		{
+			name:    "prose turn ending",
+			errMsg:  `antigravity output parse: ended its turn with prose instead of the required JSON object`,
+			wantSub: "prose",
+		},
+		{
+			name:    "agy permission declaration",
+			errMsg:  `antigravity reported error: declaring permissions: cortex tool view_file: failed`,
+			wantSub: "permission",
+		},
+		{
+			name:    "invalid tool call",
+			errMsg:  `antigravity reported error: invalid tool call error (invalid_args)`,
+			wantSub: "tool call",
+		},
+		{
+			name:    "free usage limit",
+			errMsg:  `API rate limit reached: FreeUsageLimit exceeded`,
+			wantSub: "usage limit",
+		},
 	}
 
 	for _, tc := range cases {

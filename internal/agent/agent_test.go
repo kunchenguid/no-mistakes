@@ -752,3 +752,23 @@ func TestFinalizeTextResult_WithSchemaParsesProseQuotingFenceExampleThenClosedBl
 		t.Errorf("expected summary=one issue, got %q", output.Summary)
 	}
 }
+
+func TestFinalizeTextResult_WithSchemaParsesProseWrappedJSONObject(t *testing.T) {
+	// Models routinely end a turn with a narration sentence around the JSON
+	// object without markdown code fences.
+	text := "I have completed testing and found no issues.\n{\"findings\":[],\"summary\":\"clean test run\"}\nHope this helps!"
+	result, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []any  `json:"findings"`
+		Summary  string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.Summary != "clean test run" {
+		t.Errorf("expected summary=%q, got %q", "clean test run", output.Summary)
+	}
+}

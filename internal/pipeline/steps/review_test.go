@@ -897,7 +897,7 @@ func reviewPromptFor(t *testing.T, rules []config.PathInstruction) string {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
 	}
-	return ag.calls[0].Prompt
+	return strings.ReplaceAll(ag.calls[0].Prompt, dir, "<WORKDIR>")
 }
 
 // A repository with no review.path_instructions must get the review prompt it

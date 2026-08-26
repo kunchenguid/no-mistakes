@@ -282,10 +282,54 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema)
 	if err != nil {
+		// Models routinely end a turn with a narration sentence around the
+		// JSON object and no fences. When the output is prose-wrapped (no
+		// leading object, no fences anywhere), recover the last balanced JSON
+		// object before failing; fence-based and schema-violation failures
+		// keep their existing authoritative handling.
+		trimmedText := strings.TrimSpace(text)
+		if !strings.HasPrefix(trimmedText, "{") && !strings.Contains(text, "```") {
+			if candidate, found := extractLastJSONObject(text); found {
+				if retried, retryErr := parseStructuredTextOutput(string(candidate), schema); retryErr == nil {
+					return &Result{Output: retried, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+				}
+			}
+			return nil, fmt.Errorf("%s output parse: ended its turn with prose instead of the required JSON object (output snippet: %q)", agentName, outputSnippet(text))
+		}
 		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+}
+
+// extractLastJSONObject scans text backwards for the last balanced top-level
+// JSON object and returns it when it parses. It recovers structured results
+// from outputs where the model wrapped the object in prose without fences.
+func extractLastJSONObject(text string) (json.RawMessage, bool) {
+	openBraces := 0
+	closeBraces := 0
+	endIndex := -1
+	runes := []rune(text)
+
+	for i := len(runes) - 1; i >= 0; i-- {
+		switch runes[i] {
+		case '}':
+			if endIndex == -1 {
+				endIndex = i
+			}
+			closeBraces++
+		case '{':
+			openBraces++
+			if openBraces == closeBraces && endIndex != -1 {
+				snippet := string(runes[i : endIndex+1])
+				var parsed json.RawMessage
+				if err := json.Unmarshal([]byte(snippet), &parsed); err == nil {
+					return parsed, true
+				}
+			}
+		}
+	}
+	return nil, false
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for

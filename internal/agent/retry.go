@@ -144,6 +144,16 @@ var transientNeedles = []struct {
 	{"temporary failure in name resolution", "dns temporary failure"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
+	// A model ending its turn with prose instead of the required JSON object
+	// is a stochastic behavior, not a deterministic defect: the step's real
+	// work is typically already complete, so a cold retry succeeds often
+	// enough to be worth more than a terminal failure.
+	{"ended its turn with prose", "prose final turn"},
+	// agy's strict tool-call validation kills the whole run when the model
+	// emits one malformed call; the step work is usually already complete.
+	{"declaring permissions", "agy permission declaration"},
+	{"invalid tool call", "invalid tool call"},
+	{"freeusagelimit", "free usage limit"},
 }
 
 // classifyTransient reports whether an error message looks like a transient
