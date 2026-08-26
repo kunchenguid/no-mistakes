@@ -545,20 +545,27 @@ func (h *Host) repoSlug() string {
 }
 
 func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
-	represented := make(map[string]struct{}, len(checks))
-	for _, check := range checks {
+	represented := make(map[string][]int, len(checks))
+	for i, check := range checks {
 		if runID := h.actionsRunID(check.Link); runID != "" {
-			represented[runID] = struct{}{}
+			represented[runID] = append(represented[runID], i)
 		}
 	}
 	for _, run := range runs {
 		runID := h.actionsRunID(run.Link)
-		if _, exists := represented[runID]; runID != "" && exists {
+		if indices := represented[runID]; runID != "" && len(indices) > 0 {
+			if !run.StartedAt.IsZero() {
+				for _, i := range indices {
+					if checks[i].StartedAt.IsZero() {
+						checks[i].StartedAt = run.StartedAt
+					}
+				}
+			}
 			continue
 		}
 		checks = append(checks, run)
 		if runID != "" {
-			represented[runID] = struct{}{}
+			represented[runID] = []int{len(checks) - 1}
 		}
 	}
 	return checks

@@ -389,6 +389,41 @@ func TestGetChecksCollapseOrderingDoesNotLetWorkflowRunUnionResurrectSupersededC
 	}
 }
 
+func TestGetChecksKeepsQueuedReplacementOverSupersededFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[
+				{"__typename":"CheckRun","name":"CI","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-26T08:25:50Z","completedAt":"2026-08-26T08:25:56Z","detailsUrl":"https://github.com/test/repo/actions/runs/101/job/201"},
+				{"__typename":"CheckRun","name":"CI","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://github.com/test/repo/actions/runs/102/job/202"}
+			]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":2,"workflow_runs":[
+				{"id":101,"name":"CI","status":"completed","conclusion":"failure","created_at":"2026-08-26T08:25:45Z","updated_at":"2026-08-26T08:25:56Z"},
+				{"id":102,"name":"CI","status":"queued","conclusion":null,"created_at":"2026-08-26T08:39:44Z","updated_at":"2026-08-26T08:39:44Z"}
+			]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("GetChecks() returned %d checks, want one: %+v", len(checks), checks)
+	}
+	if got := checks[0]; got.Name != "CI" || got.Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[0] = %+v, want the queued replacement to supersede the old failure", got)
+	}
+	wantStartedAt := time.Date(2026, 8, 26, 8, 39, 44, 0, time.UTC)
+	if !checks[0].StartedAt.Equal(wantStartedAt) {
+		t.Fatalf("checks[0].StartedAt = %v, want workflow creation time %v", checks[0].StartedAt, wantStartedAt)
+	}
+}
+
 func TestGetChecksUsesWorkflowRunStartTimeWhenCollapsingSameNameChecks(t *testing.T) {
 	t.Parallel()
 
