@@ -18,8 +18,8 @@ code review, evidence-oriented test validation, test or lint detection when you
 have not configured explicit commands, auto-fixing, and setup-wizard suggestions
 when you leave prompts blank.
 
-Pipeline agent prompts also include a workspace-boundary preamble.
-It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
+Pipeline agent prompts also include a workspace-boundary preamble and an execution-context section with the exact worktree directory and path contract.
+It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, use that exact path prefix when tools require absolute paths without guessing or re-resolving paths, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
 The only intentional out-of-worktree write it allows is test evidence under the run's managed evidence directory when a testing prompt asks for it.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
@@ -233,7 +233,7 @@ After no-mistakes starts one, it terminates any remaining child processes when t
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 
-Transient API and network failures are retried up to three times with exponential backoff. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
+Transient API and network failures, stochastic prose turn endings, and transient tool-call or permission validation errors are retried up to three times with exponential backoff. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
 
 ## Intent extraction
 
