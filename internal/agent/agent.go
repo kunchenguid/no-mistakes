@@ -335,24 +335,28 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	// inline example never shadows a real trailing block, and an unclosed
 	// fence never competes with a closed one. Only when no closed fence
 	// parses do we consult the open candidates.
+	closedParsed := parseCandidates(closed)
+	if len(closedParsed) > 1 {
+		return nil, fmt.Errorf("multiple JSON code fences found in output")
+	}
+	openParsed := parseCandidates(openCands)
+	if len(openParsed) > 1 {
+		return nil, fmt.Errorf("multiple JSON code fences found in output")
+	}
+
 	var fenced json.RawMessage
-	if parsed := parseCandidates(closed); len(parsed) > 1 {
-		return nil, fmt.Errorf("multiple JSON code fences found in output")
-	} else if len(parsed) == 1 {
-		fenced = parsed[0]
-	} else if parsed := parseCandidates(openCands); len(parsed) > 1 {
-		return nil, fmt.Errorf("multiple JSON code fences found in output")
-	} else if len(parsed) == 1 {
-		fenced = parsed[0]
+	if len(closedParsed) == 1 {
+		fenced = closedParsed[0]
+	} else if len(openParsed) == 1 {
+		fenced = openParsed[0]
 	}
 
-	bare, bareErr := lastBareJSONObject(text, validationSchema)
-	if candidateErr == nil && bareErr != nil {
-		candidateErr = bareErr
+	bareParsed, bareErr := bareJSONObjects(text, validationSchema)
+	if len(bareParsed) > 1 {
+		return nil, fmt.Errorf("multiple bare JSON objects found in output")
 	}
-
-	if fenced != nil && bare != nil {
-		if !jsonEqual(fenced, bare) {
+	if fenced != nil && len(bareParsed) == 1 {
+		if !jsonEqual(fenced, bareParsed[0]) {
 			return nil, fmt.Errorf("conflicting JSON candidates found in output")
 		}
 		return fenced, nil
@@ -360,8 +364,11 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 	if fenced != nil {
 		return fenced, nil
 	}
-	if bare != nil {
-		return bare, nil
+	if len(bareParsed) == 1 {
+		return bareParsed[0], nil
+	}
+	if candidateErr == nil && bareErr != nil {
+		candidateErr = bareErr
 	}
 
 	if candidateErr != nil {
@@ -530,13 +537,15 @@ func indexJSONFenceClose(text string) (int, int) {
 	return -1, -1
 }
 
-// lastBareJSONObject scans text for balanced {...} substrings that parse
-// as JSON and returns the last concluding one found. This handles models that emit
-// reasoning prose followed by a raw JSON answer, with no code fence. An incidental
-// object embedded in prose followed by substantive discussion is rejected.
-func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, error) {
-	var last json.RawMessage
-	var lastEnd int
+// bareJSONObjects scans text for balanced {...} substrings outside code fences
+// that parse as JSON and validate against the schema. Only concluding objects
+// are candidates; an incidental object followed by substantive prose is not a
+// verdict.
+func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
+	var valid []struct {
+		obj      json.RawMessage
+		endIndex int
+	}
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
@@ -562,19 +571,25 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 		candidate := text[i:end]
 		obj, err := parseStructuredCandidate([]byte(candidate), schema)
 		if err == nil {
-			last = obj
-			lastEnd = end
+			valid = append(valid, struct {
+				obj      json.RawMessage
+				endIndex int
+			}{obj: obj, endIndex: end})
 			lastErr = nil
 		} else if lastErr == nil {
 			lastErr = err
 		}
 		i = end - 1
 	}
-	if last != nil {
-		trailing := strings.TrimSpace(text[lastEnd:])
+	var concluding []json.RawMessage
+	for _, candidate := range valid {
+		trailing := strings.TrimSpace(text[candidate.endIndex:])
 		if trailing == "" || (len(trailing) < 80 && !strings.Contains(trailing, "\n")) {
-			return last, nil
+			concluding = append(concluding, candidate.obj)
 		}
+	}
+	if len(concluding) > 0 {
+		return concluding, nil
 	}
 	return nil, lastErr
 }
