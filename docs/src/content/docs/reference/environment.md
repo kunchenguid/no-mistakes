@@ -251,6 +251,7 @@ It never sends a SHA, run ID, path, branch name, URL, remote name, or command ar
 
 Everything sent remotely is low-cardinality: command names, statuses, durations, counts, flag booleans, agent and step names, and - on the single terminal `run finished` event - the bounded performance rollup `agent_invocations`, `resumed_invocations`, and `fallback_invocations` (small counts only).
 Run IDs, repository paths, branch names, session identities, prompts, model outputs, diffs, and per-invocation performance records are never sent.
+A step name is one of the fixed pipeline steps, except for a repository-declared [gate](/no-mistakes/reference/repo-config/#gates), whose bounded declared name reaches step, approval, and fix events as written in the repository's trusted `.no-mistakes.yaml`; the `axi logs` command event records it as the fixed token `gate` instead.
 
 Detailed performance evidence stays on the machine in the local state database (`<NM_HOME>/state.sqlite`): one `agent_invocations` row per agent invocation, plus each run's accumulated parked-at-gate time.
 Each row records run and step identity, purpose (such as review/review-fix/housekeeping), the reported model and its provider, the cold/started/resumed/fallback session mode, a truncated session-identity hash, timestamps, duration, exit status, and failure category, alongside the session-fidelity metrics below.

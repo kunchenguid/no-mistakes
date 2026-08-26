@@ -160,12 +160,12 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, fmt.Errorf("worktree does not belong to its gate repository")
 	}
 
-	execSteps := m.steps()
-	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
-		return nil, err
-	}
 	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
 	if err != nil {
+		return nil, err
+	}
+	execSteps := steps.WithCustomGates(m.steps(), cfg.Gates)
+	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
 		return nil, err
 	}
 	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
@@ -243,6 +243,17 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	// Gates are read back from the run, never re-resolved. Everything else here
+	// is deliberately re-read from the live default branch, but a gate decides
+	// which steps the run HAS: the default branch may have gained or lost one
+	// since this run parked, and rebuilding the sequence from the current list
+	// would leave recovery matching the run's recorded steps against a sequence
+	// it never executed - failing a healthy parked run as a crash.
+	gates, err := m.pinnedRunGates(run.ID)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Gates = gates
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		return nil, err
 	}
@@ -253,6 +264,23 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		}
 	}
 	return cfg, nil
+}
+
+// pinnedRunGates reads back the gate list a run resolved at creation. An absent
+// pin means the bare core pipeline - the only sequence a run created before
+// gates were pinned can have had - while an unusable one fails its caller
+// closed with a reason, because silently dropping it would resume the run
+// against a shorter pipeline than the one it recorded.
+func (m *RunManager) pinnedRunGates(runID string) ([]config.Gate, error) {
+	payload, err := m.db.GetRunGates(runID)
+	if err != nil {
+		return nil, fmt.Errorf("read pinned gates: %w", err)
+	}
+	gates, err := config.ParseGates(payload)
+	if err != nil {
+		return nil, fmt.Errorf("pinned gates are unusable: %w", err)
+	}
+	return gates, nil
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
@@ -1094,7 +1122,25 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}
 
-	execSteps := m.steps()
+	// Configuration decides this run's gates exactly once, here, and the
+	// resolved list is recorded before the executor can write a single step
+	// row. Every later consumer - above all crash recovery - reads that record
+	// back through pinnedRunGates, so a gate merged onto (or removed from) the
+	// default branch from here on is inert for this run instead of retargeting
+	// its resume at a step sequence it never executed.
+	pinnedGates, err := config.MarshalGates(cfg.Gates)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record gates: %s", err))
+		trackStartFailure("record_gates")
+		return "", fmt.Errorf("record gates: %w", err)
+	}
+	if err := m.db.SetRunGates(run.ID, pinnedGates); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record gates: %s", err))
+		trackStartFailure("record_gates")
+		return "", fmt.Errorf("record gates: %w", err)
+	}
+
+	execSteps := steps.WithCustomGates(m.steps(), cfg.Gates)
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,

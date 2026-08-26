@@ -907,6 +907,35 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 	return " AND id NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
+// GetRunGates returns the gate list pinned to a run at creation, or the empty
+// string for a run that pinned none. The payload is opaque here: config owns
+// its shape (config.MarshalGates/ParseGates), and the database only guarantees
+// that what was written survives a restart.
+func (d *DB) GetRunGates(id string) (string, error) {
+	var gates sql.NullString
+	err := d.sql.QueryRow(`SELECT gates_json FROM runs WHERE id = ?`, id).Scan(&gates)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get run gates: %w", err)
+	}
+	return gates.String, nil
+}
+
+// SetRunGates records the repository-declared gates this run executes. The
+// caller writes it once, at run creation, before the executor can record a
+// single step, so the run's step sequence is fixed from the moment anything can
+// observe it and stays fixed even if the trusted default branch's gates change
+// while the run is in flight.
+func (d *DB) SetRunGates(id, gates string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET gates_json = ?, updated_at = ? WHERE id = ?`, gates, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run gates: %w", err)
+	}
+	return nil
+}
+
 // GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or
 // the empty string when the run has never spent one. The payload is opaque
 // here: the CI step owns its shape, and the database only guarantees that what

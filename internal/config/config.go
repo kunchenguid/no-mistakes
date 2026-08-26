@@ -234,6 +234,17 @@ type RepoConfig struct {
 	// pushed branch must not be able to inject or weaken the guidance that
 	// reviews it.
 	Review ReviewRaw `yaml:"review"`
+	// Gates are repository-declared extra checks that run immediately after
+	// their anchor core step. They are additive only: a gate cannot skip,
+	// reorder, or replace a core step, and a failing gate fails the run.
+	// A gate either executes shell on the daemon host or injects instructions
+	// into a gate agent, so it is honored ONLY from the trusted default-branch
+	// copy of .no-mistakes.yaml (see EffectiveRepoConfig), regardless of
+	// allow_repo_commands: unlike commands.{test,lint,format}, which a
+	// maintainer can opt into reading from a pushed branch because they only
+	// re-run that branch's own suite, a gate defines what validating the branch
+	// MEANS, and a contributor must not author the check that clears them.
+	Gates []Gate `yaml:"gates"`
 	// DisableProjectSettings opts the repository out of loading project-level
 	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
 	// per-harness project settings) into gate agents. It exists for
@@ -406,6 +417,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
+		Gates                  []Gate      `yaml:"gates"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 		NoCI                   bool        `yaml:"no_ci"`
 	}
@@ -426,6 +438,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
+	c.Gates = raw.Gates
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	c.NoCI = raw.NoCI
 	return nil
@@ -500,16 +513,20 @@ type Config struct {
 	SessionReuse          bool
 	Eval                  Eval
 	Commands              Commands
-	IgnorePatterns        []string
-	AutoFix               AutoFix
-	CI                    CI
-	Commit                Commit
-	Intent                Intent
-	Test                  Test
-	Document              Document
-	Review                Review
-	PR                    PR
-	ForgeProfiles         ForgeProfiles
+	// Gates are the repository's extra checks, already trusted-only by the
+	// time they reach here (EffectiveRepoConfig sourced them from the trusted
+	// default-branch copy).
+	Gates          []Gate
+	IgnorePatterns []string
+	AutoFix        AutoFix
+	CI             CI
+	Commit         Commit
+	Intent         Intent
+	Test           Test
+	Document       Document
+	Review         Review
+	PR             PR
+	ForgeProfiles  ForgeProfiles
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -1977,6 +1994,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateGates(cfg.Gates); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
 	if err := validatePRRaw(cfg.PR); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
@@ -2073,7 +2093,9 @@ func validatePathInstructionGlob(pattern string) error {
 // trusted-only for the same reason: a pushed branch must not weaken the
 // documentation rules that gate itself. Review (the path-scoped guidance
 // injected into the review gate prompt) is trusted-only for the same reason: a
-// pushed branch must not steer the reviewer that gates it. DisableProjectSettings
+// pushed branch must not steer the reviewer that gates it. Gates (extra
+// repository-declared checks, which run shell or steer a gate agent) are
+// trusted-only for the same reason. DisableProjectSettings
 // is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
@@ -2111,6 +2133,13 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// must not silently drop the maintainer's review rules when the pushed
 		// branch happens to carry no review block.
 		effective.Review = trusted.Review
+		// gates define what validating the pushed branch means - they execute
+		// shell on the daemon host or steer a gate agent - so they are
+		// trusted-only for exactly the reason review.path_instructions is, and
+		// likewise regardless of allow_repo_commands: that opt-in covers a
+		// branch re-running its own suite, never a branch authoring the extra
+		// check that clears it.
+		effective.Gates = copyGates(trusted.Gates)
 		// disable_project_settings is a security boundary: honor it ONLY from the
 		// trusted default-branch copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
@@ -2142,6 +2171,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
+		effective.Gates = nil
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
 		effective.CI = CIRaw{}
@@ -2500,6 +2530,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,
 		Commands:       repo.Commands,
+		Gates:          copyGates(repo.Gates),
 		IgnorePatterns: repo.IgnorePatterns,
 		AutoFix:        af,
 		CI:             ci,

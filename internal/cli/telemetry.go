@@ -76,6 +76,12 @@ func sanitizeAxiTelemetryStep(step string) string {
 	if validStep(types.StepName(step)) {
 		return step
 	}
+	// A repository gate's step name carries the repository's own wording, so it
+	// collapses to a bounded token rather than travelling to remote telemetry
+	// verbatim. It is still a real step, so it must not read as "invalid".
+	if types.StepName(step).IsCustomGate() {
+		return "gate"
+	}
 	return "invalid"
 }
 

@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -122,6 +123,26 @@ var reviewFindingsSchema = json.RawMessage(`{
 	},
 	"required": ["findings", "risk_level", "risk_rationale", "risk_scope"]
 }`)
+
+// WithCustomGates returns the run's step sequence: the given core pipeline
+// with each repository-declared gate inserted immediately after its anchor core
+// step. The core sequence is never reordered and never loses a member, so the
+// gates a repository adds can only lengthen what a pass means.
+func WithCustomGates(core []pipeline.Step, gates []config.Gate) []pipeline.Step {
+	if len(gates) == 0 || IsDemoMode() {
+		return core
+	}
+	anchored := make(map[types.StepName][]pipeline.Step, len(gates))
+	for _, gate := range gates {
+		anchored[gate.After] = append(anchored[gate.After], &CustomGateStep{Gate: gate})
+	}
+	sequence := make([]pipeline.Step, 0, len(core)+len(gates))
+	for _, step := range core {
+		sequence = append(sequence, step)
+		sequence = append(sequence, anchored[step.Name()]...)
+	}
+	return sequence
+}
 
 // AllSteps returns the fixed pipeline step sequence.
 // When NM_DEMO=1, it returns mock steps for demo recordings.

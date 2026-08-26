@@ -416,3 +416,95 @@ func TestUpdateStepStatus(t *testing.T) {
 		t.Errorf("status = %q, want %q", got.Status, types.StepStatusAwaitingApproval)
 	}
 }
+
+// A custom gate shares its anchor's step_order, so a run holds duplicate sort
+// keys for the first time. Executor.recoveredGate matches these rows to the
+// executor's step list POSITIONALLY, and SQLite does not define the order of
+// rows with equal keys, so without a tie-break every parked run in a
+// gates-configured repository could become unrecoverable. Step ids are
+// monotonic ULIDs, so id order is insertion - that is, execution - order.
+func TestGetStepsByRun_OrdersEqualStepOrderRowsDeterministically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo", "git@github.com:test/repo.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	gate := types.CustomGateStepName(types.StepReview, "arch-fitness")
+	if gate.Order() != types.StepReview.Order() {
+		t.Fatalf("gate order = %d, want the anchor's %d", gate.Order(), types.StepReview.Order())
+	}
+	// Insert the gate row FIRST, with the LATER id. Physical (rowid) order and
+	// id order therefore disagree, so a query relying on SQLite's undefined tie
+	// order returns the gate ahead of the anchor it actually ran after.
+	for _, row := range []struct {
+		id   string
+		name types.StepName
+	}{
+		{"01000000000000000000000002", gate},
+		{"01000000000000000000000001", types.StepReview},
+	} {
+		if _, err := d.sql.Exec(
+			`INSERT INTO step_results (id, run_id, step_name, step_order, status) VALUES (?, ?, ?, ?, ?)`,
+			row.id, run.ID, row.name, row.name.Order(), types.StepStatusPending,
+		); err != nil {
+			t.Fatalf("insert step result %s: %v", row.name, err)
+		}
+	}
+
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps by run: %v", err)
+	}
+	got := make([]types.StepName, 0, len(steps))
+	for _, s := range steps {
+		got = append(got, s.StepName)
+	}
+	want := []types.StepName{types.StepReview, gate}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("step order = %v, want %v", got, want)
+	}
+}
+
+// The production insertion path must produce the same answer: a gate comes
+// back immediately after the anchor it runs after.
+func TestGetStepsByRun_PlacesAGateAfterItsAnchor(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo", "git@github.com:test/repo.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	sequence := []types.StepName{
+		types.StepReview,
+		types.CustomGateStepName(types.StepReview, "arch-fitness"),
+		types.CustomGateStepName(types.StepReview, "budget"),
+		types.StepTest,
+	}
+	for _, name := range sequence {
+		if _, err := d.InsertStepResult(run.ID, name); err != nil {
+			t.Fatalf("insert step result %s: %v", name, err)
+		}
+	}
+
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps by run: %v", err)
+	}
+	if len(steps) != len(sequence) {
+		t.Fatalf("step count = %d, want %d", len(steps), len(sequence))
+	}
+	for i, want := range sequence {
+		if steps[i].StepName != want {
+			t.Fatalf("step %d = %q, want %q", i, steps[i].StepName, want)
+		}
+	}
+}

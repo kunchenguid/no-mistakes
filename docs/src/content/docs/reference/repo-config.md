@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -309,6 +309,71 @@ These checks run on whichever copy of the file is parsed, including the pushed b
 #### Trust
 
 Like `document.instructions`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands): a value present only on a pushed branch is ignored, so a contributor cannot inject instructions into the review that gates them.
+
+### gates
+
+Extra repository-declared checks that run inside the pipeline, in addition to the core steps.
+
+| | |
+|---|---|
+| Type | `object[]` with `name` (`string`), `after` (`string`), and exactly one of `command` (`string`) or `instructions` (`string`, multiline) |
+| Default | Empty (core pipeline only) |
+
+Use this for a validation pass that does not fit an existing step - a mutation-testing budget, a complexity ceiling, an architectural fitness function - so it runs before the branch is pushed rather than only in remote CI:
+
+```yaml
+gates:
+  - name: mutation-budget
+    after: test
+    command: "make mutation"
+  - name: arch-fitness
+    after: lint
+    instructions: |
+      No package under internal/ may import internal/cli.
+```
+
+A gate with `command` runs that command in the run worktree and passes on exit code 0.
+A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings. On that judging turn the agent is instructed to report only and to leave the worktree alone, which is a prompt contract like the rest of the pipeline's agent steering rather than an enforced sandbox. Only an explicitly authorized `fix` answer lets a gate of either kind change the worktree, and what it repairs is committed to the branch - see [Failure](#failure) below.
+
+#### Placement
+
+`after` names the core step the gate runs immediately after. Valid anchors are `rebase`, `review`, `test`, `document`, and `lint`.
+
+The delivery tail (`push`, `pr`, `ci`) cannot be anchored: a gate that ran after push would be validating a branch the world can already see. `intent` cannot be anchored either, because it establishes the acceptance criteria the later gates check against.
+
+Gates are inserted into the run's step sequence and never replace, reorder, or remove a core step. Two gates sharing an anchor run in the order they appear in the file. A gate shares its anchor's step order, so a restart that resets from the anchor resets the gate with it.
+
+A run resolves this list once, when it starts, and keeps it for its whole lifetime, including across a daemon restart. Adding or removing a gate on the default branch therefore applies to later runs, and never retargets a run that is already in flight or parked at a gate.
+
+#### Failure
+
+A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
+
+Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and its own requirement - the command that must exit `0`, or the rule an agent gate states - and re-runs its check, so the next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
+
+Each gate keeps its own step log under the step name `gate.<anchor>.<name>`, so a gate declared as `name: mutation-budget` with `after: test` is read with `no-mistakes axi logs --step gate.test.mutation-budget`.
+
+Because a gate can only add a verdict, a repository that configures gates makes a pass mean *more* than the core pipeline, never less. There is no way to switch a core step off here; to skip one for a single run, use the per-run [`--skip`](/no-mistakes/reference/cli/) instead.
+
+A gate also cannot be pre-skipped: neither `--skip` nor the `no-mistakes.skip=` push option accepts a gate step name, so a pushed branch cannot switch off the maintainer's extra check before its own run starts. Answering a parked gate with `skip` stays available, like any other gate, as a decision made at the park.
+
+#### Limits and validation
+
+`name` must be lowercase letters, digits, and inner hyphens, at most 40 characters, unique within the file, and not a core step name.
+
+At most 16 gates are allowed, and an `instructions` value may not exceed 16,384 bytes, because it shares the agent prompt's budget and an oversized prompt fails the invocation outright. Merge-conflict markers are removed from `instructions` exactly as for [`review.path_instructions`](#reviewpath_instructions), and a value left empty once they are removed is rejected.
+
+A malformed entry fails when the config is parsed, so the run aborts before any gate starts. These checks run on whichever copy of the file is parsed, including the pushed branch's, so a broken gate surfaces before it merges and becomes the trusted copy.
+
+#### Trust
+
+A gate either executes shell on the daemon host or steers a gate agent, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands).
+
+That opt-in deliberately does not extend here. It covers a pushed branch re-running its own suite through `commands.*`; a gate instead defines what validating the branch *means*, so a contributor must not be able to declare, retarget, or delete the check that clears them.
+
+What that boundary protects is the gate's *declaration*, not the repository files a `command` gate goes on to invoke. The command runs in the run worktree, which is checked out at the pushed head, so a contributor who can edit the script or make target it calls can still change what it actually checks - the same property `commands.test` and `commands.lint` have. An `instructions` gate is harder to weaken, because its rule comes from the trusted copy and the agent judges the change against it - but that agent runs in the same worktree, so with [`disable_project_settings`](#disable_project_settings) left at its default the branch's own `AGENTS.md`, `CLAUDE.md`, or harness project settings reach it alongside the trusted rule and can still steer the verdict.
+
+So when a contributor must not be able to weaken a gate, state it as `instructions` *and* set `disable_project_settings: true` on the trusted copy, or point `command` at logic that does not live in the repository.
 
 ### Command process lifetime
 

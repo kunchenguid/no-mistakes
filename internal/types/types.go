@@ -97,7 +97,12 @@ func (s StepName) Value() (driver.Value, error) {
 }
 
 // StepOrder returns the fixed execution order for a step (1-indexed).
+// A custom gate shares its anchor's order: it runs immediately after that core
+// step, and a restart that resets from the anchor must reset the gate with it.
 func (s StepName) Order() int {
+	if anchor, ok := s.CustomGateAnchor(); ok {
+		return anchor.Order()
+	}
 	switch s {
 	case StepIntent:
 		return 1
@@ -125,6 +130,108 @@ func (s StepName) Order() int {
 // AllSteps returns all pipeline steps in execution order.
 func AllSteps() []StepName {
 	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
+}
+
+// CustomGateStepPrefix marks a step name as a repository-declared extra gate
+// rather than one of the fixed core steps, and CustomGateStepSeparator joins
+// the encoded anchor to the gate's label.
+//
+// The separator is '.' rather than ':' because a step name is used verbatim as
+// a filename: the executor derives each step's log path from it, and Win32
+// parses '<name>:<stream>:<type>' as an NTFS alternate data stream, so a
+// colon-bearing name fails to open on Windows and takes the whole run down
+// with it. '.' is a legal filename character on every supported platform, and
+// neither a core step name nor a well-formed gate label can contain one, so
+// the encoding stays reversible.
+const (
+	CustomGateStepPrefix    = "gate."
+	CustomGateStepSeparator = "."
+)
+
+// MaxCustomGateLabelLen bounds a gate label so the derived step name stays a
+// short, valid filename and a compact entry in the step tables, the PR body,
+// and the attestation payload.
+const MaxCustomGateLabelLen = 40
+
+// ValidCustomGateLabel reports whether label is a well-formed gate label:
+// non-empty, at most MaxCustomGateLabelLen bytes, and lowercase letters,
+// digits, and inner hyphens only.
+//
+// This is the single owner of that syntax, because it is what makes a gate
+// step name safe to join onto a path. Both the config that mints gate names
+// and CustomGateAnchor, which decides whether an arbitrary string IS a gate
+// step, answer from here, so a name that reports true for IsCustomGate can
+// never carry a separator or a traversal segment into a log path.
+func ValidCustomGateLabel(label string) bool {
+	if label == "" || len(label) > MaxCustomGateLabelLen {
+		return false
+	}
+	for i, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '-' && i > 0 && i < len(label)-1:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// CustomGateStepName encodes a gate's anchor into its step name so Order can
+// place the gate without consulting the configuration that declared it.
+func CustomGateStepName(anchor StepName, name string) StepName {
+	return StepName(CustomGateStepPrefix + string(anchor) + CustomGateStepSeparator + name)
+}
+
+// decodeCustomGate reverses CustomGateStepName and is the single owner of that
+// decoding: IsCustomGate, CustomGateAnchor, and CustomGateLabel all answer from
+// here, so the separator handling lives in one place and the three can never
+// disagree about whether a name is a gate. It reports false for a core step,
+// and for any name whose encoded anchor is not itself a core step or whose
+// label is not well-formed, so a malformed name can never be ordered, or turned
+// into a log path, as if it were valid.
+func decodeCustomGate(s StepName) (StepName, string, bool) {
+	rest, ok := strings.CutPrefix(string(s), CustomGateStepPrefix)
+	if !ok {
+		return "", "", false
+	}
+	anchor, label, ok := strings.Cut(rest, CustomGateStepSeparator)
+	if !ok || !ValidCustomGateLabel(label) {
+		return "", "", false
+	}
+	if !IsCoreStepName(StepName(anchor)) {
+		return "", "", false
+	}
+	return StepName(anchor), label, true
+}
+
+// IsCustomGate reports whether the step is a repository-declared extra gate.
+func (s StepName) IsCustomGate() bool {
+	_, _, ok := decodeCustomGate(s)
+	return ok
+}
+
+// CustomGateAnchor returns the core step a custom gate runs after.
+func (s StepName) CustomGateAnchor() (StepName, bool) {
+	anchor, _, ok := decodeCustomGate(s)
+	return anchor, ok
+}
+
+// CustomGateLabel returns the repository-declared name of a custom gate, or
+// empty for a core step or a malformed gate name.
+func (s StepName) CustomGateLabel() string {
+	_, label, _ := decodeCustomGate(s)
+	return label
+}
+
+// IsCoreStepName reports whether the name is one of the fixed core steps.
+func IsCoreStepName(s StepName) bool {
+	for _, step := range AllSteps() {
+		if step == s {
+			return true
+		}
+	}
+	return false
 }
 
 // StepStatus represents the lifecycle state of a pipeline step.

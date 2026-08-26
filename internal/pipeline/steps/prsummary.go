@@ -154,12 +154,21 @@ func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
 			Status: sr.Status,
 		})
 	}
+	// A custom gate shares its anchor's order, so the tie-break decides where
+	// the published record places it. A gate runs immediately AFTER its anchor,
+	// and a lexicographic tie-break would put it before ("gate.review.x" sorts
+	// ahead of "review"), so coreness decides first. Peers - two gates on the
+	// same anchor - keep the recorded order, which GetStepsByRun makes
+	// deterministic and equal to declaration, hence execution, order.
 	sort.SliceStable(attestation.Steps, func(i, j int) bool {
 		left, right := attestation.Steps[i].Step, attestation.Steps[j].Step
 		if left.Order() != right.Order() {
 			return left.Order() < right.Order()
 		}
-		return left < right
+		if left.IsCustomGate() != right.IsCustomGate() {
+			return !left.IsCustomGate()
+		}
+		return false
 	})
 	payload, err := json.Marshal(attestation)
 	if err != nil {

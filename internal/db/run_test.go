@@ -1,6 +1,7 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -1030,5 +1031,62 @@ func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
 	got, _ = d.GetRun(run.ID)
 	if got.CustodyReturnedAt == nil || *got.CustodyReturnedAt != first {
 		t.Fatalf("custody stamp changed: %#v, want %d", got.CustodyReturnedAt, first)
+	}
+}
+
+// TestRunGatesArePinnedAndDefaultToNone covers the durable half of a run's
+// pinned gate list: an untouched run reports no pin (the bare core pipeline,
+// which is the only sequence a row written before this column existed can have
+// had), and a recorded pin survives a reopen of the database.
+func TestRunGatesArePinnedAndDefaultToNone(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "gates.sqlite")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	pinned, err := d.GetRunGates(run.ID)
+	if err != nil {
+		t.Fatalf("get run gates: %v", err)
+	}
+	if pinned != "" {
+		t.Errorf("gates on a fresh run = %q, want no pin", pinned)
+	}
+
+	payload := `[{"name":"arch-fitness","after":"review","command":"make arch"}]`
+	if err := d.SetRunGates(run.ID, payload); err != nil {
+		t.Fatalf("set run gates: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	pinned, err = reopened.GetRunGates(run.ID)
+	if err != nil {
+		t.Fatalf("get run gates after restart: %v", err)
+	}
+	if pinned != payload {
+		t.Errorf("gates after restart = %q, want %q", pinned, payload)
+	}
+}
+
+func TestGetRunGatesForUnknownRun(t *testing.T) {
+	d := openTestDB(t)
+	pinned, err := d.GetRunGates("no-such-run")
+	if err != nil {
+		t.Fatalf("get run gates: %v", err)
+	}
+	if pinned != "" {
+		t.Errorf("gates for unknown run = %q, want empty", pinned)
 	}
 }

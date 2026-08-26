@@ -73,9 +73,17 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 }
 
 // GetStepsByRun returns all step results for a run, in execution order.
+//
+// The `id` tie-break is load-bearing: a custom gate shares its anchor's
+// step_order, so a run can hold duplicate sort keys, and SQLite does not define
+// the order of rows with equal keys. Executor.recoveredGate matches these rows
+// to the executor's step list POSITIONALLY, so an unspecified tie order would
+// make every parked run in a gates-configured repository unrecoverable. Step
+// ids are monotonic ULIDs, so ordering by id reproduces insertion - that is,
+// execution - order deterministically.
 func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE run_id = ? ORDER BY step_order`, runID,
+		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE run_id = ? ORDER BY step_order, id`, runID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get steps by run: %w", err)

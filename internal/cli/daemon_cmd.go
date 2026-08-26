@@ -241,6 +241,15 @@ func validStep(step types.StepName) bool {
 	return false
 }
 
+// validReadableStep accepts everything a run can have recorded a step log for,
+// which includes the repository's own gates. Read-only surfaces use this;
+// validStep stays the stricter answer for anything that CHANGES what a run
+// does. In particular `no-mistakes.skip=` must never accept a gate name, or a
+// pushed branch could switch off the maintainer's extra check by push option.
+func validReadableStep(step types.StepName) bool {
+	return validStep(step) || step.IsCustomGate()
+}
+
 func dedupeSteps(steps []types.StepName) []types.StepName {
 	seen := make(map[types.StepName]bool, len(steps))
 	out := make([]types.StepName, 0, len(steps))
