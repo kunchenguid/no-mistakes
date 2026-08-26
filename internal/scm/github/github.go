@@ -644,13 +644,15 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	type workflowRun struct {
-		ID          int64  `json:"id"`
-		Name        string `json:"name"`
-		DisplayName string `json:"display_title"`
-		Status      string `json:"status"`
-		Conclusion  string `json:"conclusion"`
-		UpdatedAt   string `json:"updated_at"`
-		HTMLURL     string `json:"html_url"`
+		ID           int64  `json:"id"`
+		Name         string `json:"name"`
+		DisplayName  string `json:"display_title"`
+		Status       string `json:"status"`
+		Conclusion   string `json:"conclusion"`
+		RunStartedAt string `json:"run_started_at"`
+		CreatedAt    string `json:"created_at"`
+		UpdatedAt    string `json:"updated_at"`
+		HTMLURL      string `json:"html_url"`
 	}
 	var pages []struct {
 		TotalCount   *int          `json:"total_count"`
@@ -697,6 +699,13 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		if name == "" {
 			name = "GitHub Actions workflow"
 		}
+		var startedAt time.Time
+		for _, timestamp := range []string{run.RunStartedAt, run.CreatedAt} {
+			if parsed, parseErr := time.Parse(time.RFC3339, timestamp); parseErr == nil {
+				startedAt = parsed
+				break
+			}
+		}
 		var completedAt time.Time
 		if run.UpdatedAt != "" {
 			if parsed, parseErr := time.Parse(time.RFC3339, run.UpdatedAt); parseErr == nil {
@@ -725,7 +734,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			}
 			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
 		}
-		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, Link: link})
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, StartedAt: startedAt, Link: link})
 	}
 	return checks, nil
 }
