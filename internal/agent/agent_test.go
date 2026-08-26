@@ -1005,6 +1005,48 @@ func TestFinalizeTextResult_IdenticalNumericSpellingSucceeds(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_EquivalentLargeExponentVerdictsSucceed(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"confidence":1e1000001}`,
+		"```",
+		`{"confidence":10e1000000}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"confidence":{"type":"number"}},
+		"required":["confidence"]
+	}`)
+	result, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("expected equivalent large-exponent verdicts to succeed, got %v", err)
+	}
+	if string(result.Output) != `{"confidence":1e1000001}` {
+		t.Fatalf("unexpected output: %s", string(result.Output))
+	}
+}
+
+func TestFinalizeTextResult_DistinctLargeExponentVerdictsConflict(t *testing.T) {
+	text := strings.Join([]string{
+		"```json",
+		`{"confidence":1e1000001}`,
+		"```",
+		`{"confidence":2e1000001}`,
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"confidence":{"type":"number"}},
+		"required":["confidence"]
+	}`)
+	_, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected distinct large-exponent verdicts to conflict")
+	}
+	if !strings.Contains(err.Error(), "conflicting JSON candidates") {
+		t.Fatalf("expected conflicting JSON candidates error, got %v", err)
+	}
+}
+
 func TestFinalizeTextResult_ProseWithNonJSONFenceReturnsEndedWithProseError(t *testing.T) {
 	text := "I ran tests and they passed:\n```bash\ngo test ./...\n```\nAll done."
 	_, err := finalizeTextResult("antigravity", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})

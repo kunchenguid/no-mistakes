@@ -620,15 +620,7 @@ func jsonValuesEqual(a, b any) bool {
 		if !ok {
 			return false
 		}
-		numberA, ok := new(big.Rat).SetString(valueA.String())
-		if !ok {
-			return false
-		}
-		numberB, ok := new(big.Rat).SetString(valueB.String())
-		if !ok {
-			return false
-		}
-		return numberA.Cmp(numberB) == 0
+		return jsonNumbersEqual(valueA, valueB)
 	case map[string]any:
 		valueB, ok := b.(map[string]any)
 		if !ok || len(valueA) != len(valueB) {
@@ -655,6 +647,98 @@ func jsonValuesEqual(a, b any) bool {
 	default:
 		return reflect.DeepEqual(a, b)
 	}
+}
+
+type jsonDecimal struct {
+	negative bool
+	digits   string
+	power    *big.Int
+}
+
+func jsonNumbersEqual(a, b json.Number) bool {
+	decimalA, ok := parseJSONDecimal(a)
+	if !ok {
+		return false
+	}
+	decimalB, ok := parseJSONDecimal(b)
+	if !ok {
+		return false
+	}
+	if decimalA.digits == "" || decimalB.digits == "" {
+		return decimalA.digits == decimalB.digits
+	}
+	if decimalA.negative != decimalB.negative {
+		return false
+	}
+
+	orderA := decimalOrder(decimalA)
+	orderB := decimalOrder(decimalB)
+	if orderA.Cmp(orderB) != 0 {
+		return false
+	}
+
+	maxDigits := len(decimalA.digits)
+	if len(decimalB.digits) > maxDigits {
+		maxDigits = len(decimalB.digits)
+	}
+	for i := 0; i < maxDigits; i++ {
+		digitA, digitB := byte('0'), byte('0')
+		if i < len(decimalA.digits) {
+			digitA = decimalA.digits[i]
+		}
+		if i < len(decimalB.digits) {
+			digitB = decimalB.digits[i]
+		}
+		if digitA != digitB {
+			return false
+		}
+	}
+	return true
+}
+
+func parseJSONDecimal(number json.Number) (jsonDecimal, bool) {
+	raw := number.String()
+	negative := strings.HasPrefix(raw, "-")
+	if negative {
+		raw = raw[1:]
+	}
+
+	exponent := new(big.Int)
+	mantissa := raw
+	if exponentIndex := strings.IndexAny(raw, "eE"); exponentIndex >= 0 {
+		mantissa = raw[:exponentIndex]
+		exponentText := raw[exponentIndex+1:]
+		if strings.HasPrefix(exponentText, "+") {
+			exponentText = exponentText[1:]
+		}
+		if exponentText == "" {
+			return jsonDecimal{}, false
+		}
+		if _, ok := exponent.SetString(exponentText, 10); !ok {
+			return jsonDecimal{}, false
+		}
+	}
+
+	fractionalPart := ""
+	if dotIndex := strings.IndexByte(mantissa, '.'); dotIndex >= 0 {
+		fractionalPart = mantissa[dotIndex+1:]
+		mantissa = mantissa[:dotIndex] + fractionalPart
+	}
+
+	digits := strings.TrimLeft(mantissa, "0")
+	if digits == "" {
+		return jsonDecimal{}, true
+	}
+	trimmedDigits := strings.TrimRight(digits, "0")
+	trailingZeros := len(digits) - len(trimmedDigits)
+	power := new(big.Int).Sub(exponent, big.NewInt(int64(len(fractionalPart))))
+	power.Add(power, big.NewInt(int64(trailingZeros)))
+	return jsonDecimal{negative: negative, digits: trimmedDigits, power: power}, true
+}
+
+func decimalOrder(decimal jsonDecimal) *big.Int {
+	order := new(big.Int).Set(decimal.power)
+	return order.Add(order, big.NewInt(int64(len(decimal.digits))))
 }
 
 // scanBalancedObject returns the exclusive end index of a brace-balanced
