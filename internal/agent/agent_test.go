@@ -393,6 +393,23 @@ func TestFinalizeTextResult_WithSchemaParsesJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaPreservesTypeErrorForValidJSON(t *testing.T) {
+	for _, text := range []string{"[]", "null"} {
+		t.Run(text, func(t *testing.T) {
+			_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+			if strings.Contains(err.Error(), "ended its turn with prose") {
+				t.Fatalf("schema error was masked as prose turn ending: %v", err)
+			}
+			if !strings.Contains(err.Error(), "JSON output must be object") {
+				t.Fatalf("expected object type error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	text := "review complete\n\n```json\n{\"done\":true}\n```"
 	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
