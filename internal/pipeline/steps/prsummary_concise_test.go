@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -142,5 +144,52 @@ func TestBuildTestingSummaryForPR_BitbucketIsLinkOnlyAndBounded(t *testing.T) {
 	}
 	if !strings.Contains(got, "[After]") {
 		t.Fatalf("Bitbucket summary dropped safe visual link:\n%s", got)
+	}
+}
+
+func TestBuildTestingSummaryForPR_EncodesArtifactLabelExactlyOnce(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[],"summary":"","testing_summary":"Evidence collected.","artifacts":[{"kind":"log","label":"timeout <5s","content":"captured probe output"}]}`
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, FindingsJSON: &findings}}}
+
+	got := BuildTestingSummaryForPRWithProvider(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderGitHub)
+	if !strings.Contains(got, "Evidence: timeout &lt;5s") {
+		t.Fatalf("GitHub evidence label did not render as its own text:\n%s", got)
+	}
+	if strings.Contains(got, `\&`) {
+		t.Fatalf("GitHub evidence label was escaped twice, publishing the escape itself:\n%s", got)
+	}
+}
+
+func TestRenderBitbucketConciseArtifact_EncodesLocalReferenceLabelExactlyOnce(t *testing.T) {
+	t.Parallel()
+	opts := testingSummaryOptions{flavor: prBodyMarkdown, repoRoot: "/repo", evidenceRoot: "/evidence"}
+	got := renderBitbucketConciseArtifact(types.TestArtifact{
+		Label: "timeout <5s",
+		Path:  "/evidence/capture.png",
+	}, opts, "timeout <5s")
+	if !strings.Contains(got, `timeout \<5s`) {
+		t.Fatalf("Bitbucket local evidence label did not render as its own text:\n%s", got)
+	}
+	if strings.Contains(got, "&lt;") {
+		t.Fatalf("Bitbucket local evidence label was HTML-escaped on top of its Markdown escape:\n%s", got)
+	}
+}
+
+func TestBuildTestingSummaryForPR_NonGitHubHostLinksArtifactInsteadOfInliningRelativeImage(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	shot := filepath.Join(repoRoot, "artifacts", "shot.png")
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence collected.","artifacts":[{"kind":"screenshot","label":"After","path":%q}]}`, shot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, FindingsJSON: &findings}}}
+
+	got := BuildTestingSummaryForPRWithProvider(steps, rounds, "https://gitlab.com/example/widgets.git", "abc123", repoRoot, "", nil, scm.ProviderGitLab)
+	if strings.Contains(got, "[![") {
+		t.Fatalf("relative repo path was promoted to an inline image that cannot resolve:\n%s", got)
+	}
+	if !strings.Contains(got, "- Evidence: [After](artifacts/shot.png)") {
+		t.Fatalf("non-GitHub host lost the artifact link fallback:\n%s", got)
 	}
 }

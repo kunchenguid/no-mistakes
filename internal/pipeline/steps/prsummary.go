@@ -358,16 +358,16 @@ func renderConciseTestingArtifactUnits(artifacts []types.TestArtifact, opts test
 			}
 			continue
 		}
+		encodedLabel := encodePRText(label, opts.flavor)
 		if source, raw := trustedInlineVisualTargets(artifact, opts); source != "" && raw != "" {
-			alt := markdownAltText(escapeMarkdownInlineText(label))
 			units = append(units, conciseTestingArtifactUnit{
-				text:         fmt.Sprintf("[![%s](%s)](%s)\n", alt, raw, source),
-				linkText:     fmt.Sprintf("- Evidence: [%s](%s)\n", escapeMarkdownInlineText(label), source),
+				text:         fmt.Sprintf("[![%s](%s)](%s)\n", markdownAltText(encodedLabel), raw, source),
+				linkText:     fmt.Sprintf("- Evidence: [%s](%s)\n", encodedLabel, source),
 				inlineVisual: true,
 			})
 			continue
 		}
-		rendered := renderCompactTestingArtifact(artifact, opts, escapeMarkdownInlineText(label), &state)
+		rendered := renderCompactTestingArtifact(artifact, opts, encodedLabel, &state)
 		if strings.TrimSpace(rendered) != "" {
 			units = append(units, conciseTestingArtifactUnit{text: rendered})
 		}
@@ -375,6 +375,13 @@ func renderConciseTestingArtifactUnits(artifacts []types.TestArtifact, opts test
 	return units
 }
 
+// trustedInlineVisualTargets returns the renderer-derived pair an artifact may
+// be inlined with, or two empty strings when it may not. Both targets must be
+// absolute http(s) URLs the renderer itself derived: with no evidence links and
+// no GitHub bases (GitLab, Azure DevOps, an unknown provider) the target
+// helpers fall back to a bare repo-relative path, which an inline image
+// reference resolves against the provider's own URL and 404s. Such artifacts
+// stay plain links instead.
 func trustedInlineVisualTargets(artifact types.TestArtifact, opts testingSummaryOptions) (source, raw string) {
 	if artifact.Path == "" || !isImageArtifact(artifact.Kind, artifact.Path) {
 		return "", ""
@@ -383,22 +390,36 @@ func trustedInlineVisualTargets(artifact types.TestArtifact, opts testingSummary
 	pathOnly.URL = ""
 	source = artifactLinkTargetForPath(pathOnly, opts)
 	raw = artifactTargetForPath(pathOnly, opts)
-	if source == "" || raw == "" || source == artifact.Path || raw == artifact.Path {
+	if !isAbsoluteWebTarget(source) || !isAbsoluteWebTarget(raw) {
 		return "", ""
 	}
 	return source, raw
 }
 
+func isAbsoluteWebTarget(target string) bool {
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
 func renderBitbucketConciseArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string) string {
+	encodedLabel := encodePRText(label, opts.flavor)
 	target := artifact.URL
 	if target == "" {
 		target = artifactLinkTargetForPath(artifact, opts)
 	}
 	if target != "" {
-		return fmt.Sprintf("- Evidence: [%s](%s)\n", encodePRText(label, opts.flavor), target)
+		return fmt.Sprintf("- Evidence: [%s](%s)\n", encodedLabel, target)
 	}
 	if localPath := localArtifactPath(artifact.Path, opts); localPath != "" {
-		return renderLocalArtifactLine(encodePRText(label, opts.flavor), localPath, opts.flavor)
+		return renderLocalArtifactLine(encodedLabel, localPath, opts.flavor)
 	}
 	return ""
 }
@@ -633,7 +654,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		return ""
 	}
 	if opts.compactArtifacts {
-		return renderCompactTestingArtifact(artifact, opts, label, state)
+		return renderCompactTestingArtifact(artifact, opts, encodePRText(label, opts.flavor), state)
 	}
 	target := artifact.URL
 	if target == "" {
@@ -660,7 +681,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else if localPath != "" {
-			b.WriteString(renderLocalArtifactLine(label, localPath, opts.flavor))
+			b.WriteString(renderLocalArtifactLine(html.EscapeString(label), localPath, opts.flavor))
 		}
 	}
 	if descriptionLine != "" {
@@ -679,6 +700,10 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
+// renderCompactTestingArtifact takes an ALREADY-ENCODED label. Encoding a label
+// is the caller's job and must happen exactly once: a second pass here escapes
+// the first pass's own output, so a label like "timeout <5s" publishes as the
+// literal text "&lt;5s".
 func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string, state *testingArtifactRenderState) string {
 	target := artifact.URL
 	if target == "" {
@@ -695,7 +720,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	// No embeddable text: render a link or local-file reference (images, videos, binaries).
 	if caption == "" && !hasFile {
 		if target != "" {
-			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
+			return fmt.Sprintf("- Evidence: [%s](%s)\n", label, target)
 		}
 		return renderLocalArtifactLine(label, localPath, opts.flavor)
 	}
@@ -707,7 +732,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 
 	var inner strings.Builder
 	if target != "" {
-		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
+		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", label, target))
 	} else if !hasFile && localPath != "" {
 		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts.flavor))
 		inner.WriteString("\n")
@@ -717,7 +742,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		inner.WriteString("\n\n")
 	}
 	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
-	return foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
+	return foldPRBlock("Evidence: "+label, inner.String(), opts.flavor)
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,
@@ -980,12 +1005,15 @@ func renderLocalArtifactLine(label, localPath string, flavor prBodyFlavor) strin
 	return renderLocalArtifactReference("- Evidence", label, localPath, flavor)
 }
 
+// renderLocalArtifactReference takes an ALREADY-ENCODED label, for the same
+// reason as renderCompactTestingArtifact. localPath is encoded here because it
+// is raw filesystem text at every call site.
 func renderLocalArtifactReference(prefix, label, localPath string, flavor prBodyFlavor) string {
 	path := "<code>" + html.EscapeString(localPath) + "</code>"
 	if flavor == prBodyMarkdown {
 		path = "`" + localPath + "`"
 	}
-	return fmt.Sprintf("%s: %s (local file: %s)\n", prefix, html.EscapeString(label), path)
+	return fmt.Sprintf("%s: %s (local file: %s)\n", prefix, label, path)
 }
 
 func sanitizeArtifactURL(target string) string {

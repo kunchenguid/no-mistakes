@@ -343,25 +343,51 @@ func assemblePRBodyWithoutIntent(narrative, riskLine, testingMD, pipelineMD stri
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
+	narrative, testingMD = selectBoundedNarrativeAndTesting(narrative, riskLine, testingMD, pipelineMD, bodyLimit, prBodyMeasure(false))
+	return assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD, bodyLimit, false)
+}
+
+// selectBoundedNarrativeAndTesting is the single owner of which narrative
+// variant a capped body keeps and whether Testing survives with it. Priority is
+// the full narrative, then Testing, then the complete acceptance context: a
+// section is only shed once every higher-priority one still cannot fit beside
+// the newest pipeline update. Both the provider-unit cap (Azure) and the GitHub
+// byte-safety cap route through it with their own measure, so neither can drift
+// into a different shedding order.
+func selectBoundedNarrativeAndTesting(narrative, riskLine, testingMD, pipelineMD string, limit int, measure func(string) int) (string, string) {
 	priorityPipeline := fullLatestPipelineUpdate(pipelineMD)
-	if priorityPipeline == "" || scm.PRBodyLen(priorityPipeline) > bodyLimit {
+	if priorityPipeline == "" || measure(priorityPipeline) > limit {
 		priorityPipeline = minimumPipelineRetainingLatestUpdate(pipelineMD)
 	}
 	if priorityPipeline == "" {
 		priorityPipeline = pipelineSectionHeader(pipelineMD)
 	}
-	fitsWithPriorityPipeline := func(candidateTesting string) bool {
-		prefix := composeGeneratedSectionsUnbounded(narrative, riskLine, candidateTesting, "")
+	fitsWithPriorityPipeline := func(candidateNarrative, candidateTesting string) bool {
+		prefix := composeGeneratedSectionsUnbounded(candidateNarrative, riskLine, candidateTesting, "")
 		separator := 0
 		if prefix != "" && priorityPipeline != "" {
-			separator = scm.PRBodyLen("\n\n")
+			separator = measure("\n\n")
 		}
-		return scm.PRBodyLen(prefix)+separator+scm.PRBodyLen(priorityPipeline) <= bodyLimit
+		return measure(prefix)+separator+measure(priorityPipeline) <= limit
 	}
-	if fitsWithPriorityPipeline(testingMD) {
-		return assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD, bodyLimit, false)
+	if fitsWithPriorityPipeline(narrative, testingMD) {
+		return narrative, testingMD
 	}
-	return assemblePRBodyCoreWithoutIntent(narrative, riskLine, "", pipelineMD, bodyLimit, false)
+	if testingMD != "" && fitsWithPriorityPipeline(narrative, "") {
+		return narrative, ""
+	}
+	narrative = omitCompleteAcceptanceContext(narrative)
+	if testingMD != "" && fitsWithPriorityPipeline(narrative, testingMD) {
+		return narrative, testingMD
+	}
+	return narrative, ""
+}
+
+func prBodyMeasure(byteLimit bool) func(string) int {
+	if byteLimit {
+		return func(text string) int { return len(text) }
+	}
+	return scm.PRBodyLen
 }
 
 func assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD string, bodyLimit int, byteLimit bool) string {
@@ -370,10 +396,7 @@ func assemblePRBodyCoreWithoutIntent(narrative, riskLine, testingMD, pipelineMD 
 		return truncateBalancedNarrative(prefix, bodyLimit, byteLimit)
 	}
 	header, _ := splitPipelineSectionHeader(pipelineMD)
-	measure := scm.PRBodyLen
-	if byteLimit {
-		measure = func(text string) int { return len(text) }
-	}
+	measure := prBodyMeasure(byteLimit)
 	headerLen := measure(header)
 	if header == "" || headerLen > bodyLimit {
 		return truncateBalancedNarrative(prefix+"\n\n"+pipelineMD, bodyLimit, byteLimit)
@@ -416,32 +439,8 @@ func buildPRBodyWithoutIntent(narrative, riskLine, testingMD, pipelineMD string)
 	if len(full) <= maxPullRequestBodyBytes {
 		return full
 	}
-	priorityPipeline := fullLatestPipelineUpdate(pipelineMD)
-	if priorityPipeline == "" || len(priorityPipeline) > maxPullRequestBodyBytes {
-		priorityPipeline = minimumPipelineRetainingLatestUpdate(pipelineMD)
-	}
-	if priorityPipeline == "" {
-		priorityPipeline = pipelineSectionHeader(pipelineMD)
-	}
-	fitsWithPriorityPipeline := func(candidateNarrative, candidateTesting string) bool {
-		prefix := composeGeneratedSectionsUnbounded(candidateNarrative, riskLine, candidateTesting, "")
-		separator := 0
-		if prefix != "" && priorityPipeline != "" {
-			separator = len("\n\n")
-		}
-		return len(prefix)+separator+len(priorityPipeline) <= maxPullRequestBodyBytes
-	}
-	if fitsWithPriorityPipeline(narrative, testingMD) {
-		return assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD)
-	}
-	if testingMD != "" && fitsWithPriorityPipeline(narrative, "") {
-		return assemblePRBodyWithinByteLimit(narrative, riskLine, "", pipelineMD)
-	}
-	narrative = omitCompleteAcceptanceContext(narrative)
-	if testingMD != "" && fitsWithPriorityPipeline(narrative, testingMD) {
-		return assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD)
-	}
-	return assemblePRBodyWithinByteLimit(narrative, riskLine, "", pipelineMD)
+	narrative, testingMD = selectBoundedNarrativeAndTesting(narrative, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes, prBodyMeasure(true))
+	return assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD)
 }
 
 func assemblePRBodyWithinByteLimit(narrative, riskLine, testingMD, pipelineMD string) string {
@@ -471,10 +470,7 @@ func composeGeneratedSectionsUnbounded(narrative, riskLine, testingMD, pipelineM
 }
 
 func truncateBalancedNarrative(narrative string, maxUnits int, byteLimit bool) string {
-	measure := scm.PRBodyLen
-	if byteLimit {
-		measure = func(text string) int { return len(text) }
-	}
+	measure := prBodyMeasure(byteLimit)
 	if measure(narrative) <= maxUnits {
 		return narrative
 	}

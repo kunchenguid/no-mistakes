@@ -137,6 +137,34 @@ func TestAssembleConcisePRBody_AzureCapKeepsBalancedStructureAndHonestContextMar
 	}
 }
 
+func TestAssembleConcisePRBody_KeepsTestingWhenOmittingAcceptanceContextMakesRoom(t *testing.T) {
+	t.Parallel()
+
+	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("Complete acceptance context sentence. ", 40), IntentSource: db.RunIntentSourceAgent}
+	narrative := renderConcisePRNarrative(prContent{
+		Intent:             "Keep evidence when context can be shed.",
+		AcceptanceCriteria: []prAcceptanceCriterion{{Summary: "Keep Testing above complete context", Details: "Testing outranks the complete acceptance context under a cap."}},
+		Body:               "## What Changed\n\n- Shed acceptance context before Testing.",
+	}, sctx, scm.ProviderAzureDevOps, "M\tinternal/pipeline/steps/pr.go")
+	pipelineMD := pipelineMarkdownForTest("newest pipeline update")
+	testingMD := "## Testing\n\nFocused checks passed."
+	bodyLimit := 1200
+
+	if scm.PRBodyLen(narrative) <= bodyLimit {
+		t.Fatalf("narrative must overflow the cap for this regression, got %d units", scm.PRBodyLen(narrative))
+	}
+	got := assemblePRBodyWithoutIntent(narrative, "⚠️ Medium: cap behavior", testingMD, pipelineMD, bodyLimit)
+
+	if scm.PRBodyLen(got) > bodyLimit {
+		t.Fatalf("capped body exceeded its limit: %d\n%s", scm.PRBodyLen(got), got)
+	}
+	for _, want := range []string{"Complete acceptance context omitted to fit the provider description limit.", "## Testing", "Focused checks passed.", "newest pipeline update"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("capped body dropped %q while budget remained:\n%s", want, got)
+		}
+	}
+}
+
 func TestBuildConcisePRBody_GitHubSafetyCapKeepsNarrativeBalanced(t *testing.T) {
 	t.Parallel()
 

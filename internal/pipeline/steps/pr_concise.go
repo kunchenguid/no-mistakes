@@ -473,11 +473,6 @@ func escapeMarkdownMetacharacters(text, mode string) string {
 	return text
 }
 
-func escapeMarkdownInlineText(text string) string {
-	text = strings.ReplaceAll(text, "\\", "\\\\")
-	return escapeMarkdownMetacharacters(text, "\\")
-}
-
 func escapeMarkdownStructuralLines(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
