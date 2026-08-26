@@ -378,7 +378,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			return nil, err
 		}
 		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
-		checks = collapseLatestByName(checks)
+		checks = h.collapseLatestByName(checks)
 		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
@@ -590,7 +590,7 @@ func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.C
 // union checks against, letting the union re-add the same stale run under
 // its own workflow run name - resurrecting exactly the failure this is
 // meant to hide.
-func collapseLatestByName(checks []scm.Check) []scm.Check {
+func (h *Host) collapseLatestByName(checks []scm.Check) []scm.Check {
 	index := make(map[string]int, len(checks))
 	collapsed := make([]scm.Check, 0, len(checks))
 	for _, check := range checks {
@@ -599,7 +599,7 @@ func collapseLatestByName(checks []scm.Check) []scm.Check {
 			continue
 		}
 		if i, ok := index[check.Name]; ok {
-			if checkStartedAfter(check, collapsed[i]) {
+			if h.checkStartedAfter(check, collapsed[i]) {
 				collapsed[i] = check
 			}
 			continue
@@ -611,14 +611,21 @@ func collapseLatestByName(checks []scm.Check) []scm.Check {
 }
 
 // checkStartedAfter reports whether a is the newer of the two checks,
-// comparing StartedAt first and falling back to CompletedAt when neither
-// check reported a start time.
-func checkStartedAfter(a, b scm.Check) bool {
-	if !a.StartedAt.IsZero() || !b.StartedAt.IsZero() {
-		if a.StartedAt.Equal(b.StartedAt) {
-			return a.CompletedAt.After(b.CompletedAt)
-		}
+// comparing start time, Actions run identity, pending state, then completion.
+func (h *Host) checkStartedAfter(a, b scm.Check) bool {
+	if !a.StartedAt.Equal(b.StartedAt) {
 		return a.StartedAt.After(b.StartedAt)
+	}
+	if aID, aErr := strconv.ParseUint(h.actionsRunID(a.Link), 10, 64); aErr == nil {
+		if bID, bErr := strconv.ParseUint(h.actionsRunID(b.Link), 10, 64); bErr == nil && aID != bID {
+			return aID > bID
+		}
+	}
+	if a.Bucket == scm.CheckBucketPending && b.Bucket != scm.CheckBucketPending {
+		return true
+	}
+	if b.Bucket == scm.CheckBucketPending && a.Bucket != scm.CheckBucketPending {
+		return false
 	}
 	return a.CompletedAt.After(b.CompletedAt)
 }

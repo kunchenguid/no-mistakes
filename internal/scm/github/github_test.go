@@ -422,7 +422,7 @@ func TestGetChecksPreservesSameNameStatusContextAndCheckRun(t *testing.T) {
 	}
 }
 
-func TestGetChecksKeepsQueuedReplacementOverSupersededFailure(t *testing.T) {
+func TestGetChecksKeepsQueuedReplacementWithEqualStartTime(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
@@ -436,7 +436,7 @@ func TestGetChecksKeepsQueuedReplacementOverSupersededFailure(t *testing.T) {
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
 			stdout: `[{"total_count":2,"workflow_runs":[
 				{"id":101,"name":"CI","status":"completed","conclusion":"failure","created_at":"2026-08-26T08:25:45Z","updated_at":"2026-08-26T08:25:56Z"},
-				{"id":102,"name":"CI","status":"queued","conclusion":null,"created_at":"2026-08-26T08:39:44Z","updated_at":"2026-08-26T08:39:44Z"}
+				{"id":102,"name":"CI","status":"queued","conclusion":null,"created_at":"2026-08-26T08:25:50Z","updated_at":"2026-08-26T08:25:50Z"}
 			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
@@ -451,7 +451,7 @@ func TestGetChecksKeepsQueuedReplacementOverSupersededFailure(t *testing.T) {
 	if got := checks[0]; got.Name != "CI" || got.Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[0] = %+v, want the queued replacement to supersede the old failure", got)
 	}
-	wantStartedAt := time.Date(2026, 8, 26, 8, 39, 44, 0, time.UTC)
+	wantStartedAt := time.Date(2026, 8, 26, 8, 25, 50, 0, time.UTC)
 	if !checks[0].StartedAt.Equal(wantStartedAt) {
 		t.Fatalf("checks[0].StartedAt = %v, want workflow creation time %v", checks[0].StartedAt, wantStartedAt)
 	}
