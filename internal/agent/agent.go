@@ -357,9 +357,8 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 
 	trimmedText := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmedText, "{") && !strings.Contains(text, "```") {
-		return nil, fmt.Errorf("ended its turn with prose instead of the required JSON object")
+		return nil, fmt.Errorf("ended its turn with prose instead of the required JSON object (output snippet: %q)", outputSnippet(text))
 	}
-
 	return nil, rawErr
 }
 
@@ -519,10 +518,12 @@ func indexJSONFenceClose(text string) (int, int) {
 }
 
 // lastBareJSONObject scans text for balanced {...} substrings that parse
-// as JSON and returns the last one found. This handles models that emit
-// reasoning prose followed by a raw JSON answer, with no code fence.
+// as JSON and returns the last concluding one found. This handles models that emit
+// reasoning prose followed by a raw JSON answer, with no code fence. An incidental
+// object embedded in prose followed by substantive discussion is rejected.
 func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, error) {
 	var last json.RawMessage
+	var lastEnd int
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
@@ -546,22 +547,21 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 			continue
 		}
 		candidate := text[i:end]
-		var parsed json.RawMessage
-		if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
-			continue
-		}
-		if err := validateStructuredOutput(parsed, schema); err != nil {
-			if lastErr == nil {
-				lastErr = err
-			}
-		} else {
-			last = parsed
+		obj, err := parseStructuredCandidate([]byte(candidate), schema)
+		if err == nil {
+			last = obj
+			lastEnd = end
 			lastErr = nil
+		} else if lastErr == nil {
+			lastErr = err
 		}
 		i = end - 1
 	}
 	if last != nil {
-		return last, nil
+		trailing := strings.TrimSpace(text[lastEnd:])
+		if trailing == "" || (len(trailing) < 80 && !strings.Contains(trailing, "\n")) {
+			return last, nil
+		}
 	}
 	return nil, lastErr
 }

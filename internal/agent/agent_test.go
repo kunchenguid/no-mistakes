@@ -823,3 +823,27 @@ func TestFinalizeTextResult_ProseWithoutJSONReturnsEndedWithProseError(t *testin
 		t.Fatalf("expected ended with prose error, got: %v", err)
 	}
 }
+
+func TestLastBareJSONObject_IgnoresIncidentalExamplePrecedingProse(t *testing.T) {
+	// Greptile review regression: an incidental schema-valid JSON example quoted
+	// mid-prose before substantive findings must not be mistaken for the final verdict.
+	text := strings.Join([]string{
+		"Here is an example of what a clean output looks like:",
+		"{\"findings\":[],\"summary\":\"clean\"}",
+		"",
+		"However, upon actual inspection of the diff, I found several critical bugs:",
+		"Line 42 has a nil dereference.",
+	}, "\n")
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	_, err := finalizeTextResult("antigravity", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected failure because bare JSON was an incidental example before substantive prose")
+	}
+}
