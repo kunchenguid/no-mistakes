@@ -110,6 +110,85 @@ func TestCopilotAgent_BuildArgs_UserAskUserSuppressesDefault(t *testing.T) {
 	}
 }
 
+// TestCopilotAgent_BuildArgs_SuppressesCustomInstructionsUnderOptOut locks in
+// the copilot project-settings contract UNDER the trusted opt-out: copilot is
+// told not to load AGENTS.md and related files. The flag is documented by
+// Copilot CLI (`--no-custom-instructions`); live verification against a
+// signed-in Copilot is pending.
+func TestCopilotAgent_BuildArgs_SuppressesCustomInstructionsUnderOptOut(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", disableProjectSettings: true}
+	args := ca.buildArgs()
+	if !copilotArgsContain(args, "--no-custom-instructions") {
+		t.Errorf("buildArgs = %v, want --no-custom-instructions", args)
+	}
+}
+
+// TestCopilotAgent_BuildArgs_NoSuppressionWithoutOptOut is the backward-compat
+// guarantee: without the opt-out, copilot adds no suppression and loads custom
+// instructions exactly as before.
+func TestCopilotAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot"}
+	args := ca.buildArgs()
+	if copilotArgsContain(args, "--no-custom-instructions") {
+		t.Errorf("buildArgs = %v, must add no suppression when the repo did not opt out", args)
+	}
+}
+
+// TestCopilotAgent_BuildArgs_UserCustomInstructionsOverrideWins ensures an
+// operator who pinned the custom-instructions surface is not double-set even
+// under opt-out, and that re-enabling the surface defeats neutralization.
+func TestCopilotAgent_BuildArgs_UserCustomInstructionsOverrideWins(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", disableProjectSettings: true, extraArgs: []string{"--custom-instructions"}}
+	args := ca.buildArgs()
+	if copilotArgsContain(args, "--no-custom-instructions") {
+		t.Errorf("buildArgs = %v, must not add --no-custom-instructions over a user --custom-instructions", args)
+	}
+	if ca.NeutralizesGateInstructions() {
+		t.Error("copilot with --custom-instructions must not report neutralized")
+	}
+}
+
+func TestCopilotAgent_NeutralizesGateInstructions(t *testing.T) {
+	if NeutralizesGateInstructions(&copilotAgent{bin: "copilot"}) {
+		t.Error("copilot must not report neutralized without the opt-out")
+	}
+	if !NeutralizesGateInstructions(&copilotAgent{bin: "copilot", disableProjectSettings: true}) {
+		t.Error("copilot must report neutralized under the opt-out")
+	}
+	if !NeutralizesGateInstructions(&copilotAgent{bin: "copilot", disableProjectSettings: true, extraArgs: []string{"--no-custom-instructions"}}) {
+		t.Error("copilot with an explicit --no-custom-instructions must stay neutralized")
+	}
+	if NeutralizesGateInstructions(&copilotAgent{bin: "copilot", disableProjectSettings: true, extraArgs: []string{"--custom-instructions"}}) {
+		t.Error("copilot with --custom-instructions must fail closed")
+	}
+}
+
+func TestCopilotAgent_BuildArgs_DoesNotDuplicateNoCustomInstructions(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", disableProjectSettings: true, extraArgs: []string{"--no-custom-instructions"}}
+	args := ca.buildArgs()
+	count := 0
+	for _, a := range args {
+		if a == "--no-custom-instructions" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected single --no-custom-instructions, got %d: %v", count, args)
+	}
+	if !ca.NeutralizesGateInstructions() {
+		t.Error("copilot with an explicit --no-custom-instructions must stay neutralized")
+	}
+}
+
+func copilotArgsContain(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildCopilotPrompt_InlinesSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)
 	prompt := buildCopilotPrompt("do the thing", schema)

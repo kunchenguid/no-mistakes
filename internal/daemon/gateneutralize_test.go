@@ -19,7 +19,7 @@ func fakeLookPath(bin string) (string, error) { return "/fake/bin/" + bin, nil }
 // opt-out (disable_project_settings=true), a verified harness passes the gate and
 // its pipeline agent reports neutralized.
 func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 		if err != nil {
@@ -37,7 +37,7 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentGrok, types.AgentOpenCode, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentGrok, types.AgentOpenCode} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{}); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)
@@ -52,8 +52,8 @@ func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
 // no suppression knob - is admitted and runs exactly as before.
 func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 	// rovodev is omitted: its resolution runs a real version probe that a fake
-	// binary path cannot satisfy. opencode/pi/copilot already prove that an
-	// unverified adapter is admitted when the repo did not opt out.
+	// binary path cannot satisfy. opencode already proves that an unverified
+	// adapter is admitted when the repo did not opt out.
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentGrok, types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name} // DisableProjectSettings defaults false
 		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})

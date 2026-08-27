@@ -21,11 +21,31 @@ type copilotAgent struct {
 	bin       string
 	extraArgs []string
 	subprocessContext
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses copilot's project-level custom-instructions surface.
+	disableProjectSettings bool
 }
 
 func (a *copilotAgent) Name() string { return "copilot" }
 
 func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether copilot is currently launched with
+// the target repo's custom instructions (AGENTS.md and related files) suppressed.
+// It is meaningful only under the opt-out (disableProjectSettings): the gate only
+// consults it when the repo opted out. It is honest about the EFFECTIVE launch -
+// copilot's documented `--no-custom-instructions` flag ("Disable loading of custom
+// instructions from AGENTS.md and related files") is in effect iff the operator
+// did not re-enable the surface. buildArgs appends `--no-custom-instructions`
+// when the operator did not pin the surface themselves; an operator override
+// that re-enables custom instructions (`--custom-instructions`) defeats
+// neutralization, so this returns false and the gate fails closed rather than
+// running with repo instructions loaded. The flag is documented by Copilot CLI
+// 1.0.80 (`copilot --help`); live verification against a signed-in Copilot is
+// pending.
+func (a *copilotAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings && copilotEffectiveCustomInstructionsSuppressed(a.extraArgs)
+}
 
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -145,7 +165,7 @@ func copilotErrorDetail(copilotErr, stderr string) string {
 // added; --no-ask-user is always added so the agent never blocks waiting for
 // interactive input.
 func (a *copilotAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+6)
+	args := make([]string, 0, len(a.extraArgs)+7)
 	args = append(args, a.extraArgs...)
 	args = append(args,
 		"--output-format", "json",
@@ -156,6 +176,18 @@ func (a *copilotAgent) buildArgs() []string {
 	}
 	if !copilotUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "--allow-all-tools")
+	}
+	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
+	// disable loading of custom instructions from AGENTS.md and related files so
+	// an agent-orchestration target cannot install a fleet-captain identity on
+	// the gate agent. Copilot CLI documents `--no-custom-instructions` for this
+	// surface. Skipped only when the operator already controlled the surface
+	// (their choice wins; NeutralizesGateInstructions then fails closed if that
+	// value re-enables custom instructions). When the repo did not opt out,
+	// nothing is added and copilot loads custom instructions exactly as before
+	// (backward-compat). Live verification against a signed-in Copilot is pending.
+	if a.disableProjectSettings && !copilotUserSetCustomInstructions(a.extraArgs) {
+		args = append(args, "--no-custom-instructions")
 	}
 	return args
 }
@@ -191,6 +223,45 @@ func copilotUserSetAskUser(extraArgs []string) bool {
 		}
 	}
 	return false
+}
+
+// copilotUserSetCustomInstructions reports whether extraArgs already control
+// Copilot's custom-instructions surface, in which case buildArgs skips its
+// default --no-custom-instructions.
+func copilotUserSetCustomInstructions(extraArgs []string) bool {
+	_, pinned := copilotUserCustomInstructions(extraArgs)
+	return pinned
+}
+
+// copilotUserCustomInstructions returns whether extraArgs pin the custom-
+// instructions surface (last occurrence wins) and whether that pin suppresses
+// AGENTS.md. `--no-custom-instructions` suppresses; `--custom-instructions`
+// re-enables. Handles both bare flags and `--flag=` forms.
+func copilotUserCustomInstructions(extraArgs []string) (suppressed bool, pinned bool) {
+	for _, arg := range extraArgs {
+		switch {
+		case arg == "--no-custom-instructions", strings.HasPrefix(arg, "--no-custom-instructions="):
+			suppressed = true
+			pinned = true
+		case arg == "--custom-instructions", strings.HasPrefix(arg, "--custom-instructions="):
+			suppressed = false
+			pinned = true
+		}
+	}
+	return suppressed, pinned
+}
+
+// copilotEffectiveCustomInstructionsSuppressed reports whether the EFFECTIVE
+// copilot launch suppresses custom instructions from AGENTS.md and related
+// files: true when the operator did not pin the surface (buildArgs appends
+// --no-custom-instructions) or pinned --no-custom-instructions themselves, and
+// false when the operator re-enabled custom instructions.
+func copilotEffectiveCustomInstructionsSuppressed(extraArgs []string) bool {
+	suppressed, pinned := copilotUserCustomInstructions(extraArgs)
+	if !pinned {
+		return true // buildArgs appends --no-custom-instructions
+	}
+	return suppressed
 }
 
 // buildCopilotPrompt appends a JSON-output contract to the user prompt when a

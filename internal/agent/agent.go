@@ -163,8 +163,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex, claude, and pi have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Only codex, claude, pi, and copilot have a
+// verified neutralization knob today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -174,8 +174,8 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex, claude, and pi have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex, claude, or pi in "+
+		"checkout. Only codex, claude, pi, and copilot have a verified neutralization knob (and only when it "+
+		"is not overridden by agent_args_override); set 'agent' to codex, claude, pi, or copilot in "+
 		"~/.no-mistakes/config.yaml", a.Name())
 }
 
@@ -1084,7 +1084,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 			subprocessContext:      newSubprocessContext(opts.Environment),
 		}, nil
 	case types.AgentCopilot:
-		return &copilotAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
+		return &copilotAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentAntigravity:
 		return &antigravityAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	default:
