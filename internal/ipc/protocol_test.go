@@ -405,6 +405,7 @@ func TestMethodConstants(t *testing.T) {
 		MethodGetRuns,
 		MethodGetRunsForHead,
 		MethodGetActiveRun,
+		MethodStartFreshRun,
 		MethodRerun,
 		MethodSubscribe,
 		MethodRespond,

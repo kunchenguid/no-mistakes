@@ -791,6 +791,55 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
+func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+	if strings.TrimSpace(branch) == "" || strings.TrimSpace(headSHA) == "" {
+		return "", fmt.Errorf("fresh run requires a branch and head")
+	}
+	repo, err := m.db.GetRepo(repoID)
+	if err != nil {
+		return "", fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil {
+		return "", fmt.Errorf("unknown repo %s", repoID)
+	}
+
+	gateDir := m.paths.RepoDir(repo.ID)
+	gateHead, err := git.ResolveRef(ctx, gateDir, "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("resolve gate head: %w", err)
+	}
+	if gateHead != headSHA {
+		return "", fmt.Errorf("gate head for %q changed from %s to %s; retry the fresh run", branch, headSHA, gateHead)
+	}
+
+	runs, err := m.db.GetRunsByRepo(repoID)
+	if err != nil {
+		return "", fmt.Errorf("get runs: %w", err)
+	}
+	baseSHA := gateHead
+	for _, run := range runs {
+		if run.Branch != branch {
+			continue
+		}
+		if run.Status == types.RunPending || run.Status == types.RunRunning {
+			return "", fmt.Errorf("an active run already owns branch %s", branch)
+		}
+		if baseSHA == gateHead {
+			baseSHA = run.BaseSHA
+		}
+		if run.HeadSHA == gateHead {
+			baseSHA = run.BaseSHA
+			break
+		}
+	}
+
+	source := ""
+	if strings.TrimSpace(intent) != "" {
+		source = db.RunIntentSourceAgent
+	}
+	return m.startRunWithIntentSource(ctx, repo, branch, gateHead, baseSHA, "fresh", skipSteps, intent, source)
+}
+
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
 	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {

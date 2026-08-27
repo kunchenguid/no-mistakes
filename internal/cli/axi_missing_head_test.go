@@ -6,9 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -142,5 +147,99 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 				t.Fatalf("missing-head state lost manual reconciliation guidance: %#v", state)
 			}
 		})
+	}
+}
+
+type missingHeadFreshRunFixture struct {
+	repoDir string
+	paths   *paths.Paths
+	d      *db.DB
+	repo   *db.Repo
+	branch string
+	head   string
+}
+
+func newMissingHeadFreshRunFixture(t *testing.T) missingHeadFreshRunFixture {
+	t.Helper()
+	repoDir := setupTestRepo(t)
+	p := paths.WithRoot(os.Getenv("NM_HOME"))
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	repo, _, err := gate.Init(context.Background(), d, p, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := "feature/missing-head"
+	run(t, repoDir, "git", "checkout", "-b", branch)
+	run(t, repoDir, "git", "push", gate.RemoteName, "HEAD:refs/heads/"+branch)
+	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	missing := strings.Repeat("f", 40)
+	pipelineRun, err := d.InsertRun(repo.ID, branch, head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatusWithVerifiedHead(pipelineRun.ID, types.RunCancelled, missing); err != nil {
+		t.Fatal(err)
+	}
+
+	mockClaude := writeMockClaude(t, t.TempDir())
+	configYAML := "agent: claude\nagent_path_override:\n  claude: " + mockClaude + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	startTestDaemon(t, p, d)
+
+	return missingHeadFreshRunFixture{repoDir: repoDir, paths: p, d: d, repo: repo, branch: branch, head: head}
+}
+
+func TestTriggerRunStartsFreshRunWhenNoopGateHasMissingTerminalHead(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+	client, err := ipc.Dial(f.paths.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	env := &axiEnv{p: f.paths, d: f.d, repo: f.repo, cfg: config.DefaultGlobalConfig(), client: client}
+	runID, err := triggerRun(context.Background(), env, f.branch, f.head, nil, "fresh delivery")
+	if err != nil {
+		t.Fatalf("triggerRun() error = %v", err)
+	}
+	got, err := f.d.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.HeadSHA != f.head {
+		t.Fatalf("fresh run = %#v, want head %s", got, f.head)
+	}
+}
+
+func TestRootWizardStartsFreshRunWhenNoopGateHasMissingTerminalHead(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+
+	previousInteractive := terminalInteractive
+	terminalInteractive = func() bool { return false }
+	defer func() { terminalInteractive = previousInteractive }()
+	previousTimeout := triggerWaitTimeout
+	triggerWaitTimeout = 100 * time.Millisecond
+	defer func() { triggerWaitTimeout = previousTimeout }()
+
+	previousRunTUI := runTUI
+	var attached *ipc.RunInfo
+	runTUI = func(_ string, _ *ipc.Client, run *ipc.RunInfo, _ string) error {
+		attached = run
+		return nil
+	}
+	defer func() { runTUI = previousRunTUI }()
+
+	if _, err := executeCmd("-y"); err != nil {
+		t.Fatalf("executeCmd(-y) error = %v", err)
+	}
+	if attached == nil || attached.HeadSHA != f.head {
+		t.Fatalf("wizard attached run = %#v, want head %s", attached, f.head)
 	}
 }
