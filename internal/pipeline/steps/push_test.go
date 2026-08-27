@@ -896,7 +896,7 @@ func TestPushStep_GateMirrorFetchesExplicitPushedHeadInDetachedWorktree(t *testi
 	}
 }
 
-func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissing(t *testing.T) {
+func TestPushStep_FailsWhenGateMirrorDirectoryMissing(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 
@@ -917,16 +917,15 @@ func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
-	// Explicitly remove gateDir to test missing directory handling
+	// Explicitly remove gateDir to test missing directory failure
 	_ = os.RemoveAll(gateDir)
 
 	recordReviewApproval(t, sctx, submittedHead)
 
-	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("expected push step to succeed when gate mirror directory is absent, got: %v", err)
-	}
-	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != submittedHead {
-		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
+	if _, err := (&PushStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected push step to fail when gate mirror directory is absent, got nil")
+	} else if !strings.Contains(err.Error(), "stat gate mirror repository") {
+		t.Fatalf("expected stat error, got: %v", err)
 	}
 }
 
