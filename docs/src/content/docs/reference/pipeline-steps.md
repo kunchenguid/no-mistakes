@@ -214,8 +214,8 @@ Creates or updates a pull request.
 **Skipped when:**
 - The branch is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch) (the repository's forge default branch, or the trusted `pr.base_branch` when configured)
 - The upstream host is not GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), or Gitea
-- The provider CLI (`gh`, `glab`, `forgejo-axi`, or `tea`) is not installed for GitHub, GitLab, Forgejo, or Gitea
-- The provider CLI is not authenticated for GitHub, GitLab, Forgejo, or Gitea
+- The provider CLI (`gh`, `glab`, `forgejo-axi`, or `tea`) is not installed for GitHub, GitLab, Forgejo, or Gitea (GitHub also skips when `gh` is missing from `PATH`)
+- The provider CLI is not authenticated for GitHub, GitLab, Forgejo, or Gitea (GitHub reports a timed-out or interrupted `gh auth status` separately from auth failure; either still skips)
 - Bitbucket Cloud credentials are missing (`NO_MISTAKES_BITBUCKET_EMAIL` or `NO_MISTAKES_BITBUCKET_API_TOKEN`)
 - The `az` CLI with the `azure-devops` extension is not installed or not authenticated for Azure DevOps
 - A legacy or manually edited non-GitHub repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only

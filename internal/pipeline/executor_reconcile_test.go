@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -289,6 +292,108 @@ func TestExecutor_GateRecheckIsBoundedAndApprovalWinsAfterTimeout(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("blocking provider check was not bounded")
+	}
+}
+
+// TestExecutor_AppliesGateReconcileTimingsFromGlobalConfig is the operator
+// path for gate_reconcile_interval / gate_reconcile_timeout: write them in
+// global config.yaml, load + merge, construct NewExecutor with that Config
+// (no SetGateReconcileTimings), and prove a hanging reconcile is bounded by
+// the configured timeout rather than the hardcoded 30s default. If wiring
+// were missing, the blocking check would hold the gate for ~30s and this
+// 1s deadline would fail.
+func TestExecutor_AppliesGateReconcileTimingsFromGlobalConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	// Operator raises the per-attempt budget for slow gh auth probes; the
+	// interval stays long so only the timeout bound is under test here.
+	body := "gate_reconcile_interval: \"1h\"\ngate_reconcile_timeout: \"25ms\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	global, err := config.LoadGlobal(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if global.GateReconcileInterval != time.Hour || global.GateReconcileTimeout != 25*time.Millisecond {
+		t.Fatalf("loaded timings = interval %v timeout %v, want 1h / 25ms",
+			global.GateReconcileInterval, global.GateReconcileTimeout)
+	}
+	cfg := config.Merge(global, &config.RepoConfig{})
+	if cfg.GateReconcileInterval != time.Hour || cfg.GateReconcileTimeout != 25*time.Millisecond {
+		t.Fatalf("merged timings = interval %v timeout %v, want 1h / 25ms",
+			cfg.GateReconcileInterval, cfg.GateReconcileTimeout)
+	}
+
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{name: types.StepCI, block: true, started: make(chan struct{})}
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	workDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	select {
+	case <-step.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gate reconciliation did not start")
+	}
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("configured gate_reconcile_timeout was not applied; blocking check still used the hardcoded default")
+	}
+}
+
+// TestExecutor_AppliesGateReconcileIntervalFromGlobalConfig proves the
+// operator-configured interval (not the hardcoded 2m) drives how often a
+// still-parked gate is rechecked. With interval 10ms, a second reconcile must
+// arrive well before the 2m default; Approve ends the park cleanly.
+func TestExecutor_AppliesGateReconcileIntervalFromGlobalConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "gate_reconcile_interval: \"10ms\"\ngate_reconcile_timeout: \"50ms\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	global, err := config.LoadGlobal(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	cfg := config.Merge(global, &config.RepoConfig{})
+
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+
+	workDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for step.calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if step.calls.Load() < 2 {
+		t.Fatalf("reconcile calls = %d within 500ms, want >= 2 from configured 10ms interval (default 2m would not recheck yet)", step.calls.Load())
+	}
+
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("parked gate did not complete after approve")
 	}
 }
 

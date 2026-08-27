@@ -240,6 +240,36 @@ func TestLoadGlobal_GateReconcileTimings(t *testing.T) {
 	}
 }
 
+// TestLoadGlobal_GateReconcileTimings_OperatorSlowAuthBudget is the documented
+// operator path: raise interval/timeout in global config.yaml so slow gh auth
+// probes fit the parked-gate reconcile budget (defaults remain 2m / 30s).
+func TestLoadGlobal_GateReconcileTimings_OperatorSlowAuthBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "gate_reconcile_interval: \"5m\"\ngate_reconcile_timeout: \"2m\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.GateReconcileInterval != 5*time.Minute {
+		t.Fatalf("gate_reconcile_interval = %v, want 5m", cfg.GateReconcileInterval)
+	}
+	if cfg.GateReconcileTimeout != 2*time.Minute {
+		t.Fatalf("gate_reconcile_timeout = %v, want 2m", cfg.GateReconcileTimeout)
+	}
+	merged := Merge(cfg, &RepoConfig{})
+	if merged.GateReconcileInterval != 5*time.Minute || merged.GateReconcileTimeout != 2*time.Minute {
+		t.Fatalf("Merge did not preserve global timings: interval=%v timeout=%v",
+			merged.GateReconcileInterval, merged.GateReconcileTimeout)
+	}
+	t.Logf("operator config.yaml loaded: gate_reconcile_interval=%v gate_reconcile_timeout=%v",
+		merged.GateReconcileInterval, merged.GateReconcileTimeout)
+}
+
 func TestLoadGlobal_InvalidGateReconcileTimings(t *testing.T) {
 	dir := t.TempDir()
 	for _, body := range []string{

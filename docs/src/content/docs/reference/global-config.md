@@ -467,7 +467,7 @@ Raise this if your environment's Git credential helper (for example `gh auth git
 
 ### gate_reconcile_interval
 
-How often the daemon retries a parked approval-gate reconcile (for example after an agent is not authenticated) before the next attempt.
+How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -478,14 +478,14 @@ Accepts any positive Go `time.ParseDuration` string. Global-only: there is no ma
 
 ### gate_reconcile_timeout
 
-Maximum wall time each parked approval-gate reconcile attempt may spend before the attempt fails and the next interval wait begins. Covers host probes such as `gh auth status` that can hang without returning.
+Maximum wall time one parked approval-gate reconcile attempt may spend before the attempt stops, the gate stays parked, and the next interval wait begins. Covers host probes such as `gh auth status` that can hang without returning.
 
 |         |                        |
 | ------- | ---------------------- |
 | Type    | `string` (Go duration) |
 | Default | `30s`                  |
 
-Accepts any positive Go `time.ParseDuration` string. Global-only: there is no matching field in a repository's `.no-mistakes.yaml`. Raise this if a legitimate credential helper or network path routinely needs longer than the default for auth probes; leave it alone if you only want clearer timeout errors (those still surface as timed-out gate failures regardless of this value).
+Accepts any positive Go `time.ParseDuration` string. Global-only: there is no matching field in a repository's `.no-mistakes.yaml`. Raise this if a legitimate credential helper or network path routinely needs longer than the default for auth probes during reconcile. Timeout and interruption are reported distinctly from authentication failure; that distinction does not require raising this value.
 
 ### log_level
 
