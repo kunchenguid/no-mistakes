@@ -161,27 +161,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
 		gateTip = strings.TrimSpace(gateTip)
 
-		submittedHead := ""
-		if sctx.Run.SubmittedHeadSHA != nil {
-			submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
-		}
-
-		if gateTip == "" || gateTip == submittedHead {
+		// If gateTip is already a newer descendant (an intervening push that contains headBeingPushed),
+		// preserve it without rewinding. Otherwise, atomically advance the gate mirror ref to headBeingPushed.
+		if _, isDescendantErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); isDescendantErr != nil || gateTip == "" || gateTip == headBeingPushed {
 			if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
 				return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
-			}
-		} else {
-			// Check if gateTip is an ancestor of headBeingPushed (fast-forward advance)
-			if _, isAncestorErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); isAncestorErr == nil {
-				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
-					return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
-				}
-			} else {
-				// Check if gateTip is a newer descendant (intervening push that already contains headBeingPushed)
-				if _, isDescendantErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); isDescendantErr != nil {
-					// gateTip is neither an ancestor nor a newer descendant; fail loudly rather than leaving divergent mirror
-					return nil, fmt.Errorf("gate mirror ref %s at %s diverged from submitted %s and pushed %s", ref, gateTip, submittedHead, headBeingPushed)
-				}
 			}
 		}
 	}
