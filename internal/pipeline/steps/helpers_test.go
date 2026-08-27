@@ -171,13 +171,16 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 		// a per-test directory so a step under test can never write evidence
 		// into a shared location the next test would then observe.
 		EvidenceDir: filepath.Join(t.TempDir(), "evidence", "run-1"),
-		WorkDir:     workDir,
-		Agent:       ag,
-		Config:      &config.Config{Agent: types.AgentClaude, Commands: cmds},
-		DB:          database,
-		Log:         func(s string) {},
-		LogChunk:    func(s string) {},
-		LogFile:     func(s string) {},
+		// A per-test stand-in for NM_HOME: a directory that exists and is never
+		// the repo worktree, mirroring the production app root.
+		AppRoot:  t.TempDir(),
+		WorkDir:  workDir,
+		Agent:    ag,
+		Config:   &config.Config{Agent: types.AgentClaude, Commands: cmds},
+		DB:       database,
+		Log:      func(s string) {},
+		LogChunk: func(s string) {},
+		LogFile:  func(s string) {},
 	}
 }
 

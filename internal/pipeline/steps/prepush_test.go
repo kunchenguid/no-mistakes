@@ -314,6 +314,96 @@ func TestRunConfiguredPrePushCheck_SkipMatrix(t *testing.T) {
 	}
 }
 
+// writeRelativePrePushScript writes a trivial pre_push_check script at relPath
+// under root and returns the command a repository could configure to invoke
+// it BY THAT RELATIVE PATH, i.e. relying on the process working directory to
+// resolve it - exactly what a contributor's own pushed branch can supply at a
+// path the trusted config names (the documented example is
+// "scripts/merge-queue-hold.sh").
+func writeRelativePrePushScript(t *testing.T, root, relPath string, exitCode int) string {
+	t.Helper()
+	full := filepath.Join(root, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		full += ".cmd"
+		relPath += ".cmd"
+		body := "@echo off\r\nexit /b " + strconv.Itoa(exitCode) + "\r\n"
+		if err := os.WriteFile(full, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return relPath
+	}
+	body := "#!/bin/sh\nexit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(full, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return "sh " + relPath
+}
+
+// TestRunConfiguredPrePushCheck_RunsOutsideWorktree is the regression test for
+// the trust-boundary bypass a repository-relative pre_push_check script would
+// otherwise open: pre_push_check is trusted-only precisely because it is a
+// security veto, but running it inside the pushed worktree would let a
+// contributor shadow a repo-relative script - such as the documented
+// "scripts/merge-queue-hold.sh" example - with their own branch content and
+// make the trusted command always pass using the daemon's own credentials.
+// The script here lives ONLY in the pushed worktree (sctx.WorkDir), so the
+// check must fail to resolve it rather than silently executing it.
+func TestRunConfiguredPrePushCheck_RunsOutsideWorktree(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+
+	// A contributor-controlled script at a repository-relative path that
+	// always exits 0 (i.e. it would silently defeat the guard if it ran).
+	sctx.Config.PrePushCheck = writeRelativePrePushScript(t, dir, "scripts/merge-queue-hold.sh", 0)
+
+	err := runConfiguredPrePushCheck(sctx, forcePushDecision{remoteSHA: strings.Repeat("a", 40)}, prePushTarget{
+		Ref:     "refs/heads/feature",
+		Branch:  "feature",
+		HeadSHA: headSHA,
+	})
+	if err == nil {
+		t.Fatal("a repository-relative pre_push_check script resolved against the pushed worktree; a contributor's own branch could shadow the trusted check")
+	}
+}
+
+// TestRunConfiguredPrePushCheck_UsesLivePRBaseBranch pins the same precedence
+// the CI step already applies (AGENTS.md, pr.base_branch): once a pull
+// request exists, its actual forge base branch is authoritative over a
+// since-changed pr.base_branch, because the check exists to describe the real
+// target of the pull request the guard protects, not a hypothetical one a
+// later config edit selected.
+func TestRunConfiguredPrePushCheck_UsesLivePRBaseBranch(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.PR.BaseBranch = "main"
+	env, _ := fakeGHWithBase(t, prURL, "develop")
+	sctx.Env = env
+
+	probe := newPrePushProbe(t, dir, "refs/heads/feature", 0)
+	sctx.Config.PrePushCheck = probe.command
+
+	if err := runConfiguredPrePushCheck(sctx, forcePushDecision{remoteSHA: strings.Repeat("a", 40)}, prePushTarget{
+		Ref:        "refs/heads/feature",
+		Branch:     "feature",
+		BaseBranch: prePushBaseBranch(sctx),
+		HeadSHA:    headSHA,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fields := probe.mustRun(t)
+	if fields["base_branch"] != "develop" {
+		t.Fatalf("pre_push_check base_branch = %q, want the pull request's live base %q, not the stale configured %q", fields["base_branch"], "develop", "main")
+	}
+}
+
 func TestPRNumberFromURL(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{

@@ -8,6 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 // prePushCheckOutputMaxBytes bounds how much of a blocking check's output is
@@ -107,6 +108,17 @@ func (e *prePushCheckBlockedError) Error() string {
 //
 // An unset pre_push_check is a complete no-op: no forge lookup, no subprocess,
 // no behavior change.
+//
+// The command runs with sctx.AppRoot (the no-mistakes app root) as its
+// working directory, never sctx.WorkDir. pre_push_check is trusted-only
+// precisely because it is a security veto a repository relies on to protect
+// an externally owned pull request, unlike commands.{test,lint,format}, whose
+// entire job is to validate the pushed content itself. Running it inside the
+// pushed worktree would let a contributor shadow a repo-relative script
+// (e.g. the documented `pre_push_check: "scripts/merge-queue-hold.sh"`) with
+// their own branch content and defeat the guard with the daemon's own
+// credentials. A repository-relative script therefore will not resolve; the
+// check must name an absolute path or a PATH-resolved binary.
 func runConfiguredPrePushCheck(sctx *pipeline.StepContext, decision forcePushDecision, target prePushTarget) error {
 	if sctx.Config == nil {
 		return nil
@@ -126,9 +138,17 @@ func runConfiguredPrePushCheck(sctx *pipeline.StepContext, decision forcePushDec
 
 	target.RemoteSHA = decision.remoteSHA
 	target.PRURL, target.PRNumber = resolvePrePushPRIdentity(sctx, target.Branch)
+	if actual := livePRBaseBranch(sctx, target.PRURL, target.PRNumber); actual != "" {
+		target.BaseBranch = actual
+	}
+
+	checkDir := strings.TrimSpace(sctx.AppRoot)
+	if checkDir == "" {
+		return fmt.Errorf("pre_push_check %q: no app root available to run the check outside the pushed worktree", command)
+	}
 
 	sctx.Log(fmt.Sprintf("running pre_push_check before updating %s: %s", target.describe(), command))
-	output, exitCode, err := runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, prePushCheckEnv(sctx, target), command)
+	output, exitCode, err := runShellCommandWithProcessEnv(sctx.Ctx, checkDir, prePushCheckEnv(sctx, target), command)
 	if err != nil {
 		return fmt.Errorf("run pre_push_check %q: %w", command, err)
 	}
@@ -212,19 +232,43 @@ func resolvePrePushPRIdentity(sctx *pipeline.StepContext, branch string) (prURL,
 	return url, number
 }
 
-// prePushBaseBranch reports the branch this change is destined for, using the
-// same precedence the PR step applies so the check sees the target a pull
-// request on this branch actually has.
+// prePushBaseBranch reports the configured integration base branch as a
+// fallback for when no open pull request (or no live-readable base) is known
+// yet. Once a pull request exists, runConfiguredPrePushCheck overrides this
+// with its actual live base branch via livePRBaseBranch, matching the
+// precedence the CI step already applies: a since-changed pr.base_branch must
+// not misdescribe an existing pull request's real target.
 func prePushBaseBranch(sctx *pipeline.StepContext) string {
-	if sctx.Config != nil {
-		if configured := strings.TrimSpace(sctx.Config.PR.BaseBranch); configured != "" {
-			return configured
-		}
+	return effectivePRBaseBranch(sctx)
+}
+
+// livePRBaseBranch asks the forge for the open pull request's actual base
+// branch, when one is known. An already-open pull request's live target is
+// authoritative over a since-changed pr.base_branch for the same reason the
+// CI step prefers it (see effectivePRBaseBranch callers in ci.go): the check
+// exists to describe the branch's real target to the guard, not a
+// hypothetical one a later config edit selected. Best effort: an unsupported
+// provider, an unreachable forge, or a lookup failure leaves the caller's
+// existing value untouched rather than blocking the check.
+func livePRBaseBranch(sctx *pipeline.StepContext, prURL, prNumber string) string {
+	if prURL == "" && prNumber == "" {
+		return ""
 	}
-	if sctx.Repo != nil {
-		return sctx.Repo.DefaultBranch
+	host, skipReason := buildHost(sctx, resolvedProvider(sctx))
+	if host == nil {
+		sctx.LogFile(fmt.Sprintf("pre_push_check: live base branch unavailable: %s", skipReason))
+		return ""
 	}
-	return ""
+	reader, ok := host.(scm.PRBaseBranchReader)
+	if !ok {
+		return ""
+	}
+	actual, err := reader.GetPRBaseBranch(sctx.Ctx, &scm.PR{Number: prNumber, URL: prURL})
+	if err != nil {
+		sctx.LogFile(fmt.Sprintf("pre_push_check: live base branch lookup failed: %v", err))
+		return ""
+	}
+	return strings.TrimSpace(actual)
 }
 
 // prNumberFromURL extracts the trailing numeric segment every supported

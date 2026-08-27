@@ -131,6 +131,16 @@ func (e *Executor) runEvidenceDir(runID string) string {
 	return e.paths.RunEvidenceDir(configured, runID)
 }
 
+// appRoot returns the no-mistakes app root, a stable directory outside any
+// repository checkout, for steps that need to run a trusted subprocess
+// without a repo-relative path resolving against contributor-pushed content.
+func (e *Executor) appRoot() string {
+	if e.paths == nil {
+		return ""
+	}
+	return e.paths.Root()
+}
+
 // SetGateReconcileTimings overrides the interval between approval-gate
 // reconciliation checks and the deadline for each check. It is primarily used
 // by deterministic tests and specialized embeddings; non-positive values keep
@@ -826,6 +836,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Sessions:         e.sessions,
 		Shared:           e.shared,
 		EvidenceDir:      e.runEvidenceDir(run.ID),
+		AppRoot:          e.appRoot(),
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,

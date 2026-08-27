@@ -51,8 +51,10 @@ review:
         Prose changes only. Do not request test coverage.
 
 # Optional veto run before the push step moves a branch that already exists on
-# the remote. Read only from the trusted default branch. Unset = no check.
-pre_push_check: "scripts/merge-queue-hold.sh"
+# the remote. Runs outside the pushed worktree, so this must be an absolute
+# path or a PATH-resolved binary, never a repository-relative script.
+# Read only from the trusted default branch. Unset = no check.
+pre_push_check: "sh /etc/no-mistakes/merge-queue-hold.sh"
 
 # For orchestration repos whose project instructions would misidentify gate agents.
 # Read only from the trusted default branch. Defaults to false.
@@ -197,7 +199,7 @@ no-mistakes cannot know which repositories have such a process, what it is, or h
 
 #### What the check receives
 
-The command runs with the run's worktree as its working directory, in the same environment configured commands get, plus:
+Unlike `commands.{test,lint,format}`, the command does **not** run with the pushed branch's worktree as its working directory - it runs from the no-mistakes app root instead, in the same environment configured commands get, plus the variables below. This is deliberate: `pre_push_check` is a security veto the repository relies on to protect a pull request an external process already owns, so its own behavior must stay trusted-only too. Running it inside the pushed worktree would let a contributor shadow a repo-relative script (like the example below) with their own branch content and defeat the guard using the daemon's credentials. Point `pre_push_check` at an **absolute path** to a script that lives outside any repository checkout, or at a binary on `PATH`; a repository-relative path will not resolve.
 
 | Variable | Value |
 | --- | --- |
@@ -238,7 +240,8 @@ A merge-queue-aware check. Adapt the hold signals to whatever your queue actuall
 
 ```sh
 #!/bin/sh
-# scripts/merge-queue-hold.sh
+# /etc/no-mistakes/merge-queue-hold.sh - deployed to the daemon host outside
+# any repository checkout, so a pushed branch cannot rewrite it.
 # Refuse to move a pull request head that an external merge process owns.
 set -eu
 
@@ -267,7 +270,7 @@ exit 0
 
 ```yaml
 # .no-mistakes.yaml, on your default branch
-pre_push_check: "sh scripts/merge-queue-hold.sh"
+pre_push_check: "sh /etc/no-mistakes/merge-queue-hold.sh"
 ```
 
 The same shape works for any forge: swap `gh` for the CLI or API your host provides, or query your merge bot directly.
