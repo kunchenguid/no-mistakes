@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -277,12 +279,67 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 		if branchsync.RunHeadUnmoved(state) {
 			return nil
 		}
+		// A terminal run can retain a moved head in its record after that
+		// commit and all recovery evidence have disappeared. Keep the
+		// branch-sync state manual-only, but do not let an unrecoverable
+		// historical record block unrelated fresh work forever. Any surviving
+		// commit or recovery anchor remains a custody block.
+		if state.Safety == "blocked_recover_preserved_head_missing" && freshRunHasNoPipelineEvidence(ctx, env, state) {
+			return nil
+		}
 		return &state
 	case branchsync.StatePushInProgress:
 		return &state
 	default:
 		return nil
 	}
+}
+
+// freshRunHasNoPipelineEvidence permits a fresh delivery only after positive
+// local evidence shows that a terminal run's recorded moved head and its
+// recovery anchors are gone. Unreadable repositories or conflicting anchors
+// fail closed so this exception cannot discard recoverable pipeline work.
+func freshRunHasNoPipelineEvidence(ctx context.Context, env *axiEnv, state branchsync.State) bool {
+	if env == nil || env.p == nil || env.repo == nil || strings.TrimSpace(state.Pipeline.RunID) == "" || strings.TrimSpace(state.Pipeline.CurrentHead) == "" {
+		return false
+	}
+	if _, err := git.Run(ctx, ".", "cat-file", "-e", state.Pipeline.CurrentHead+"^{commit}"); err == nil {
+		return false
+	}
+	if recoveryEvidencePresent(ctx, ".", state.Pipeline.RunID) {
+		return false
+	}
+
+	gateDir := env.p.RepoDir(env.repo.ID)
+	info, err := os.Stat(gateDir)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	if !info.IsDir() {
+		return false
+	}
+	if recoveryEvidencePresent(ctx, gateDir, state.Pipeline.RunID) {
+		return false
+	}
+	if _, err := git.Run(ctx, gateDir, "cat-file", "-e", state.Pipeline.CurrentHead+"^{commit}"); err == nil {
+		return false
+	}
+	// A present but unreadable gate is not proof that the pipeline head is
+	// gone. Treat it as evidence we cannot safely inspect.
+	bare, err := git.Run(ctx, gateDir, "rev-parse", "--is-bare-repository")
+	if err != nil || strings.TrimSpace(bare) != "true" {
+		return false
+	}
+	return true
+}
+
+func recoveryEvidencePresent(ctx context.Context, dir, runID string) bool {
+	ref := custody.RecoveryRef(runID)
+	if target, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(target) != "" {
+		return true
+	}
+	_, exists, err := git.ExactRefTarget(ctx, dir, ref)
+	return err != nil || exists
 }
 
 // triggerRun starts a fresh run for branch: it pushes the current HEAD through

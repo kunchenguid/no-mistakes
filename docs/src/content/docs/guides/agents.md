@@ -179,6 +179,7 @@ Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
+A terminal `pipeline_owned` state with `safety: blocked_recover_preserved_head_missing` may still require manual reconciliation for sync or recovery; `no-mistakes axi run` rechecks that the recorded head and recovery evidence are truly absent and can start unrelated fresh work only in that case. Any surviving commit or recovery anchor keeps custody blocked.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 Then commit follow-up work on top so every pipeline fix commit remains in the branch.
