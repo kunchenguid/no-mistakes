@@ -257,6 +257,9 @@ type RunInfo struct {
 	Error            *string         `json:"error,omitempty"`
 	CIReady          bool            `json:"ci_ready,omitempty"`
 	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	// PRBaseBranch is the per-run PR target override, if the operator set
+	// --base-branch when starting this run.
+	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

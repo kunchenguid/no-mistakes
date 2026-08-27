@@ -268,6 +268,9 @@ func TestRunInfoRoundTrip(t *testing.T) {
 	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != submittedHead {
 		t.Errorf("submitted_head_sha = %v, want %q", got.SubmittedHeadSHA, submittedHead)
 	}
+	if got.PRBaseBranch != nil {
+		t.Errorf("pr_base_branch = %v, want nil when omitted", got.PRBaseBranch)
+	}
 }
 
 func TestStepResultInfoRoundTrip(t *testing.T) {

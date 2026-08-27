@@ -100,19 +100,23 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag            | Type     | Default | Description                                                                                          |
+| --------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `--intent`      | `string` | (none)  | What the user set out to accomplish; required to start a new run                                     |
+| `-y`, `--yes`   | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                                            |
+| `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
+| `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+`--base-branch` is persisted on the run so rebase, PR, and CI honor it after resume.
+Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.

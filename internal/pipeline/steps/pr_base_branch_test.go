@@ -111,6 +111,58 @@ func TestPRStep_PerRunBaseBranchOverridesRepoConfig(t *testing.T) {
 	}
 }
 
+func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	runBase := "epic/feature"
+	sctx.Run.PRBaseBranch = &runBase
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "pr create") {
+		t.Fatalf("expected existing PR to be retargeted, not duplicated, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "pr edit") {
+		t.Fatalf("expected gh pr edit, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "pr edit 42 --repo test/repo --base epic/feature") && !strings.Contains(ghLog, "--base epic/feature") {
+		t.Fatalf("expected retarget --base epic/feature, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.BaseBranch = "main"
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logData), "--base main") {
+		t.Fatalf("repo-config pr.base_branch must not retarget an existing PR, got:\n%s", logData)
+	}
+}
+
 func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

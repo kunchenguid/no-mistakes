@@ -940,6 +940,49 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+func TestSetPRBaseBranchTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{URL: prURL}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if selector := got[3]; selector != prURL {
+		t.Fatalf("edit selector = %q, want the known PR URL %q", selector, prURL)
+	}
+	if !containsArg(got, "--base") || !containsArg(got, "epic/feature") {
+		t.Fatalf("expected --base epic/feature, got %v", got)
+	}
+}
+
+func TestSetPRBaseBranchFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{}, "epic/feature"); err == nil {
+		t.Fatal("SetPRBaseBranch() with no PR identity: expected error, got nil")
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 

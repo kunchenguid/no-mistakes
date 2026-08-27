@@ -384,6 +384,20 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 	return scm.PRContent{Title: parsed.Title, Body: parsed.Body}, nil
 }
 
+func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
+	args = append(args, "--base", baseBranch)
+	cmd := h.cmd(ctx, "gh", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh pr edit --base: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	selector, err := prSelector(pr)
 	if err != nil {

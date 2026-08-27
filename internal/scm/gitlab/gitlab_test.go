@@ -279,6 +279,20 @@ func TestUpdatePRDoesNotPassUnsupportedYesFlag(t *testing.T) {
 	}
 }
 
+func TestSetPRBaseBranchUsesTargetBranchFlag(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr update 7 --target-branch epic/feature": {
+			stdout: "updated\n",
+		},
+	}), nil, "", "")
+
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{Number: "7"}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+}
+
 func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	t.Parallel()
 

@@ -295,6 +295,29 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	return pr, nil
 }
 
+func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
+	id := ""
+	if pr != nil {
+		id = pr.Number
+		if id == "" {
+			if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
+				id = num
+			}
+		}
+		if id == "" {
+			id = pr.URL
+		}
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("merge request identity is required to retarget")
+	}
+	cmd := h.cmd(ctx, "glab", "mr", "update", id, "--target-branch", baseBranch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("glab mr update --target-branch: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	mr, err := h.viewMR(ctx, pr.Number)
 	if err != nil {

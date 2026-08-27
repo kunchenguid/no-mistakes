@@ -145,7 +145,20 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		return emitError(cmd, 1, fmt.Sprintf("get current HEAD: %v", err))
 	}
 
-	runID := activeRunID(env, branch, headSHA)
+	if strings.TrimSpace(baseBranch) != "" {
+		if _, err := steps.ValidateRunPRBaseBranchName(baseBranch); err != nil {
+			return emitError(cmd, 2, fmt.Sprintf("--base-branch: %v", err))
+		}
+	}
+
+	runID := ""
+	if active := activeRunInfo(env, branch, headSHA); active != nil {
+		if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
+			return emitError(cmd, 2, err.Error(),
+				"Omit --base-branch to reattach, or abort the active run before starting a new one")
+		}
+		runID = active.ID
+	}
 	if runID == "" {
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
@@ -203,13 +216,42 @@ func validateAxiRunBaseBranch(ctx context.Context, baseBranch string) error {
 	return steps.VerifyRemoteBranchExists(ctx, ".", normalized)
 }
 
+// conflictingActiveRunPRBaseBranch reports when --base-branch would be
+// discarded by reattaching to an in-flight run that already has a different
+// (or empty) per-run PR target.
+func conflictingActiveRunPRBaseBranch(run *ipc.RunInfo, requested string) error {
+	requested = strings.TrimSpace(requested)
+	if requested == "" || run == nil {
+		return nil
+	}
+	stored := ""
+	if run.PRBaseBranch != nil {
+		stored = strings.TrimSpace(*run.PRBaseBranch)
+	}
+	if stored == requested {
+		return nil
+	}
+	if stored == "" {
+		return fmt.Errorf("active run %s is already in progress without --base-branch %s", run.ID, requested)
+	}
+	return fmt.Errorf("active run %s is already targeting %s, not %s", run.ID, stored, requested)
+}
+
 // activeRunID returns the ID of a non-terminal run for branch and head, or "" if none.
 func activeRunID(env *axiEnv, branch, headSHA string) string {
-	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+	run := activeRunInfo(env, branch, headSHA)
+	if run == nil {
 		return ""
 	}
-	return activeRunIDForHead(&active, headSHA)
+	return run.ID
+}
+
+func activeRunInfo(env *axiEnv, branch, headSHA string) *ipc.RunInfo {
+	var active ipc.GetActiveRunResult
+	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+		return nil
+	}
+	return activeRunInfoForHead(active.Run, headSHA)
 }
 
 func activeRunIDForHead(active *ipc.GetActiveRunResult, headSHA string) string {

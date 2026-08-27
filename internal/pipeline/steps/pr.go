@@ -96,6 +96,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			return nil, err
+		}
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
@@ -123,6 +126,39 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// retargetExistingPRIfNeeded moves an already-open PR onto a per-run
+// --base-branch override when the live forge base disagrees. Repo-config
+// pr.base_branch changes still do not retarget: requested is empty in that
+// path, so title and body update in place and CI keeps following the live
+// forge base.
+func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, existing *scm.PR, requested string) error {
+	requested = strings.TrimSpace(requested)
+	if requested == "" || existing == nil {
+		return nil
+	}
+	actual := strings.TrimSpace(existing.BaseBranch)
+	if actual == requested {
+		return nil
+	}
+	retargeter, ok := host.(scm.PRBaseRetargeter)
+	if !ok {
+		if actual == "" {
+			return nil
+		}
+		return fmt.Errorf("existing pull request %s targets %s, not %s, and this provider cannot retarget it", describePR(existing), actual, requested)
+	}
+	from := actual
+	if from == "" {
+		from = "its current base"
+	}
+	sctx.Log(fmt.Sprintf("retargeting existing pull request %s from %s to %s", describePR(existing), from, requested))
+	if err := retargeter.SetPRBaseBranch(sctx.Ctx, existing, requested); err != nil {
+		return fmt.Errorf("retarget pull request to %s: %w", requested, err)
+	}
+	existing.BaseBranch = requested
+	return nil
 }
 
 func describePR(pr *scm.PR) string {
