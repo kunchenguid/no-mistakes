@@ -971,4 +971,3 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
 	}
 }
-
