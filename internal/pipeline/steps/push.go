@@ -166,9 +166,24 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
 			gateTip = strings.TrimSpace(gateTip)
 
-			// If gateTip is already a newer descendant (an intervening push that contains headBeingPushed),
-			// preserve it without rewinding. Otherwise, atomically advance the gate mirror ref to headBeingPushed.
-			if _, isDescendantErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); isDescendantErr != nil || gateTip == "" || gateTip == headBeingPushed {
+			submittedHead := ""
+			if sctx.Run.SubmittedHeadSHA != nil {
+				submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+			}
+
+			shouldUpdate := gateTip == "" || gateTip == headBeingPushed || (submittedHead != "" && gateTip == submittedHead)
+			if !shouldUpdate {
+				if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); err == nil {
+					// Preserve a newer descendant.
+					shouldUpdate = false
+				} else if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); err == nil {
+					// Fast-forward advance from an older ancestor.
+					shouldUpdate = true
+				} else {
+					return nil, fmt.Errorf("gate mirror ref %s at %s diverged from pushed head %s", ref, gateTip, headBeingPushed)
+				}
+			}
+			if shouldUpdate {
 				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
 					return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 				}
