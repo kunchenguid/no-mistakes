@@ -872,5 +872,3 @@ func TestPushStep_GateMirrorFetchesExplicitPushedHeadInDetachedWorktree(t *testi
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
 	}
 }
-
-
