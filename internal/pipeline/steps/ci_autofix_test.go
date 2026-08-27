@@ -1162,3 +1162,54 @@ func TestCIStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testin
 		t.Fatalf("ci-fix.txt status = %q, want uncommitted", got)
 	}
 }
+
+type mockReviewHost struct {
+	scm.Host
+	comments []scm.ReviewComment
+}
+
+func (m *mockReviewHost) Capabilities() scm.Capabilities {
+	return scm.Capabilities{ReviewComments: true}
+}
+
+func (m *mockReviewHost) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewComment, error) {
+	return m.comments, nil
+}
+
+func TestCIStep_AutoFixIngestsReviewComments(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			return &agent.Result{}, nil
+		},
+	}
+
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	host := &mockReviewHost{
+		comments: []scm.ReviewComment{
+			{
+				ID:     "123",
+				Author: "greptile-apps[bot]",
+				Path:   "internal/pipeline/steps/push.go",
+				Line:   155,
+				Body:   "Missing mirror reports success",
+			},
+		},
+	}
+	pr := &scm.PR{Number: "869", URL: "https://github.com/kunchenguid/no-mistakes/pull/869"}
+
+	_, _ = (&CIStep{}).autoFixCI(sctx, host, pr, []string{"test"}, false)
+
+	if !strings.Contains(capturedPrompt, "### Unresolved PR Review Comments:") {
+		t.Fatalf("expected prompt to contain review comments section, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "[greptile-apps[bot]] (internal/pipeline/steps/push.go:155): Missing mirror reports success") {
+		t.Fatalf("expected prompt to format bot comment, got:\n%s", capturedPrompt)
+	}
+}
+

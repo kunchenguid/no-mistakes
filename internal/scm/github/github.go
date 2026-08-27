@@ -134,7 +134,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -1169,3 +1169,67 @@ func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
 		return ""
 	}
 }
+
+// GetReviewComments implements scm.ReviewCommentsHost.
+func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewComment, error) {
+	if pr == nil {
+		return nil, errors.New("pr is nil")
+	}
+	prNum, err := prSelector(pr)
+	if err != nil {
+		return nil, err
+	}
+	repo := h.repo
+	if repo == "" && pr.URL != "" {
+		repo = RepoSlug(pr.URL)
+	}
+	if repo == "" {
+		return nil, errors.New("cannot determine repository for PR review comments")
+	}
+
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	endpoint := fmt.Sprintf("repos/%s/pulls/%s/comments", repo, prNum)
+	args = append(args, endpoint, "--paginate")
+
+	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh api PR review comments: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	var rawComments []struct {
+		ID        int64     `json:"id"`
+		Body      string    `json:"body"`
+		Path      string    `json:"path"`
+		Line      *int      `json:"line"`
+		HTMLURL   string    `json:"html_url"`
+		CreatedAt time.Time `json:"created_at"`
+		User      struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(out, &rawComments); err != nil {
+		return nil, fmt.Errorf("decode PR review comments JSON: %w", err)
+	}
+
+	var comments []scm.ReviewComment
+	for _, raw := range rawComments {
+		line := 0
+		if raw.Line != nil {
+			line = *raw.Line
+		}
+		comments = append(comments, scm.ReviewComment{
+			ID:        strconv.FormatInt(raw.ID, 10),
+			Author:    raw.User.Login,
+			Path:      raw.Path,
+			Line:      line,
+			Body:      raw.Body,
+			CreatedAt: raw.CreatedAt,
+			URL:       raw.HTMLURL,
+		})
+	}
+	return comments, nil
+}
+

@@ -1645,3 +1645,26 @@ func TestGitHubHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestHost_GetReviewComments(t *testing.T) {
+	t.Parallel()
+
+	rawJSON := `[{"id":12345,"body":"Fix this null pointer","path":"pkg/foo.go","line":42,"html_url":"https://github.com/test/repo/pull/1#discussion_r12345","created_at":"2026-08-27T12:00:00Z","user":{"login":"greptile-apps[bot]"}}]`
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/pulls/1/comments --paginate": {stdout: rawJSON},
+	}), nil, "", "test/repo")
+
+	comments, err := host.GetReviewComments(context.Background(), &scm.PR{Number: "1", URL: "https://github.com/test/repo/pull/1"})
+	if err != nil {
+		t.Fatalf("GetReviewComments failed: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(comments))
+	}
+	c := comments[0]
+	if c.ID != "12345" || c.Author != "greptile-apps[bot]" || c.Path != "pkg/foo.go" || c.Line != 42 || c.Body != "Fix this null pointer" {
+		t.Fatalf("unexpected comment parsed: %#v", c)
+	}
+}
+

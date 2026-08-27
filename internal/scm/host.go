@@ -198,6 +198,7 @@ type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
 	MergedProof     bool
+	ReviewComments  bool
 }
 
 var (
@@ -210,6 +211,23 @@ var (
 	// the wrong commit.
 	ErrHeadChanged = errors.New("pull request head changed")
 )
+
+// ReviewComment represents a code review comment or bot finding on a pull request.
+type ReviewComment struct {
+	ID        string
+	Author    string
+	Path      string
+	Line      int
+	Body      string
+	CreatedAt time.Time
+	URL       string
+}
+
+// ReviewCommentsHost is an optional interface for SCM hosts that support fetching
+// unresolved review comments on a pull request.
+type ReviewCommentsHost interface {
+	GetReviewComments(ctx context.Context, pr *PR) ([]ReviewComment, error)
+}
 
 // MergedProof is provider evidence that a specific PR head was merged.
 type MergedProof struct {

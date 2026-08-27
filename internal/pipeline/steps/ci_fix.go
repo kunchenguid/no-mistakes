@@ -45,6 +45,27 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		}
 	}
 
+	var reviewCommentsSection string
+	if host.Capabilities().ReviewComments {
+		if rch, ok := host.(scm.ReviewCommentsHost); ok {
+			comments, err := rch.GetReviewComments(ctx, pr)
+			if err != nil && err != scm.ErrUnsupported {
+				slog.Warn("failed to fetch PR review comments", "err", err)
+			} else if len(comments) > 0 {
+				var b strings.Builder
+				b.WriteString("\n\n### Unresolved PR Review Comments:\n")
+				for _, c := range comments {
+					loc := c.Path
+					if c.Line > 0 {
+						loc = fmt.Sprintf("%s:%d", c.Path, c.Line)
+					}
+					b.WriteString(fmt.Sprintf("- [%s] (%s): %s\n", c.Author, loc, strings.TrimSpace(c.Body)))
+				}
+				reviewCommentsSection = b.String()
+			}
+		}
+	}
+
 	// Build prompt based on what issues are present
 	var promptIntro string
 	var promptRules string
@@ -102,6 +123,9 @@ Context:
 
 CI logs:
 %s`, logOutput)
+	}
+	if reviewCommentsSection != "" {
+		prompt += reviewCommentsSection
 	}
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
