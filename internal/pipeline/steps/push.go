@@ -9,7 +9,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -144,12 +143,8 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// Update the gate mirror's ref so follow-up pushes to the gate proxy
 	// remain fast-forwardable after pipeline rebases.
-	if sctx.Repo != nil {
-		p, err := paths.New()
-		if err != nil {
-			return nil, fmt.Errorf("resolve paths for gate mirror update: %w", err)
-		}
-		gateDir := p.RepoDir(sctx.Repo.ID)
+	if sctx.Repo != nil && strings.TrimSpace(sctx.GateDir) != "" {
+		gateDir := strings.TrimSpace(sctx.GateDir)
 		if _, statErr := os.Stat(gateDir); statErr != nil {
 			if !os.IsNotExist(statErr) {
 				return nil, fmt.Errorf("stat gate mirror repository: %w", statErr)

@@ -17,11 +17,8 @@ func setupGateMirror(t *testing.T, sctx *pipeline.StepContext) string {
 	t.Helper()
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
-	p, err := paths.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	gateDir := p.RepoDir(sctx.Repo.ID)
+	gateDir := paths.WithRoot(t.TempDir()).RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -750,6 +747,7 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -812,6 +810,7 @@ func TestPushStep_GateMirrorUpdateFailurePropagatesError(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	// Create gateDir as a normal directory that is NOT a valid git repository
 	if err := os.MkdirAll(gateDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -849,6 +848,7 @@ func TestPushStep_GateMirrorFetchesExplicitPushedHeadInDetachedWorktree(t *testi
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -917,6 +917,7 @@ func TestPushStep_SkipsWhenGateMirrorDirectoryMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	// Explicitly remove gateDir to test missing directory failure
 	_ = os.RemoveAll(gateDir)
 
@@ -952,6 +953,7 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
