@@ -3,13 +3,11 @@ package steps
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -144,14 +142,18 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// Update the gate mirror's ref so follow-up pushes to the gate proxy
 	// remain fast-forwardable after pipeline rebases.
-	if p, err := paths.New(); err == nil && sctx.Repo != nil {
-		gateDir := p.RepoDir(sctx.Repo.ID)
-		if _, statErr := os.Stat(gateDir); statErr == nil {
-			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+ref+":"+ref); fetchErr != nil {
-				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed); updateErr != nil {
-					sctx.Log(fmt.Sprintf("warning: update gate ref %s: %v", ref, updateErr))
-				}
+	if gateDir := strings.TrimSpace(sctx.GateDir); gateDir != "" {
+		if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+ref+":"+ref); fetchErr != nil {
+			if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed); updateErr != nil {
+				return nil, fmt.Errorf("synchronize gate mirror ref %s: fetch: %v; update-ref: %w", ref, fetchErr, updateErr)
 			}
+		}
+		mirroredHead, verifyErr := git.Run(ctx, gateDir, "rev-parse", ref+"^{commit}")
+		if verifyErr != nil {
+			return nil, fmt.Errorf("verify gate mirror ref %s: %w", ref, verifyErr)
+		}
+		if mirroredHead != headBeingPushed {
+			return nil, fmt.Errorf("verify gate mirror ref %s: got %s, want %s", ref, mirroredHead, headBeingPushed)
 		}
 	}
 

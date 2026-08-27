@@ -728,6 +728,7 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
 	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -765,5 +766,25 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != rebasedHead {
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
+	}
+}
+
+func TestPushStep_FailsWhenGateMirrorCannotSync(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.GateDir = filepath.Join(t.TempDir(), "missing.git")
+	recordReviewApproval(t, sctx, headSHA)
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "synchronize gate mirror ref") {
+		t.Fatalf("push with unavailable gate mirror error = %v, want synchronization failure", err)
 	}
 }

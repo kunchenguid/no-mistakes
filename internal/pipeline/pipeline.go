@@ -19,6 +19,7 @@ type StepContext struct {
 	Run                   *db.Run
 	Repo                  *db.Repo
 	WorkDir               string
+	GateDir               string
 	Agent                 agent.Agent
 	Config                *config.Config
 	ForgeContext          *forgecontext.Context

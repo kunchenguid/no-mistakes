@@ -433,6 +433,8 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 
 const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt startedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
 
+const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:100){nodes{databaseId body path line url createdAt author{login}}}} pageInfo{hasNextPage endCursor}}}}}`
+
 func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
 	repo := h.repoSlug()
 	parts := strings.Split(repo, "/")
@@ -1175,61 +1177,128 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 	if pr == nil {
 		return nil, errors.New("pr is nil")
 	}
-	prNum, err := prSelector(pr)
-	if err != nil {
-		return nil, err
-	}
-	repo := h.repo
+	repo := h.repoSlug()
 	if repo == "" && pr.URL != "" {
 		repo = RepoSlug(pr.URL)
 	}
 	if repo == "" {
 		return nil, errors.New("cannot determine repository for PR review comments")
 	}
-
-	args := []string{"api"}
-	if h.host != "" {
-		args = append(args, "--hostname", h.host)
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("resolve GitHub repository for PR review comments: invalid repository %q", repo)
 	}
-	endpoint := fmt.Sprintf("repos/%s/pulls/%s/comments", repo, prNum)
-	args = append(args, endpoint, "--paginate")
-
-	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("gh api PR review comments: %s: %w", strings.TrimSpace(string(out)), err)
+	prNum := strings.TrimSpace(pr.Number)
+	if prNum == "" {
+		number, parseErr := parsePullRequestURL(pr.URL, h.host, repo)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		prNum = strconv.Itoa(number)
 	}
-
-	var rawComments []struct {
-		ID        int64     `json:"id"`
-		Body      string    `json:"body"`
-		Path      string    `json:"path"`
-		Line      *int      `json:"line"`
-		HTMLURL   string    `json:"html_url"`
-		CreatedAt time.Time `json:"created_at"`
-		User      struct {
-			Login string `json:"login"`
-		} `json:"user"`
-	}
-	if err := json.Unmarshal(out, &rawComments); err != nil {
-		return nil, fmt.Errorf("decode PR review comments JSON: %w", err)
+	number, err := strconv.Atoi(prNum)
+	if err != nil || number <= 0 {
+		return nil, errors.New("expected positive GitHub pull request number")
 	}
 
 	var comments []scm.ReviewComment
-	for _, raw := range rawComments {
-		line := 0
-		if raw.Line != nil {
-			line = *raw.Line
+	cursor := ""
+	for {
+		args := []string{"api"}
+		if h.host != "" {
+			args = append(args, "--hostname", h.host)
 		}
-		comments = append(comments, scm.ReviewComment{
-			ID:        strconv.FormatInt(raw.ID, 10),
-			Author:    raw.User.Login,
-			Path:      raw.Path,
-			Line:      line,
-			Body:      raw.Body,
-			CreatedAt: raw.CreatedAt,
-			URL:       raw.HTMLURL,
-		})
+		args = append(args, "graphql", "-f", "query="+reviewThreadsQuery,
+			"-F", "owner="+parts[0], "-F", "name="+parts[1], "-F", "number="+strconv.Itoa(number))
+		if cursor != "" {
+			args = append(args, "-F", "cursor="+cursor)
+		}
+		out, commandErr := h.cmd(ctx, "gh", args...).CombinedOutput()
+		if commandErr != nil {
+			return nil, fmt.Errorf("gh api PR review comments: %s: %w", strings.TrimSpace(string(out)), commandErr)
+		}
+		var response struct {
+			Data struct {
+				Repository *struct {
+					PullRequest *struct {
+						ReviewThreads struct {
+							Nodes []struct {
+								IsResolved bool `json:"isResolved"`
+								Comments   struct {
+									Nodes []struct {
+										ID        int64     `json:"databaseId"`
+										Body      string    `json:"body"`
+										Path      string    `json:"path"`
+										Line      *int      `json:"line"`
+										URL       string    `json:"url"`
+										CreatedAt time.Time `json:"createdAt"`
+										Author    *struct {
+											Login string `json:"login"`
+										} `json:"author"`
+									} `json:"nodes"`
+								} `json:"comments"`
+							} `json:"nodes"`
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+						} `json:"reviewThreads"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			return nil, fmt.Errorf("decode PR review comments JSON: %w", err)
+		}
+		if len(response.Errors) > 0 {
+			return nil, fmt.Errorf("gh api PR review comments: %s", response.Errors[0].Message)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.PullRequest == nil {
+			return nil, errors.New("PR review comments response did not contain the pull request")
+		}
+		threads := response.Data.Repository.PullRequest.ReviewThreads
+		for _, thread := range threads.Nodes {
+			if thread.IsResolved {
+				continue
+			}
+			for _, raw := range thread.Comments.Nodes {
+				if raw.Author == nil || !isSupportedReviewBot(raw.Author.Login) {
+					continue
+				}
+				line := 0
+				if raw.Line != nil {
+					line = *raw.Line
+				}
+				comments = append(comments, scm.ReviewComment{
+					ID:        strconv.FormatInt(raw.ID, 10),
+					Author:    raw.Author.Login,
+					Path:      raw.Path,
+					Line:      line,
+					Body:      raw.Body,
+					CreatedAt: raw.CreatedAt,
+					URL:       raw.URL,
+				})
+			}
+		}
+		if !threads.PageInfo.HasNextPage {
+			break
+		}
+		if threads.PageInfo.EndCursor == "" || threads.PageInfo.EndCursor == cursor {
+			return nil, errors.New("PR review comments response returned an invalid page cursor")
+		}
+		cursor = threads.PageInfo.EndCursor
 	}
 	return comments, nil
 }
 
+func isSupportedReviewBot(login string) bool {
+	switch strings.ToLower(strings.TrimSpace(login)) {
+	case "greptile-apps[bot]", "greptile-apps":
+		return true
+	default:
+		return false
+	}
+}
