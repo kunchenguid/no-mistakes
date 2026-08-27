@@ -137,8 +137,20 @@ func runConfiguredPrePushCheck(sctx *pipeline.StepContext, decision forcePushDec
 	}
 
 	target.RemoteSHA = decision.remoteSHA
-	target.PRURL, target.PRNumber = resolvePrePushPRIdentity(sctx, target.Branch)
+	var freshBaseBranch string
+	target.PRURL, target.PRNumber, freshBaseBranch = resolvePrePushPRIdentity(sctx, target.Branch)
+	if freshBaseBranch != "" {
+		// A freshly listed PR/MR already carries the forge's live target
+		// branch on every supported provider, not just GitHub - prefer it
+		// over the configured fallback before trying the GitHub-only
+		// dedicated lookup below.
+		target.BaseBranch = freshBaseBranch
+	}
 	if actual := livePRBaseBranch(sctx, target.PRURL, target.PRNumber); actual != "" {
+		// A dedicated by-identity lookup is the most current read (it also
+		// covers the case where the PR identity came from the run's durable
+		// record instead of a fresh listing above), so it wins when the
+		// provider supports it.
 		target.BaseBranch = actual
 	}
 
@@ -195,41 +207,47 @@ func redactPrePushOutput(output string) string {
 // pushed belongs to. It prefers the run's own durably recorded PR URL and
 // otherwise asks the forge, which is what makes the identity available on the
 // FIRST push of a run against an already-open pull request - the exact push
-// this hook exists to guard.
+// this hook exists to guard. When the forge has to be asked, baseBranch is
+// also returned from that same lookup: every supported provider's PR listing
+// already carries its live target branch, so this is a live read, not the
+// configured fallback, on any provider - not just the one with a dedicated
+// scm.PRBaseBranchReader (see livePRBaseBranch). baseBranch is empty when the
+// identity instead came from the run's durable record, since that path does
+// not re-list the PR.
 //
 // Every failure is best-effort and non-fatal: the check still runs with empty
 // PR fields. A forge that is unreachable, unauthenticated, or unsupported must
 // not be able to silently disable a guard the repository asked for, and a
 // command that needs the PR identity can look it up itself.
-func resolvePrePushPRIdentity(sctx *pipeline.StepContext, branch string) (prURL, prNumber string) {
+func resolvePrePushPRIdentity(sctx *pipeline.StepContext, branch string) (prURL, prNumber, baseBranch string) {
 	if sctx.Run != nil && sctx.Run.PRURL != nil {
 		if recorded := strings.TrimSpace(*sctx.Run.PRURL); recorded != "" {
-			return recorded, prNumberFromURL(recorded)
+			return recorded, prNumberFromURL(recorded), ""
 		}
 	}
 	host, skipReason := buildHost(sctx, resolvedProvider(sctx))
 	if host == nil {
 		sctx.LogFile(fmt.Sprintf("pre_push_check: pull request identity unavailable: %s", skipReason))
-		return "", ""
+		return "", "", ""
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
 		sctx.LogFile(fmt.Sprintf("pre_push_check: pull request identity unavailable: %v", err))
-		return "", ""
+		return "", "", ""
 	}
 	pr, err := host.FindPR(sctx.Ctx, branch, "")
 	if err != nil {
 		sctx.LogFile(fmt.Sprintf("pre_push_check: pull request lookup for %s failed: %v", branch, err))
-		return "", ""
+		return "", "", ""
 	}
 	if pr == nil {
-		return "", ""
+		return "", "", ""
 	}
 	number := strings.TrimSpace(pr.Number)
 	url := strings.TrimSpace(pr.URL)
 	if number == "" && url != "" {
 		number = prNumberFromURL(url)
 	}
-	return url, number
+	return url, number, strings.TrimSpace(pr.BaseBranch)
 }
 
 // prePushBaseBranch reports the configured integration base branch as a

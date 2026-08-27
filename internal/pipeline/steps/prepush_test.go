@@ -404,6 +404,41 @@ func TestRunConfiguredPrePushCheck_UsesLivePRBaseBranch(t *testing.T) {
 	}
 }
 
+// TestRunConfiguredPrePushCheck_UsesFreshlyListedBaseBranchOnNonGitHubForge
+// pins the same live-over-configured precedence as
+// TestRunConfiguredPrePushCheck_UsesLivePRBaseBranch, but for a provider that
+// has no dedicated scm.PRBaseBranchReader (GitLab). The base branch still
+// must not come from the stale configured value: FindPR's own listing already
+// carries the merge request's real target branch, and that data must not be
+// discarded just because no GitHub-only follow-up lookup exists for it.
+func TestRunConfiguredPrePushCheck_UsesFreshlyListedBaseBranchOnNonGitHubForge(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Config.PR.BaseBranch = "main"
+	mrJSON := `{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":"opened","target_branch":"develop"}`
+	env, _ := fakeGlab(t, mrJSON)
+	sctx.Env = env
+
+	probe := newPrePushProbe(t, dir, "refs/heads/feature", 0)
+	sctx.Config.PrePushCheck = probe.command
+
+	if err := runConfiguredPrePushCheck(sctx, forcePushDecision{remoteSHA: strings.Repeat("a", 40)}, prePushTarget{
+		Ref:        "refs/heads/feature",
+		Branch:     "feature",
+		BaseBranch: prePushBaseBranch(sctx),
+		HeadSHA:    headSHA,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fields := probe.mustRun(t)
+	if fields["base_branch"] != "develop" {
+		t.Fatalf("pre_push_check base_branch = %q, want the merge request's live target %q, not the stale configured %q", fields["base_branch"], "develop", "main")
+	}
+}
+
 func TestPRNumberFromURL(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
