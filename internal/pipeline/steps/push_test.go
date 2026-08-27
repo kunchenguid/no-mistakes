@@ -10,7 +10,24 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
+
+func setupGateMirror(t *testing.T, sctx *pipeline.StepContext) string {
+	t.Helper()
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+	return gateDir
+}
 
 // TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit reproduces
 // the end-user incident at the real push boundary. Review approved R, then an
@@ -47,6 +64,7 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	setupGateMirror(t, sctx)
 	// Let the entry guard pass so this regression continues to isolate the
 	// independent durable review-approved binding added at the push boundary.
 	sctx.Run.HeadSHA = clobberedHead
@@ -207,6 +225,7 @@ func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, approvedHead)
 
 	if _, err := (&PushStep{}).Execute(sctx); err != nil {
@@ -236,7 +255,6 @@ func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(
 }
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
-	t.Parallel()
 	// When push retries after a prior UpdateRunHeadSHA failure, there are no
 	// uncommitted changes. The step must still reconcile the DB if HeadSHA is stale.
 	upstream := t.TempDir()
@@ -266,6 +284,7 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, staleHeadSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, actualHeadSHA)
 
 	step := &PushStep{}
@@ -296,7 +315,6 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 }
 
 func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
-	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -321,6 +339,7 @@ func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "feature"
+	setupGateMirror(t, sctx)
 	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence", Branch: "no-mistakes/evidence"}
 	recordReviewApproval(t, sctx, headSHA)
 
@@ -348,7 +367,6 @@ func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 }
 
 func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
-	t.Parallel()
 	parent := t.TempDir()
 	fork := t.TempDir()
 	gitCmd(t, parent, "init", "--bare")
@@ -382,6 +400,7 @@ func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	sctx.Repo.UpstreamURL = parent
 	sctx.Repo.ForkURL = fork
 	sctx.Run.Branch = "feature"
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, headSHA)
 
 	step := &PushStep{}
@@ -426,6 +445,7 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
 	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
 	sctx.Run.Branch = "refs/heads/feature"
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, headSHA)
 
 	step := &PushStep{}
@@ -448,7 +468,6 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 // this worktree never had. The formatter or the Test step's evidence agent left
 // an uncommitted edit behind, and the run must still deliver it.
 func TestPushStep_CommitsLeftoverChangesWhenLegacyHuskyRuntimeIsMissing(t *testing.T) {
-	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
@@ -491,6 +510,7 @@ func TestPushStep_CommitsLeftoverChangesWhenLegacyHuskyRuntimeIsMissing(t *testi
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, headSHA)
 
 	if _, err := (&PushStep{}).Execute(sctx); err != nil {
@@ -568,6 +588,7 @@ func TestPushStep_AllowsForcePushAfterMidRunRebaseOverPriorPushedGeneration(t *t
 	sctx.Run.HeadSHA = rebasedHead
 	sctx.Run.BaseSHA = newBaseSHA
 	sctx.Run.LastPushedSHA = &gen1Head
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, rebasedHead)
 
 	if _, err := (&PushStep{}).Execute(sctx); err != nil {
@@ -632,6 +653,7 @@ func TestPushStep_AllowsForcePushOnRerunOverPriorRunPushedGeneration(t *testing.
 	sctx.Run.BaseSHA = newBaseSHA
 	// Run2 itself has not pushed yet (LastPushedSHA is nil)
 	sctx.Run.LastPushedSHA = nil
+	setupGateMirror(t, sctx)
 	recordReviewApproval(t, sctx, rebasedHead)
 
 	// Record that a prior run for this repo/branch pushed gen1Head.
@@ -874,7 +896,7 @@ func TestPushStep_GateMirrorFetchesExplicitPushedHeadInDetachedWorktree(t *testi
 	}
 }
 
-func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissingWithNMHome(t *testing.T) {
+func TestPushStep_FailsWhenGateMirrorDirectoryMissing(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 
@@ -890,15 +912,20 @@ func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissingWithNMHome(t *testing
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	// Explicitly remove gateDir to test missing directory failure
+	_ = os.RemoveAll(gateDir)
+
 	recordReviewApproval(t, sctx, submittedHead)
 
-	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("expected push step to succeed when gate mirror directory is absent, got: %v", err)
-	}
-
-	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if remoteHead != submittedHead {
-		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
+	if _, err := (&PushStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected push step to fail when gate mirror directory is absent, got nil")
+	} else if !strings.Contains(err.Error(), "stat gate mirror repository") {
+		t.Fatalf("expected stat error, got: %v", err)
 	}
 }
 

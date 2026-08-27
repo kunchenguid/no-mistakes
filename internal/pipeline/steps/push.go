@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -145,45 +144,46 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	// Update the gate mirror's ref so follow-up pushes to the gate proxy
 	// remain fast-forwardable after pipeline rebases.
-	if p, err := paths.New(); err == nil && sctx.Repo != nil {
+	if sctx.Repo != nil {
+		p, err := paths.New()
+		if err != nil {
+			return nil, fmt.Errorf("resolve paths for gate mirror update: %w", err)
+		}
 		gateDir := p.RepoDir(sctx.Repo.ID)
 		if _, statErr := os.Stat(gateDir); statErr != nil {
-			if !os.IsNotExist(statErr) {
-				return nil, fmt.Errorf("stat gate mirror repository: %w", statErr)
+			return nil, fmt.Errorf("stat gate mirror repository: %w", statErr)
+		}
+
+		if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, headBeingPushed); fetchErr != nil {
+			return nil, fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
+		}
+
+		gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
+		gateTip = strings.TrimSpace(gateTip)
+
+		submittedHead := ""
+		if sctx.Run.SubmittedHeadSHA != nil {
+			submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+		}
+
+		if gateTip == "" || gateTip == submittedHead {
+			if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
+				return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 			}
 		} else {
-			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, headBeingPushed); fetchErr != nil {
-				return nil, fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
-			}
-
-			gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
-			gateTip = strings.TrimSpace(gateTip)
-
-			submittedHead := ""
-			if sctx.Run.SubmittedHeadSHA != nil {
-				submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
-			}
-			if gateTip == "" || gateTip == submittedHead {
+			// Check if gateTip is an ancestor of headBeingPushed (fast-forward advance)
+			if _, isAncestorErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); isAncestorErr == nil {
 				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
 					return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 				}
 			} else {
-				// Check if gateTip is an ancestor of headBeingPushed (fast-forward advance)
-				if _, isAncestorErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); isAncestorErr == nil {
-					if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
-						return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
-					}
-				} else {
-					// Check if gateTip is a newer descendant (intervening push that already contains headBeingPushed)
-					if _, isDescendantErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); isDescendantErr != nil {
-						// gateTip is neither an ancestor nor a newer descendant; fail loudly rather than leaving divergent mirror
-						return nil, fmt.Errorf("gate mirror ref %s at %s diverged from submitted %s and pushed %s", ref, gateTip, submittedHead, headBeingPushed)
-					}
+				// Check if gateTip is a newer descendant (intervening push that already contains headBeingPushed)
+				if _, isDescendantErr := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); isDescendantErr != nil {
+					// gateTip is neither an ancestor nor a newer descendant; fail loudly rather than leaving divergent mirror
+					return nil, fmt.Errorf("gate mirror ref %s at %s diverged from submitted %s and pushed %s", ref, gateTip, submittedHead, headBeingPushed)
 				}
 			}
 		}
-	} else if err != nil && (!testing.Testing() || os.Getenv("NM_HOME") != "") {
-		return nil, fmt.Errorf("resolve paths for gate mirror update: %w", err)
 	}
 
 	sctx.Log("pushed successfully")
