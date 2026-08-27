@@ -67,12 +67,13 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate         string           `json:"gate"`
+	Ref          string           `json:"ref"`
+	Old          string           `json:"old"`
+	New          string           `json:"new"`
+	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
+	Intent       string           `json:"intent,omitempty"`
+	PRBaseBranch string           `json:"pr_base_branch,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -130,6 +131,7 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

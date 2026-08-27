@@ -236,6 +236,10 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// Per-run PR target branch chosen by the operator (e.g. axi run
+	// --base-branch). Nullable: absent means fall back to repo config and the
+	// forge default branch.
+	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

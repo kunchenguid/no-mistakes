@@ -669,7 +669,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		Summary: "newer unrelated requirements",
 		Source:  db.RunIntentSourceAgent,
 		Score:   1,
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,6 +692,60 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+}
+
+func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "pr-base-rerun-repo")
+	workDir := repo.WorkingPath
+	gitCmd(t, workDir, "checkout", "-b", "epic/feature")
+	if err := os.WriteFile(filepath.Join(workDir, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "epic.txt")
+	gitCmd(t, workDir, "commit", "-m", "epic")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/epic/feature")
+	gitCmd(t, workDir, "checkout", "main")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:         p.RepoDir("pr-base-rerun-repo"),
+		Ref:          "refs/heads/main",
+		Old:          "0000000000000000000000000000000000000000",
+		New:          headSHA,
+		PRBaseBranch: "epic/feature",
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun := waitForRunTerminalState(t, d, first.RunID)
+	if firstRun.PRBaseBranch == nil || *firstRun.PRBaseBranch != "epic/feature" {
+		t.Fatalf("first run PRBaseBranch = %#v, want epic/feature", firstRun.PRBaseBranch)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "pr-base-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" {
+		t.Fatalf("rerun PRBaseBranch = %#v, want inherited epic/feature", got.PRBaseBranch)
 	}
 }
 

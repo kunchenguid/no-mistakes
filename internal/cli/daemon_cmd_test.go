@@ -109,3 +109,14 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestPRBaseBranchPushOptionRoundTrip(t *testing.T) {
+	opt := formatPRBaseBranchPushOption("epic/feature")
+	got, err := parsePRBaseBranchPushOptions([]string{opt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "epic/feature" {
+		t.Fatalf("round-trip = %q, want epic/feature", got)
+	}
+}
