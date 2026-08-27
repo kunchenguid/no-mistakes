@@ -303,7 +303,8 @@ func freshRunHasNoPipelineEvidence(ctx context.Context, env *axiEnv, state branc
 	if env == nil || env.p == nil || env.repo == nil || strings.TrimSpace(state.Pipeline.RunID) == "" || strings.TrimSpace(state.Pipeline.CurrentHead) == "" {
 		return false
 	}
-	if _, err := git.Run(ctx, ".", "cat-file", "-e", state.Pipeline.CurrentHead+"^{commit}"); err == nil {
+	localHeadExists, err := git.RefExists(ctx, ".", state.Pipeline.CurrentHead)
+	if err != nil || localHeadExists {
 		return false
 	}
 	if recoveryEvidencePresent(ctx, ".", state.Pipeline.RunID) {
@@ -318,16 +319,14 @@ func freshRunHasNoPipelineEvidence(ctx context.Context, env *axiEnv, state branc
 	if !info.IsDir() {
 		return false
 	}
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return false
+	}
 	if recoveryEvidencePresent(ctx, gateDir, state.Pipeline.RunID) {
 		return false
 	}
-	if _, err := git.Run(ctx, gateDir, "cat-file", "-e", state.Pipeline.CurrentHead+"^{commit}"); err == nil {
-		return false
-	}
-	// A present but unreadable gate is not proof that the pipeline head is
-	// gone. Treat it as evidence we cannot safely inspect.
-	bare, err := git.Run(ctx, gateDir, "rev-parse", "--is-bare-repository")
-	if err != nil || strings.TrimSpace(bare) != "true" {
+	gateHeadExists, err := git.RefExists(ctx, gateDir, state.Pipeline.CurrentHead)
+	if err != nil || gateHeadExists {
 		return false
 	}
 	return true

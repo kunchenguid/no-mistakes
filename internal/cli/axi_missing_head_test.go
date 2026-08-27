@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 		gatePresent      bool
 		survivingAnchor  bool
 		verifiedHead     bool
+		objectReadError  bool
 		wantFreshBlocked bool
 		wantSafety       string
 	}{
@@ -65,6 +67,16 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 			wantFreshBlocked: true,
 			wantSafety:       "blocked_recover_preserved_head_missing",
 		},
+		{
+			name: "object read failure keeps custody",
+			recordedHead: func(_ *testing.T, _ string) string {
+				return strings.Repeat("f", 40)
+			},
+			gatePresent:      true,
+			objectReadError:  true,
+			wantFreshBlocked: true,
+			wantSafety:       "blocked_recover_preserved_head_missing",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repoDir, paths, database, repo := setupAxiQueryRepo(t)
@@ -84,6 +96,15 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 				}
 				cliGit(t, gateDir, "init", "--bare")
 				cliGit(t, repoDir, "push", gateDir, "HEAD:refs/heads/feature/missing-head")
+				if tc.objectReadError {
+					objectPath := filepath.Join(gateDir, "objects", recorded[:2], recorded[2:])
+					if err := os.MkdirAll(filepath.Dir(objectPath), 0o755); err != nil {
+						t.Fatalf("create corrupt object directory: %v", err)
+					}
+					if err := os.WriteFile(objectPath, []byte("corrupt object"), 0o644); err != nil {
+						t.Fatalf("write corrupt object: %v", err)
+					}
+				}
 			}
 
 			pipelineRun, err := database.InsertRun(repo.ID, "feature/missing-head", submitted, submitted)

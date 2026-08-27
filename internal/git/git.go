@@ -679,9 +679,17 @@ func ExactRefTarget(ctx context.Context, dir, ref string) (string, bool, error) 
 
 // RefExists reports whether the given ref resolves to a commit. It uses
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
-// result rather than a loud error.
+// result rather than a loud error. Bare repositories are addressed with an
+// explicit --git-dir so callers can distinguish missing objects without
+// relying on cwd-based repository discovery.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	args := []string{"rev-parse", "--verify", "--quiet", ref + "^{commit}"}
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	} else {
+		args = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = nonInteractiveEnvForContext(ctx, dir)
 	winproc.Harden(cmd)
 	if err := cmd.Run(); err != nil {
