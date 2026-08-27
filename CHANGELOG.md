@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.3](https://github.com/kunchenguid/no-mistakes/compare/v1.59.2...v1.59.3) (2026-08-27)
+
+
+### Bug Fixes
+
+* **update:** reap background update-check processes ([#858](https://github.com/kunchenguid/no-mistakes/issues/858)) ([06c6504](https://github.com/kunchenguid/no-mistakes/commit/06c65043ede499378ab8c524aff2e0f966806ab0))
+
 ## [1.59.2](https://github.com/kunchenguid/no-mistakes/compare/v1.59.1...v1.59.2) (2026-08-26)
 
 
