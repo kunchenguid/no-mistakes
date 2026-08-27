@@ -3,11 +3,13 @@ package steps
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -137,6 +139,19 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		sctx.Run.HeadSHA = headBeingPushed
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headBeingPushed); err != nil {
 			return nil, err
+		}
+	}
+
+	// Update the gate mirror's ref so follow-up pushes to the gate proxy
+	// remain fast-forwardable after pipeline rebases.
+	if p, err := paths.New(); err == nil && sctx.Repo != nil {
+		gateDir := p.RepoDir(sctx.Repo.ID)
+		if _, statErr := os.Stat(gateDir); statErr == nil {
+			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+ref+":"+ref); fetchErr != nil {
+				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed); updateErr != nil {
+					sctx.Log(fmt.Sprintf("warning: update gate ref %s: %v", ref, updateErr))
+				}
+			}
 		}
 	}
 
