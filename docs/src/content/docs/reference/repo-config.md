@@ -8,7 +8,8 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `pre_push_check`, and `test.evidence.branch` only from that trusted copy.
+`pre_push_check` is trusted-only for two independent reasons: it runs shell on the daemon host, and it is the guard standing in front of the very push a contributor's branch is asking for, so a pushed branch must be able neither to inject it nor to delete it.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -48,6 +49,10 @@ review:
     - path: "docs/**"
       instructions: |
         Prose changes only. Do not request test coverage.
+
+# Optional veto run before the push step moves a branch that already exists on
+# the remote. Read only from the trusted default branch. Unset = no check.
+pre_push_check: "scripts/merge-queue-hold.sh"
 
 # For orchestration repos whose project instructions would misidentify gate agents.
 # Read only from the trusted default branch. Defaults to false.
@@ -174,6 +179,100 @@ If checks still appear on a declared no-CI repository, their actual states are p
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A feature branch cannot self-declare `no_ci: true` to bypass checks, and cannot clear a trusted declaration either.
+
+### pre_push_check
+
+A shell command run immediately before the [Push](/no-mistakes/reference/pipeline-steps/#push) step moves a branch that **already exists** on the push remote. A non-zero exit refuses the push.
+
+| | |
+| --- | --- |
+| Type | `string` (shell command) |
+| Default | unset (no check runs, and push behavior is exactly as it was before this field existed) |
+
+#### The problem it solves
+
+A gate round can produce a new commit - a review fix, a lint fix, a rebase - for a branch that already has an open pull request. If an **external merge process** owns that pull request at that moment (a merge queue, a batching merge bot that builds several approved PRs together on a scratch branch, a release train), pushing a new commit changes the PR's head SHA and invalidates whatever that process has in flight. Where PRs are batched, one new commit can throw away the CI cycle for every other pull request in the same batch, not just the one that moved.
+
+no-mistakes cannot know which repositories have such a process, what it is, or how it signals "I am holding this PR right now" - so it does not guess. `pre_push_check` is the seam where a repository answers that question for itself.
+
+#### What the check receives
+
+The command runs with the run's worktree as its working directory, in the same environment configured commands get, plus:
+
+| Variable | Value |
+| --- | --- |
+| `NO_MISTAKES_PR_URL` | URL of the open pull request on this branch, or empty when none was resolved |
+| `NO_MISTAKES_PR_NUMBER` | Number of that pull request, or empty |
+| `NO_MISTAKES_REF` | Full ref being pushed, e.g. `refs/heads/feature` |
+| `NO_MISTAKES_BRANCH` | Short branch name, e.g. `feature` |
+| `NO_MISTAKES_BASE_BRANCH` | Branch this change targets |
+| `NO_MISTAKES_HEAD_SHA` | Commit about to be published |
+| `NO_MISTAKES_REMOTE_SHA` | Commit the remote branch (and therefore the open pull request) points at right now |
+
+The pull request identity comes from the run's own recorded PR when it has one, and otherwise from a forge lookup by branch, so it is available on the **first** push of a run against an already-open pull request - the exact push this guard exists for. That lookup is best effort: an unreachable, unauthenticated, or unsupported forge leaves `NO_MISTAKES_PR_URL` and `NO_MISTAKES_PR_NUMBER` empty rather than silently disabling a guard the repository asked for. A check that needs the identity can look it up itself from `NO_MISTAKES_BRANCH`.
+
+#### When it runs
+
+It runs for a push that would **change the head of a branch that already exists on the remote**. That is the only push that can land underneath an open pull request.
+
+It does **not** run when:
+
+- `pre_push_check` is unset - no subprocess, no forge lookup, nothing changes
+- The push creates the branch on the remote for the first time. There is nothing on the remote yet, so there is no pull request and no external process to disturb; opening a brand-new pull request is never gated by this hook
+- The remote branch already points at the commit being pushed, so nothing moves
+
+#### Outcome
+
+| Exit code | Result |
+| --- | --- |
+| `0` | The push proceeds exactly as it would without the field |
+| non-zero | The push is refused. **No object is moved and the remote branch is untouched.** The step fails with a message naming the pull request, the commit range that was going to move, the exit code, and the check's own output |
+
+A refusal is a hold, not a corruption: re-run the gate once the pull request is no longer held, or clear the hold and push manually if the update is intended.
+
+If the command cannot be launched at all (missing interpreter, unreadable script), the step fails with that error rather than pushing.
+
+#### Example
+
+A merge-queue-aware check. Adapt the hold signals to whatever your queue actually sets - a label, a check name, a lock branch, an API field:
+
+```sh
+#!/bin/sh
+# scripts/merge-queue-hold.sh
+# Refuse to move a pull request head that an external merge process owns.
+set -eu
+
+# No open pull request on this branch: nothing external can own it.
+[ -n "${NO_MISTAKES_PR_NUMBER:-}" ] || exit 0
+
+# 1. A label the queue applies while it holds a pull request.
+hold_labels='queued|merging|in-merge-queue'
+labels=$(gh pr view "$NO_MISTAKES_PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || true)
+if printf '%s\n' "$labels" | grep -Eqi "^($hold_labels)$"; then
+  echo "PR #$NO_MISTAKES_PR_NUMBER is held by the merge queue."
+  echo "Not moving its head from $NO_MISTAKES_REMOTE_SHA to $NO_MISTAKES_HEAD_SHA."
+  exit 1
+fi
+
+# 2. Some queues signal with a pending check on the pull request head instead.
+if gh pr checks "$NO_MISTAKES_PR_NUMBER" --json name,state \
+     --jq '.[] | select(.name | test("merge.?queue"; "i")) | select(.state == "PENDING") | .name' \
+     2>/dev/null | grep -q .; then
+  echo "A merge-queue build is in flight on PR #$NO_MISTAKES_PR_NUMBER; not moving its head."
+  exit 1
+fi
+
+exit 0
+```
+
+```yaml
+# .no-mistakes.yaml, on your default branch
+pre_push_check: "sh scripts/merge-queue-hold.sh"
+```
+
+The same shape works for any forge: swap `gh` for the CLI or API your host provides, or query your merge bot directly.
+
+This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`, for two independent reasons. It runs arbitrary shell on the daemon host like `commands.*` do, and it is the guard standing in front of the very push a contributor's branch is asking for - so a pushed branch must be able neither to inject a command nor to delete the guard that would hold it back.
 
 ### pr.base_branch
 

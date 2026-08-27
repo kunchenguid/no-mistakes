@@ -212,6 +212,20 @@ type RepoConfig struct {
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool `yaml:"allow_repo_commands"`
+	// PrePushCheck is an optional shell command run immediately before the push
+	// step updates a branch that ALREADY exists on the push remote - the case
+	// where an external merge process (a merge queue, a batching merge bot, a
+	// release train) may already own the open pull request on that branch. A
+	// non-zero exit refuses the push instead of moving the PR head underneath
+	// that process. Empty (the default) disables the check entirely and leaves
+	// push behavior unchanged.
+	//
+	// It executes arbitrary shell on the daemon host exactly like commands.*,
+	// and it is a SAFETY boundary, so it is honored ONLY from the trusted
+	// default-branch copy of .no-mistakes.yaml (see EffectiveRepoConfig) and
+	// ignores allow_repo_commands: a pushed branch must be able neither to
+	// inject a command nor to delete the maintainer's guard on its own push.
+	PrePushCheck string `yaml:"pre_push_check"`
 	// PR carries pull-request routing settings. BaseBranch controls where a PR
 	// lands, so EffectiveRepoConfig treats it as trusted-only unless the
 	// repository explicitly opts into pushed settings.
@@ -398,6 +412,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commands               Commands    `yaml:"commands"`
 		IgnorePatterns         []string    `yaml:"ignore_patterns"`
 		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
+		PrePushCheck           string      `yaml:"pre_push_check"`
 		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
 		CI                     CIRaw       `yaml:"ci"`
 		Commit                 CommitRaw   `yaml:"commit"`
@@ -418,6 +433,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commands = raw.Commands
 	c.IgnorePatterns = raw.IgnorePatterns
 	c.AllowRepoCommands = raw.AllowRepoCommands
+	c.PrePushCheck = raw.PrePushCheck
 	c.AutoFix = raw.AutoFix
 	c.CI = raw.CI
 	c.Commit = raw.Commit
@@ -515,6 +531,10 @@ type Config struct {
 	// project-level settings/instructions suppressed; the daemon fails the run
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
+	// PrePushCheck is the resolved, trusted-only pre-push safety command (see
+	// the RepoConfig field). Empty means no check is configured and the push
+	// step behaves exactly as it did before the field existed.
+	PrePushCheck string
 	// NoCI is the resolved, trusted-only declaration that this repository
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
@@ -2126,6 +2146,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// billed to the repository. It is trusted-only for that reason, so a
 		// pushed branch cannot raise its own rerun budget to the cap.
 		effective.CI = trusted.CI
+		// pre_push_check both executes shell on the daemon host and guards the
+		// push that the pushed branch is itself asking for. It is trusted-only
+		// regardless of allow_repo_commands for both halves of that: a
+		// contributor must be able neither to inject the command nor to delete
+		// the maintainer's guard from the very branch it is meant to hold back.
+		effective.PrePushCheck = trusted.PrePushCheck
 		// test.evidence.branch names the git ref evidence commits are pushed
 		// to with the maintainer's credentials. It is trusted-only so a pushed
 		// branch cannot aim them at another branch of the repository; the rest
@@ -2145,6 +2171,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
 		effective.CI = CIRaw{}
+		effective.PrePushCheck = ""
 		effective.Test.Evidence.Branch = nil
 		if !allowRepoCommands {
 			effective.PR = PRRaw{}
@@ -2513,6 +2540,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
+		PrePushCheck:           strings.TrimSpace(repo.PrePushCheck),
 		NoCI:                   repo.NoCI,
 	}
 

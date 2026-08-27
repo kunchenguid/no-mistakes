@@ -193,6 +193,7 @@ Pushes the validated branch to the configured push target.
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
 - Requires the commit proposed for push to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
 - Re-reads the push target via `git ls-remote` before pushing
+- For a push that would move an **already-existing** remote branch, runs the repository's [`pre_push_check`](/no-mistakes/reference/repo-config/#pre_push_check) when one is configured, and refuses the push on a non-zero exit. Creating a branch for the first time, and a remote already at the pushed head, are not gated
 - For existing branches, refuses to force-push when the live remote carries commits the pipeline has not incorporated by patch-id
 - Fails closed when the remote safety check cannot verify whether the push would discard existing remote work
 - Uses `--force-with-lease=<ref>:<sha>` with an explicit SHA anchor for allowed existing-branch rewrites

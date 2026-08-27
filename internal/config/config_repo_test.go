@@ -592,3 +592,64 @@ func TestLoadRepo_LegacyAutoFixBabysit(t *testing.T) {
 		t.Fatalf("ci auto-fix = %d, want 0", *cfg.AutoFix.CI)
 	}
 }
+
+// TestRepoConfig_PrePushCheck covers the pre-push safety hook end to end at the
+// configuration layer: it parses from .no-mistakes.yaml, it resolves onto the
+// merged config, and it is honored ONLY from the trusted default-branch copy.
+// The trust rule has two independent reasons, and both have to hold: the value
+// is shell that runs on the daemon host, and it is the guard standing in front
+// of the very push the pushed branch is asking for.
+func TestRepoConfig_PrePushCheck(t *testing.T) {
+	trustedCommand := "scripts/merge-queue-hold.sh"
+	pushedCommand := "true"
+
+	parsed, err := LoadRepoFromBytes([]byte("pre_push_check: \"" + trustedCommand + "\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.PrePushCheck != trustedCommand {
+		t.Fatalf("parsed pre_push_check = %q, want %q", parsed.PrePushCheck, trustedCommand)
+	}
+
+	pushed := &RepoConfig{PrePushCheck: pushedCommand}
+	trusted := &RepoConfig{PrePushCheck: trustedCommand}
+
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	if effective.PrePushCheck != trustedCommand {
+		t.Fatalf("pre_push_check = %q, want %q from the trusted copy", effective.PrePushCheck, trustedCommand)
+	}
+	if got := Merge(DefaultGlobalConfig(), effective).PrePushCheck; got != trustedCommand {
+		t.Fatalf("resolved pre_push_check = %q, want %q", got, trustedCommand)
+	}
+
+	// allow_repo_commands opts in to pushed commands and agent selection. It
+	// must not also let a branch replace the guard on its own push.
+	optedIn := EffectiveRepoConfig(pushed, trusted, true)
+	if optedIn.PrePushCheck != trustedCommand {
+		t.Fatalf("pre_push_check with allow_repo_commands = %q, want %q", optedIn.PrePushCheck, trustedCommand)
+	}
+
+	// A branch that removes the field must not disarm the maintainer's guard.
+	silent := EffectiveRepoConfig(&RepoConfig{}, trusted, true)
+	if silent.PrePushCheck != trustedCommand {
+		t.Fatalf("pre_push_check for a branch with no value = %q, want %q", silent.PrePushCheck, trustedCommand)
+	}
+
+	// No trusted copy means no check at all, never the pushed one.
+	withoutTrusted := EffectiveRepoConfig(pushed, nil, true)
+	if withoutTrusted.PrePushCheck != "" {
+		t.Fatalf("pre_push_check without a trusted copy = %q, want unset", withoutTrusted.PrePushCheck)
+	}
+}
+
+// TestMerge_PrePushCheckDefaultsToUnset pins the opt-in guarantee at the
+// configuration layer: a repository that never mentions the field resolves to
+// an empty command, which the push step treats as "behave exactly as before".
+func TestMerge_PrePushCheckDefaultsToUnset(t *testing.T) {
+	if got := Merge(DefaultGlobalConfig(), &RepoConfig{}).PrePushCheck; got != "" {
+		t.Fatalf("default pre_push_check = %q, want unset", got)
+	}
+	if got := Merge(DefaultGlobalConfig(), &RepoConfig{PrePushCheck: "  \n\t "}).PrePushCheck; got != "" {
+		t.Fatalf("whitespace-only pre_push_check = %q, want unset", got)
+	}
+}

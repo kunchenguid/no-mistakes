@@ -49,12 +49,22 @@ func mergeEnv(extra []string) []string {
 	if len(extra) == 0 {
 		return nil
 	}
-	merged := make([]string, 0, len(os.Environ())+len(extra))
+	return overrideEnv(os.Environ(), extra)
+}
+
+// overrideEnv returns base with every entry of extra applied: an entry whose
+// key is already present replaces it in place (so PATH stays where the caller
+// put it), and the rest are appended in order.
+func overrideEnv(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	merged := make([]string, 0, len(base)+len(extra))
 	overrides := make(map[string]string, len(extra))
 	for _, entry := range extra {
 		overrides[envKey(entry)] = entry
 	}
-	for _, entry := range os.Environ() {
+	for _, entry := range base {
 		key := envKey(entry)
 		if override, ok := overrides[key]; ok {
 			merged = append(merged, override)
