@@ -1514,7 +1514,32 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 	}
 }
 
-func TestAvailableReportsTimeoutInsteadOfAuthFailure(t *testing.T) {
+func TestAvailableReportsDeadlineExceededInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(ctx)
+	if err == nil {
+		t.Fatal("Available() error = nil, want timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Available() error = %v, want context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Available() error = %v, want timed out message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure on timeout", err)
+	}
+}
+
+func TestAvailableReportsCancellationInsteadOfAuthFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1531,11 +1556,14 @@ func TestAvailableReportsTimeoutInsteadOfAuthFailure(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Available() error = %v, want context.Canceled", err)
 	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("Available() error = %v, want timed out message", err)
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("Available() error = %v, want interrupted message", err)
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Available() error = %v, must not report timeout on cancellation", err)
 	}
 	if strings.Contains(err.Error(), "not authenticated") {
-		t.Fatalf("Available() error = %v, must not report auth failure on timeout", err)
+		t.Fatalf("Available() error = %v, must not report auth failure on cancellation", err)
 	}
 }
 

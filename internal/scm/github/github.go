@@ -158,8 +158,11 @@ func (h *Host) Available(ctx context.Context) error {
 	if err := cmd.Run(); err != nil {
 		// Keep timeout / missing-binary failures distinct from auth failure so a
 		// cancelled reconcile context is not reported as "log in again".
-		if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("gh auth status timed out: %w", ctx.Err())
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("gh auth status interrupted: %w", ctx.Err())
 		}
 		if errors.Is(err, exec.ErrNotFound) {
 			return fmt.Errorf("gh CLI is not on PATH: %w", err)
