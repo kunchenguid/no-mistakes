@@ -767,4 +767,3 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
 	}
 }
-
