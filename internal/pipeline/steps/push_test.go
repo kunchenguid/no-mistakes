@@ -901,3 +901,74 @@ func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissingWithNMHome(t *testing
 		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
 	}
 }
+
+func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.SubmittedHeadSHA = &submittedHead
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+
+	// Initial gate head is submittedHead
+	gitCmd(t, gateDir, "fetch", dir, "refs/heads/feature:refs/heads/feature")
+
+	// Worktree produces a new rebased head
+	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rebased commit")
+	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Simulate an intervening push advancing gateDir to a newer commit
+	if err := os.WriteFile(filepath.Join(dir, "intervening.txt"), []byte("intervening\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "intervening commit")
+	interveningHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, gateDir, "fetch", dir, "HEAD:refs/heads/feature")
+
+	// Reset worktree back to rebasedHead
+	gitCmd(t, dir, "reset", "--hard", rebasedHead)
+
+	sctx.Run.HeadSHA = rebasedHead
+	recordReviewApproval(t, sctx, rebasedHead)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("push step failed: %v", err)
+	}
+
+	// Remote head should be updated to rebasedHead
+	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if remoteHead != rebasedHead {
+		t.Fatalf("expected remote head = %s, got %s", rebasedHead, remoteHead)
+	}
+
+	// Gate mirror ref must NOT be rewound to rebasedHead; it must remain at interveningHead
+	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
+	if gateHead != interveningHead {
+		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
+	}
+}
+

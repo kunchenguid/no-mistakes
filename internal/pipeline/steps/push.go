@@ -152,8 +152,21 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 				return nil, fmt.Errorf("stat gate mirror repository: %w", statErr)
 			}
 		} else {
-			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+headBeingPushed+":"+ref); fetchErr != nil {
-				return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, fetchErr)
+			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, headBeingPushed); fetchErr != nil {
+				return nil, fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
+			}
+
+			gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
+			gateTip = strings.TrimSpace(gateTip)
+
+			submittedHead := ""
+			if sctx.Run.SubmittedHeadSHA != nil {
+				submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+			}
+			if gateTip == "" || gateTip == submittedHead {
+				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
+					return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
+				}
 			}
 		}
 	} else if err != nil && (!testing.Testing() || os.Getenv("NM_HOME") != "") {
