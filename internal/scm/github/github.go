@@ -2,6 +2,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -151,8 +152,23 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
-		return errors.New("gh CLI is not authenticated")
+	cmd := h.cmd(ctx, "gh", authArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Keep timeout / missing-binary failures distinct from auth failure so a
+		// cancelled reconcile context is not reported as "log in again".
+		if ctx.Err() != nil {
+			return fmt.Errorf("gh auth status timed out: %w", ctx.Err())
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("gh CLI is not on PATH: %w", err)
+		}
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return fmt.Errorf("gh CLI is not authenticated: %s: %w", detail, err)
+		}
+		return fmt.Errorf("gh CLI is not authenticated: %w", err)
 	}
 	return nil
 }

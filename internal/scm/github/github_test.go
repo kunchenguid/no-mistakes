@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1510,6 +1511,72 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil", err)
+	}
+}
+
+func TestAvailableReportsTimeoutInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(ctx)
+	if err == nil {
+		t.Fatal("Available() error = nil, want timeout error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Available() error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Available() error = %v, want timed out message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure on timeout", err)
+	}
+}
+
+func TestAvailableReportsMissingBinaryInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "no-mistakes-missing-gh-binary")
+	}, func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want missing-binary error")
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("Available() error = %v, want exec.ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "not on PATH") {
+		t.Fatalf("Available() error = %v, want not on PATH message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure when gh is missing", err)
+	}
+}
+
+func TestAvailableWrapsAuthFailureWithStderr(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {stderr: "github.com\n  X Failed to log in\n", code: 1},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want auth failure")
+	}
+	if !strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, want not authenticated", err)
+	}
+	if !strings.Contains(err.Error(), "Failed to log in") {
+		t.Fatalf("Available() error = %v, want stderr detail", err)
 	}
 }
 
