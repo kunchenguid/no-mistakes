@@ -53,11 +53,14 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	var sawDeadline bool
+	var sawLivenessSink bool
 	ag := &mockAgent{
 		name: "test",
-		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
-			_, sawDeadline = ctx.Deadline()
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The evidence turn is bounded by the per-invocation silence
+			// watchdog (test_agent_timeout), which hands the adapter an
+			// activity sink rather than installing a fixed deadline.
+			sawLivenessSink = opts.OnActivity != nil
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok"}`)}, nil
 		},
 	}
@@ -66,8 +69,8 @@ func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sawDeadline {
-		t.Fatal("evidence agent ran without a deadline")
+	if !sawLivenessSink {
+		t.Fatal("evidence agent ran without a liveness sink")
 	}
 	if outcome == nil || outcome.NeedsApproval {
 		t.Fatalf("successful evidence gathering should still complete, got %+v", outcome)

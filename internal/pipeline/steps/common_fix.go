@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -26,6 +27,12 @@ type fixExecutionOptions struct {
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
 	AgentContext            context.Context
+	// AgentBudget, when positive, is the fix turn's silence budget (per
+	// invocation, measured from that turn's own activity). Steps with their
+	// own configured agent budget (review_agent_timeout, test_agent_timeout)
+	// pass it so the fix turn never inherits another turn's remainder; zero
+	// keeps the shared default AgentTimeout.
+	AgentBudget time.Duration
 	// SessionRole, when set, runs the fix turn in that durable review-loop
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
@@ -276,7 +283,13 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.AgentContext != nil {
 		agentCtx = opts.AgentContext
 	}
-	result, err := sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
+	var result *agent.Result
+	var err error
+	if opts.AgentBudget > 0 {
+		result, err = sctx.RunAgentSessionBudget(agentCtx, opts.AgentBudget, opts.SessionRole, runOpts)
+	} else {
+		result, err = sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
+	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
 	}

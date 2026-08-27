@@ -1,9 +1,7 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,26 +21,11 @@ func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	var cancel context.CancelFunc
-	var timeout time.Duration
-	var restoreContext func()
-	startReviewTimeout := func() {
-		if cancel != nil {
-			return
-		}
-		parentCtx := sctx.Ctx
-		ctx, cancel, timeout = reviewAgentContext(sctx)
-		sctx.Ctx = ctx
-		restoreContext = func() {
-			cancel()
-			sctx.Ctx = parentCtx
-		}
-	}
-	defer func() {
-		if restoreContext != nil {
-			restoreContext()
-		}
-	}()
+	// Every agent turn of this step - the optional fix turn and the rereview
+	// turn - gets its own fresh silence budget of this size. A shared round
+	// budget let a long healthy fix turn leave its successor only the
+	// remainder, killing a newly started reviewer minutes into its turn.
+	budget := reviewAgentBudget(sctx)
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -83,7 +66,6 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// regression tests guard the wording, not the runtime.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
-		startReviewTimeout()
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -133,9 +115,10 @@ Previous review findings to address:
 			SessionRole:             pipeline.SessionRoleFixer,
 			Purpose:                 "review-fix",
 			Workload:                workload,
+			AgentBudget:             budget,
 		})
 		if err != nil {
-			return nil, reviewAgentError(ctx, timeout, "agent fix", err)
+			return nil, reviewAgentError(err, "agent fix")
 		}
 		fixSummary = summary
 	}
@@ -172,7 +155,6 @@ Previous review findings to address:
 
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
-	startReviewTimeout()
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -275,7 +257,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+	result, err := sctx.RunAgentBudget(ctx, budget, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -285,7 +267,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	})
 	if err != nil {
-		return nil, reviewAgentError(ctx, timeout, "agent review", err)
+		return nil, reviewAgentError(err, "agent review")
 	}
 
 	// Parse structured findings
@@ -403,20 +385,23 @@ func sanitizePromptMultilineText(text string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func reviewAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
+// reviewAgentBudget resolves the Review step's per-turn silence budget: a
+// positive review_agent_timeout wins, otherwise the default.
+func reviewAgentBudget(sctx *pipeline.StepContext) time.Duration {
 	timeout := config.DefaultReviewAgentTimeout
 	if sctx != nil && sctx.Config != nil && sctx.Config.ReviewAgentTimeout > 0 {
 		timeout = sctx.Config.ReviewAgentTimeout
 	}
-	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errReviewAgentTimeout)
-	return ctx, cancel, timeout
+	return timeout
 }
 
-var errReviewAgentTimeout = errors.New("review agent timeout")
-
-func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
-	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s (review agent silent for %s): %w", prefix, timeout, timeout, err)
+// reviewAgentError renders a review-turn failure, re-labeling the shared
+// silence watchdog's timeout with the review-specific diagnostic (preserving
+// its budget and liveness evidence) so operators can tell a genuinely quiet
+// review agent from other failures.
+func reviewAgentError(err error, prefix string) error {
+	if ate := pipeline.AsAgentTimeout(err); ate != nil {
+		return ate.StepError(prefix, "review agent")
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }

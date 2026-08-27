@@ -391,10 +391,12 @@ For older active runs that do not yet have activity rows, AXI falls back to the 
 
 ### agent_timeout
 
-Maximum wall-clock time for one pipeline agent invocation that does not already have a more specific deadline.
+Maximum silence time for one pipeline agent invocation that does not already have a more specific deadline.
 This is the default-by-construction budget: Document, Lint, Rebase conflict repair, PR drafting, CI auto-fix, and any future agent-spawning step are bounded even if they forget to install their own timer.
-Review still uses [`review_agent_timeout`](#review_agent_timeout) as a per-round budget, Test still uses [`test_agent_timeout`](#test_agent_timeout) per invocation, and Intent keeps its five-minute extraction cap; any existing deadline is honored rather than capped.
-When this deadline expires, the agent is cancelled and the invocation returns a timeout diagnostic instead of remaining active indefinitely. Agent-driven mutation steps fail the run, while PR drafting follows its existing agent-error fallback and continues with deterministic content.
+The budget is a liveness budget, not a hard wall-clock cap: the invocation is cancelled only after this long with no reported activity. Activity means bytes on the agent's stdout pipe, native process lifecycle events, and - for the Pi adapter - advancement of the exact pi session file bound to that invocation (pi buffers stdout when piped, so a quiet pipe alone does not prove a quiet agent). Each newly launched agent process starts with a fresh full budget.
+When no pi session can be bound unambiguously (session-free `--no-session` turns, relocated session storage, or ambiguous files), only stdout and lifecycle evidence govern the invocation, matching the previous behavior.
+Review uses [`review_agent_timeout`](#review_agent_timeout) per agent turn, Test uses [`test_agent_timeout`](#test_agent_timeout) per invocation, and Intent keeps its five-minute extraction cap; any existing deadline is honored rather than capped.
+When the silence budget expires with no activity from any source, the agent's whole process tree is terminated and the invocation returns a timeout diagnostic naming the last observed activity instead of remaining active indefinitely. Agent-driven mutation steps fail the run, while PR drafting follows its existing agent-error fallback and continues with deterministic content.
 A late successful return after the deadline is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
 |         |                        |
@@ -409,9 +411,9 @@ It is global-only: repository config and environment variables cannot override i
 
 ### review_agent_timeout
 
-Maximum wall-clock time for the Review step's agent turns in one review round.
-The budget starts at that round's first agent turn and covers its optional review-fix turn plus the rereview turn together; every later auto-fix round starts a fresh budget.
-When the deadline expires, the review agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+Maximum silence time for one Review-step agent turn.
+The optional review-fix turn and the rereview turn each get their own fresh full budget measured from that turn's own activity: a long fix turn cannot leave the rereview only the remainder. Liveness evidence is the same as [`agent_timeout`](#agent_timeout) (stdout bytes, process lifecycle, bound pi session advancement).
+When the silence budget expires with no activity, the review agent's process tree is terminated and the run fails with a diagnostic naming the timeout and the last observed activity instead of remaining active indefinitely.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -424,9 +426,9 @@ Raise it for repositories whose reviews legitimately run long; it bounds only th
 
 ### test_agent_timeout
 
-Maximum wall-clock time for one Test-step agent invocation.
-The budget covers the post-test evidence-gathering turn, and a Test-repair turn gets its own budget of the same length.
-When the deadline expires, the test agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+Maximum silence time for one Test-step agent invocation.
+The post-test evidence-gathering turn and a Test-repair turn each get their own budget of this size. Liveness evidence is the same as [`agent_timeout`](#agent_timeout).
+When the silence budget expires with no activity, the test agent's process tree is terminated and the run fails with a diagnostic naming the timeout and the last observed activity instead of remaining active indefinitely.
 
 |         |                        |
 | ------- | ---------------------- |

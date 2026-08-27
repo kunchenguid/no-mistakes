@@ -38,10 +38,17 @@ type nativeAgentPipe struct {
 	file     *os.File
 	done     func()
 	doneOnce sync.Once
+	// onData, when set, is called after every successful read. It feeds the
+	// invocation silence watchdog: bytes visible on the pipe are liveness
+	// evidence. Kinds only - the bytes themselves never leave the parse path.
+	onData func()
 }
 
 func (p *nativeAgentPipe) Read(b []byte) (int, error) {
 	n, err := p.file.Read(b)
+	if n > 0 && p.onData != nil {
+		p.onData()
+	}
 	if err != nil {
 		p.markDone()
 	}
@@ -58,7 +65,12 @@ func (p *nativeAgentPipe) markDone() {
 	p.doneOnce.Do(p.done)
 }
 
-func startNativeAgentCommand(cmd *exec.Cmd) (*nativeAgentCommand, error) {
+// startNativeAgentCommand launches cmd with piped stdout/stderr and reports
+// coarse liveness evidence through onActivity: one lifecycle signal at process
+// start (which resets the silence clock for the fresh process) and one stdout
+// signal per successful pipe read. onActivity may be nil, in which case the
+// caller's watchdog keeps its legacy invocation-start-only behavior.
+func startNativeAgentCommand(cmd *exec.Cmd, onActivity func(ActivityKind)) (*nativeAgentCommand, error) {
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -88,8 +100,15 @@ func startNativeAgentCommand(cmd *exec.Cmd) (*nativeAgentCommand, error) {
 		remainingPipes: 2,
 		pipesDone:      make(chan struct{}),
 	}
-	started.stdout = &nativeAgentPipe{file: stdoutR, done: started.markPipeDone}
+	var onStdoutData func()
+	if onActivity != nil {
+		onStdoutData = func() { onActivity(ActivityStdout) }
+	}
+	started.stdout = &nativeAgentPipe{file: stdoutR, done: started.markPipeDone, onData: onStdoutData}
 	started.stderr = &nativeAgentPipe{file: stderrR, done: started.markPipeDone}
+	if onActivity != nil {
+		onActivity(ActivityLifecycle)
+	}
 	go func() {
 		err := cmd.Wait()
 		started.terminate()
