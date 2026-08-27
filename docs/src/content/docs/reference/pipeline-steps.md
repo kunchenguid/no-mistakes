@@ -200,7 +200,7 @@ Pushes the validated branch to the configured push target.
 - Treats the branch as already pushed when the remote already points at that verified commit
 - Uses regular push for new branches
 - Updates the run's head SHA in the database to the exact commit delivered
-- Synchronizes and verifies the gate mirror ref at the delivered commit so subsequent pushes to the gate proxy remain fast-forwardable after pipeline rebases; failure to update or verify the mirror fails Push
+- When the local gate mirror exists, advances its branch ref to the delivered commit when that does not rewind a newer gate submission; skips a missing mirror and fails on a divergent ref so subsequent pushes to the gate proxy remain fast-forwardable after pipeline rebases
 
 A remote branch can move without being rejected when all remote commits are already represented in the validated head, or when a run is intentionally rewriting history it already knew about.
 Any other out-of-band commit stops the push instead of being overwritten.
@@ -298,7 +298,6 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Keeps waiting, rather than pausing, while any check can still finish on its own, so a cancellation observed alongside a running check is decided only once the rollup has stopped moving
 - Never re-runs checks across a head change: if the published branch head no longer equals the commit the run delivered, the step clears any ready-to-merge signal and pauses for user approval with the expected and observed commits, because re-running checks would certify a revision this run never produced
 - On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Forgejo via the exact native check target plus `forgejo-axi run view --log-failed` when runtime routes are available, Bitbucket Cloud via failed pipeline step logs; Azure DevOps has no first-class build-log command, so the agent fixes from the failing-check list without logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them locally with [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message), re-runs validation from Review, and publishes them through the Push step's force-push safety guard. Forgejo status gating remains active when logs are unsupported or unavailable
-- On GitHub auto-fix attempts, also fetches unresolved review-thread comments authored by the supported Greptile bot accounts and includes them as untrusted prompt data; the rendered section is capped at 32 KiB and marks additional comments as omitted when the limit is reached
 - Preserves steps already skipped for the run when restarting validation, including after recovery from a daemon restart
 - Bounds that CI-fix agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): an expired budget cancels the agent and fails the attempt with a timeout diagnostic rather than leaving the run active indefinitely, and a late successful return after the deadline is not committed
 - On GitHub, GitLab, Forgejo, or Azure DevOps merge conflict: asks the agent to rebase onto the latest PR base branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
