@@ -26,5 +26,12 @@ func defaultSpawnBackground(currentVersion string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start background update check: %w", err)
 	}
+	// The check is fire-and-forget, so the CLI must not block on it, but the
+	// CLI is still the child's only possible wait owner: an unwaited child
+	// stays a <defunct> entry attached to this process until this process
+	// exits. A short-lived command hides that, while a run-following
+	// `axi run`/`axi respond` lives for tens of minutes, so the zombie is what
+	// an operator sees when triaging that process. Reap off the critical path.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
