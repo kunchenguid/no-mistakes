@@ -167,6 +167,9 @@ func TestFindPRMatchesByHeadBranch(t *testing.T) {
 	if pr.Number != "7" || pr.URL != "https://gitea.example.com/owner/repo/pulls/7" {
 		t.Fatalf("FindPR() = %+v, want PR #7", pr)
 	}
+	if pr.BaseBranch != "main" {
+		t.Fatalf("FindPR() BaseBranch = %q, want main", pr.BaseBranch)
+	}
 }
 
 func TestFindPRFiltersByBaseBranch(t *testing.T) {
@@ -371,6 +374,43 @@ func TestUpdatePRFallsBackToNumberFromURL(t *testing.T) {
 	pr := &scm.PR{URL: "http://gitea.example.com/owner/repo/pulls/7"}
 	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "updated", Body: "body"}); err != nil {
 		t.Fatalf("UpdatePR() error = %v", err)
+	}
+}
+
+func TestSetPRBaseBranchPatchesPullViaTeaAPI(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea api --login work --method PATCH --field base=epic/feature /repos/owner/repo/pulls/7": {
+			stdout: `{"index":7,"base":{"ref":"epic/feature"}}`,
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{Number: "7"}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+}
+
+func TestSetPRBaseBranchFallsBackToNumberFromURL(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea api --login work --method PATCH --field base=epic/feature /repos/owner/repo/pulls/7": {
+			stdout: `{"index":7}`,
+		},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{URL: "https://gitea.example.com/owner/repo/pulls/7"}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+}
+
+func TestSetPRBaseBranchFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(nil), nil, "gitea.example.com", "work", "owner/repo")
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{}, "epic/feature"); err == nil {
+		t.Fatal("SetPRBaseBranch() with no PR identity: expected error, got nil")
 	}
 }
 

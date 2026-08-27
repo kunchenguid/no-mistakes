@@ -163,6 +163,41 @@ func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	}
 }
 
+func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{}
+	host := nonRetargetHost{}
+	cases := []struct {
+		name string
+		pr   *scm.PR
+	}{
+		{
+			name: "unknown live base",
+			pr:   &scm.PR{Number: "7", URL: "https://gitea.example.com/owner/repo/pulls/7"},
+		},
+		{
+			name: "known mismatched base",
+			pr:   &scm.PR{Number: "7", URL: "https://gitea.example.com/owner/repo/pulls/7", BaseBranch: "main"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := retargetExistingPRIfNeeded(sctx, host, tc.pr, "epic/feature")
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "cannot retarget") {
+				t.Fatalf("error = %v, want cannot retarget", err)
+			}
+		})
+	}
+}
+
+// nonRetargetHost is a scm.Host that does not implement PRBaseRetargeter, so
+// a per-run --base-branch override cannot silently skip when the live forge
+// base is missing or disagrees.
+type nonRetargetHost struct{ scm.Host }
+
 func TestPRStep_SkipsWhenBranchEqualsPerRunBase(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

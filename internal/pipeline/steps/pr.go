@@ -145,7 +145,7 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	retargeter, ok := host.(scm.PRBaseRetargeter)
 	if !ok {
 		if actual == "" {
-			return nil
+			return fmt.Errorf("existing pull request %s has no readable base branch, and this provider cannot retarget it to %s", describePR(existing), requested)
 		}
 		return fmt.Errorf("existing pull request %s targets %s, not %s, and this provider cannot retarget it", describePR(existing), actual, requested)
 	}
