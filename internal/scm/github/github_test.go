@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -1586,6 +1587,31 @@ func TestAvailableReportsMissingBinaryInsteadOfAuthFailure(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "not authenticated") {
 		t.Fatalf("Available() error = %v, must not report auth failure when gh is missing", err)
+	}
+}
+
+func TestAvailableReportsCommandFactoryMissingBinaryInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitHubHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "GITHUB_TEST_HELPER=1")
+		cmd.Err = &exec.Error{Name: name, Err: fs.ErrNotExist}
+		return cmd
+	}, func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want missing-binary error")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Available() error = %v, want fs.ErrNotExist", err)
+	}
+	if !strings.Contains(err.Error(), "not on PATH") {
+		t.Fatalf("Available() error = %v, want not on PATH message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure when command factory marks gh missing", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -164,7 +165,7 @@ func (h *Host) Available(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("gh auth status interrupted: %w", ctx.Err())
 		}
-		if errors.Is(err, exec.ErrNotFound) {
+		if isMissingExecutable(err) {
 			return fmt.Errorf("gh CLI is not on PATH: %w", err)
 		}
 		detail := strings.TrimSpace(stderr.String())
@@ -174,6 +175,17 @@ func (h *Host) Available(ctx context.Context) error {
 		return fmt.Errorf("gh CLI is not authenticated: %w", err)
 	}
 	return nil
+}
+
+func isMissingExecutable(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return errors.Is(execErr.Err, exec.ErrNotFound) || errors.Is(execErr.Err, fs.ErrNotExist)
+	}
+	return false
 }
 
 func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
