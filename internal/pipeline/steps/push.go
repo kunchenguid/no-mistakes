@@ -148,11 +148,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if p, err := paths.New(); err == nil && sctx.Repo != nil {
 		gateDir := p.RepoDir(sctx.Repo.ID)
 		if _, statErr := os.Stat(gateDir); statErr != nil {
-			if !os.IsNotExist(statErr) || (!testing.Testing() && os.Getenv("NM_HOME") != "") {
+			if !os.IsNotExist(statErr) {
 				return nil, fmt.Errorf("stat gate mirror repository: %w", statErr)
 			}
 		} else {
-			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, headBeingPushed+":"+ref); fetchErr != nil {
+			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+headBeingPushed+":"+ref); fetchErr != nil {
 				return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, fetchErr)
 			}
 		}

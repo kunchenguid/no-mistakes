@@ -740,12 +740,13 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 		t.Fatalf("expected initial gate head = %s, got %s", submittedHead, initialGateHead)
 	}
 
-	// Worktree produces a new rebased head
+	// Worktree produces a new non-fast-forward rebased head
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
 	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "rebased commit")
+	gitCmd(t, dir, "commit", "-m", "non-fast-forward rebased commit")
 	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	sctx.Run.HeadSHA = rebasedHead
@@ -870,5 +871,33 @@ func TestPushStep_GateMirrorFetchesExplicitPushedHeadInDetachedWorktree(t *testi
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != rebasedHead {
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
+	}
+}
+
+func TestPushStep_SkipsGateMirrorUpdateWhenDirectoryMissingWithNMHome(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	recordReviewApproval(t, sctx, submittedHead)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("expected push step to succeed when gate mirror directory is absent, got: %v", err)
+	}
+
+	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if remoteHead != submittedHead {
+		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
 	}
 }
