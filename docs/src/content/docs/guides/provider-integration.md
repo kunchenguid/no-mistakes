@@ -33,6 +33,7 @@ What you do not get is PR automation and CI monitoring.
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet | supported |
+| **Unresolved review-bot comments for CI auto-fix** | GitHub via `gh` CLI | not supported | not supported | not supported | not supported | not supported |
 | **[Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** (cancellations and pre-run infra failures) | `gh` CLI | not supported | not supported | not supported | not supported | not supported |
 
 ## What changes when provider wiring is present
@@ -77,6 +78,7 @@ If one daemon serves repositories that require non-overlapping accounts, give ea
 - PR creation and update on pushes
 - CI check polling with exponential backoff (30s → 60s → 120s) until the PR is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job log fetching (`gh run view --log-failed`) for the CI auto-fix step
+- Unresolved Greptile review-thread comments supplied to CI auto-fix prompts; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for filtering and prompt-safety details
 - PR mergeability polling, and agent-driven resolution when the provider reports an actual merge conflict
 
 ### GitHub fork contributions
