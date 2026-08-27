@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -509,5 +510,26 @@ func TestOpenWaitsForTransientMigrationLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Open did not finish after the migration lock was released")
+	}
+}
+
+func TestMigrationColumnsDerivedFromMigrationStatements(t *testing.T) {
+	for _, col := range []string{"review_approved_head_sha", "submitted_head_sha", "awaiting_agent_since", "parked_ms"} {
+		if !slices.Contains(MigrationColumns("runs"), col) {
+			t.Fatalf("MigrationColumns(runs) missing %s", col)
+		}
+	}
+	for _, col := range []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit"} {
+		if !slices.Contains(MigrationColumns("step_results"), col) {
+			t.Fatalf("MigrationColumns(step_results) missing %s", col)
+		}
+	}
+	if slices.Contains(MigrationColumns("runs"), "status") {
+		t.Fatalf("MigrationColumns(runs) includes base-schema column status")
+	}
+
+	extended := append(append([]string{}, migrationStatements...), `ALTER TABLE runs ADD COLUMN future_probe INTEGER`)
+	if !slices.Contains(migrationAddedColumns(extended, "runs"), "future_probe") {
+		t.Fatalf("migrationAddedColumns does not extend with new migration statements")
 	}
 }

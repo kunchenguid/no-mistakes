@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -170,12 +171,24 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	// db.ActiveRunWorktrees).
 	runs, err := i.DB.ActiveRunWorktrees()
 	if err != nil {
+		// A DB created before the migrations that introduced columns read by this
+		// advisory query fails with "no such column". This metadata is advisory
+		// (the refusal does not depend on it), and with the daemon down there is
+		// no live agent-step ancestry to detect. Degrade to empty so the daemon
+		// can start and its authoritative open can run the migration; still
+		// propagate genuine DB errors.
+		if preMigrationSchemaError(err, "runs") {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
 	}
 	var out []activeAgentStep
 	for _, run := range runs {
 		steps, err := i.DB.GetStepsByRun(run.RunID)
 		if err != nil {
+			if preMigrationSchemaError(err, "step_results") {
+				return nil, nil
+			}
 			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
 		}
 		for _, step := range steps {
@@ -190,6 +203,63 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 		}
 	}
 	return out, nil
+}
+
+const noSuchColumnPrefix = "no such column: "
+
+// preMigrationSchemaError reports whether err is a driver "no such column"
+// error naming a column that migrationStatements add to one of the given
+// tables. The name is compared as a whole identifier, never as a substring of
+// the message: this predicate fails an advisory read of the recursive-gate
+// guard open, so an allowlist entry that merely prefixes the genuinely missing
+// column (`intent` against `intent_source`) must not authorize the degrade.
+// Anything it cannot attribute to a migration stays an error.
+func preMigrationSchemaError(err error, tables ...string) bool {
+	missing, ok := missingColumnName(err)
+	if !ok {
+		return false
+	}
+	for _, table := range tables {
+		if slices.Contains(db.MigrationColumns(table), missing) {
+			return true
+		}
+	}
+	return false
+}
+
+// missingColumnName extracts the bare column identifier from a "no such
+// column" driver error, dropping any table qualifier SQLite may include.
+func missingColumnName(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, noSuchColumnPrefix)
+	if idx < 0 {
+		return "", false
+	}
+	name := msg[idx+len(noSuchColumnPrefix):]
+	if end := strings.IndexFunc(name, func(r rune) bool { return !isSQLIdentifierRune(r) }); end >= 0 {
+		name = name[:end]
+	}
+	if qualifier := strings.LastIndex(name, "."); qualifier >= 0 {
+		name = name[qualifier+1:]
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+func isSQLIdentifierRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '_', r == '.':
+		return true
+	default:
+		return false
+	}
 }
 
 func activeStepStatus(status types.StepStatus) bool {
