@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -147,12 +148,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if p, err := paths.New(); err == nil && sctx.Repo != nil {
 		gateDir := p.RepoDir(sctx.Repo.ID)
 		if _, statErr := os.Stat(gateDir); statErr == nil {
-			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, "+"+ref+":"+ref); fetchErr != nil {
+			if _, fetchErr := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", sctx.WorkDir, headBeingPushed+":"+ref); fetchErr != nil {
 				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed); updateErr != nil {
-					sctx.Log(fmt.Sprintf("warning: update gate ref %s: %v", ref, updateErr))
+					return nil, fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 				}
 			}
 		}
+	} else if err != nil && (!testing.Testing() || os.Getenv("NM_HOME") != "") {
+		return nil, fmt.Errorf("resolve paths for gate mirror update: %w", err)
 	}
 
 	sctx.Log("pushed successfully")
