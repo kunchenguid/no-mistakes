@@ -2521,14 +2521,14 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	cfg := &Config{
-		Agent:                global.Agent,
-		Agents:               copyAgents(global.Agents),
-		ACPXPath:             global.ACPXPath,
-		ForgejoAXIPath:       global.ForgejoAXIPath,
-		ACPRegistryOverrides: global.ACPRegistryOverrides,
-		AgentPathOverride:    global.AgentPathOverride,
-		AgentArgsOverride:    global.AgentArgsOverride,
-		AgentConfig:          global.AgentConfig,
+		Agent:                 global.Agent,
+		Agents:                copyAgents(global.Agents),
+		ACPXPath:              global.ACPXPath,
+		ForgejoAXIPath:        global.ForgejoAXIPath,
+		ACPRegistryOverrides:  global.ACPRegistryOverrides,
+		AgentPathOverride:     global.AgentPathOverride,
+		AgentArgsOverride:     global.AgentArgsOverride,
+		AgentConfig:           global.AgentConfig,
 		CITimeout:             global.CITimeout,
 		StepQuietWarning:      global.StepQuietWarning,
 		AgentTimeout:          global.AgentTimeout,
