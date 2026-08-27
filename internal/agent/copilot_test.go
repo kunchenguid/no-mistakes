@@ -112,9 +112,9 @@ func TestCopilotAgent_BuildArgs_UserAskUserSuppressesDefault(t *testing.T) {
 
 // TestCopilotAgent_BuildArgs_SuppressesCustomInstructionsUnderOptOut locks in
 // the copilot project-settings contract UNDER the trusted opt-out: copilot is
-// told not to load AGENTS.md and related files. The flag is documented by
-// Copilot CLI (`--no-custom-instructions`); live verification against a
-// signed-in Copilot is pending.
+// told not to load AGENTS.md and related files. Verified empirically against
+// Copilot CLI 1.0.80: with AGENTS.md loaded copilot adopts the target identity;
+// with --no-custom-instructions it does not.
 func TestCopilotAgent_BuildArgs_SuppressesCustomInstructionsUnderOptOut(t *testing.T) {
 	ca := &copilotAgent{bin: "copilot", disableProjectSettings: true}
 	args := ca.buildArgs()

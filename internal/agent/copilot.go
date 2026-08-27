@@ -40,9 +40,12 @@ func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
 // when the operator did not pin the surface themselves; an operator override
 // that re-enables custom instructions (`--custom-instructions`) defeats
 // neutralization, so this returns false and the gate fails closed rather than
-// running with repo instructions loaded. The flag is documented by Copilot CLI
-// 1.0.80 (`copilot --help`); live verification against a signed-in Copilot is
-// pending.
+// running with repo instructions loaded. Verified empirically against Copilot
+// CLI 1.0.80: with AGENTS.md loaded copilot adopts the target identity; with
+// --no-custom-instructions it does not. The flag stops AGENTS.md being loaded
+// automatically; an agent explicitly told to go find instruction files can still
+// read one off disk with its own tools. That is outside what this knob claims,
+// and the same is true of the other adapters.
 func (a *copilotAgent) NeutralizesGateInstructions() bool {
 	return a.disableProjectSettings && copilotEffectiveCustomInstructionsSuppressed(a.extraArgs)
 }
@@ -185,7 +188,7 @@ func (a *copilotAgent) buildArgs() []string {
 	// (their choice wins; NeutralizesGateInstructions then fails closed if that
 	// value re-enables custom instructions). When the repo did not opt out,
 	// nothing is added and copilot loads custom instructions exactly as before
-	// (backward-compat). Live verification against a signed-in Copilot is pending.
+	// (backward-compat).
 	if a.disableProjectSettings && !copilotUserSetCustomInstructions(a.extraArgs) {
 		args = append(args, "--no-custom-instructions")
 	}

@@ -22,9 +22,8 @@ func optOutAgent(t *testing.T, name types.AgentName, extraArgs []string) Agent {
 // fail-closed contract: under the opt-out, only codex, claude, pi, and copilot
 // neutralize the target repo's project agent settings/instructions; every other
 // harness reports false and is refused rather than launched with project
-// instructions loaded. Codex, claude, and pi knobs are empirically verified;
-// copilot's --no-custom-instructions is documented by the CLI (live verification
-// pending).
+// instructions loaded. Codex, claude, pi, and copilot knobs are empirically
+// verified.
 func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing.T) {
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentCopilot} {
 		if !NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
