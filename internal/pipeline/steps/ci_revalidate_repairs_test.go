@@ -280,6 +280,44 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	}
 }
 
+// Once a repair has reached the remote and its push binding is durable, a
+// later gate-mirror synchronization failure must not turn that successful
+// publication into a failed fix attempt. The mirror can be repaired by a
+// later Push step; the CI monitor must keep watching the published commit.
+func TestCIStep_PublishedRepairSurvivesLateGateMirrorFailure(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	writeCIFix(f.dir)
+	f.sctx.GateDir = filepath.Join(t.TempDir(), "invalid-gate")
+	if err := os.MkdirAll(f.sctx.GateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	if err != nil {
+		t.Fatalf("published repair was misreported as failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("published repair was not reported as a real change")
+	}
+	publishedHead := f.localHead(t)
+	if publishedHead == f.headSHA || f.remoteHead(t) != publishedHead {
+		t.Fatalf("repair was not published: prior=%s local=%s remote=%s", f.headSHA, publishedHead, f.remoteHead(t))
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != publishedHead || run.LastPushedSHA == nil || *run.LastPushedSHA != publishedHead {
+		t.Fatalf("published repair was not durably bound to %s: %#v", publishedHead, run)
+	}
+	if !strings.Contains(f.log(), "CI repair was published, but gate mirror synchronization failed") {
+		t.Fatalf("late gate-mirror failure was not logged as a warning:\n%s", f.log())
+	}
+	if !strings.Contains(f.log(), "committed and pushed CI repair") {
+		t.Fatalf("successful repair publication was not logged:\n%s", f.log())
+	}
+}
+
 func TestCIStep_PublishPolicyAllowsConflictRebaseContinuity(t *testing.T) {
 	f := newCIRepairFixture(t, false, nil)
 	gitCmd(t, f.dir, "checkout", "main")

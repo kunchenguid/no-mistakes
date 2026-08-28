@@ -172,47 +172,62 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	}
 
 	// Update the gate mirror's ref so follow-up pushes to the gate proxy
-	// remain fast-forwardable after pipeline rebases.
-	if sctx.Repo != nil && strings.TrimSpace(sctx.GateDir) != "" {
-		gateDir := strings.TrimSpace(sctx.GateDir)
-		if _, statErr := os.Stat(gateDir); statErr != nil {
-			if !os.IsNotExist(statErr) {
-				return fmt.Errorf("stat gate mirror repository: %w", statErr)
-			}
+	// remain fast-forwardable after pipeline rebases. At this point the remote
+	// push and its durable binding have already succeeded. A Push-step retry can
+	// retry a mirror failure, but the CI monitor must not call an already
+	// published repair failed and spend another fix attempt on it.
+	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
+		if continuity.ciRepair {
+			sctx.Log(fmt.Sprintf("warning: CI repair was published, but gate mirror synchronization failed: %v", err))
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string) error {
+	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
+		return nil
+	}
+	gateDir := strings.TrimSpace(sctx.GateDir)
+	if _, statErr := os.Stat(gateDir); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		return fmt.Errorf("stat gate mirror repository: %w", statErr)
+	}
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
+	}
+
+	if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, headBeingPushed, headBeingPushed); fetchErr != nil {
+		return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
+	}
+
+	gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
+	gateTip = strings.TrimSpace(gateTip)
+
+	submittedHead := ""
+	if sctx.Run.SubmittedHeadSHA != nil {
+		submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+	}
+
+	shouldUpdate := gateTip == "" || gateTip == headBeingPushed || (submittedHead != "" && gateTip == submittedHead)
+	if !shouldUpdate {
+		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); err == nil {
+			// Preserve a newer descendant.
+			shouldUpdate = false
+		} else if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); err == nil {
+			// Fast-forward advance from an older ancestor.
+			shouldUpdate = true
 		} else {
-			if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
-				return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
-			}
-
-			if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, headBeingPushed, headBeingPushed); fetchErr != nil {
-				return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
-			}
-
-			gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
-			gateTip = strings.TrimSpace(gateTip)
-
-			submittedHead := ""
-			if sctx.Run.SubmittedHeadSHA != nil {
-				submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
-			}
-
-			shouldUpdate := gateTip == "" || gateTip == headBeingPushed || (submittedHead != "" && gateTip == submittedHead)
-			if !shouldUpdate {
-				if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); err == nil {
-					// Preserve a newer descendant.
-					shouldUpdate = false
-				} else if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateTip, headBeingPushed); err == nil {
-					// Fast-forward advance from an older ancestor.
-					shouldUpdate = true
-				} else {
-					return fmt.Errorf("gate mirror ref %s at %s diverged from pushed head %s", ref, gateTip, headBeingPushed)
-				}
-			}
-			if shouldUpdate {
-				if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
-					return fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
-				}
-			}
+			return fmt.Errorf("gate mirror ref %s at %s diverged from pushed head %s", ref, gateTip, headBeingPushed)
+		}
+	}
+	if shouldUpdate {
+		if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
+			return fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 		}
 	}
 	return nil
