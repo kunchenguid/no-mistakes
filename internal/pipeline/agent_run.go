@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // ErrAgentTimeout is the context cause used when the default per-invocation
@@ -269,7 +270,7 @@ func agentReportClause(err error) string {
 	if err.Error() == context.DeadlineExceeded.Error() || err.Error() == context.Canceled.Error() {
 		return ""
 	}
-	text := strings.Join(strings.Fields(err.Error()), " ")
+	text := safeurl.RedactText(strings.Join(strings.Fields(err.Error()), " "))
 	if text == "" {
 		return ""
 	}

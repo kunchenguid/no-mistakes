@@ -1258,7 +1258,7 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			invocations++
 			<-ctx.Done()
-			return nil, ctx.Err()
+			return nil, errors.New("pi exited: unable to access 'https://operator:secret@example.com/owner/repo.git': denied")
 		},
 	}
 
@@ -1311,6 +1311,12 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 	}
 	if !strings.Contains(item.Description, "produced no output at all") {
 		t.Fatalf("finding %q, want the measured silence carried into the gate", item.Description)
+	}
+	if strings.Contains(item.Description, "operator:secret") {
+		t.Fatalf("finding %q leaked adapter URL credentials", item.Description)
+	}
+	if !strings.Contains(item.Description, "https://redacted@example.com/owner/repo.git") {
+		t.Fatalf("finding %q, want the adapter URL preserved with credentials redacted", item.Description)
 	}
 }
 
