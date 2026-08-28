@@ -101,11 +101,14 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		interactive := terminalInteractive()
 		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || interactive) {
 			startedViaWizard = true
+			var wizardRunID string
 			// waitFn blocks inside the wizard's alt screen until the daemon
 			// has the run registered, so the handoff to runTUI below is
 			// seamless rather than flashing the pre-wizard terminal.
 			waitFn := func(ctx context.Context, branch string) error {
-				return awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, branch, skipSteps)
+				var err error
+				wizardRunID, err = awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, branch, skipSteps)
+				return err
 			}
 			var res wizard.Result
 			var wErr error
@@ -122,17 +125,33 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 				return wErr
 			}
 			if res.Success {
-				run, err = waitForActiveRun(ctx, client, repo.ID, res.TargetBranch, triggerWaitTimeout)
-				if err != nil {
-					return fmt.Errorf("wait for active run: %w", err)
-				}
-				if run == nil {
-					if err := awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, res.TargetBranch, skipSteps); err != nil {
-						return err
+				if wizardRunID != "" {
+					var result ipc.GetRunResult
+					if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: wizardRunID}, &result); err != nil {
+						return fmt.Errorf("get wizard run: %w", err)
 					}
+					run = result.Run
+					if run == nil {
+						return fmt.Errorf("wizard run %s no longer exists", wizardRunID)
+					}
+				} else {
 					run, err = waitForActiveRun(ctx, client, repo.ID, res.TargetBranch, triggerWaitTimeout)
 					if err != nil {
-						return fmt.Errorf("wait for fresh run: %w", err)
+						return fmt.Errorf("wait for active run: %w", err)
+					}
+					if run == nil {
+						wizardRunID, err = awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, res.TargetBranch, skipSteps)
+						if err != nil {
+							return err
+						}
+						var result ipc.GetRunResult
+						if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: wizardRunID}, &result); err != nil {
+							return fmt.Errorf("get fresh run: %w", err)
+						}
+						run = result.Run
+						if run == nil {
+							return fmt.Errorf("fresh run %s no longer exists", wizardRunID)
+						}
 					}
 				}
 				if autoYes && run == nil {
@@ -163,26 +182,27 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	return runTUI(p.Socket(), client, run, update.CachedLatestVersion())
 }
 
-func awaitDaemonRunRegistrationOrStartFresh(ctx context.Context, client *ipc.Client, p *paths.Paths, d *db.DB, repo *db.Repo, workDir, branch string, skipSteps []types.StepName) error {
+func awaitDaemonRunRegistrationOrStartFresh(ctx context.Context, client *ipc.Client, p *paths.Paths, d *db.DB, repo *db.Repo, workDir, branch string, skipSteps []types.StepName) (string, error) {
 	run, err := waitForActiveRun(ctx, client, repo.ID, branch, triggerWaitTimeout)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if run != nil {
-		return nil
+		return run.ID, nil
 	}
 
 	headSHA, err := git.Run(ctx, workDir, "rev-parse", "HEAD")
 	if err != nil {
-		return fmt.Errorf("resolve current HEAD for %q: %w", branch, err)
+		return "", fmt.Errorf("resolve current HEAD for %q: %w", branch, err)
 	}
 	if err := guardFreshRun(ctx, p, d, repo, workDir); err != nil {
-		return err
+		return "", err
 	}
-	if _, err := startFreshRun(ctx, client, repo.ID, branch, headSHA, skipSteps, ""); err != nil {
-		return fmt.Errorf("start fresh run for %q: %w", branch, err)
+	runID, err := startFreshRun(ctx, client, repo.ID, branch, headSHA, workDir, skipSteps, "")
+	if err != nil {
+		return "", fmt.Errorf("start fresh run for %q: %w", branch, err)
 	}
-	return nil
+	return runID, nil
 }
 
 func guardFreshRun(ctx context.Context, p *paths.Paths, d *db.DB, repo *db.Repo, workDir string) error {

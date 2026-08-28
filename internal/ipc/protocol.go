@@ -137,6 +137,7 @@ type StartFreshRunParams struct {
 	RepoID    string           `json:"repo_id"`
 	Branch    string           `json:"branch"`
 	HeadSHA   string           `json:"head_sha"`
+	WorkDir   string           `json:"work_dir"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
 }

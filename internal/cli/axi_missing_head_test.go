@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/wizard"
 )
 
 // TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead reproduces the
@@ -28,6 +29,7 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 		recordedHead     func(t *testing.T, submitted string) string
 		advanceWorktree  bool
 		gatePresent      bool
+		olderRecoverable bool
 		survivingAnchor  bool
 		verifiedHead     bool
 		objectReadError  bool
@@ -63,12 +65,40 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 			wantSafety:       "blocked_recover_preserved_head_missing",
 		},
 		{
+			name: "missing gate keeps fresh path blocked",
+			recordedHead: func(_ *testing.T, _ string) string {
+				return strings.Repeat("f", 40)
+			},
+			wantFreshBlocked: true,
+			wantSafety:       "blocked_recover_preserved_head_missing",
+		},
+		{
+			name: "unverified missing head keeps fresh path blocked",
+			recordedHead: func(_ *testing.T, _ string) string {
+				return strings.Repeat("f", 40)
+			},
+			gatePresent:      true,
+			verifiedHead:     false,
+			wantFreshBlocked: true,
+			wantSafety:       "blocked_recover_preserved_head_missing",
+		},
+		{
 			name: "missing head with recovery evidence keeps custody",
 			recordedHead: func(_ *testing.T, _ string) string {
 				return strings.Repeat("f", 40)
 			},
 			gatePresent:      true,
 			survivingAnchor:  true,
+			wantFreshBlocked: true,
+			wantSafety:       "blocked_recover_preserved_head_missing",
+		},
+		{
+			name: "older recoverable head keeps custody",
+			recordedHead: func(_ *testing.T, _ string) string {
+				return strings.Repeat("f", 40)
+			},
+			gatePresent:      true,
+			olderRecoverable: true,
 			wantFreshBlocked: true,
 			wantSafety:       "blocked_recover_preserved_head_missing",
 		},
@@ -90,16 +120,31 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 
 			submitted := cliGit(t, repoDir, "rev-parse", "HEAD")
 			recorded := tc.recordedHead(t, submitted)
-			if tc.advanceWorktree {
-				cliGit(t, repoDir, "commit", "--allow-empty", "-m", "pipeline fix")
-				recorded = cliGit(t, repoDir, "rev-parse", "HEAD")
-			}
+			var gateDir string
 			if tc.gatePresent {
-				gateDir := paths.RepoDir(repo.ID)
+				gateDir = paths.RepoDir(repo.ID)
 				if err := os.MkdirAll(gateDir, 0o755); err != nil {
 					t.Fatalf("create gate directory: %v", err)
 				}
 				cliGit(t, gateDir, "init", "--bare")
+			}
+			if tc.olderRecoverable {
+				cliGit(t, repoDir, "commit", "--allow-empty", "-m", "older pipeline fix")
+				olderHead := cliGit(t, repoDir, "rev-parse", "HEAD")
+				cliGit(t, repoDir, "push", gateDir, "HEAD:refs/heads/feature/missing-head")
+				olderRun, err := database.InsertRun(repo.ID, "feature/missing-head", submitted, submitted)
+				if err != nil {
+					t.Fatalf("insert older pipeline run: %v", err)
+				}
+				if err := database.UpdateRunStatusWithVerifiedHead(olderRun.ID, types.RunCancelled, olderHead); err != nil {
+					t.Fatalf("terminalize older pipeline run: %v", err)
+				}
+			}
+			if tc.advanceWorktree {
+				cliGit(t, repoDir, "commit", "--allow-empty", "-m", "pipeline fix")
+				recorded = cliGit(t, repoDir, "rev-parse", "HEAD")
+			}
+			if tc.gatePresent && !tc.olderRecoverable {
 				cliGit(t, repoDir, "push", gateDir, "HEAD:refs/heads/feature/missing-head")
 				if tc.objectReadError {
 					objectPath := filepath.Join(gateDir, "objects", recorded[:2], recorded[2:])
@@ -241,5 +286,93 @@ func TestRootWizardStartsFreshRunWhenNoopGateHasMissingTerminalHead(t *testing.T
 	}
 	if attached == nil || attached.HeadSHA != f.head {
 		t.Fatalf("wizard attached run = %#v, want head %s", attached, f.head)
+	}
+}
+
+func TestRootWizardKeepsRunIdentityAfterTerminalWait(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+
+	previousInteractive := terminalInteractive
+	terminalInteractive = func() bool { return true }
+	defer func() { terminalInteractive = previousInteractive }()
+	previousTimeout := triggerWaitTimeout
+	triggerWaitTimeout = 100 * time.Millisecond
+	defer func() { triggerWaitTimeout = previousTimeout }()
+
+	previousWizardRun := wizardRun
+	var startedRunID string
+	wizardRun = func(cfg wizard.Config) (wizard.Result, error) {
+		if err := cfg.WaitForRun(context.Background(), f.branch); err != nil {
+			return wizard.Result{}, err
+		}
+		runs, err := f.d.GetRunsByRepo(f.repo.ID)
+		if err != nil {
+			return wizard.Result{}, err
+		}
+		startedRunID = runs[0].ID
+		if err := f.d.UpdateRunStatus(startedRunID, types.RunCompleted); err != nil {
+			return wizard.Result{}, err
+		}
+		return wizard.Result{Success: true, Pushed: true, TargetBranch: f.branch}, nil
+	}
+	defer func() { wizardRun = previousWizardRun }()
+
+	previousRunTUI := runTUI
+	var attached *ipc.RunInfo
+	runTUI = func(_ string, _ *ipc.Client, run *ipc.RunInfo, _ string) error {
+		attached = run
+		return nil
+	}
+	defer func() { runTUI = previousRunTUI }()
+
+	if _, err := executeCmd(); err != nil {
+		t.Fatalf("executeCmd() error = %v", err)
+	}
+	if attached == nil || attached.ID != startedRunID {
+		t.Fatalf("wizard attached run = %#v, want run %s", attached, startedRunID)
+	}
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("runs after terminal wizard handoff = %d, want original plus one fresh run", len(runs))
+	}
+}
+
+func TestDaemonFreshRunRechecksPipelineCustody(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+	cliGit(t, f.repoDir, "commit", "--allow-empty", "-m", "recoverable pipeline fix")
+	movedHead := cliGit(t, f.repoDir, "rev-parse", "HEAD")
+	cliGit(t, f.repoDir, "push", f.paths.RepoDir(f.repo.ID), "HEAD:refs/heads/"+f.branch)
+	recoverable, err := f.d.InsertRun(f.repo.ID, f.branch, f.head, f.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.UpdateRunStatusWithVerifiedHead(recoverable.ID, types.RunCancelled, movedHead); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(f.paths.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.StartFreshRunResult
+	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID:  f.repo.ID,
+		Branch:  f.branch,
+		HeadSHA: movedHead,
+		WorkDir: f.repoDir,
+	}, &result)
+	if err == nil || !strings.Contains(err.Error(), "fresh run blocked") {
+		t.Fatalf("fresh run IPC error = %v, want custody refusal", err)
+	}
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("runs after custody refusal = %d, want 2", len(runs))
 	}
 }

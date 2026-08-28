@@ -1209,7 +1209,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleStartFreshRun(ctx, p.RepoID, p.Branch, p.HeadSHA, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleStartFreshRun(ctx, p.RepoID, p.Branch, p.HeadSHA, p.WorkDir, p.SkipSteps, p.Intent)
 		if err != nil {
 			return nil, err
 		}

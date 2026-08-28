@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -791,16 +792,27 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
-func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
-	if strings.TrimSpace(branch) == "" || strings.TrimSpace(headSHA) == "" {
-		return "", fmt.Errorf("fresh run requires a branch and head")
+func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, headSHA, workDir string, skipSteps []types.StepName, intent string) (string, error) {
+	if strings.TrimSpace(branch) == "" || strings.TrimSpace(headSHA) == "" || strings.TrimSpace(workDir) == "" {
+		return "", fmt.Errorf("fresh run requires a branch, head, and worktree")
 	}
+	branchMu := m.branchLock(repoID, branch)
+	branchMu.Lock()
+	defer branchMu.Unlock()
+
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
 	}
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo %s", repoID)
+	}
+	active, err := m.db.GetActiveRun(repoID, branch)
+	if err != nil {
+		return "", fmt.Errorf("get active run: %w", err)
+	}
+	if active != nil {
+		return "", fmt.Errorf("an active run already owns branch %s", branch)
 	}
 
 	gateDir := m.paths.RepoDir(repo.ID)
@@ -811,6 +823,18 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 	if gateHead != headSHA {
 		return "", fmt.Errorf("gate head for %q changed from %s to %s; retry the fresh run", branch, headSHA, gateHead)
 	}
+	if state := (&branchsync.Service{
+		DB:      m.db,
+		Repo:    repo,
+		WorkDir: workDir,
+		GateDir: gateDir,
+		Paths:   m.paths,
+	}).FreshRunOwnershipState(ctx, branch, headSHA); state != nil {
+		if state.Error != "" {
+			return "", fmt.Errorf("fresh run blocked: %s", state.Error)
+		}
+		return "", fmt.Errorf("fresh run blocked: pipeline custody is unresolved")
+	}
 
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
@@ -820,9 +844,6 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 	for _, run := range runs {
 		if run.Branch != branch {
 			continue
-		}
-		if run.Status == types.RunPending || run.Status == types.RunRunning {
-			return "", fmt.Errorf("an active run already owns branch %s", branch)
 		}
 		if baseSHA == gateHead {
 			baseSHA = run.BaseSHA
@@ -837,7 +858,7 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 	if strings.TrimSpace(intent) != "" {
 		source = db.RunIntentSourceAgent
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, gateHead, baseSHA, "fresh", skipSteps, intent, source)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, gateHead, baseSHA, "fresh", skipSteps, intent, source)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -902,10 +923,20 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
 }
 
-// startRunWithIntentSource is the common run-creation path. source is empty
-// when no intent is supplied, RunIntentSourceAgent for a new explicit
-// override, and RunIntentSourceRerun for inherited explicit intent.
+// branchLock returns the serializer for one repository branch.
+func (m *RunManager) branchLock(repoID, branch string) *sync.Mutex {
+	lockVal, _ := m.branchLocks.LoadOrStore(repoID+"/"+branch, &sync.Mutex{})
+	return lockVal.(*sync.Mutex)
+}
+
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	branchMu := m.branchLock(repo.ID, branch)
+	branchMu.Lock()
+	defer branchMu.Unlock()
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source)
+}
+
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -920,14 +951,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
-
-	// Serialize per repo+branch to prevent two concurrent pushes from both
-	// passing cancelActiveRuns and creating duplicate pipelines.
-	lockKey := repo.ID + "/" + branch
-	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	branchMu := lockVal.(*sync.Mutex)
-	branchMu.Lock()
-	defer branchMu.Unlock()
 
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
-	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -282,84 +280,25 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 }
 
 func freshRunBranchOwnershipStateAt(ctx context.Context, env *axiEnv, workDir string) *branchsync.State {
-	state := inspectAxiBranchSyncAt(ctx, env, workDir)
-	switch state.State {
-	case branchsync.StatePipelineOwned:
-		// The ownership block exists to keep a fresh push from discarding
-		// pipeline commits that live only in the gate. An ACTIVE run whose
-		// head has not moved yet holds none, so the pre-existing supersede
-		// flow (push new commits over an in-flight run) stays available; a
-		// terminal unmoved run never reaches here because cancellation
-		// releases the branch as user_owned.
-		if branchsync.RunHeadUnmoved(state) {
-			return nil
-		}
-		// A terminal run can retain a moved head in its record after that
-		// commit and all recovery evidence have disappeared. Keep the
-		// branch-sync state manual-only, but do not let an unrecoverable
-		// historical record block unrelated fresh work forever. Any surviving
-		// commit or recovery anchor remains a custody block.
-		if state.Safety == "blocked_recover_preserved_head_missing" && freshRunHasNoPipelineEvidence(ctx, env, state, workDir) {
-			return nil
-		}
-		return &state
-	case branchsync.StatePushInProgress:
-		return &state
-	default:
-		return nil
+	service := &branchsync.Service{
+		DB:            env.d,
+		Repo:          env.repo,
+		WorkDir:       workDir,
+		GateDir:       env.p.RepoDir(env.repo.ID),
+		Paths:         env.p,
+		RemoteTimeout: branchSyncRemoteTimeout(env),
 	}
-}
-
-// freshRunHasNoPipelineEvidence permits a fresh delivery only after positive
-// local evidence shows that a terminal run's recorded moved head and its
-// recovery anchors are gone. Unreadable repositories or conflicting anchors
-// fail closed so this exception cannot discard recoverable pipeline work.
-func freshRunHasNoPipelineEvidence(ctx context.Context, env *axiEnv, state branchsync.State, workDir string) bool {
-	if env == nil || env.p == nil || env.repo == nil || strings.TrimSpace(state.Pipeline.RunID) == "" || strings.TrimSpace(state.Pipeline.CurrentHead) == "" {
-		return false
-	}
-	localHeadExists, err := git.RefExists(ctx, workDir, state.Pipeline.CurrentHead)
-	if err != nil || localHeadExists {
-		return false
-	}
-	if recoveryEvidencePresent(ctx, workDir, state.Pipeline.RunID) {
-		return false
-	}
-
-	gateDir := env.p.RepoDir(env.repo.ID)
-	info, err := os.Stat(gateDir)
-	if err != nil {
-		return os.IsNotExist(err)
-	}
-	if !info.IsDir() {
-		return false
-	}
-	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
-		return false
-	}
-	if recoveryEvidencePresent(ctx, gateDir, state.Pipeline.RunID) {
-		return false
-	}
-	gateHeadExists, err := git.RefExists(ctx, gateDir, state.Pipeline.CurrentHead)
-	if err != nil || gateHeadExists {
-		return false
-	}
-	return true
-}
-
-func recoveryEvidencePresent(ctx context.Context, dir, runID string) bool {
-	ref := custody.RecoveryRef(runID)
-	if target, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(target) != "" {
-		return true
-	}
-	_, exists, err := git.ExactRefTarget(ctx, dir, ref)
-	return err != nil || exists
+	return service.FreshRunOwnershipState(ctx, "", "")
 }
 
 // triggerRun starts a fresh run for branch by pushing the current HEAD through
 // the gate. Callers must check for an existing active run first (see
 // activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+	workDir, err := git.FindGitRoot(".")
+	if err != nil {
+		return "", fmt.Errorf("resolve current worktree: %w", err)
+	}
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
@@ -370,7 +309,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		// a matching terminal run may predate this push, so do not attach to it.
 		priorRunIDs = nil
 	}
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
 	gateHeadBefore, gateHeadErr := git.Run(ctx, env.p.RepoDir(env.repo.ID), "rev-parse", "refs/heads/"+branch+"^{commit}")
@@ -380,15 +319,15 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		// Close the inspection-to-push race: if the pipeline advanced ownership
 		// after the pre-push check, preserve the structured branch-sync refusal
 		// instead of leaking the resulting Git non-fast-forward.
-		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+		if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 			return "", &branchOwnershipError{state: *state}
 		}
 	}
 	if pushErr == nil && gateWasCurrent {
-		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+		if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 			return "", &branchOwnershipError{state: *state}
 		}
-		runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, skipSteps, intent)
+		runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, workDir, skipSteps, intent)
 		if err != nil {
 			return "", fmt.Errorf("start fresh run for %q: %v", branch, err)
 		}
@@ -402,22 +341,23 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		return "", fmt.Errorf("push %q to gate: %v", branch, pushErr)
 	}
 
-	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+	if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, skipSteps, intent)
+	runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, workDir, skipSteps, intent)
 	if err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return runID, nil
 }
 
-func startFreshRun(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+func startFreshRun(ctx context.Context, client *ipc.Client, repoID, branch, headSHA, workDir string, skipSteps []types.StepName, intent string) (string, error) {
 	var result ipc.StartFreshRunResult
 	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID:    repoID,
 		Branch:    branch,
 		HeadSHA:   headSHA,
+		WorkDir:   workDir,
 		SkipSteps: skipSteps,
 		Intent:    intent,
 	}, &result); err != nil {
