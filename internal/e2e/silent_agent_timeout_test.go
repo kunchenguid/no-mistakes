@@ -80,6 +80,11 @@ func TestSilentAgentTimeoutReportsMeasuredEvidence(t *testing.T) {
 	}
 
 	statusOut, _ := h.RunInDir(operator, "axi", "status")
+	// Keep the real operator surfaces visible under `go test -v` so this
+	// regression can also produce reviewer-visible evidence of the executable
+	// journey rather than only a pass/fail result.
+	t.Logf("stock axi run surface:\n%s", runOut)
+	t.Logf("stock axi status surface:\n%s", statusOut)
 	surfaces := runOut + "\n" + statusOut
 
 	// The budget that expired must be named...
