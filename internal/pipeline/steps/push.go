@@ -95,6 +95,20 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
+
+	// A push that moves an already-existing remote branch can land underneath
+	// an open pull request an external merge process already owns, so give the
+	// repository its configured veto before any object moves. Unset (the
+	// default) is a no-op; creating the branch for the first time is skipped.
+	if err := runConfiguredPrePushCheck(sctx, decision, prePushTarget{
+		Ref:        ref,
+		Branch:     branch,
+		BaseBranch: prePushBaseBranch(sctx),
+		HeadSHA:    headBeingPushed,
+	}); err != nil {
+		return nil, err
+	}
+
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).

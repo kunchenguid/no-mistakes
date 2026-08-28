@@ -153,19 +153,21 @@ func TestFindPRMatchesByHeadBranch(t *testing.T) {
 	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
 		"tea pulls list --repo owner/repo --login work --fields index,title,state,url,head,base --output json": {
 			stdout: `[{"index":"3","title":"other","state":"open","url":"https://gitea.example.com/owner/repo/pulls/3","head":"other-branch","base":"main"},` +
-				`{"index":"7","title":"mine","state":"open","url":"https://gitea.example.com/owner/repo/pulls/7","head":"feature/x","base":"main"}]`,
+				`{"index":"7","title":"mine","state":"open","url":"https://gitea.example.com/owner/repo/pulls/7","head":"feature/x","base":"develop"}]`,
 		},
 	}), nil, "gitea.example.com", "work", "owner/repo")
 
-	pr, err := host.FindPR(context.Background(), "feature/x", "main")
+	// No base filter, so the returned BaseBranch can only have come from the
+	// listing's own "base" field, not from an input echoed back.
+	pr, err := host.FindPR(context.Background(), "feature/x", "")
 	if err != nil {
 		t.Fatalf("FindPR() error = %v", err)
 	}
 	if pr == nil {
 		t.Fatal("FindPR() = nil, want PR")
 	}
-	if pr.Number != "7" || pr.URL != "https://gitea.example.com/owner/repo/pulls/7" {
-		t.Fatalf("FindPR() = %+v, want PR #7", pr)
+	if pr.Number != "7" || pr.URL != "https://gitea.example.com/owner/repo/pulls/7" || pr.BaseBranch != "develop" {
+		t.Fatalf("FindPR() = %+v, want PR #7 targeting develop", pr)
 	}
 }
 

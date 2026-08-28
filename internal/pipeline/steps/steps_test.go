@@ -142,6 +142,13 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "view" {
+		if jsonField, ok := fakeCLIFlagValue(args, "--json"); ok && jsonField == "baseRefName" {
+			if prBase == "" {
+				os.Exit(1)
+			}
+			fmt.Println(prBase)
+			os.Exit(0)
+		}
 		if prURL != "" {
 			fmt.Println(prURL)
 			os.Exit(0)

@@ -293,7 +293,7 @@ func TestPRLifecycleCommandsAndIdempotentCreate(t *testing.T) {
 	host := newTestHost(recorder)
 
 	found, err := host.FindPR(context.Background(), "feature/forgejo", "main")
-	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA {
+	if err != nil || found == nil || found.Number != "42" || found.URL != testPRURL || found.HeadSHA != testHeadSHA || found.BaseBranch != "main" {
 		t.Fatalf("FindPR() = (%+v, %v)", found, err)
 	}
 	created, err := host.CreatePR(context.Background(), "feature/forgejo", "main", scm.PRContent{Title: "Title", Body: "line one\nline two"})

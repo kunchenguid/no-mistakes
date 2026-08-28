@@ -141,7 +141,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if base != "" && item.Base != base {
 			continue
 		}
-		return &scm.PR{Number: item.Index, URL: item.URL}, nil
+		return &scm.PR{Number: item.Index, URL: item.URL, BaseBranch: strings.TrimSpace(item.Base)}, nil
 	}
 	return nil, nil
 }
