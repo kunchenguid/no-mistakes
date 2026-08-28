@@ -49,6 +49,9 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
 
 The gate will push validated branches to the fork while opening PRs against the parent.
+A fork run that should open a PR must start with `no-mistakes axi run --intent "..."`, with `PR destination: parent-owner/repo` as the first intent line.
+A direct `git push no-mistakes` has no authoritative destination; it may validate and push to the fork, but the PR step refuses creation, and attaching with `axi run` later does not retrofit the missing destination.
+See the [`axi run` reference](/no-mistakes/reference/cli/#no-mistakes-axi-run) for the exact contract.
 
 ```
 $ no-mistakes init

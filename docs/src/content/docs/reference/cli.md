@@ -47,6 +47,7 @@ The gate advertises Git push-option support, so you can skip steps for one push 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass `--fork-url` with your fork remote URL.
 The Push step and rebase branch-sync use the fork, including when CI repair restarts validation and reaches Push again, while GitHub PR and CI commands stay scoped to the parent repository and create PRs with `--head <fork-owner>:<branch>`.
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
+For the required trigger and explicit destination on a fork run that should create a PR, see [`axi run`](#no-mistakes-axi-run).
 
 `--worktree-root` is for directory-scoped toolchain configuration (mise, direnv), which resolves by path ancestry and so never reaches a run worktree under `NM_HOME`.
 The flag resolves the directory, then prints the [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry to add to `~/.no-mistakes/config.yaml`; the global config is hand-maintained, so `init` never rewrites it for you.
@@ -112,6 +113,8 @@ no-mistakes axi run --intent "the user's goal" --yes
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 For a GitHub repository initialized with `--fork-url`, the intent must start with a dedicated `PR destination: owner/repo` line naming the repository allowed to receive the pull request. Repository mentions elsewhere in the intent, including issue links, do not authorize publication.
+For fork routing, `axi run --intent` is the required trigger for a run that should create a PR.
+A direct `git push no-mistakes` creates the run without an authoritative destination; attaching later cannot retrofit one, so the run may complete validation and push to the fork but the PR step refuses creation.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
