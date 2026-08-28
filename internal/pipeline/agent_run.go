@@ -126,6 +126,19 @@ func (a *agentActivity) observe() {
 	a.mu.Unlock()
 }
 
+func (a *agentActivity) beginAttempt() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.last = time.Time{}
+	a.observed = 0
+	a.launchedPID = 0
+	a.launchedAt = time.Time{}
+	a.launched = false
+	a.mu.Unlock()
+}
+
 func (a *agentActivity) observeLaunch(pid int) {
 	if a == nil {
 		return
@@ -185,6 +198,8 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 			activity.observeLaunch(event.PID)
 		case agent.LifecyclePhaseActivity:
 			activity.observe()
+		case agent.LifecyclePhaseRetry, agent.LifecyclePhaseFallback:
+			activity.beginAttempt()
 		case agent.LifecyclePhaseExit:
 			// Exit is the deadline's own consequence: cancelling the context
 			// kills the subprocess and the adapter reports it. Counting that as
@@ -192,8 +207,8 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 			// until the last instant, which is the fabricated-evidence problem
 			// this measurement replaces.
 		default:
-			// Retry and unknown lifecycle phases are adapter control metadata,
-			// not evidence of assistant text or subprocess output.
+			// Unknown lifecycle phases are adapter control metadata, not evidence
+			// of assistant text or subprocess output.
 		}
 		if onLifecycle != nil {
 			onLifecycle(event)

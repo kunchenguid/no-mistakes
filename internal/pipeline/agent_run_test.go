@@ -376,12 +376,14 @@ func TestRunAgent_RetryMetadataIsNotObservedOutput(t *testing.T) {
 	}
 }
 
-func TestRunAgent_FallbackNoticeIsLoggedWithoutBecomingObservedOutput(t *testing.T) {
+func TestRunAgent_FallbackResetsPriorAttemptActivity(t *testing.T) {
 	t.Parallel()
 	first := &hangingAgent{
-		name: "missing",
-		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			return nil, errors.New("missing start: executable not found")
+		name: "active",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "active", Phase: agent.LifecyclePhaseStart, PID: 5151})
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "active", Phase: agent.LifecyclePhaseActivity})
+			return nil, errors.New("active exited: unavailable")
 		},
 	}
 	second := &hangingAgent{
@@ -417,7 +419,10 @@ func TestRunAgent_FallbackNoticeIsLoggedWithoutBecomingObservedOutput(t *testing
 		t.Fatalf("error = %q, want silent fallback agent reported as producing no output", err)
 	}
 	if strings.Contains(err.Error(), "last produced output") {
-		t.Fatalf("error = %q, fallback control metadata must not count as output", err)
+		t.Fatalf("error = %q, prior attempt activity must not count as replacement output", err)
+	}
+	if !strings.Contains(err.Error(), "pid=6161") {
+		t.Fatalf("error = %q, want silence attributed to the replacement subprocess", err)
 	}
 }
 
