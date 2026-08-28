@@ -15,7 +15,7 @@ import (
 // pipelineOwnedPRIntent is the reported class of acceptance criterion: a PR
 // outcome this same pipeline run owns later (push + PR steps), not something
 // source review can verify pre-push.
-const pipelineOwnedPRIntent = "REQUIRED: Open PR A unmerged\nPR destination: example/no-mistakes"
+const pipelineOwnedPRIntent = "PR destination: example/no-mistakes\nREQUIRED: Open PR A unmerged"
 
 // deferredPRFinding is the invalid pre-push finding shape reported in the bug:
 // the reviewer treats "PR does not exist yet" as an intent contradiction.
