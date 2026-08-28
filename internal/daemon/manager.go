@@ -792,7 +792,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
-func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, headSHA, workDir string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, headSHA, workDir string, priorRunIDs []string, skipSteps []types.StepName, intent string) (string, error) {
 	if strings.TrimSpace(branch) == "" || strings.TrimSpace(headSHA) == "" || strings.TrimSpace(workDir) == "" {
 		return "", fmt.Errorf("fresh run requires a branch, head, and worktree")
 	}
@@ -807,14 +807,6 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo %s", repoID)
 	}
-	active, err := m.db.GetActiveRun(repoID, branch)
-	if err != nil {
-		return "", fmt.Errorf("get active run: %w", err)
-	}
-	if active != nil {
-		return "", fmt.Errorf("an active run already owns branch %s", branch)
-	}
-
 	gateDir := m.paths.RepoDir(repo.ID)
 	gateHead, err := git.ResolveRef(ctx, gateDir, "refs/heads/"+branch)
 	if err != nil {
@@ -822,6 +814,35 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 	}
 	if gateHead != headSHA {
 		return "", fmt.Errorf("gate head for %q changed from %s to %s; retry the fresh run", branch, headSHA, gateHead)
+	}
+	var prior map[string]struct{}
+	if priorRunIDs != nil {
+		prior = make(map[string]struct{}, len(priorRunIDs))
+		for _, runID := range priorRunIDs {
+			if strings.TrimSpace(runID) == "" {
+				return "", fmt.Errorf("fresh run received an empty pre-push run identity")
+			}
+			prior[runID] = struct{}{}
+		}
+		runsForHead, err := m.db.GetRunsByRepoHead(repoID, branch, headSHA)
+		if err != nil {
+			return "", fmt.Errorf("get exact-head runs: %w", err)
+		}
+		for _, run := range runsForHead {
+			if strings.TrimSpace(run.ID) == "" {
+				return "", fmt.Errorf("exact-head run has an empty ID")
+			}
+			if _, existed := prior[run.ID]; !existed {
+				return run.ID, nil
+			}
+		}
+	}
+	active, err := m.db.GetActiveRun(repoID, branch)
+	if err != nil {
+		return "", fmt.Errorf("get active run: %w", err)
+	}
+	if active != nil {
+		return "", fmt.Errorf("an active run already owns branch %s", branch)
 	}
 	if state := (&branchsync.Service{
 		DB:      m.db,
@@ -834,6 +855,9 @@ func (m *RunManager) HandleStartFreshRun(ctx context.Context, repoID, branch, he
 			return "", fmt.Errorf("fresh run blocked: %s", state.Error)
 		}
 		return "", fmt.Errorf("fresh run blocked: pipeline custody is unresolved")
+	}
+	if priorRunIDs == nil {
+		return "", fmt.Errorf("fresh run requires a pre-push run identity baseline")
 	}
 
 	runs, err := m.db.GetRunsByRepo(repoID)

@@ -286,7 +286,7 @@ func (s *Service) FreshRunOwnershipState(ctx context.Context, expectedBranch, ex
 
 	switch state.State {
 	case StatePipelineOwned:
-		if RunHeadUnmoved(state) {
+		if RunHeadUnmoved(state) && (state.Pipeline.Status == string(types.RunPending) || state.Pipeline.Status == string(types.RunRunning)) {
 			return nil
 		}
 		if state.Safety == "blocked_recover_preserved_head_missing" && s.hasNoPipelineEvidence(ctx, state.Local.Branch) {

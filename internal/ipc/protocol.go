@@ -134,12 +134,13 @@ type RerunParams struct {
 }
 
 type StartFreshRunParams struct {
-	RepoID    string           `json:"repo_id"`
-	Branch    string           `json:"branch"`
-	HeadSHA   string           `json:"head_sha"`
-	WorkDir   string           `json:"work_dir"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	RepoID       string           `json:"repo_id"`
+	Branch       string           `json:"branch"`
+	HeadSHA      string           `json:"head_sha"`
+	WorkDir      string           `json:"work_dir"`
+	PriorRunIDs  []string         `json:"prior_run_ids"`
+	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
+	Intent       string           `json:"intent,omitempty"`
 }
 
 type StartFreshRunResult struct {

@@ -46,6 +46,15 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 			wantSafety:       "user_owned",
 		},
 		{
+			name: "terminal unmoved without verification keeps custody",
+			recordedHead: func(_ *testing.T, submitted string) string {
+				return submitted
+			},
+			verifiedHead:     false,
+			wantFreshBlocked: true,
+			wantSafety:       "blocked_pipeline_owned_recoverable",
+		},
+		{
 			name: "terminal recoverable moved head keeps custody",
 			recordedHead: func(_ *testing.T, submitted string) string {
 				return submitted
@@ -303,6 +312,9 @@ func TestRootWizardKeepsRunIdentityAfterTerminalWait(t *testing.T) {
 	previousWizardRun := wizardRun
 	var startedRunID string
 	wizardRun = func(cfg wizard.Config) (wizard.Result, error) {
+		if err := cfg.Push(context.Background(), f.branch); err != nil {
+			return wizard.Result{}, err
+		}
 		if err := cfg.WaitForRun(context.Background(), f.branch); err != nil {
 			return wizard.Result{}, err
 		}
@@ -375,5 +387,84 @@ func TestDaemonFreshRunRechecksPipelineCustody(t *testing.T) {
 	}
 	if len(runs) != 2 {
 		t.Fatalf("runs after custody refusal = %d, want 2", len(runs))
+	}
+}
+
+func TestDaemonFreshRunReturnsNewExactHeadRunInsteadOfDuplicating(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorRunIDs := make([]string, 0, len(runs))
+	for _, run := range runs {
+		priorRunIDs = append(priorRunIDs, run.ID)
+	}
+	existing, err := f.d.InsertRun(f.repo.ID, f.branch, f.head, f.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.UpdateRunStatusWithVerifiedHead(existing.ID, types.RunCompleted, f.head); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(f.paths.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.StartFreshRunResult
+	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID:      f.repo.ID,
+		Branch:      f.branch,
+		HeadSHA:     f.head,
+		WorkDir:     f.repoDir,
+		PriorRunIDs: priorRunIDs,
+	}, &result)
+	if err != nil {
+		t.Fatalf("fresh run IPC error = %v", err)
+	}
+	if result.RunID != existing.ID {
+		t.Fatalf("fresh run ID = %s, want existing exact-head run %s", result.RunID, existing.ID)
+	}
+	runs, err = f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != len(priorRunIDs)+1 {
+		t.Fatalf("runs after exact-head handoff = %d, want %d", len(runs), len(priorRunIDs)+1)
+	}
+}
+
+func TestWizardFreshRunRefusesContextDriftAfterPush(t *testing.T) {
+	f := newMissingHeadFreshRunFixture(t)
+	runs, err := f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorRunIDs := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		priorRunIDs[run.ID] = struct{}{}
+	}
+	identity := &freshRunIdentity{branch: f.branch, headSHA: f.head, priorRunIDs: priorRunIDs}
+
+	cliGit(t, f.repoDir, "checkout", "-b", "feature/context-drift")
+	previousTimeout := triggerWaitTimeout
+	triggerWaitTimeout = 100 * time.Millisecond
+	defer func() { triggerWaitTimeout = previousTimeout }()
+	client, err := ipc.Dial(f.paths.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := awaitDaemonRunRegistrationOrStartFresh(context.Background(), client, f.paths, f.d, f.repo, f.repoDir, f.branch, identity, nil); err == nil || !strings.Contains(err.Error(), "context changed") {
+		t.Fatalf("context-drift handoff error = %v, want context refusal", err)
+	}
+	runs, err = f.d.GetRunsByRepo(f.repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != len(priorRunIDs) {
+		t.Fatalf("runs after context-drift refusal = %d, want %d", len(runs), len(priorRunIDs))
 	}
 }

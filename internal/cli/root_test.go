@@ -225,8 +225,8 @@ func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected -y to fail when no active run appears after push")
 	}
-	if !strings.Contains(err.Error(), "resolve gate head") {
-		t.Fatalf("error should explain that the pushed branch is unavailable, got %v", err)
+	if !strings.Contains(err.Error(), "record a pushed branch") {
+		t.Fatalf("error should explain that the pushed branch identity is unavailable, got %v", err)
 	}
 }
 

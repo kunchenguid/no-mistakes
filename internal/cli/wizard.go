@@ -137,7 +137,7 @@ type repoState struct {
 	defaultBranch string
 	detached      bool
 	dirty         bool
-	beforePush    func(context.Context, string) error
+	beforePush    func(context.Context, string, string) error
 }
 
 // needsBranch reports whether the user has no feature branch to work on —
@@ -242,7 +242,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		},
 		Push: func(ctx context.Context, branch string) error {
 			if state.beforePush != nil {
-				if err := state.beforePush(ctx, workDir); err != nil {
+				if err := state.beforePush(ctx, workDir, branch); err != nil {
 					return err
 				}
 			}

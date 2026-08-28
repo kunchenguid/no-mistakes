@@ -291,6 +291,45 @@ func freshRunBranchOwnershipStateAt(ctx context.Context, env *axiEnv, workDir st
 	return service.FreshRunOwnershipState(ctx, "", "")
 }
 
+type freshRunIdentity struct {
+	branch      string
+	headSHA     string
+	priorRunIDs map[string]struct{}
+}
+
+func captureFreshRunIdentity(ctx context.Context, client *ipc.Client, repoID, workDir, branch string) (*freshRunIdentity, error) {
+	headSHA, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve current HEAD for %q: %w", branch, err)
+	}
+	if err := validateFreshRunContext(ctx, workDir, branch, headSHA); err != nil {
+		return nil, err
+	}
+	priorRunIDs, err := runIDsForHead(client, repoID, branch, headSHA)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot runs for %q at %s: %w", branch, headSHA, err)
+	}
+	return &freshRunIdentity{branch: branch, headSHA: headSHA, priorRunIDs: priorRunIDs}, nil
+}
+
+func validateFreshRunContext(ctx context.Context, workDir, branch, headSHA string) error {
+	currentBranch, err := git.CurrentBranch(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("recheck current branch for %q: %w", branch, err)
+	}
+	if currentBranch != branch {
+		return fmt.Errorf("fresh run context changed from branch %q to %q", branch, currentBranch)
+	}
+	currentHead, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("recheck current HEAD for %q: %w", branch, err)
+	}
+	if currentHead != headSHA {
+		return fmt.Errorf("fresh run context changed from HEAD %s to %s", headSHA, currentHead)
+	}
+	return nil
+}
+
 // triggerRun starts a fresh run for branch by pushing the current HEAD through
 // the gate. Callers must check for an existing active run first (see
 // activeRunID) and apply pre-flight guards.
@@ -299,21 +338,20 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if err != nil {
 		return "", fmt.Errorf("resolve current worktree: %w", err)
 	}
+	if err := validateFreshRunContext(ctx, workDir, branch, headSHA); err != nil {
+		return "", err
+	}
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
 	if err != nil {
-		// An active run can still be found below. Without a baseline, however,
-		// a matching terminal run may predate this push, so do not attach to it.
-		priorRunIDs = nil
+		return "", fmt.Errorf("snapshot runs for %q at %s: %w", branch, headSHA, err)
 	}
 	if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	gateHeadBefore, gateHeadErr := git.Run(ctx, env.p.RepoDir(env.repo.ID), "rev-parse", "refs/heads/"+branch+"^{commit}")
-	gateWasCurrent := gateHeadErr == nil && gateHeadBefore == headSHA
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
 		// Close the inspection-to-push race: if the pipeline advanced ownership
@@ -323,18 +361,14 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 			return "", &branchOwnershipError{state: *state}
 		}
 	}
-	if pushErr == nil && gateWasCurrent {
-		if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
-			return "", &branchOwnershipError{state: *state}
-		}
-		runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, workDir, skipSteps, intent)
-		if err != nil {
-			return "", fmt.Errorf("start fresh run for %q: %v", branch, err)
-		}
-		return runID, nil
+	run, waitErr := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout)
+	if waitErr != nil {
+		return "", fmt.Errorf("wait for triggered run for %q: %w", branch, waitErr)
 	}
-
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
+	if run != nil {
+		if err := validateFreshRunContext(ctx, workDir, branch, headSHA); err != nil {
+			return "", err
+		}
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -344,22 +378,33 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, workDir, skipSteps, intent)
+	runID, err := startFreshRun(ctx, env.client, env.repo.ID, branch, headSHA, workDir, priorRunIDs, skipSteps, intent)
 	if err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return runID, nil
 }
 
-func startFreshRun(ctx context.Context, client *ipc.Client, repoID, branch, headSHA, workDir string, skipSteps []types.StepName, intent string) (string, error) {
+func startFreshRun(ctx context.Context, client *ipc.Client, repoID, branch, headSHA, workDir string, priorRunIDs map[string]struct{}, skipSteps []types.StepName, intent string) (string, error) {
+	if priorRunIDs == nil {
+		return "", fmt.Errorf("fresh run requires a pre-push run identity baseline")
+	}
+	ids := make([]string, 0, len(priorRunIDs))
+	for id := range priorRunIDs {
+		if strings.TrimSpace(id) == "" {
+			return "", fmt.Errorf("fresh run received an empty pre-push run identity")
+		}
+		ids = append(ids, id)
+	}
 	var result ipc.StartFreshRunResult
 	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		RepoID:    repoID,
-		Branch:    branch,
-		HeadSHA:   headSHA,
-		WorkDir:   workDir,
-		SkipSteps: skipSteps,
-		Intent:    intent,
+		RepoID:      repoID,
+		Branch:      branch,
+		HeadSHA:     headSHA,
+		WorkDir:     workDir,
+		PriorRunIDs: ids,
+		SkipSteps:   skipSteps,
+		Intent:      intent,
 	}, &result); err != nil {
 		return "", err
 	}
@@ -381,6 +426,9 @@ func runIDsForHead(client *ipc.Client, repoID, branch, headSHA string) (map[stri
 	}
 	ids := make(map[string]struct{}, len(runs))
 	for _, run := range runs {
+		if strings.TrimSpace(run.ID) == "" {
+			return nil, fmt.Errorf("exact-head run has an empty ID")
+		}
 		ids[run.ID] = struct{}{}
 	}
 	return ids, nil
@@ -399,6 +447,9 @@ func runsForHead(client *ipc.Client, repoID, branch, headSHA string) ([]ipc.RunI
 // that fails before it can be observed as active. priorRunIDs prevents an
 // up-to-date push from attaching to a terminal run created by an earlier one.
 func waitForTriggeredRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, priorRunIDs map[string]struct{}, timeout time.Duration) (*ipc.RunInfo, error) {
+	if priorRunIDs == nil {
+		return nil, fmt.Errorf("run identity baseline is unavailable")
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -414,19 +465,24 @@ func waitForTriggeredRunForHead(ctx context.Context, client *ipc.Client, repoID,
 			return nil, err
 		}
 		if run := activeRunInfoForHead(result.Run, headSHA); run != nil {
-			return run, nil
-		}
-		if priorRunIDs != nil {
-			runs, err := runsForHead(client, repoID, branch, headSHA)
-			if err != nil {
-				return nil, err
+			if strings.TrimSpace(run.ID) == "" {
+				return nil, fmt.Errorf("active exact-head run has an empty ID")
 			}
-			for i := range runs {
-				run := &runs[i]
-				if _, existed := priorRunIDs[run.ID]; !existed {
-					return run, nil
-				}
-				break
+			if _, existed := priorRunIDs[run.ID]; !existed {
+				return run, nil
+			}
+		}
+		runs, err := runsForHead(client, repoID, branch, headSHA)
+		if err != nil {
+			return nil, err
+		}
+		for i := range runs {
+			run := &runs[i]
+			if strings.TrimSpace(run.ID) == "" {
+				return nil, fmt.Errorf("exact-head run has an empty ID")
+			}
+			if _, existed := priorRunIDs[run.ID]; !existed {
+				return run, nil
 			}
 		}
 		select {
