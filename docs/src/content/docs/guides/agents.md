@@ -167,6 +167,7 @@ no-mistakes axi status
 no-mistakes axi sync --check
 no-mistakes axi sync
 no-mistakes axi sync --recover
+no-mistakes axi sync --adopt-published
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
@@ -176,6 +177,7 @@ no-mistakes axi abort --run <id>
 Before any post-pipeline local commit or fresh run, read `branch_sync` and follow its exact `next_action.command`.
 A `sync` action runs `no-mistakes axi sync` first.
 A `recover_custody` action is ordinary `no-mistakes axi sync --recover` to take a still-available preserved head, or `no-mistakes axi sync --recover --keep-local` when that head is unavailable and you are discarding the missing commits, or when a bound archive preserves divergent later work while custody returns at the reported required head; never substitute one action for the other. See [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the alternative validation path and its refusal conditions.
+An `adopt_published` action is `no-mistakes axi sync --adopt-published`: it verifies the configured push target already has the exact rebased local head, then updates only the stale gate lane. A target mismatch or target change refuses without replacing that lane.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
