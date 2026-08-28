@@ -77,11 +77,13 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 
 ## Review
 
-AI code review of your diff.
+AI code review of your diff against the run's integration branch.
 
 **Behavior:**
 
-- Diffs the base commit against head
+- Resolves the integration branch as trusted `pr.base_branch` when configured, otherwise the repository's forge default branch
+- Fetches that branch before calculating the merge-base and fails with an actionable error if the configured target is unavailable; it never silently substitutes the forge default
+- Diffs the effective base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
 - Appends the [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) blocks whose glob matches at least one changed file, in configured order, each labelled with its own `path` and the files it matched so a scoped rule cannot read as a repository-wide instruction; a change that matches nothing, or a repo with none configured, gets the prompt unchanged

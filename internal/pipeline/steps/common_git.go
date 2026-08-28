@@ -25,6 +25,27 @@ func reviewWorkload(ctx context.Context, workDir, base, head string) *agent.Invo
 	return &agent.InvocationWorkload{Files: files, Lines: lines}
 }
 
+// effectivePRBaseBranch resolves the single integration branch used by the
+// pipeline's rebase, review, and PR steps. The effective Config has already
+// applied the trusted-config boundary: a pushed repository config can select a
+// target only through the existing allow_repo_commands opt-in.
+func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
+	if sctx != nil && sctx.Config != nil {
+		if branch := strings.TrimSpace(sctx.Config.PR.BaseBranch); branch != "" {
+			return branch
+		}
+	}
+	if sctx != nil && sctx.Repo != nil {
+		if branch := strings.TrimSpace(sctx.Repo.DefaultBranch); branch != "" {
+			return branch
+		}
+	}
+	// Preserve the existing git default when neither registration nor config
+	// provides a branch. This is only a last-resort compatibility fallback; a
+	// configured non-empty PR base is never replaced by it.
+	return "main"
+}
+
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base
 // against the default branch, falling back to the empty tree SHA.
@@ -47,6 +68,35 @@ func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, default
 		return mb
 	}
 	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+}
+
+// resolveReviewBaseSHA fetches and resolves the effective integration branch
+// before calculating the review merge-base. Review must not fall back to the
+// run's recorded base SHA when a configured target cannot be fetched: that SHA
+// may belong to the forge default branch and would make the reviewer inspect a
+// different integration target while the prompt claims otherwise.
+//
+// A zero base SHA retains the existing empty-tree behavior when the fetched
+// target has no common ancestor with the new branch. A non-zero run with no
+// common ancestor fails closed because there is no safe target-relative scope.
+func resolveReviewBaseSHA(ctx context.Context, sctx *pipeline.StepContext) (string, error) {
+	baseBranch := effectivePRBaseBranch(sctx)
+	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+		return "", fmt.Errorf("review integration base %q unavailable: fetch failed; ensure the branch exists on the upstream remote: %w", baseBranch, err)
+	}
+
+	ref := "origin/" + baseBranch
+	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}"); err != nil {
+		return "", fmt.Errorf("review integration base %q unavailable after fetch: resolve %s: %w", baseBranch, ref, err)
+	}
+	mergeBase, err := git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", ref)
+	if err == nil && strings.TrimSpace(mergeBase) != "" {
+		return strings.TrimSpace(mergeBase), nil
+	}
+	if sctx.Run != nil && git.IsZeroSHA(sctx.Run.BaseSHA) {
+		return git.EmptyTreeSHA, nil
+	}
+	return "", fmt.Errorf("review integration base %q has no common ancestor with run head; refusing to review against another branch", baseBranch)
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {

@@ -166,20 +166,6 @@ func forcePushRebaseTargets(branch, defaultBranch string) []string {
 	return []string{"origin/" + defaultBranch}
 }
 
-// effectivePRBaseBranch resolves the branch used as the integration base for
-// rebases. The repository default remains the fallback for configurations that
-// do not select a separate PR target branch.
-func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
-		defaultBranch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
-	}
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
-	return defaultBranch
-}
-
 // detectBundledLocalDefaultCommits returns a blocking finding when the gated
 // branch carries commits that exist on the contributor's local default branch
 // but were never pushed to origin/<default>. In multi-session / monorepo setups
