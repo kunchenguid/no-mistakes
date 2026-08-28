@@ -2605,3 +2605,43 @@ func TestRecoverGateAndRunStateRefusalsNameAnExit(t *testing.T) {
 		})
 	}
 }
+
+// TestInspectDoesNotAdvertiseSettlementForSymbolicStrandedAnchor is the review
+// regression for the probe/write disagreement. settlementAnchorsFree predicts
+// whether custody.PreserveRecoveryAnchor can write an anchor, but that write
+// refuses ANY symbolic ref as its first check, while the probe used
+// git.ExactRefTarget alone - and a DANGLING symref is invisible to
+// for-each-ref while symbolic-ref still succeeds. So the probe reported "free"
+// for a ref the settlement can never write, and inspection advertised a
+// settlement that refuses on every attempt.
+func TestInspectDoesNotAdvertiseSettlementForSymbolicStrandedAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	// The conflicting-gate-anchor shape: the recorded head is still in the
+	// gate, so the settlement's pin loop will try to write the stranded anchor
+	// there.
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+	strandedRef := custody.RecoveryStrandedRef(f.run.ID)
+	mustRun(t, f.gate, "symbolic-ref", strandedRef, "refs/no-mistakes/nonexistent/"+f.run.ID)
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, strandedRef); err != nil || exists {
+		t.Fatalf("fixture invariant broken: dangling symref is visible to for-each-ref (exists=%v err=%v)", exists, err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction != nil && state.NextAction.Code == "return_custody_keep_local" {
+		t.Fatalf("advertised a settlement whose stranded anchor can never be written: %#v", state.NextAction)
+	}
+
+	// The advertisement must match what recovery actually does.
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("keep-local with a symbolic stranded anchor = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("a symbolic stranded anchor stamped custody")
+	}
+	if got := mustRun(t, f.gate, "symbolic-ref", strandedRef); got != "refs/no-mistakes/nonexistent/"+f.run.ID {
+		t.Fatalf("symbolic evidence was rewritten = %s", got)
+	}
+}

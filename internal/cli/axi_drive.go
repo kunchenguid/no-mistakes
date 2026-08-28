@@ -327,7 +327,12 @@ func terminalRunCustodyHelpWithDB(ctx context.Context, p *paths.Paths, d *db.DB,
 		Paths:   p,
 	}
 	state := service.InspectCached(ctx)
-	if state.Pipeline.RunID != runID {
+	// Resolving to this run is not the same as being HELD by it: a released
+	// branch still resolves to its last run, and inspect_and_reconcile_manually
+	// is not custody-specific (classifyRelation emits it for ordinary
+	// divergence with a `git log` command). Both conditions are required, which
+	// is the same gate the bare-abort site applies.
+	if state.Pipeline.RunID != runID || state.State != branchsync.StatePipelineOwned {
 		return nil
 	}
 	return custodySettlementHelp(state.NextAction)

@@ -342,3 +342,94 @@ func TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 		}
 	}
 }
+
+// TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence is the sibling of
+// TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence for the two `--run <id>`
+// abort sites. Their only guard is state.Pipeline.RunID != runID, which proves
+// the branch RESOLVES to that run - not that a run still holds it - so a
+// diverged, already-released branch still reached custodySettlementHelp and
+// answered an abort with `git log` reconciliation advice the bare site had
+// already been taught not to emit.
+func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
+	runID, _, _ := divergedReleasedBranchFixture(t)
+
+	t.Run("daemon unavailable", func(t *testing.T) {
+		out, err := executeCmd("axi", "abort", "--run", runID)
+		t.Logf("daemon-down --run abort on a diverged, unheld branch:\n%s", out)
+		if err != nil {
+			t.Fatalf("terminal run must resolve idempotently: %v\n%s", err, out)
+		}
+		assertNoAbortHelpEmitted(t, out)
+	})
+}
+
+// TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergenceWithDaemon covers the
+// same guard on the daemon-up resolveInactiveAbortTruth path.
+func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergenceWithDaemon(t *testing.T) {
+	runID, p, _ := divergedReleasedBranchFixture(t)
+	startInactiveAbortDaemon(t, p, runID)
+
+	out, err := executeCmd("axi", "abort", "--run", runID)
+	t.Logf("daemon-up --run abort on a diverged, unheld branch:\n%s", out)
+	if err != nil {
+		t.Fatalf("terminal run must resolve idempotently: %v\n%s", err, out)
+	}
+	assertNoAbortHelpEmitted(t, out)
+}
+
+// divergedReleasedBranchFixture builds a branch whose run pushed successfully
+// and whose custody was already returned, then diverges it locally, so
+// classification lands on ordinary divergence rather than pipeline custody
+// while the branch still resolves to that run.
+func divergedReleasedBranchFixture(t *testing.T) (string, *paths.Paths, string) {
+	t.Helper()
+	runID, p, local := wedgedCustodyAbortFixture(t)
+	root := filepath.Dir(local)
+
+	cliGit(t, local, "checkout", "-b", "pipeline-pushed")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("pipeline rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "pipeline rewrite")
+	pushed := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "feature/wedged")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("local rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "local rewrite")
+
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(runID, db.PushBinding{
+		HeadSHA:           pushed,
+		TargetKind:        "upstream",
+		TargetFingerprint: branchsync.TargetFingerprint(filepath.Join(root, "remote.git")),
+		Ref:               "refs/heads/feature/wedged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunCustodyReturned(runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return runID, p, local
+}
+
+func assertNoAbortHelpEmitted(t *testing.T, out string) {
+	t.Helper()
+	if !strings.Contains(out, "aborted: false") {
+		t.Errorf("abort no-op output missing %q:\n%s", "aborted: false", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "help[") {
+			t.Errorf("abort emitted help for a branch no run holds:\n%s", line)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "Run `git log") {
+			t.Errorf("abort prescribed unrelated divergence advice:\n%s", line)
+		}
+	}
+}

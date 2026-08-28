@@ -1742,6 +1742,14 @@ func (s *Service) settlementGateBranchUsable(ctx context.Context, state *State, 
 // only refuse falls back to manual reconciliation.
 func (s *Service) settlementAnchorsFree(ctx context.Context, state *State, run *db.Run, gateDir, preserved string) bool {
 	anchorFreeAt := func(dir, ref, want string) bool {
+		// PreserveRecoveryAnchor refuses ANY symbolic ref as its first check,
+		// and a dangling symref is invisible to for-each-ref while
+		// symbolic-ref still resolves it - so probing with ExactRefTarget
+		// alone reports "free" for a ref the settlement can never write.
+		// Mirror recoveryAnchorCompatible so the probe agrees with the write.
+		if symbolic, symErr := git.Run(ctx, dir, "symbolic-ref", "-q", ref); symErr == nil && symbolic != "" {
+			return false
+		}
 		target, exists, err := git.ExactRefTarget(ctx, dir, ref)
 		if err != nil {
 			return false
