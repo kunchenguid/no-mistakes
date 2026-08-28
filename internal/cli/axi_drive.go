@@ -968,8 +968,11 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 		}
 		// The branch a terminal run still holds must leave with a command that
 		// can settle it, not just the no-op (issue #824) - but only a custody
-		// settlement, never an instruction to launch a fresh pipeline.
-		if help := custodySettlementHelp(state.NextAction); len(help) > 0 {
+		// settlement, never an instruction to launch a fresh pipeline. The
+		// pipeline_owned gate is what makes that true: inspect_and_reconcile_manually
+		// is also emitted for ordinary divergence, where it is git-log advice
+		// rather than a custody settlement and belongs on no abort response.
+		if help := custodySettlementHelp(state.NextAction); len(help) > 0 && state.State == branchsync.StatePipelineOwned {
 			fields = append(fields, toon.Field{Key: "help", Value: help})
 		}
 		emitDoc(cmd, fields...)

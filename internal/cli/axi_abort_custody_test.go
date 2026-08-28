@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -270,4 +271,74 @@ func startNoActiveRunDaemon(t *testing.T, p *paths.Paths) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("fake daemon did not become reachable")
+}
+
+// TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence pins the custody scope of
+// the abort help. inspect_and_reconcile_manually is not custody-specific -
+// classifyRelation emits it for ordinary divergence with a `git log` command -
+// so a bare abort on a branch no run holds must stay silent rather than answer
+// with unrelated reconciliation advice.
+func TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
+	runID, p, local := wedgedCustodyAbortFixture(t)
+	root := filepath.Dir(local)
+
+	// A real pipeline push binding, then local work that conflicts with it, so
+	// classification lands on ordinary divergence rather than pipeline custody.
+	cliGit(t, local, "checkout", "-b", "pipeline-pushed")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("pipeline rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "pipeline rewrite")
+	pushed := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "feature/wedged")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("local rewrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "local rewrite")
+
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(runID, db.PushBinding{
+		HeadSHA:           pushed,
+		TargetKind:        "upstream",
+		TargetFingerprint: branchsync.TargetFingerprint(filepath.Join(root, "remote.git")),
+		Ref:               "refs/heads/feature/wedged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunCustodyReturned(runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	startNoActiveRunDaemon(t, p)
+
+	out, err := executeCmd("axi", "abort")
+	t.Logf("bare abort on a diverged, unheld branch:\n%s", out)
+	if err != nil {
+		t.Fatalf("bare abort with no active run must be a no-op success: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "aborted: false") {
+		t.Errorf("bare abort no-op output missing %q:\n%s", "aborted: false", out)
+	}
+	if !strings.Contains(out, "safety: blocked_diverged") {
+		t.Fatalf("fixture did not reach ordinary divergence:\n%s", out)
+	}
+	// The structured branch_sync object still REPORTS the branch's own
+	// next_action; that is ownership state, not a prescription. Only the
+	// abort's own help prescribes, and here it must prescribe nothing.
+	if !strings.Contains(out, "code: inspect_and_reconcile_manually") {
+		t.Errorf("branch_sync stopped reporting the branch's own next action:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "help[") {
+			t.Errorf("abort emitted help for a branch no run holds:\n%s", line)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "Run `git log") {
+			t.Errorf("abort prescribed unrelated divergence advice:\n%s", line)
+		}
+	}
 }

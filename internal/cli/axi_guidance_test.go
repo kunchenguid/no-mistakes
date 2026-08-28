@@ -50,9 +50,10 @@ var canonicalBranchSyncPhrases = []string{
 	"user_owned",
 	"before changing the submitted head",
 	// Settlement of a self-inconsistent custody record (issue #824): a record
-	// whose recorded pipeline head can no longer be verified has no preserved
-	// head to take, so every surface must name the keep-local settlement that
-	// can actually complete instead of a recovery that always refuses.
+	// whose recorded pipeline head cannot be verified - absent from every
+	// object store, or contradicted by the run's own recovery evidence - must
+	// name the keep-local settlement that can actually complete instead of a
+	// recovery that always refuses.
 	"return_custody_keep_local",
 	"no-mistakes axi sync --recover --keep-local",
 }
