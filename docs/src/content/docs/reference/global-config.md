@@ -397,14 +397,14 @@ Review still uses [`review_agent_timeout`](#review_agent_timeout) as a per-round
 When this deadline expires, the agent is cancelled and the invocation returns a timeout diagnostic instead of remaining active indefinitely. Most agent-driven mutation steps fail the run, CI auto-fix parks for a user decision, and PR drafting follows its existing agent-error fallback and continues with deterministic content. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the approval behavior.
 A late successful return after the deadline is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
-The diagnostic reports what was actually measured, not the budget restated:
+The diagnostic reports what was actually measured, not the budget restated. Evidence resets when a retry, provider fallback, or failed session resume starts a replacement attempt, so the diagnostic describes only the attempt that reached the deadline:
 
-- `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the agent launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
-- `agent last produced output 4s ago (312 observed)` - the agent was working right up to the deadline. The turn needs a larger budget, or the request is too large for one turn.
-- `agent produced no output at all in 30m0s and never reported a subprocess start` - the invocation never reached a running agent process.
+- `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
+- `agent last produced output 4s ago (312 observed)` - the current attempt was working right up to the deadline. The turn needs a larger budget, or the request is too large for one turn.
+- `agent produced no output at all in 30m0s and never reported a subprocess start` - the current attempt never reached a running agent process.
 
 Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr. Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
-Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; a bare context cancellation is omitted because it adds no evidence.
+Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings. A bare context cancellation is omitted because it adds no evidence.
 
 |         |                        |
 | ------- | ---------------------- |
