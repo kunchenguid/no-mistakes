@@ -13,7 +13,8 @@ const (
 	LifecyclePhaseExit = "exit"
 	// LifecyclePhaseRetry marks a transient retry before the next subprocess attempt.
 	LifecyclePhaseRetry = "retry"
-	// LifecyclePhaseFallback marks a provider fallback before the next agent attempt.
+	// LifecyclePhaseFallback marks any fallback before a fresh agent attempt,
+	// including provider, session-resume, and structured-output fallbacks.
 	LifecyclePhaseFallback = "fallback"
 	// LifecyclePhaseActivity marks observed liveness of a running native
 	// subprocess: bytes arrived on its stdout or stderr.
@@ -22,9 +23,8 @@ const (
 	// adapter forwards only assistant prose to OnChunk, and an agent spends most
 	// of a long turn emitting tool events instead, so a healthy multi-minute fix
 	// round is indistinguishable from a process that is blocked before its first
-	// byte. This phase is the missing proof of life, and it is the only
-	// measurement the invocation-timeout diagnostics are allowed to describe as
-	// silence.
+	// byte. Together with streamed assistant text, this phase supplies the
+	// measured output evidence used by invocation-timeout diagnostics.
 	LifecyclePhaseActivity = "activity"
 )
 
