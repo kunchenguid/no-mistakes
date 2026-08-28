@@ -61,6 +61,7 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 				return strings.Repeat("f", 40)
 			},
 			gatePresent:      true,
+			verifiedHead:     true,
 			wantFreshBlocked: false,
 			wantSafety:       "blocked_recover_preserved_head_missing",
 		},
@@ -198,10 +199,10 @@ func TestFreshRunBranchOwnershipDistinguishesMissingTerminalHead(t *testing.T) {
 type missingHeadFreshRunFixture struct {
 	repoDir string
 	paths   *paths.Paths
-	d      *db.DB
-	repo   *db.Repo
-	branch string
-	head   string
+	d       *db.DB
+	repo    *db.Repo
+	branch  string
+	head    string
 }
 
 func newMissingHeadFreshRunFixture(t *testing.T) missingHeadFreshRunFixture {
@@ -220,8 +221,8 @@ func newMissingHeadFreshRunFixture(t *testing.T) missingHeadFreshRunFixture {
 
 	branch := "feature/missing-head"
 	run(t, repoDir, "git", "checkout", "-b", branch)
-	run(t, repoDir, "git", "push", gate.RemoteName, "HEAD:refs/heads/"+branch)
-	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	head := cliGit(t, repoDir, "rev-parse", "HEAD")
+	cliGit(t, p.RepoDir(repo.ID), "fetch", repoDir, "HEAD:refs/heads/"+branch)
 	missing := strings.Repeat("f", 40)
 	pipelineRun, err := d.InsertRun(repo.ID, branch, head, head)
 	if err != nil {
@@ -344,7 +345,7 @@ func TestDaemonFreshRunRechecksPipelineCustody(t *testing.T) {
 	f := newMissingHeadFreshRunFixture(t)
 	cliGit(t, f.repoDir, "commit", "--allow-empty", "-m", "recoverable pipeline fix")
 	movedHead := cliGit(t, f.repoDir, "rev-parse", "HEAD")
-	cliGit(t, f.repoDir, "push", f.paths.RepoDir(f.repo.ID), "HEAD:refs/heads/"+f.branch)
+	cliGit(t, f.paths.RepoDir(f.repo.ID), "fetch", f.repoDir, "HEAD:refs/heads/"+f.branch)
 	recoverable, err := f.d.InsertRun(f.repo.ID, f.branch, f.head, f.head)
 	if err != nil {
 		t.Fatal(err)
