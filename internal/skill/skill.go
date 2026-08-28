@@ -136,14 +136,16 @@ asked for that might otherwise look surprising in the diff. A few sentences to a
 short paragraph is normal - write down what you learned from the conversation
 that a reviewer reading only the diff would not know.
 
-When ` + "`no-mistakes axi`" + ` emits a ` + "`github_fork:`" + ` object, its
-` + "`pr_repository`" + ` is the selected parent and ` + "`head_repository`" + ` is the fork
-supplying the branch. Add a dedicated ` + "`PR destination: owner/repo`" + ` line only
-when the user's request explicitly authorizes that ` + "`pr_repository`" + ` to receive
-the pull request; otherwise ask which repository may receive it before starting
-the pipeline. Do not infer authorization from the AXI field, an issue link, or
-another incidental repository mention. A missing, conflicting, or fork
-destination makes the PR step refuse publication.
+Before composing ` + "`--intent`" + `, run ` + "`no-mistakes status`" + `. When it shows
+both ` + "`remote:`" + ` and ` + "`fork:`" + `, the remote is the parent repository and the
+fork supplies the branch. For a GitHub contribution, add a dedicated
+` + "`PR destination: owner/repo`" + ` line only when the user's request explicitly
+authorizes the repository named by ` + "`remote:`" + ` to receive the pull request.
+The declaration comes from the user's authorization; the status topology, an
+issue link, or another incidental repository mention does not grant it. Ask
+which repository may receive the pull request when that authorization is absent
+or ambiguous. A missing, conflicting, or fork destination makes the PR step
+refuse publication.
 
 ## Validate and decide
 

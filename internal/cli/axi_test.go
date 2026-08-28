@@ -617,49 +617,6 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	}
 }
 
-func TestAxiHomeExposesCredentialSafeGitHubForkRouting(t *testing.T) {
-	repoDir, _, database, repo := setupAxiQueryRepo(t)
-	chdir(t, repoDir)
-	if _, err := database.ReplaceRepoURLs(
-		repo.ID,
-		"https://parent-token@github.com/parent-owner/no-mistakes.git",
-		"https://fork-token@github.com/fork-owner/no-mistakes.git",
-	); err != nil {
-		t.Fatalf("replace repository URLs: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetContext(context.Background())
-	cmd.SetOut(&out)
-	if _, err := runAxiHome(cmd); err != nil {
-		t.Fatalf("axi home: %v\n%s", err, out.String())
-	}
-
-	var doc struct {
-		GitHubFork struct {
-			PRRepository                string `toon:"pr_repository"`
-			HeadRepository              string `toon:"head_repository"`
-			ExplicitDestinationRequired bool   `toon:"explicit_destination_required"`
-		} `toon:"github_fork"`
-	}
-	if err := toon.UnmarshalString(out.String(), &doc); err != nil {
-		t.Fatalf("decode axi home TOON: %v\n%s", err, out.String())
-	}
-	if doc.GitHubFork.PRRepository != "parent-owner/no-mistakes" {
-		t.Fatalf("github_fork.pr_repository = %q, want parent-owner/no-mistakes:\n%s", doc.GitHubFork.PRRepository, out.String())
-	}
-	if doc.GitHubFork.HeadRepository != "fork-owner/no-mistakes" {
-		t.Fatalf("github_fork.head_repository = %q, want fork-owner/no-mistakes:\n%s", doc.GitHubFork.HeadRepository, out.String())
-	}
-	if !doc.GitHubFork.ExplicitDestinationRequired {
-		t.Fatalf("github_fork.explicit_destination_required = false, want true:\n%s", out.String())
-	}
-	if strings.Contains(out.String(), "parent-token") || strings.Contains(out.String(), "fork-token") {
-		t.Fatalf("axi home exposed remote credentials:\n%s", out.String())
-	}
-}
-
 func TestRenderedRunsFingerprintChangesForEveryDisplayedRun(t *testing.T) {
 	runs := []*db.Run{
 		{ID: "newer", Branch: "feature/newer", HeadSHA: "head-newer", Status: types.RunRunning},

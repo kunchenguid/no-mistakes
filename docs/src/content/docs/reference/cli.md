@@ -81,7 +81,6 @@ no-mistakes axi
 ```
 
 With no subcommand, shows the executable path, description, repo, current branch, daemon state, recent runs, and next-step help, including a pointer to `no-mistakes axi run --help` and the installed `/no-mistakes` skill for full driving guidance.
-For a GitHub fork registration, it also emits a credential-safe `github_fork` object naming the parent `pr_repository`, fork `head_repository`, and the requirement for an explicit destination in the run intent.
 When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` when it is parked or `axi status` when it is still running.
 If an active run object is parked at a decision gate, it includes `awaiting_agent: parked <duration>` immediately after `status`.
 That field is observability only; the `gate:` object still tells the agent which response to send.

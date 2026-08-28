@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,8 +13,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/scm"
-	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/spf13/cobra"
 )
@@ -186,9 +183,6 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 		{Key: "current_branch", Value: branchDisplay},
 		{Key: "daemon", Value: daemonState},
 	}
-	if fork := githubForkRoutingField(cmd.Context(), env.repo); fork != nil {
-		fields = append(fields, *fork)
-	}
 
 	var currentActive *db.Run
 	if branch != "" {
@@ -269,31 +263,6 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 
 	emitDoc(cmd, fields...)
 	return fingerprint, nil
-}
-
-type githubForkRoutingView struct {
-	PRRepository                string `toon:"pr_repository"`
-	HeadRepository              string `toon:"head_repository"`
-	ExplicitDestinationRequired bool   `toon:"explicit_destination_required"`
-}
-
-func githubForkRoutingField(ctx context.Context, repo *db.Repo) *toon.Field {
-	if repo == nil || strings.TrimSpace(repo.ForkURL) == "" || scm.DetectProviderStaticContext(ctx, repo.UpstreamURL) != scm.ProviderGitHub {
-		return nil
-	}
-	prRepository := github.RepoSlug(repo.UpstreamURL)
-	headRepository := github.RepoSlug(repo.ForkURL)
-	if prRepository == "" || headRepository == "" {
-		return nil
-	}
-	return &toon.Field{
-		Key: "github_fork",
-		Value: githubForkRoutingView{
-			PRRepository:                prRepository,
-			HeadRepository:              headRepository,
-			ExplicitDestinationRequired: true,
-		},
-	}
 }
 
 // runsFields renders a recent-runs table with an aggregate count, showing at
