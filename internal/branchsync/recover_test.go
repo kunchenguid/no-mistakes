@@ -2335,3 +2335,59 @@ func TestRecoverKeepLocalRefusalNamesTheAnchorItAlreadyWrote(t *testing.T) {
 		t.Fatal("refused settlement stamped custody")
 	}
 }
+
+// TestInspectDoesNotAdvertiseSettlementForSymbolicGateAnchor is the review
+// regression for the residual advertise-then-refuse corner. A DANGLING
+// symbolic gate recovery ref is invisible to `for-each-ref` while
+// `symbolic-ref -q` still succeeds, so recoveryAnchorCompatible reports
+// "incompatible" with no error while Recover's own ExactRefTarget probe sees
+// no ref at all. Recovery then fails inside PreserveRecoveryHead's symbolic
+// check, at a refusal site that deliberately has no keep-local interception.
+// Symbolic gate-anchor evidence must therefore disqualify the record outright.
+func TestInspectDoesNotAdvertiseSettlementForSymbolicGateAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	// Dangling: the target never exists, so for-each-ref omits the ref.
+	mustRun(t, f.gate, "symbolic-ref", f.anchorRef(), "refs/no-mistakes/evidence/"+f.run.ID)
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, f.anchorRef()); err != nil || exists {
+		t.Fatalf("fixture invariant broken: exact ref target exists=%v err=%v", exists, err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("symbolic-anchor next action = %#v", state.NextAction)
+	}
+
+	// The advertisement must match what recovery actually does.
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("keep-local with a symbolic gate anchor = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("a symbolic gate anchor stamped custody")
+	}
+	if got := mustRun(t, f.gate, "symbolic-ref", f.anchorRef()); got != "refs/no-mistakes/evidence/"+f.run.ID {
+		t.Fatalf("symbolic evidence was rewritten = %s", got)
+	}
+}
+
+// TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor covers
+// the softer sibling named in the same finding: a symbolic gate anchor that
+// DOES resolve (to the preserved head) is listed by for-each-ref, so recovery
+// gets further, but the ordinary keep-local path still refuses when the gate
+// branch is gone. Symbolic evidence disqualifies the record either way.
+func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "symbolic-ref", f.anchorRef(), "refs/heads/feature/recover")
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("resolving-symbolic-anchor next action = %#v", state.NextAction)
+	}
+	if f.custodyReturned() {
+		t.Fatal("inspection stamped custody")
+	}
+}

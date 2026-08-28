@@ -1611,6 +1611,17 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *Stat
 		return false
 	}
 	wd := s.workDir()
+	// Symbolic gate-anchor evidence disqualifies the record outright. A
+	// DANGLING symref is invisible to for-each-ref while symbolic-ref still
+	// succeeds, so recoveryAnchorCompatible reports "incompatible" with no
+	// error while Recover's own probe sees no ref at all and then fails inside
+	// PreserveRecoveryHead's symbolic check - a refusal site that deliberately
+	// carries no keep-local interception. A RESOLVING symref gets further and
+	// still refuses on the ordinary keep-local path. Either way the settlement
+	// is unreachable, so it must not be advertised.
+	if symbolic, symErr := git.Run(ctx, gateDir, "symbolic-ref", "-q", custody.RecoveryRef(run.ID)); symErr == nil && symbolic != "" {
+		return false
+	}
 	gateCompatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 	if err != nil {
 		return false

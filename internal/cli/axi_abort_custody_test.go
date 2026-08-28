@@ -191,3 +191,83 @@ func startInactiveAbortDaemon(t *testing.T, p *paths.Paths, runID string) {
 	}
 	t.Fatal("fake daemon did not become reachable")
 }
+
+// TestBareAbortNoOpNeverPrescribesLaunchingAPipeline is the review regression
+// for the branch-scoped abort no-op. The `--run` sites already guard their
+// help behind an exact run match, but the bare-abort site emitted the branch's
+// next action unconditionally - so on a branch whose custody was already
+// returned it answered an abort by prescribing `axi run`, telling the operator
+// to LAUNCH a pipeline. Abort help exists to name a custody settlement (issue
+// #824 constraint 2); it must never prescribe starting a run.
+func TestBareAbortNoOpNeverPrescribesLaunchingAPipeline(t *testing.T) {
+	runID, p, _ := wedgedCustodyAbortFixture(t)
+	// Custody already returned: the branch's own next action becomes
+	// run_pipeline, which an abort response must not hand back.
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunCustodyReturned(runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	startNoActiveRunDaemon(t, p)
+
+	out, err := executeCmd("axi", "abort")
+	t.Logf("bare abort on a released branch:\n%s", out)
+	if err != nil {
+		t.Fatalf("bare abort with no active run must be a no-op success: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "aborted: false") {
+		t.Errorf("bare abort no-op output missing %q:\n%s", "aborted: false", out)
+	}
+	// The structured branch_sync object still REPORTS the branch's own
+	// next_action (run_pipeline here); that is ownership state, not a
+	// prescription. Only the abort's own help prescribes a command, and a
+	// non-settlement action must yield no help at all.
+	if strings.Contains(out, "Run `no-mistakes axi run") {
+		t.Errorf("abort prescribed launching a pipeline:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "help[") {
+			t.Errorf("abort emitted help for a non-settlement next action:\n%s", line)
+		}
+	}
+}
+
+// startNoActiveRunDaemon serves a daemon with no active run for the branch, so
+// the bare abort takes its documented idempotent no-op path.
+func startNoActiveRunDaemon(t *testing.T, p *paths.Paths) {
+	t.Helper()
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.HealthResult{Status: "ok"}, nil
+	})
+	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GateContextResult{Nested: false}, nil
+	})
+	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GetActiveRunResult{Run: nil}, nil
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(p.Socket()) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-errCh:
+		case <-time.After(time.Second):
+			t.Error("fake daemon did not stop")
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if client, dialErr := ipc.Dial(p.Socket()); dialErr == nil {
+			client.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fake daemon did not become reachable")
+}

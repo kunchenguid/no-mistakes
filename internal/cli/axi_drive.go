@@ -288,6 +288,29 @@ func terminalRunCustodyHelp(ctx context.Context, p *paths.Paths, runID string) [
 	return terminalRunCustodyHelpWithDB(ctx, p, d, runID)
 }
 
+// custodySettlementHelp renders abort help for a branch-ownership next action,
+// but ONLY for the custody-settlement actions an abort response is entitled to
+// prescribe. Abort help exists to name how to settle custody the pipeline
+// still holds (issue #824); a released branch's ordinary next action is
+// run_pipeline, and answering an abort by telling the operator to LAUNCH a
+// fresh run exceeds that scope entirely. The allowlist is deliberate: an
+// unrecognized or pipeline-launching action yields no help rather than being
+// passed through.
+func custodySettlementHelp(action *branchsync.NextAction) []string {
+	if action == nil {
+		return nil
+	}
+	switch action.Code {
+	case "recover_custody", "return_custody_keep_local", "inspect_and_reconcile_manually":
+		return []string{
+			"Run `" + action.Command + "`",
+			branchSyncAgentGuidance,
+		}
+	default:
+		return nil
+	}
+}
+
 func terminalRunCustodyHelpWithDB(ctx context.Context, p *paths.Paths, d *db.DB, runID string) []string {
 	if p == nil || d == nil || strings.TrimSpace(runID) == "" {
 		return nil
@@ -304,13 +327,10 @@ func terminalRunCustodyHelpWithDB(ctx context.Context, p *paths.Paths, d *db.DB,
 		Paths:   p,
 	}
 	state := service.InspectCached(ctx)
-	if state.Pipeline.RunID != runID || state.NextAction == nil {
+	if state.Pipeline.RunID != runID {
 		return nil
 	}
-	return []string{
-		"Run `" + state.NextAction.Command + "`",
-		branchSyncAgentGuidance,
-	}
+	return custodySettlementHelp(state.NextAction)
 }
 
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
@@ -947,12 +967,10 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 			fields = append(fields, branchSyncField(state))
 		}
 		// The branch a terminal run still holds must leave with a command that
-		// can settle it, not just the no-op (issue #824).
-		if state.NextAction != nil {
-			fields = append(fields, toon.Field{Key: "help", Value: []string{
-				"Run `" + state.NextAction.Command + "`",
-				branchSyncAgentGuidance,
-			}})
+		// can settle it, not just the no-op (issue #824) - but only a custody
+		// settlement, never an instruction to launch a fresh pipeline.
+		if help := custodySettlementHelp(state.NextAction); len(help) > 0 {
+			fields = append(fields, toon.Field{Key: "help", Value: help})
 		}
 		emitDoc(cmd, fields...)
 		return nil
