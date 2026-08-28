@@ -217,6 +217,11 @@ type missingHeadFreshRunFixture struct {
 func newMissingHeadFreshRunFixture(t *testing.T) missingHeadFreshRunFixture {
 	t.Helper()
 	repoDir := setupTestRepo(t)
+	// Fresh-run admission reads the registered default branch to load trusted
+	// project settings. Seed the fixture's otherwise-empty origin so that the
+	// wizard handoff exercises identity matching instead of failing on missing
+	// test infrastructure.
+	cliGit(t, repoDir, "push", "origin", "HEAD:refs/heads/main")
 	p := paths.WithRoot(os.Getenv("NM_HOME"))
 	d, err := db.Open(p.DB())
 	if err != nil {

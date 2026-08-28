@@ -57,6 +57,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	var run *ipc.RunInfo
 	var repoID string
 	var state *repoState
+	var wizardIdentity *freshRunIdentity
 	startedViaWizard := false
 
 	if runID != "" {
@@ -75,7 +76,6 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		if err != nil {
 			return err
 		}
-		var wizardIdentity *freshRunIdentity
 		state.beforePush = func(ctx context.Context, workDir, branch string) error {
 			identity, err := captureFreshRunIdentity(ctx, client, repo.ID, workDir, branch)
 			if err != nil {
