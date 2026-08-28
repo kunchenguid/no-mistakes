@@ -107,6 +107,7 @@ type agentActivity struct {
 	observed int
 	// launchedPID is the native subprocess PID, when one was reported.
 	launchedPID int
+	launchedAt  time.Time
 	launched    bool
 }
 
@@ -131,6 +132,7 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.mu.Lock()
 	a.launched = true
 	a.launchedPID = pid
+	a.launchedAt = time.Now()
 	a.mu.Unlock()
 }
 
@@ -141,7 +143,7 @@ func (a *agentActivity) evidence() string {
 	}
 	a.mu.Lock()
 	observed, begun, last := a.observed, a.begun, a.last
-	launched, pid := a.launched, a.launchedPID
+	launched, launchedAt, pid := a.launched, a.launchedAt, a.launchedPID
 	a.mu.Unlock()
 	if observed > 0 {
 		return fmt.Sprintf("agent last produced output %s ago (%d observed)",
@@ -149,7 +151,7 @@ func (a *agentActivity) evidence() string {
 	}
 	if launched {
 		return fmt.Sprintf("agent produced no output at all in %s after its subprocess started (pid=%d)",
-			roundActivity(time.Since(begun)), pid)
+			roundActivity(time.Since(launchedAt)), pid)
 	}
 	return fmt.Sprintf("agent produced no output at all in %s and never reported a subprocess start",
 		roundActivity(time.Since(begun)))

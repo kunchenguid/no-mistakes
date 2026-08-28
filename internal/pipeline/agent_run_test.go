@@ -455,6 +455,54 @@ func TestRunAgent_SubprocessStartAloneIsNotObservedOutput(t *testing.T) {
 	}
 }
 
+func TestRunAgent_LateSubprocessLaunchMeasuresSilenceFromLaunch(t *testing.T) {
+	t.Parallel()
+	var launchedAt time.Time
+	ag := &hangingAgent{
+		name: "late-launch",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			time.Sleep(100 * time.Millisecond)
+			launchedAt = time.Now()
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "late-launch", Phase: agent.LifecyclePhaseStart, PID: 888})
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 250 * time.Millisecond},
+	}
+
+	invocationStarted := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt:      "work",
+		OnLifecycle: func(agent.LifecycleEvent) {},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	prefix := "produced no output at all in "
+	text := err.Error()
+	start := strings.Index(text, prefix)
+	if start < 0 {
+		t.Fatalf("error = %q, want measured subprocess silence", text)
+	}
+	durationText := strings.Fields(text[start+len(prefix):])[0]
+	reported, parseErr := time.ParseDuration(durationText)
+	if parseErr != nil {
+		t.Fatalf("parse reported duration %q: %v", durationText, parseErr)
+	}
+	processElapsed := time.Since(launchedAt)
+	invocationElapsed := time.Since(invocationStarted)
+	if delta := processElapsed - reported; delta < -20*time.Millisecond || delta > 20*time.Millisecond {
+		t.Fatalf("reported silence = %s, subprocess elapsed = %s", reported, processElapsed)
+	}
+	if reported >= invocationElapsed-50*time.Millisecond {
+		t.Fatalf("reported silence = %s, invocation elapsed = %s; want late launch excluded", reported, invocationElapsed)
+	}
+}
+
 func TestRunAgent_OperatorCancellationIsNotDressedUpAsAnAgentFault(t *testing.T) {
 	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
