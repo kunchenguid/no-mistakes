@@ -240,7 +240,8 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 
 `--keep-local` is also the settlement for a self-inconsistent custody record: a terminal run whose recorded pipeline head cannot be verified has no preserved head to import, so the default `--recover` refuses with `safety: blocked_recover_preserved_head_missing` or `blocked_recover_anchor_mismatch` and nothing else could settle the branch.
 Settlement pins every reachable copy of the recorded head under `refs/no-mistakes/recover-stranded/<run>` first, so a head that still exists survives as inspectable evidence; if such a head exists and cannot be pinned, the settlement refuses with `safety: blocked_recover_preserve_failed` rather than stranding it.
-The gate branch then moves by the same compare-and-swap, so a concurrent gate push still wins and the settlement refuses.
+The gate branch then moves by the same compare-and-swap, so a concurrent gate push still wins and the settlement refuses; only a gate branch proven absent settles without that swap, since an unreadable gate branch is not evidence of absence.
+A terminal run whose head was never verified is excluded: recovery refuses it earlier, so status keeps reporting manual reconciliation rather than advertising a settlement that would refuse.
 `no-mistakes axi abort` on an already-terminal run stays an idempotent no-op - there is nothing left to cancel - but its response names that settlement command when the invoking worktree's branch is still held by that run.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.

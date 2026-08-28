@@ -2117,3 +2117,160 @@ func TestInspectNamesKeepLocalSettlementForWedgedCustodyRecord(t *testing.T) {
 		t.Fatalf("next action command = %q, want the keep-local settlement", state.NextAction.Command)
 	}
 }
+
+// TestInspectDoesNotAdvertiseSettlementForUnverifiedTerminalHead is the review
+// regression for the sibling shape that would have recreated the #824 wedge:
+// a terminal run whose head was never verified (a daemon crash after the
+// managed worktree was already gone) refuses at Recover's unverified-head
+// guard, strictly before any keep-local interception. Inspection must not
+// advertise a settlement that guard will always refuse.
+func TestInspectDoesNotAdvertiseSettlementForUnverifiedTerminalHead(t *testing.T) {
+	t.Parallel()
+
+	// A non-terminal fixture status records the run without a verified
+	// terminal head; the head is then moved off every reachable object and
+	// terminalized the way a crash-recovered run is.
+	f := newRecoverFixture(t, types.RunRunning)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("b", 40)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil || run == nil {
+		t.Fatalf("reload run: %#v, %v", run, err)
+	}
+	f.run = run
+	if run.TerminalHeadVerifiedAt != nil {
+		t.Fatal("fixture invariant broken: the terminal head is verified")
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("unverified-head next action = %#v", state.NextAction)
+	}
+
+	// The advertisement must match what recovery actually does.
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_unverified_head" {
+		t.Fatalf("keep-local on an unverified terminal head = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("an unverified terminal head stamped custody")
+	}
+}
+
+// TestRecoverKeepLocalSettlesConflictingWorktreeAnchorOnReachableHead covers
+// the review regression on the locally reachable path: when the preserved head
+// is already reachable from the local branch but the invoking worktree's own
+// recovery ref names something else, the record is just as self-inconsistent as
+// the gate-side shapes - and keeping a head that already contains the preserved
+// commits can lose nothing at all.
+func TestRecoverKeepLocalSettlesConflictingWorktreeAnchorOnReachableHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	mustRun(t, f.local, "reset", "--hard", f.preserved)
+	mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+
+	// The default recovery stays fail-closed on the same record.
+	refused := f.service.Recover(f.ctx, false)
+	if refused.Recovered || refused.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("default recovery with a conflicting worktree anchor = %#v", refused)
+	}
+	if f.custodyReturned() {
+		t.Fatal("default recovery stamped custody for a conflicting worktree anchor")
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered || state.Changed {
+		t.Fatalf("keep-local settlement of a conflicting worktree anchor = %#v", state)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("keep-local settlement did not stamp custody returned")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("settlement moved local HEAD = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.submitted {
+		t.Fatalf("settlement overwrote the conflicting worktree evidence = %s, want %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", custody.RecoveryStrandedRef(f.run.ID)); got != f.preserved {
+		t.Fatalf("stranded anchor in the worktree = %s, want %s", got, f.preserved)
+	}
+}
+
+// TestRecoverKeepLocalSettlementTreatsAnUnreadableGateBranchAsUnknown is the
+// review regression for the fail-open conflation: only a gate branch PROVEN
+// absent settles without the compare-and-swap. A gate branch that exists but
+// cannot be resolved to a commit is not evidence of absence, so the settlement
+// refuses rather than stamping custody against a head it never observed.
+func TestRecoverKeepLocalSettlementTreatsAnUnreadableGateBranchAsUnknown(t *testing.T) {
+	t.Parallel()
+
+	t.Run("absent gate branch settles without a gate move", func(t *testing.T) {
+		f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
+		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+
+		state := f.service.Recover(f.ctx, true)
+		if !state.Recovered || state.Changed {
+			t.Fatalf("settlement with an absent gate branch = %#v", state)
+		}
+		if !f.custodyReturned() {
+			t.Fatal("absent gate branch did not stamp custody returned")
+		}
+	})
+
+	t.Run("unreadable gate branch refuses", func(t *testing.T) {
+		f, staleGate, _ := wedgedCustodyFixture(t, types.RunFailed)
+		// A branch ref that exists but does not name a commit: git refuses to
+		// write one through update-ref, so the loose ref is written directly.
+		mustRun(t, f.gate, "pack-refs", "--all")
+		blob := mustRun(t, f.gate, "hash-object", "-w", filepath.Join(f.local, "file.txt"))
+		mustWrite(t, filepath.Join(f.gate, "refs", "heads", "feature", "recover"), blob+"\n")
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+			t.Fatalf("settlement with an unreadable gate branch = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("an unobserved gate head stamped custody")
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got == staleGate {
+			t.Fatalf("fixture invariant broken: the gate branch still resolves to %s", staleGate)
+		}
+	})
+}
+
+// TestRecoverKeepLocalRefusalNamesTheAnchorItAlreadyWrote is the review
+// regression for the honesty claim: the stranded anchor is the one ref the
+// settlement can write before failing, so a refusal must report where it now
+// exists instead of claiming nothing changed.
+func TestRecoverKeepLocalRefusalNamesTheAnchorItAlreadyWrote(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+	// The worktree pin succeeds; the gate pin then fails on prior evidence.
+	mustRun(t, f.gate, "update-ref", custody.RecoveryStrandedRef(f.run.ID), f.submitted)
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("refused settlement = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", custody.RecoveryStrandedRef(f.run.ID)); got != f.preserved {
+		t.Fatalf("worktree stranded anchor = %s, want %s", got, f.preserved)
+	}
+	if strings.Contains(state.Error, "no files or refs were changed") {
+		t.Fatalf("refusal claimed nothing changed after writing the worktree anchor: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, "the invoking worktree") {
+		t.Fatalf("refusal did not name where the anchor now exists: %q", state.Error)
+	}
+	if f.custodyReturned() {
+		t.Fatal("refused settlement stamped custody")
+	}
+}
