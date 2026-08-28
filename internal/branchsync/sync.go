@@ -876,7 +876,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			gateAnchor := custody.RecoveryGateRef(run.ID)
 			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
 			if err != nil || (exists && existing != gateHead) {
-				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
+				conflict := "could not be read"
+				if err == nil {
+					conflict = "names " + existing
+				}
+				return recoverBlocked(state, "blocked_recover_preserve_failed", fmt.Sprintf("the independently moved gate head %s conflicts with the existing run recovery anchor %s in the local gate %s, which %s; nothing retires that anchor, so reconcile it there before returning custody; no files or branch refs were changed", gateHead, gateAnchor, s.GateDir, conflict))
 			}
 			if !exists {
 				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)

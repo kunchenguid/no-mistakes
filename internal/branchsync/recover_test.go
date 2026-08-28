@@ -1425,6 +1425,17 @@ func TestRecoverRetryDoesNotOverwriteIndependentGateAnchor(t *testing.T) {
 	if got := mustRun(t, f.gate, "rev-parse", anchor); got != firstGate {
 		t.Fatalf("independent gate anchor = %s, want original %s", got, firstGate)
 	}
+	// Nothing retires this anchor, so hand-reconciling it in the bare gate is
+	// the operator's only exit; the refusal has to say which ref and where.
+	if !strings.Contains(second.Error, anchor) {
+		t.Fatalf("refusal did not name the conflicting anchor: %q", second.Error)
+	}
+	if !strings.Contains(second.Error, f.gate) {
+		t.Fatalf("refusal did not name the gate holding that anchor: %q", second.Error)
+	}
+	if !strings.Contains(second.Error, firstGate) {
+		t.Fatalf("refusal did not name what the anchor holds: %q", second.Error)
+	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != secondGate {
 		t.Fatalf("retry moved gate branch = %s, want %s", got, secondGate)
 	}
@@ -2503,14 +2514,15 @@ func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor(t *test
 	}
 }
 
-// TestRecoverRefusalAlwaysNamesAnExit is the durable pin for the R1/R5
-// invariant the CLI reference states: a `--recover` that refuses while the
-// branch stays held must name a next action the operator can actually run.
-// blockedPlan nils NextAction, so every new refusal site starts out violating
-// this; enumerating the sites one review round at a time is exactly how the
-// documented claim kept outrunning the code, hence one table over real git
-// states rather than four isolated assertions.
-func TestRecoverRefusalAlwaysNamesAnExit(t *testing.T) {
+// TestRecoverGateAndRunStateRefusalsNameAnExit pins the next action on exactly
+// four refusal shapes: an absent gate, the two unverified-head guards, and a
+// still-active run. It is deliberately NOT a general guarantee - blockedPlan
+// nils NextAction, and several other refusals (a missing preserved head under
+// the default --recover, the anchorReachablePreserved sites, finishRecover's
+// stamp failure) still return none. Naming this test for the broad invariant
+// would restate the claim that kept outrunning the code, so it names its
+// shapes; extending the table is what proving a wider claim would require.
+func TestRecoverGateAndRunStateRefusalsNameAnExit(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
