@@ -640,7 +640,12 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 		{
 			name:        "quoted destination example",
 			intent:      "Keep this work fork-local.\nPR destination: `parent-owner/no-mistakes`",
-			wantErrPart: "invalid",
+			wantErrPart: "does not identify",
+		},
+		{
+			name:        "html comment destination example",
+			intent:      "Keep this work fork-local.\n<!-- example:\nPR destination: parent-owner/no-mistakes\n-->",
+			wantErrPart: "does not identify",
 		},
 		{
 			name:        "unicode lookalike destination",

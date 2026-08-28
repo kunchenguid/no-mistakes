@@ -111,7 +111,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
-For a GitHub repository initialized with `--fork-url`, the intent must also contain a dedicated `PR destination: owner/repo` line naming the repository allowed to receive the pull request. Repository mentions elsewhere in the intent, including issue links, do not authorize publication.
+For a GitHub repository initialized with `--fork-url`, the intent must start with a dedicated `PR destination: owner/repo` line naming the repository allowed to receive the pull request. Repository mentions elsewhere in the intent, including issue links, do not authorize publication.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.

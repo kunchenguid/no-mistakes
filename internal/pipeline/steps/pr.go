@@ -158,34 +158,18 @@ func validatePRDestination(sctx *pipeline.StepContext, provider scm.Provider) er
 	return nil
 }
 
-// explicitPRDestination reads the typed destination declaration from the
-// authoritative --intent text. Requiring a dedicated line avoids treating an
-// issue link or incidental repository mention as publication authorization.
+// explicitPRDestination reads leading typed destination declarations from the
+// authoritative --intent text.
 func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
 	if !intentSourceIsAuthoritative(sctx) {
-		return "", fmt.Errorf("authoritative run intent does not identify a PR destination; add %q to --intent", prDestinationIntentPrefix+" owner/repo")
+		return "", fmt.Errorf("authoritative run intent does not identify a leading PR destination; start --intent with %q", prDestinationIntentPrefix+" owner/repo")
 	}
 
 	var destination string
-	var fenceMarker byte
-	var fenceLength int
 	for _, rawLine := range strings.Split(sctx.UserIntent, "\n") {
 		line := strings.TrimSuffix(rawLine, "\r")
-		marker, length, rest, isFence := intentFenceLine(line)
-		if fenceMarker != 0 {
-			if isFence && marker == fenceMarker && length >= fenceLength && strings.TrimSpace(rest) == "" {
-				fenceMarker = 0
-				fenceLength = 0
-			}
-			continue
-		}
-		if isFence {
-			fenceMarker = marker
-			fenceLength = length
-			continue
-		}
 		if len(line) < len(prDestinationIntentPrefix) || !equalASCIIFold(line[:len(prDestinationIntentPrefix)], prDestinationIntentPrefix) {
-			continue
+			break
 		}
 		candidate, ok := normalizePRDestination(line[len(prDestinationIntentPrefix):])
 		if !ok {
@@ -197,7 +181,7 @@ func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
 		destination = candidate
 	}
 	if destination == "" {
-		return "", fmt.Errorf("authoritative run intent does not identify a PR destination; add %q to --intent", prDestinationIntentPrefix+" owner/repo")
+		return "", fmt.Errorf("authoritative run intent does not identify a leading PR destination; start --intent with %q", prDestinationIntentPrefix+" owner/repo")
 	}
 	return destination, nil
 }
@@ -214,28 +198,6 @@ func normalizePRDestination(value string) (string, bool) {
 		return "", false
 	}
 	return owner + "/" + repo, true
-}
-
-func intentFenceLine(line string) (byte, int, string, bool) {
-	indent := 0
-	for indent < len(line) && indent < 4 && line[indent] == ' ' {
-		indent++
-	}
-	if indent > 3 || indent >= len(line) {
-		return 0, 0, "", false
-	}
-	marker := line[indent]
-	if marker != '`' && marker != '~' {
-		return 0, 0, "", false
-	}
-	end := indent
-	for end < len(line) && line[end] == marker {
-		end++
-	}
-	if end-indent < 3 {
-		return 0, 0, "", false
-	}
-	return marker, end - indent, line[end:], true
 }
 
 func validGitHubOwner(value string) bool {
