@@ -2098,6 +2098,18 @@ func TestRecoverKeepLocalSettlementLosesConcurrentGatePushCleanly(t *testing.T) 
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != raced {
 		t.Fatalf("gate branch = %s, want the concurrent push %s", got, raced)
 	}
+	// The race refusal itself has to name an exit, not just the retry after it.
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("lost compare-and-swap next action = %#v", state.NextAction)
+	}
+	// The pre-CAS pin makes the retry this message used to prescribe refuse
+	// forever, so the refusal must point at the anchor instead of a re-run.
+	if strings.Contains(state.Error, "re-run the recovery") {
+		t.Fatalf("refusal still prescribes a retry that cannot succeed: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, custody.RecoveryGateRef(f.run.ID)) {
+		t.Fatalf("refusal did not name the anchor to reconcile: %q", state.Error)
+	}
 
 	// The lost swap leaves refs/no-mistakes/recover-gate/<run> pinned at the
 	// head observed before the race, and nothing retires it. The retry the
