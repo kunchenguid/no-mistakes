@@ -199,6 +199,7 @@ no-mistakes axi sync --check
 no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
+no-mistakes axi sync --adopt-published
 ```
 
 | Flag           | Type   | Default | Description                                                                  |
@@ -206,6 +207,7 @@ no-mistakes axi sync --recover --keep-local
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--adopt-published` | `bool` | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -218,6 +220,12 @@ When the local gate branch is exactly at a newer same-branch pushed binding and 
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+### Published-rebase gate recovery
+
+A custody-returned branch can later be rebased and force-with-lease pushed to its configured target. Its local head then diverges from the preserved gate lane, so an ordinary gate push correctly rejects it as non-fast-forward. Status reports `state: custody_returned`, `relation: diverged`, and `next_action.code: adopt_published` instead of directing another rejected `axi run`.
+
+`axi sync --adopt-published` is the explicit recovery. It requires a clean exact checked-out branch, the same recovered lane at its recorded preserved head, and a live configured push target whose branch exactly equals local `HEAD`. It fetches that verified object into the local gate, preserves the old gate head under the run's recovery ref, then compare-and-swaps only the current lane. It never pushes to the configured target or changes the worktree. A missing, changed, or different target head, a changed gate lane, or changed local assumptions refuses without replacing the lane.
 
 ### Custody recovery
 
@@ -356,6 +364,7 @@ no-mistakes sync --check
 no-mistakes sync --yes
 no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
+no-mistakes sync --adopt-published
 ```
 
 | Flag           | Type   | Default | Description                                                     |
@@ -364,8 +373,9 @@ no-mistakes sync --recover --keep-local
 | `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--adopt-published` | `bool` | `false` | Adopt a clean diverged local head into its stale gate lane only when the configured push target has that exact head |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` and `--adopt-published` prompt the same way before they mutate a gate lane.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
