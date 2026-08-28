@@ -1552,7 +1552,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			// already has (issue #824). Only a record that keeps its own
 			// evidence intact falls back to manual reconciliation, because
 			// there the refusal is protecting something real.
-			if s.selfInconsistentCustodyRecord(ctx, run) {
+			if s.selfInconsistentCustodyRecord(ctx, state, run) {
 				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head cannot be verified in the invoking worktree or local gate; return custody at the current local head, which also points the gate branch at it"
 				state.NextAction = &NextAction{Code: "return_custody_keep_local", Command: "no-mistakes axi sync --recover --keep-local"}
 				return
@@ -1583,13 +1583,22 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 // abandon a preserved head that recovery can still import, so those keep
 // pointing at manual reconciliation.
 //
+// The advertisement carries the same fail-closed polarity as
+// recoverSettleInconsistent: it may name the settlement only when
+// Recover(keepLocal) actually reaches it. A gate recovery ref that cannot be
+// inspected at all is not evidence of inconsistency - Recover refuses that
+// probe error strictly before any keep-local interception - and an incomplete
+// adoption (the branch reached the preserved head while the worktree still
+// differs) is refused by its own guard even earlier, so both disqualify the
+// record and keep the honest manual-reconciliation pointer.
+//
 // An UNVERIFIED terminal head is excluded for a different reason: Recover
 // refuses it at the unverified-head guard, strictly before any keep-local
 // interception, so advertising the settlement there would recreate the very
 // "advertised action that always refuses" wedge this change exists to remove.
 // Making that shape recoverable is issue #707's scope, not this one; until
 // then the honest pointer is manual reconciliation.
-func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, run *db.Run) bool {
+func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *State, run *db.Run) bool {
 	if run == nil || run.TerminalHeadVerifiedAt == nil {
 		return false
 	}
@@ -1601,18 +1610,27 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, run *db.Run
 	if _, err := os.Stat(gateDir); err != nil {
 		return false
 	}
+	wd := s.workDir()
+	gateCompatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
+	if err != nil {
+		return false
+	}
+	if state != nil && state.Local.Head == preserved && !state.Local.Clean {
+		if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", custody.RecoveryLocalRef(run.ID)+"^{commit}"); err == nil && anchoredLocal != preserved {
+			return false
+		}
+	}
 	if preserved == "" {
 		return true
 	}
-	wd := s.workDir()
 	if !objectExists(ctx, wd, preserved) && !objectExists(ctx, gateDir, preserved) {
 		return true
 	}
-	for _, dir := range []string{gateDir, wd} {
-		compatible, err := recoveryAnchorCompatible(ctx, dir, run.ID, preserved)
-		if err == nil && !compatible {
-			return true
-		}
+	if !gateCompatible {
+		return true
+	}
+	if compatible, err := recoveryAnchorCompatible(ctx, wd, run.ID, preserved); err == nil && !compatible {
+		return true
 	}
 	return false
 }

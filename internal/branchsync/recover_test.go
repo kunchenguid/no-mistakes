@@ -2161,6 +2161,67 @@ func TestInspectDoesNotAdvertiseSettlementForUnverifiedTerminalHead(t *testing.T
 	}
 }
 
+// TestInspectDoesNotAdvertiseSettlementWhenGateRecoveryRefIsUninspectable is
+// the review regression for the fail-closed advertisement: a gate recovery ref
+// that cannot be inspected at all (corrupt packed-refs while the gate
+// directory itself is intact) is not evidence of inconsistency, and Recover
+// refuses that probe error strictly before any keep-local interception, so
+// inspection must keep the honest manual-reconciliation pointer instead of
+// advertising a settlement that always refuses.
+func TestInspectDoesNotAdvertiseSettlementWhenGateRecoveryRefIsUninspectable(t *testing.T) {
+	t.Parallel()
+
+	f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
+	mustWrite(t, filepath.Join(f.gate, "packed-refs"), "garbage line\n")
+	if _, _, refErr := gitpkg.ExactRefTarget(f.ctx, f.gate, f.anchorRef()); refErr == nil {
+		t.Fatal("fixture invariant broken: the gate recovery ref is still inspectable")
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("uninspectable-gate next action = %#v", state.NextAction)
+	}
+
+	// The advertisement must match what recovery actually does.
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("keep-local with an uninspectable gate recovery ref = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("an uninspectable gate recovery ref stamped custody")
+	}
+}
+
+// TestInspectDoesNotAdvertiseSettlementForIncompleteAdoption is the review
+// regression for the sibling shape: a conflicting recovery anchor on a record
+// whose branch already reached the preserved head with a stale mid-adoption
+// worktree is refused by Recover's incomplete-adoption guard, strictly before
+// any keep-local interception, so inspection must not advertise the
+// settlement there either.
+func TestInspectDoesNotAdvertiseSettlementForIncompleteAdoption(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:"+f.anchorRef())
+	mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.submitted, "")
+	mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("incomplete-adoption next action = %#v", state.NextAction)
+	}
+
+	// The advertisement must match what recovery actually does.
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_incomplete_adoption" {
+		t.Fatalf("keep-local on an incomplete adoption = %#v", recovered)
+	}
+	if f.custodyReturned() {
+		t.Fatal("an incomplete adoption stamped custody")
+	}
+}
+
 // TestRecoverKeepLocalSettlesConflictingWorktreeAnchorOnReachableHead covers
 // the review regression on the locally reachable path: when the preserved head
 // is already reachable from the local branch but the invoking worktree's own
