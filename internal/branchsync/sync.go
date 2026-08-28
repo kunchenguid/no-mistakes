@@ -785,6 +785,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 // unreadable gate branch is not evidence of absence, so it refuses exactly like
 // the sibling keep-local sites in Recover rather than stamping custody against
 // a gate head that was never observed.
+//
+// Every refusal here names a completable exit. blockedPlan clears NextAction by
+// default, and this function is the terminal settlement, so a refusal with no
+// next action would be the dead end the whole issue exists to remove - even for
+// a shape selfInconsistentCustodyRecord failed to disqualify.
 func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, state State, gateDir, preserved string) State {
 	strandedRef := custody.RecoveryStrandedRef(run.ID)
 	gateDir = strings.TrimSpace(gateDir)
@@ -812,7 +817,9 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	gateBranchRef := "refs/heads/" + state.Local.Branch
 	_, gateBranchExists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
 	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be read, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be read, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+		return blocked
 	}
 	if !gateBranchExists {
 		// Proven absent: the gate holds no branch ref for this run, so nothing
@@ -821,7 +828,9 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	}
 	gateHead, err := git.Run(ctx, gateDir, "rev-parse", gateBranchRef+"^{commit}")
 	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s does not resolve to a commit, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s does not resolve to a commit, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+		return blocked
 	}
 	return s.recoverKeepLocal(ctx, run, state, gateHead)
 }
@@ -1585,12 +1594,21 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 //
 // The advertisement carries the same fail-closed polarity as
 // recoverSettleInconsistent: it may name the settlement only when
-// Recover(keepLocal) actually reaches it. A gate recovery ref that cannot be
-// inspected at all is not evidence of inconsistency - Recover refuses that
-// probe error strictly before any keep-local interception - and an incomplete
-// adoption (the branch reached the preserved head while the worktree still
-// differs) is refused by its own guard even earlier, so both disqualify the
-// record and keep the honest manual-reconciliation pointer.
+// Recover(keepLocal) actually reaches it AND the settlement can complete
+// there. A gate recovery ref that cannot be inspected at all is not evidence
+// of inconsistency - Recover refuses that probe error strictly before any
+// keep-local interception - and an incomplete adoption (the branch reached the
+// preserved head while the worktree still differs) is refused by its own guard
+// even earlier, so both disqualify the record and keep the honest
+// manual-reconciliation pointer.
+//
+// The gate BRANCH is probed for the same reason, exactly the way the
+// settlement probes it: recoverSettleInconsistent compare-and-swaps
+// refs/heads/<branch>, so a branch ref that cannot be read or does not name a
+// commit refuses inside the settlement instead of completing. A gate branch
+// PROVEN absent is the deliberate exception - the settlement legitimately
+// completes there with no swap at all, because nothing in the gate holds
+// custody - so absent stays advertisable while unreadable does not.
 //
 // An UNVERIFIED terminal head is excluded for a different reason: Recover
 // refuses it at the unverified-head guard, strictly before any keep-local
@@ -1622,6 +1640,9 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *Stat
 	if symbolic, symErr := git.Run(ctx, gateDir, "symbolic-ref", "-q", custody.RecoveryRef(run.ID)); symErr == nil && symbolic != "" {
 		return false
 	}
+	if !s.settlementGateBranchUsable(ctx, state, gateDir) {
+		return false
+	}
 	gateCompatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 	if err != nil {
 		return false
@@ -1644,6 +1665,31 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *Stat
 		return true
 	}
 	return false
+}
+
+// settlementGateBranchUsable answers the one question recoverSettleInconsistent
+// asks of the gate branch before its compare-and-swap: can the kept local head
+// be swapped onto it, or is the branch proven absent so no swap is needed. An
+// unreadable ref and a ref that does not name a commit are neither, so the
+// settlement refuses there and must not be advertised.
+func (s *Service) settlementGateBranchUsable(ctx context.Context, state *State, gateDir string) bool {
+	if state == nil {
+		return false
+	}
+	branch := strings.TrimSpace(state.Local.Branch)
+	if branch == "" {
+		return false
+	}
+	ref := "refs/heads/" + branch
+	_, exists, err := git.ExactRefTarget(ctx, gateDir, ref)
+	if err != nil {
+		return false
+	}
+	if !exists {
+		return true
+	}
+	_, err = git.Run(ctx, gateDir, "rev-parse", ref+"^{commit}")
+	return err == nil
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {

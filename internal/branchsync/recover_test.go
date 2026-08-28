@@ -2275,6 +2275,13 @@ func TestRecoverKeepLocalSettlementTreatsAnUnreadableGateBranchAsUnknown(t *test
 		f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
 		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
 
+		// A gate branch proven absent keeps the advertisement, because the
+		// settlement completes there with no compare-and-swap at all.
+		inspected := f.service.InspectCached(f.ctx)
+		if inspected.NextAction == nil || inspected.NextAction.Code != "return_custody_keep_local" {
+			t.Fatalf("absent-gate-branch next action = %#v", inspected.NextAction)
+		}
+
 		state := f.service.Recover(f.ctx, true)
 		if !state.Recovered || state.Changed {
 			t.Fatalf("settlement with an absent gate branch = %#v", state)
@@ -2292,9 +2299,20 @@ func TestRecoverKeepLocalSettlementTreatsAnUnreadableGateBranchAsUnknown(t *test
 		blob := mustRun(t, f.gate, "hash-object", "-w", filepath.Join(f.local, "file.txt"))
 		mustWrite(t, filepath.Join(f.gate, "refs", "heads", "feature", "recover"), blob+"\n")
 
+		// The settlement refuses this shape, so inspection must not prescribe
+		// it: an advertisement that always refuses is the exact wedge #824
+		// removes.
+		inspected := f.service.InspectCached(f.ctx)
+		if inspected.NextAction == nil || inspected.NextAction.Code != "inspect_and_reconcile_manually" {
+			t.Fatalf("unreadable-gate-branch next action = %#v", inspected.NextAction)
+		}
+
 		state := f.service.Recover(f.ctx, true)
 		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
 			t.Fatalf("settlement with an unreadable gate branch = %#v", state)
+		}
+		if state.NextAction == nil {
+			t.Fatalf("refused settlement named no exit at all = %#v", state)
 		}
 		if f.custodyReturned() {
 			t.Fatal("an unobserved gate head stamped custody")
@@ -2374,9 +2392,15 @@ func TestInspectDoesNotAdvertiseSettlementForSymbolicGateAnchor(t *testing.T) {
 
 // TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor covers
 // the softer sibling named in the same finding: a symbolic gate anchor that
-// DOES resolve (to the preserved head) is listed by for-each-ref, so recovery
-// gets further, but the ordinary keep-local path still refuses when the gate
-// branch is gone. Symbolic evidence disqualifies the record either way.
+// DOES resolve is listed by for-each-ref, so recovery gets all the way through
+// and keep-local actually completes. The predicate disqualifies symbolic
+// evidence CONSERVATIVELY, without separating the dangling variant (genuinely
+// unreachable) from this resolving one, so this is a deliberate
+// UNDER-advertisement: status names a manual exit that can complete instead of
+// promising a settlement whose reachability it did not prove. Under-advertising
+// is fail-safe; over-advertising is the #824 wedge. The Recover half pins what
+// the command really does here, so a later change that starts advertising this
+// shape is a deliberate choice rather than an accident.
 func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor(t *testing.T) {
 	t.Parallel()
 
@@ -2389,5 +2413,22 @@ func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor(t *test
 	}
 	if f.custodyReturned() {
 		t.Fatal("inspection stamped custody")
+	}
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered {
+		t.Fatalf("keep-local with a resolving symbolic gate anchor = %#v", recovered)
+	}
+	if recovered.Changed {
+		t.Fatalf("keep-local moved the worktree = %#v", recovered)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("completed settlement did not stamp custody returned")
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("local HEAD = %s, want the kept head %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("gate branch = %s, want the kept local head %s", got, f.submitted)
 	}
 }
