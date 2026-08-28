@@ -483,10 +483,12 @@ type CI struct {
 	//
 	// false (default): the repair is published immediately through the same
 	// guarded force-push path the Push step uses - review-approved-head
-	// continuity, the force-with-lease anchor, remote verification, push
-	// binding, and the gate-mirror update all still apply - and the CI monitor
-	// keeps watching the same run for the new head. The run's review approval
-	// stays valid because the repair is a descendant of the approved head.
+	// continuity, the force-with-lease anchor, remote verification, and push
+	// binding all still apply - and the CI monitor keeps watching the same run
+	// for the new head. Gate-mirror synchronization is also attempted, but a
+	// failure after the verified remote binding is a warning rather than a
+	// reason to spend another repair attempt. The run's review approval stays
+	// valid because the repair is a descendant of the approved head.
 	//
 	// true: the repair is kept local, the run's review approval is revoked,
 	// and the pipeline restarts at Review so the repaired head re-passes

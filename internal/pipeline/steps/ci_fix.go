@@ -309,10 +309,13 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 
 // publishRepair publishes the repair immediately (ci.revalidate_repairs: false,
 // the default) through publishRunHead - the same guarded path the Push step
-// uses, so force-push lease safety, remote verification, the push binding, and
-// the gate-mirror update all still apply. The run's review approval is
-// deliberately NOT revoked: the push guard binds ordinary repairs to the
-// previously published run head and conflict rebases to their resolved base,
+// uses, so force-push lease safety, remote verification, and the push binding
+// all still apply. Gate-mirror synchronization is attempted too, but a failure
+// after the remote repair is verified and durably bound is only a warning: it
+// must not make the monitor spend another attempt on an already-published
+// repair. The run's review approval is deliberately NOT revoked: the push
+// guard binds ordinary repairs to the previously published run head and
+// conflict rebases to their resolved base,
 // and the monitor stays on this run to watch the checks re-run against the
 // published head.
 //

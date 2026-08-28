@@ -433,7 +433,8 @@ ci:
   revalidate_repairs: true
 ```
 
-At the default `false`, a repair the CI step's fix agent produces is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses - review-approved-head continuity, the force-with-lease anchor, remote verification, the push binding, and the gate-mirror update all still apply - and the CI monitor keeps watching the same run for the new head.
+At the default `false`, a repair the CI step's fix agent produces is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses - review-approved-head continuity, the force-with-lease anchor, remote verification, and the durable push binding all still apply - and the CI monitor keeps watching the same run for the new head.
+The path also attempts to synchronize the local gate mirror. Because the remote repair is already verified and durably bound by then, a late mirror failure is logged as a warning and does not misreport the publication as failed or spend another repair attempt; ordinary Push-step mirror failures still fail that step so it can retry.
 One repair costs one agent round.
 
 At `true`, the repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.

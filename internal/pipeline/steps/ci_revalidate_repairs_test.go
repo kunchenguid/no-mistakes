@@ -150,7 +150,11 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 				t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
 			}
 
-			gotRestart := outcome != nil && outcome.RestartFrom == types.StepReview
+			restartFrom := types.StepName("")
+			if outcome != nil {
+				restartFrom = outcome.RestartFrom
+			}
+			gotRestart := restartFrom == types.StepReview
 			if gotRestart != tc.wantRestart {
 				t.Errorf("RestartFrom review = %v, want %v (outcome %#v)", gotRestart, tc.wantRestart, outcome)
 			}
@@ -200,6 +204,8 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 			if !strings.Contains(f.log(), "CI repair policy:") {
 				t.Errorf("CI step did not report its repair policy; log:\n%s", f.log())
 			}
+			t.Logf("observable delivery: restart_from=%q prior_head=%s local_head=%s remote_head=%s approval_retained=%t published_head=%s\nCI log:\n%s",
+				restartFrom, f.headSHA, localHead, f.remoteHead(t), approvalKept, publishedSHA, f.log())
 		})
 	}
 }
