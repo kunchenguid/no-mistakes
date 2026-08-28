@@ -265,8 +265,8 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 // from Review after the CI step repairs a failing check, rather than publishing
 // the repair and continuing to monitor. It is the resolved ci.revalidate_repairs
 // policy (global config, overridden by the repository's trusted default-branch
-// config), and it is read in exactly two places: here, to decide how a repair is
-// recorded, and in the CI monitor, to decide whether to leave the step.
+// config). The repair recorder uses it to choose immediate publication or
+// revalidation, and the CI monitor logs the resolved policy.
 func ciRevalidatesRepairs(sctx *pipeline.StepContext) bool {
 	return sctx.Config != nil && sctx.Config.CI.RevalidateRepairs
 }
@@ -341,8 +341,9 @@ func ciRepairContinuityGap(sctx *pipeline.StepContext, headSHA string) string {
 	return ""
 }
 
-// recordLocalRepair keeps the repair local (ci.revalidate_repairs: true) and
-// revokes the run's review authority, so the Push step's
+// recordLocalRepair keeps the repair local because revalidation was requested
+// or continuity could not be proven. It revokes the run's review authority, so
+// the Push step's
 // assertReviewApprovedPushHead guard refuses to publish the repaired head until
 // Review has approved it again. The CI monitor turns that into a restart at
 // Review.
@@ -360,17 +361,17 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 	return ciRepairResult{HeadAdvanced: true, Revalidate: true}, nil
 }
 
-// publishRepair publishes the repair immediately (ci.revalidate_repairs: false,
-// the default) through publishRunHead - the same guarded path the Push step
-// uses, so force-push lease safety, remote verification, and the push binding
-// all still apply. Gate-mirror synchronization is attempted too, but a failure
-// after the remote repair is verified and durably bound is only a warning: it
-// must not make the monitor spend another attempt on an already-published
-// repair. The run's review approval is deliberately NOT revoked: the push
-// guard binds ordinary repairs to the previously published run head and
-// conflict rebases to their resolved base,
-// and the monitor stays on this run to watch the checks re-run against the
-// published head.
+// publishRepair publishes a continuity-proven repair immediately when
+// ci.revalidate_repairs is false. It uses publishRunHead - the same guarded path
+// the Push step uses, so force-push lease safety, remote verification, and the
+// push binding all still apply. Gate-mirror synchronization is attempted too,
+// but a failure after the remote repair is verified and durably bound is only
+// a warning: it must not make the monitor spend another attempt on an
+// already-published repair. The run's review approval is deliberately not
+// revoked: recordRepair has already proven that this head equals or descends
+// from the approved head,
+// and publishRunHead enforces the same descendant-only rule. The monitor stays
+// on this run to watch the checks re-run against the published head.
 //
 // publishRunHead advances the recorded head only after the push is verified, so
 // a failed publication leaves sctx.Run.HeadSHA on the pre-repair commit and the

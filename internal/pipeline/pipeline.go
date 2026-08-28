@@ -105,8 +105,8 @@ type StepOutcome struct {
 	Skipped       bool   // mark the step as skipped without failing the run
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// RestartFrom asks the executor to re-run validation from this earlier step.
-	// CI repairs use it when post-repair revalidation is enabled, sending the new
-	// local head back through review before push.
+	// CI repairs use it when policy requires revalidation or continuity cannot be
+	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
 	// FixSummary, when non-empty, is the agent's one-line commit summary for
 	// the fix attempt performed during this round. Steps populate it in fix

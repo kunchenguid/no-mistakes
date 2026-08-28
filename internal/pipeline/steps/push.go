@@ -95,8 +95,8 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // another fix attempt on an already published repair.
 //
 // It deliberately does NOT relax the review-approved-head check. Whether a
-// repair may be published at all is decided before publication, by
-// ciRepairContinuityProven.
+// repair may be published at all is decided before publication, using
+// ciRepairContinuityGap.
 func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, ciRepair bool) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
