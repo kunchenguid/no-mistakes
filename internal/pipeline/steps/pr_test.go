@@ -536,6 +536,8 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 	sctx.Config.PR.BaseBranch = "develop"
 	sctx.Run.Branch = "refs/heads/feature"
+	sctx.UserIntent = "PR destination: parent-owner/no-mistakes"
+	sctx.IntentSource = db.RunIntentSourceAgent
 	forgeCtx, err := forgecontext.Resolve(context.Background(), config.ForgeProfiles{
 		"github.com": {GHConfigDir: profileDir},
 	}, sctx.Repo.UpstreamURL, sctx.Repo.ForkURL)
@@ -571,6 +573,69 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 	if forgeCtx == nil || forgeCtx.ConfigDir != profileDir {
 		t.Fatalf("fork PR used forge context %#v, want %s", forgeCtx, profileDir)
+	}
+}
+
+func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		intent      string
+		wantErrPart string
+	}{
+		{
+			name:        "explicit fork disagrees with selected parent",
+			intent:      "PR destination: fork-owner/no-mistakes",
+			wantErrPart: "does not match",
+		},
+		{
+			name:        "destination unknown",
+			intent:      "Deliver this change without naming a repository.",
+			wantErrPart: "does not identify",
+		},
+		{
+			name:        "destination ambiguous",
+			intent:      "PR destination: parent-owner/no-mistakes\nPR destination: fork-owner/no-mistakes",
+			wantErrPart: "ambiguous",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			env, logFile := fakeGH(t, "")
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					payload := json.RawMessage(`{"title":"fix: guard pr destination","body":"## Summary\n\n- guard destination"}`)
+					return &agent.Result{Output: payload}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
+			sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
+			sctx.UserIntent = tc.intent
+			sctx.IntentSource = db.RunIntentSourceAgent
+
+			_, err := (&PRStep{}).Execute(sctx)
+			if err == nil {
+				t.Fatal("Execute() error = nil, want destination refusal")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrPart) {
+				t.Fatalf("Execute() error = %q, want substring %q", err, tc.wantErrPart)
+			}
+
+			if logData, readErr := os.ReadFile(logFile); readErr == nil {
+				if strings.Contains(string(logData), "pr create") {
+					t.Fatalf("destination refusal reached PR publication:\n%s", logData)
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+		})
 	}
 }
 

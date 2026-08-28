@@ -117,7 +117,9 @@ func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T
 	const branch = "feature/final-pr-scope"
 	h.CommitChange(branch, "internal/example/flag.go", "package example\n", "add flag behavior")
 	preDocumentHead := h.CommitChange(branch, "cmd/example/main.go", "package main\n", "add flag CLI")
-	h.PushToGate(branch)
+	if out, err := h.Run("axi", "run", "--intent", "PR destination: example/no-mistakes"); err != nil {
+		t.Fatalf("axi run with explicit parent destination: %v\n%s", err, out)
+	}
 
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunCompleted {

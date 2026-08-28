@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -24,6 +26,8 @@ type prContent struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 }
+
+const prDestinationIntentPrefix = "PR destination:"
 
 var prContentSchema = json.RawMessage(`{
 	"type": "object",
@@ -70,6 +74,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
+	if err := validatePRDestination(sctx, provider); err != nil {
+		return nil, err
+	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
@@ -121,6 +128,80 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// validatePRDestination fails closed before any PR operation when GitHub fork
+// routing makes the publication repository ambiguous. The fork remains the
+// pushed head repository; an authoritative run intent must independently name
+// the repository that may receive the PR so that buildHost's parent selection
+// cannot silently override fork-only delivery intent.
+func validatePRDestination(sctx *pipeline.StepContext, provider scm.Provider) error {
+	if provider != scm.ProviderGitHub || sctx == nil || sctx.Repo == nil || strings.TrimSpace(sctx.Repo.ForkURL) == "" {
+		return nil
+	}
+
+	selected := github.RepoSlug(sctx.Repo.UpstreamURL)
+	if selected == "" && sctx.Run != nil && sctx.Run.PRURL != nil {
+		selected = github.RepoSlug(*sctx.Run.PRURL)
+	}
+	if selected == "" {
+		return errors.New("refusing GitHub fork PR publication: selected PR repository is unknown")
+	}
+
+	intended, err := explicitPRDestination(sctx)
+	if err != nil {
+		return fmt.Errorf("refusing GitHub fork PR publication: %w", err)
+	}
+	if !strings.EqualFold(intended, selected) {
+		return fmt.Errorf("refusing GitHub fork PR publication: explicit destination %q does not match selected PR repository %q", intended, selected)
+	}
+	return nil
+}
+
+// explicitPRDestination reads the typed destination declaration from the
+// authoritative --intent text. Requiring a dedicated line avoids treating an
+// issue link or incidental repository mention as publication authorization.
+func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
+	if !intentSourceIsAuthoritative(sctx) {
+		return "", fmt.Errorf("authoritative run intent does not identify a PR destination; add %q to --intent", prDestinationIntentPrefix+" owner/repo")
+	}
+
+	var destination string
+	for _, line := range strings.Split(sctx.UserIntent, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) < len(prDestinationIntentPrefix) || !strings.EqualFold(line[:len(prDestinationIntentPrefix)], prDestinationIntentPrefix) {
+			continue
+		}
+		candidate, ok := normalizePRDestination(line[len(prDestinationIntentPrefix):])
+		if !ok {
+			return "", fmt.Errorf("PR destination is invalid; use %q", prDestinationIntentPrefix+" owner/repo")
+		}
+		if destination != "" && !strings.EqualFold(destination, candidate) {
+			return "", fmt.Errorf("PR destination is ambiguous: intent names both %q and %q", destination, candidate)
+		}
+		destination = candidate
+	}
+	if destination == "" {
+		return "", fmt.Errorf("authoritative run intent does not identify a PR destination; add %q to --intent", prDestinationIntentPrefix+" owner/repo")
+	}
+	return destination, nil
+}
+
+func normalizePRDestination(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 {
+		return "", false
+	}
+	owner := strings.TrimSpace(parts[0])
+	repo := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git")
+	if owner == "" || repo == "" || strings.ContainsAny(owner+repo, " \t\r\n`") {
+		return "", false
+	}
+	return owner + "/" + repo, true
 }
 
 func describePR(pr *scm.PR) string {

@@ -53,7 +53,9 @@ func TestForkRouting(t *testing.T) {
 	}
 
 	h.CommitChange(branch, "fork.txt", "fork route\n", "add fork route")
-	h.PushToGate(branch)
+	if out, err := h.Run("axi", "run", "--intent", "PR destination: parent-owner/no-mistakes"); err != nil {
+		t.Fatalf("axi run with explicit parent destination: %v\n%s", err, out)
+	}
 
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunCompleted {

@@ -136,6 +136,13 @@ asked for that might otherwise look surprising in the diff. A few sentences to a
 short paragraph is normal - write down what you learned from the conversation
 that a reviewer reading only the diff would not know.
 
+When `no-mistakes axi` shows both a parent remote and a GitHub fork,
+add a dedicated `PR destination: owner/repo` line naming the repository
+the user authorized to receive the pull request. Do not infer authorization from
+an issue link or another incidental repository mention. A missing, conflicting,
+or fork destination makes the PR step refuse publication; name the parent only
+for an explicit fork-head-to-parent contribution.
+
 ## Validate and decide
 
 Run the pipeline and decide on its findings as they come up:
