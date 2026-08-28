@@ -560,6 +560,38 @@ func TestVerifiedHeadAndTerminalStatusPersistAtomically(t *testing.T) {
 	}
 }
 
+func TestMarkTerminalHeadVerifiedIsConditionalAndIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/verify-terminal-head", "https://example.com/verify-terminal-head", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	success, err := d.MarkTerminalHeadVerified(run.ID, repo.ID, "feature", "submitted")
+	if err != nil || !success {
+		t.Fatalf("mark terminal head: success %t, err %v", success, err)
+	}
+	marked, _ := d.GetRun(run.ID)
+	if marked.TerminalHeadVerifiedAt == nil {
+		t.Fatal("terminal head was not marked verified")
+	}
+	verifiedAt := *marked.TerminalHeadVerifiedAt
+	success, err = d.MarkTerminalHeadVerified(run.ID, repo.ID, "feature", "submitted")
+	if err != nil || !success {
+		t.Fatalf("repeat mark: success %t, err %v", success, err)
+	}
+	marked, _ = d.GetRun(run.ID)
+	if marked.TerminalHeadVerifiedAt == nil || *marked.TerminalHeadVerifiedAt != verifiedAt {
+		t.Fatalf("repeat mark changed timestamp: %#v", marked.TerminalHeadVerifiedAt)
+	}
+
+	success, err = d.MarkTerminalHeadVerified(run.ID, repo.ID, "feature", "different")
+	if err != nil || success {
+		t.Fatalf("mismatched mark: success %t, err %v", success, err)
+	}
+}
+
 func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")

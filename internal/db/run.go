@@ -664,6 +664,36 @@ func (d *DB) RecordRunTerminalHeadEvidence(id, headSHA string) error {
 	return err
 }
 
+// MarkTerminalHeadVerified records exact terminal recovery evidence only while
+// the observed unpublished run identity still matches. A matching prior mark is
+// an idempotent success; changed evidence refuses without modifying the row.
+func (d *DB) MarkTerminalHeadVerified(id, repoID, branch, headSHA string) (bool, error) {
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE runs SET terminal_head_verified_at = ?, updated_at = ?
+		WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ?
+		AND status IN (?, ?, ?) AND push_active = 0 AND last_pushed_sha IS NULL
+		AND custody_returned_at IS NULL AND terminal_head_verified_at IS NULL`,
+		ts, ts, id, repoID, branch, headSHA, types.RunCompleted, types.RunFailed, types.RunCancelled)
+	if err != nil {
+		return false, fmt.Errorf("mark terminal head verified: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark terminal head verified rows: %w", err)
+	}
+	if rows == 1 {
+		return true, nil
+	}
+
+	run, err := d.GetRun(id)
+	if err != nil {
+		return false, err
+	}
+	return run != nil && run.RepoID == repoID && run.Branch == branch && run.HeadSHA == headSHA &&
+		run.Status.Terminal() && !run.PushActive && run.LastPushedSHA == nil &&
+		run.CustodyReturnedAt == nil && run.TerminalHeadVerifiedAt != nil, nil
+}
+
 // RunIntentSourceAgent is the intent_source value stamped when the driving
 // agent supplied the intent explicitly via `axi run --intent`. It marks an
 // authoritative, author-stated goal (score 1) as opposed to a transcript

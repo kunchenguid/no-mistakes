@@ -428,7 +428,7 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved, runID: run.ID}
 }
 
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
@@ -894,6 +894,28 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	}
 }
 
+func TestAxiSyncVerifyPreservedHeadRecordsExactEvidenceWithoutMovingBranch(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	cliGit(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
+	cliGit(t, f.local, "reset", "--hard", f.preserved)
+
+	out, err := executeCmd("axi", "sync", "--verify-preserved-head")
+	if err != nil {
+		t.Fatalf("verify preserved head: %v\n%s", err, out)
+	}
+	for _, want := range []string{"changed: true", "safety: blocked_pipeline_owned_recoverable", "code: recover_custody"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("verification output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("verification moved HEAD to %s, want %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover/"+f.runID+"^{commit}"); got != f.preserved {
+		t.Fatalf("verification anchor = %s, want %s", got, f.preserved)
+	}
+}
+
 func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	out, err := executeCmd("axi", "sync", "--recover")
@@ -960,6 +982,8 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--keep-local"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
+		{"axi", "sync", "--check", "--verify-preserved-head"},
+		{"axi", "sync", "--recover", "--verify-preserved-head"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

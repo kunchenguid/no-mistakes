@@ -164,6 +164,154 @@ func (f *recoverFixture) custodyReturned() bool {
 	return run.CustodyReturnedAt != nil
 }
 
+// makePreservedHeadRebasedSibling rewrites the fixture's pipeline commits onto
+// a newer base, leaving the submitted and preserved heads as siblings.
+func (f *recoverFixture) makePreservedHeadRebasedSibling() {
+	f.t.Helper()
+	pipeline := filepath.Join(filepath.Dir(f.local), "pipeline")
+	mustRun(f.t, pipeline, "checkout", "-b", "newer-base", f.base)
+	mustWrite(f.t, filepath.Join(pipeline, "base-update.txt"), "new base\n")
+	mustRun(f.t, pipeline, "add", "base-update.txt")
+	mustRun(f.t, pipeline, "commit", "-m", "upstream base update")
+	newBase := mustRun(f.t, pipeline, "rev-parse", "HEAD")
+	mustRun(f.t, pipeline, "checkout", "feature/recover")
+	mustRun(f.t, pipeline, "rebase", "--onto", newBase, f.base)
+	f.preserved = mustRun(f.t, pipeline, "rev-parse", "HEAD")
+	mustRun(f.t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	if isAncestor(f.ctx, pipeline, f.submitted, f.preserved) || isAncestor(f.ctx, pipeline, f.preserved, f.submitted) {
+		f.t.Fatalf("submitted %s and preserved %s are not siblings", f.submitted, f.preserved)
+	}
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, f.preserved); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunFailed); err != nil {
+		f.t.Fatal(err)
+	}
+	f.run, _ = f.db.GetRun(f.run.ID)
+	mustRun(f.t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
+	mustRun(f.t, f.local, "reset", "--hard", f.preserved)
+}
+
+// TestUnverifiedRebasedSiblingRequiresHeadVerification reproduces KITE-80:
+// status must not offer recovery while the same exact evidence makes recovery
+// reject an unverified sibling of the submitted head.
+func TestUnverifiedRebasedSiblingRequiresHeadVerification(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.makePreservedHeadRebasedSibling()
+
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_recover_head_verification_required" {
+		t.Fatalf("unverified sibling state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "verify_preserved_head" || state.NextAction.Command != "no-mistakes axi sync --verify-preserved-head" {
+		t.Fatalf("unverified sibling next action = %#v", state.NextAction)
+	}
+	if recovered := f.service.Recover(f.ctx, false); recovered.Recovered || recovered.Safety != "blocked_recover_head_verification_required" {
+		t.Fatalf("unverified sibling recovery = %#v", recovered)
+	}
+}
+
+func TestVerifiedRebasedSiblingRemainsRecoverable(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.makePreservedHeadRebasedSibling()
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunFailed, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("verified sibling status = %#v", state)
+	}
+	if recovered := f.service.Recover(f.ctx, false); !recovered.Recovered || recovered.State != StateCustodyReturned {
+		t.Fatalf("verified sibling recovery = %#v", recovered)
+	}
+}
+
+func TestVerifyPreservedHeadAnchorsExactSiblingAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.makePreservedHeadRebasedSibling()
+
+	first := f.service.VerifyPreservedHead(f.ctx)
+	if first.Safety != "blocked_pipeline_owned_recoverable" || !first.Changed || first.NextAction == nil || first.NextAction.Code != "recover_custody" {
+		t.Fatalf("first verification = %#v", first)
+	}
+	verified, err := f.db.GetRun(f.run.ID)
+	if err != nil || verified.TerminalHeadVerifiedAt == nil {
+		t.Fatalf("verified run = %#v, %v", verified, err)
+	}
+	verifiedAt := *verified.TerminalHeadVerifiedAt
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("recovery anchor = %s, want %s", got, f.preserved)
+	}
+
+	second := f.service.VerifyPreservedHead(f.ctx)
+	if second.Safety != "blocked_pipeline_owned_recoverable" || second.Changed {
+		t.Fatalf("idempotent verification = %#v", second)
+	}
+	verified, err = f.db.GetRun(f.run.ID)
+	if err != nil || verified.TerminalHeadVerifiedAt == nil || *verified.TerminalHeadVerifiedAt != verifiedAt {
+		t.Fatalf("idempotent terminal marker = %#v, %v", verified, err)
+	}
+}
+
+func TestVerifyPreservedHeadRefusesEvidenceMismatch(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dirty worktree", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.makePreservedHeadRebasedSibling()
+		mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+		state := f.service.VerifyPreservedHead(f.ctx)
+		if state.Safety != "blocked_recover_preserved_head_missing" {
+			t.Fatalf("dirty verification = %#v", state)
+		}
+		assertTerminalHeadUnverified(t, f)
+	})
+
+	t.Run("gate head mismatch", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.makePreservedHeadRebasedSibling()
+		mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+		state := f.service.VerifyPreservedHead(f.ctx)
+		if state.Safety != "blocked_recover_preserved_head_missing" {
+			t.Fatalf("gate mismatch verification = %#v", state)
+		}
+		assertTerminalHeadUnverified(t, f)
+	})
+
+	t.Run("recorded head changes after anchoring", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.makePreservedHeadRebasedSibling()
+		f.service.beforeTerminalHeadVerification = func() {
+			if err := f.db.UpdateRunHeadSHA(f.run.ID, f.submitted); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := f.service.VerifyPreservedHead(f.ctx)
+		if state.Safety != "blocked_verify_preserved_head_assumptions_changed" {
+			t.Fatalf("racing verification = %#v", state)
+		}
+		assertTerminalHeadUnverified(t, f)
+		if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+			t.Fatalf("interrupted anchor = %s, want %s", got, f.preserved)
+		}
+	})
+}
+
+func assertTerminalHeadUnverified(t *testing.T, f *recoverFixture) {
+	t.Helper()
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil || run.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("terminal verification = %#v, %v", run, err)
+	}
+}
+
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
 // for the stranded state itself (dogfood run 01KXN8YJ6DWF8XPP582DWQC3HV): a
 // terminal run at the pre_push phase must not be a dead end. The state stays

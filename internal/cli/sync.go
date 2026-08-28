@@ -60,7 +60,7 @@ func newSyncCmd() *cobra.Command {
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal bool
+	var check, recover, keepLocal, verifyPreservedHead bool
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -71,24 +71,30 @@ func newAxiSyncCmd() *cobra.Command {
 			"equivalent advance that anchors the old head before moving the branch to the\n" +
 			"verified pipeline head with reset semantics.\n" +
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
-			"--recover performs the guarded custody return offered by\n" +
-			"next_action.code: recover_custody; --keep-local keeps the current local head.",
+			"--verify-preserved-head anchors and records one exact terminal pipeline head; it\n" +
+			"does not move the branch or worktree. --recover performs the guarded custody\n" +
+			"return offered by next_action.code: recover_custody; --keep-local keeps the\n" +
+			"current local head.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if check && recover {
-				return emitError(cmd, 2, "--check and --recover cannot be used together")
+			if check && (recover || verifyPreservedHead) {
+				return emitError(cmd, 2, "--check cannot be combined with --recover or --verify-preserved-head")
+			}
+			if recover && verifyPreservedHead {
+				return emitError(cmd, 2, "--recover and --verify-preserved-head cannot be used together")
 			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
 			}
-			return runAxiSync(cmd, check, recover, keepLocal)
+			return runAxiSync(cmd, check, recover, keepLocal, verifyPreservedHead)
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&verifyPreservedHead, "verify-preserved-head", false, "verify and anchor the exact terminal pipeline head without moving the branch or worktree")
 	return cmd
 }
 
@@ -277,6 +283,9 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
 		}
+		if state.Safety == "blocked_recover_head_verification_required" {
+			return "run ended at an exact unverified pipeline head; verify it with `no-mistakes axi sync --verify-preserved-head`"
+		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
 		return "custody returned; the branch is yours - start a fresh run when ready"
@@ -310,7 +319,7 @@ func humanSyncSummary(state branchsync.State) string {
 	}
 }
 
-func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
+func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, verifyPreservedHead bool) error {
 	started := time.Now()
 	mode := "apply"
 	switch {
@@ -320,6 +329,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		mode = "recover_keep_local"
 	case recover:
 		mode = "recover"
+	case verifyPreservedHead:
+		mode = "verify_preserved_head"
 	}
 	var state branchsync.State
 	result := "error"
@@ -336,6 +347,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		state = service.Refresh(cmd.Context())
 	case recover:
 		state = service.Recover(cmd.Context(), keepLocal)
+	case verifyPreservedHead:
+		state = service.VerifyPreservedHead(cmd.Context())
 	default:
 		state = service.Apply(cmd.Context())
 	}
@@ -357,6 +370,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 	successful := syncStateSuccessful(state, check)
 	if recover {
 		successful = state.Recovered
+	}
+	if verifyPreservedHead {
+		successful = state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 	}
 	if successful {
 		if state.Changed {

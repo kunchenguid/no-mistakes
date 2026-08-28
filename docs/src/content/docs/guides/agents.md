@@ -168,6 +168,7 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi status
 no-mistakes axi sync --check
 no-mistakes axi sync
+no-mistakes axi sync --verify-preserved-head
 no-mistakes axi sync --recover
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
@@ -177,7 +178,8 @@ no-mistakes axi abort --run <id>
 
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
-When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
+When `next_action.code` is `verify_preserved_head`, run `no-mistakes axi sync --verify-preserved-head`. It anchors one exact terminal pipeline commit and records verification without moving the branch or worktree; then follow the newly reported next action.
+When `next_action.code` is `recover_custody` - a terminal run left verified unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.

@@ -154,11 +154,12 @@ type Service struct {
 	lsRemote    func(context.Context, string, string, string) (string, error)
 	fetchRemote func(context.Context, string, string, string, string) error
 
-	beforeApply               func()
-	beforeGateReset           func()
-	beforeRecoverWorktreeMove func()
-	beforeRecoverBranchMove   func()
-	afterRecoverBranchMove    func()
+	beforeApply                    func()
+	beforeGateReset                func()
+	beforeRecoverWorktreeMove      func()
+	beforeRecoverBranchMove        func()
+	afterRecoverBranchMove         func()
+	beforeTerminalHeadVerification func()
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
@@ -493,6 +494,54 @@ func (s *Service) Apply(ctx context.Context) State {
 	return plan
 }
 
+// VerifyPreservedHead binds an unverified terminal run to one exact preserved
+// commit. It only creates the run's private recovery anchor and records terminal
+// evidence; it never moves a branch or worktree.
+func (s *Service) VerifyPreservedHead(ctx context.Context) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, run, _ := s.inspect(ctx)
+	if state.State != StatePipelineOwned || run == nil {
+		return blockedPlan(state, state.State, "blocked_verify_preserved_head_not_applicable", "no unverified terminal pipeline head is eligible for verification; no files or refs were changed")
+	}
+	assessment := s.assessRecoveryEligibility(ctx, &state, run)
+	if run.TerminalHeadVerifiedAt != nil && assessment.kind == recoveryEligible {
+		state.Changed = false
+		return state
+	}
+	if run.TerminalHeadVerifiedAt != nil || !s.preservedHeadVerificationEligible(ctx, &state, run) {
+		return assessment.block(state)
+	}
+
+	runID, repoID, branch, preserved := run.ID, run.RepoID, run.Branch, run.HeadSHA
+	if err := custody.PreserveRecoveryHead(ctx, s.GateDir, runID, preserved); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_verify_preserved_head_anchor", "the exact preserved pipeline head could not be anchored without replacing existing evidence; no branch or worktree refs were changed")
+	}
+	anchor := custody.RecoveryRef(runID)
+	if anchored, err := git.Run(ctx, s.GateDir, "rev-parse", anchor+"^{commit}"); err != nil || anchored != preserved {
+		return blockedPlan(state, StatePipelineOwned, "blocked_verify_preserved_head_anchor", "the exact preserved pipeline head could not be confirmed after anchoring; no branch or worktree refs were changed")
+	}
+	if s.beforeTerminalHeadVerification != nil {
+		s.beforeTerminalHeadVerification()
+	}
+	rechecked, current, _ := s.inspect(ctx)
+	if current == nil || current.ID != runID || current.RepoID != repoID || current.Branch != branch || current.HeadSHA != preserved ||
+		current.TerminalHeadVerifiedAt != nil || !s.preservedHeadVerificationEligible(ctx, &rechecked, current) {
+		return blockedPlan(rechecked, StatePipelineOwned, "blocked_verify_preserved_head_assumptions_changed", "the run, branch, worktree, or gate evidence changed while the preserved head was being verified; the private anchor remains, but terminal verification was not recorded")
+	}
+	marked, err := s.DB.MarkTerminalHeadVerified(runID, repoID, branch, preserved)
+	if err != nil || !marked {
+		return blockedPlan(rechecked, StatePipelineOwned, "blocked_verify_preserved_head_assumptions_changed", "the run evidence changed before terminal verification could be recorded; the private anchor remains, but no branch or worktree refs were changed")
+	}
+	verified, verifiedRun, _ := s.inspect(ctx)
+	if verifiedRun == nil || verifiedRun.ID != runID || s.assessRecoveryEligibility(ctx, &verified, verifiedRun).kind != recoveryEligible {
+		return blockedPlan(verified, StatePipelineOwned, "blocked_verify_preserved_head_postcondition", "terminal verification was recorded, but current evidence no longer permits guarded recovery; inspect status before acting")
+	}
+	verified.Changed = true
+	return verified
+}
+
 // Recover returns custody of a branch stranded by a TERMINAL run whose MOVED
 // pipeline head was never published: cancelled or failed before the push with
 // pipeline commits in the gate, or terminal after a push with additional
@@ -585,26 +634,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
-	if run.TerminalHeadVerifiedAt == nil {
-		branch := state.Local.Branch
-		if strings.TrimSpace(s.GateDir) == "" {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
-		}
-		gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-		if err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
-		}
-		if gateHead != run.HeadSHA {
-			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
-			}
-			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
-			}
-			run.HeadSHA = gateHead
-			state.Pipeline.CurrentHead = gateHead
-			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
-		}
+	assessment := s.assessRecoveryEligibility(ctx, &state, run)
+	if assessment.kind == recoveryUnavailable && run.TerminalHeadVerifiedAt == nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run's recorded head is neither verified nor descended from the submitted head; verify or reconcile the exact preserved head before returning custody; no files or refs were changed")
+	}
+	if assessment.kind != recoveryEligible {
+		return assessment.block(state)
 	}
 
 	wd := s.workDir()
@@ -1418,6 +1453,80 @@ func terminalRunStatus(status types.RunStatus) bool {
 	return status.Terminal()
 }
 
+type recoveryEligibilityKind uint8
+
+const (
+	recoveryUnavailable recoveryEligibilityKind = iota
+	recoveryNeedsVerification
+	recoveryEligible
+)
+
+type recoveryEligibilityAssessment struct {
+	kind recoveryEligibilityKind
+}
+
+func (a recoveryEligibilityAssessment) block(state State) State {
+	switch a.kind {
+	case recoveryNeedsVerification:
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_head_verification_required", "the terminal run's exact preserved head has not been verified; verify it before returning custody; no branch or worktree refs were changed")
+		blocked.NextAction = &NextAction{Code: "verify_preserved_head", Command: "no-mistakes axi sync --verify-preserved-head"}
+		return blocked
+	default:
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", "the terminal run's recorded pipeline head cannot be recovered from the current evidence; inspect and reconcile the recorded and live heads manually; no files or refs were changed")
+		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+		return blocked
+	}
+}
+
+// assessRecoveryEligibility is the single decision used by status and recovery.
+// It keeps exact-head verification separate from custody mutation.
+func (s *Service) assessRecoveryEligibility(ctx context.Context, state *State, run *db.Run) recoveryEligibilityAssessment {
+	if state == nil || run == nil || !terminalRunStatus(run.Status) || run.CustodyReturnedAt != nil {
+		return recoveryEligibilityAssessment{kind: recoveryUnavailable}
+	}
+	if run.TerminalHeadVerifiedAt == nil {
+		if s.unverifiedDescendantRecoveryEligible(ctx, state, run) {
+			return recoveryEligibilityAssessment{kind: recoveryEligible}
+		}
+		if s.preservedHeadVerificationEligible(ctx, state, run) {
+			return recoveryEligibilityAssessment{kind: recoveryNeedsVerification}
+		}
+		return recoveryEligibilityAssessment{kind: recoveryUnavailable}
+	}
+	return recoveryEligibilityAssessment{kind: recoveryEligible}
+}
+
+func (s *Service) unverifiedDescendantRecoveryEligible(ctx context.Context, state *State, run *db.Run) bool {
+	if s.Repo == nil || run.RepoID != s.Repo.ID || run.Branch != state.Local.Branch || run.SubmittedHeadSHA == nil ||
+		run.HeadSHA == "" || strings.TrimSpace(s.GateDir) == "" {
+		return false
+	}
+	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+run.Branch+"^{commit}")
+	if err != nil || gateHead != run.HeadSHA || !isAncestor(ctx, s.GateDir, ptr(run.SubmittedHeadSHA), run.HeadSHA) {
+		return false
+	}
+	compatible, err := recoveryAnchorCompatible(ctx, s.GateDir, run.ID, run.HeadSHA)
+	return err == nil && compatible
+}
+
+func (s *Service) preservedHeadVerificationEligible(ctx context.Context, state *State, run *db.Run) bool {
+	if s.Repo == nil || run.RepoID != s.Repo.ID || run.Branch != state.Local.Branch || run.HeadSHA == "" ||
+		state.Pipeline.CurrentHead != run.HeadSHA || run.LastPushedSHA != nil || !state.Local.Clean || state.Local.Head != run.HeadSHA ||
+		duplicateBranchCheckout(ctx, s.workDir(), run.Branch) {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+run.Branch+"^{commit}")
+	if err != nil || gateHead != run.HeadSHA || !objectExists(ctx, gateDir, run.HeadSHA) {
+		return false
+	}
+	compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, run.HeadSHA)
+	return err == nil && compatible
+}
+
 // classifyPipelineOwned reports a run that still holds branch custody without
 // a successful push binding. While the run is active the block is absolute:
 // the pipeline will publish or keep moving the head, so the worktree must
@@ -1434,10 +1543,13 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
+		assessment := s.assessRecoveryEligibility(ctx, state, run)
+		if assessment.kind != recoveryEligible {
+			*state = assessment.block(*state)
+			return
+		}
 		if !s.recoverySourceAvailable(ctx, state, run) {
-			state.Safety = "blocked_recover_preserved_head_missing"
-			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
-			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			*state = recoveryEligibilityAssessment{kind: recoveryUnavailable}.block(*state)
 			return
 		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
