@@ -1,0 +1,193 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+// wedgedCustodyAbortFixture builds the issue #824 record on real state: a
+// registered operator worktree, a real local gate whose branch sits at a
+// LATER run's head, and a terminal run row with no push binding whose recorded
+// pipeline head is in no object store at all. Aborting that run cannot cancel
+// anything, so its response is the only place left to name a settlement.
+func wedgedCustodyAbortFixture(t *testing.T) (string, *paths.Paths, string) {
+	t.Helper()
+	nmHome := makeSocketSafeTempDir(t)
+	t.Setenv("NM_HOME", nmHome)
+
+	root := t.TempDir()
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	cliGit(t, local, "checkout", "-b", "feature/wedged")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "feature")
+	submitted := cliGit(t, local, "rev-parse", "HEAD")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, filepath.Join(root, "remote.git"), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, root, "init", "--bare", gate)
+	cliGit(t, local, "push", gate, "refs/heads/feature/wedged:refs/heads/feature/wedged")
+	// A later run pushed its own head onto the gate branch and was cancelled,
+	// so the gate no longer names this run's head either.
+	pipelineClone := filepath.Join(root, "later-run")
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", gate, pipelineClone)
+	cliGit(t, pipelineClone, "config", "user.name", "Test")
+	cliGit(t, pipelineClone, "config", "user.email", "test@example.com")
+	cliGit(t, pipelineClone, "checkout", "feature/wedged")
+	if err := os.WriteFile(filepath.Join(pipelineClone, "later.txt"), []byte("later run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, pipelineClone, "add", "later.txt")
+	cliGit(t, pipelineClone, "commit", "-m", "no-mistakes(review): later run fix")
+	cliGit(t, pipelineClone, "push", "origin", "HEAD:refs/heads/feature/wedged")
+
+	run, err := database.InsertRun(repo.ID, "feature/wedged", submitted, submitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The recorded pipeline head is gone from every reachable object store.
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, strings.Repeat("a", 40)); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	chdir(t, local)
+	return run.ID, p, local
+}
+
+func assertNamesKeepLocalSettlement(t *testing.T, out string) {
+	t.Helper()
+	for _, want := range []string{"aborted: false", "run_status: failed", "already terminal"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("terminal-run abort output missing %q:\n%s", want, out)
+		}
+	}
+	// The prescribed action is the FIRST help entry; the standing branch-sync
+	// guidance that follows it names `--recover` in general prose, so only the
+	// prescribed entry can be asserted. On this record the plain recovery is
+	// the command that always refuses, and it must never be prescribed here.
+	prescribed := ""
+	for _, line := range strings.Split(out, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "help[") {
+			_, rest, _ := strings.Cut(trimmed, ": ")
+			prescribed, _, _ = strings.Cut(rest, ",")
+			break
+		}
+	}
+	if prescribed != "Run `no-mistakes axi sync --recover --keep-local`" {
+		t.Errorf("terminal-run abort prescribed %q, want the keep-local settlement:\n%s", prescribed, out)
+	}
+}
+
+// TestAxiAbortOfTerminalRunNamesTheSupportedCustodySettlement is the issue #824
+// regression on the abort surface. Aborting an already-terminal run is an
+// idempotent no-op by design - there is nothing left to cancel - but the
+// reporter was left with that no-op plus a `sync --check` that kept offering a
+// recovery which always refused. The no-op must therefore name the command
+// that can actually settle the record.
+func TestAxiAbortOfTerminalRunNamesTheSupportedCustodySettlement(t *testing.T) {
+	t.Run("daemon unavailable", func(t *testing.T) {
+		runID, _, _ := wedgedCustodyAbortFixture(t)
+
+		out, err := executeCmd("axi", "abort", "--run", runID)
+		t.Logf("daemon-down terminal abort output:\n%s", out)
+		if err != nil {
+			t.Fatalf("terminal run must resolve idempotently: %v\n%s", err, out)
+		}
+		assertNamesKeepLocalSettlement(t, out)
+	})
+
+	t.Run("daemon reports no active run", func(t *testing.T) {
+		runID, p, _ := wedgedCustodyAbortFixture(t)
+		startInactiveAbortDaemon(t, p, runID)
+
+		out, err := executeCmd("axi", "abort", "--run", runID)
+		t.Logf("daemon-up terminal abort output:\n%s", out)
+		if err != nil {
+			t.Fatalf("terminal run must resolve idempotently: %v\n%s", err, out)
+		}
+		assertNamesKeepLocalSettlement(t, out)
+	})
+}
+
+// startInactiveAbortDaemon serves the exact daemon responses a terminal run
+// produces: cancel_run has nothing active to cancel, and get_run reports the
+// durable terminal record.
+func startInactiveAbortDaemon(t *testing.T, p *paths.Paths, runID string) {
+	t.Helper()
+	srv := ipc.NewServer()
+	srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.HealthResult{Status: "ok"}, nil
+	})
+	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GateContextResult{Nested: false}, nil
+	})
+	srv.Handle(ipc.MethodCancelRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		return nil, noActiveRunErr(runID)
+	})
+	srv.Handle(ipc.MethodGetRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{Run: &ipc.RunInfo{
+			ID: runID, Branch: "feature/wedged", Status: types.RunFailed,
+		}}, nil
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(p.Socket()) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-errCh:
+		case <-time.After(time.Second):
+			t.Error("fake daemon did not stop")
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if client, dialErr := ipc.Dial(p.Socket()); dialErr == nil {
+			client.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fake daemon did not become reachable")
+}

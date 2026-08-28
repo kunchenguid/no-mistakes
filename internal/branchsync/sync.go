@@ -522,7 +522,16 @@ func (s *Service) Apply(ctx context.Context) State {
 //	work
 //	diverged   any       refuse (anchor named, manual   custody at local head;
 //	                     reconcile / rerun offered)     gate reset to it (CAS)
-//	P missing  any       refuse                         refuse
+//	P missing  any       refuse                         settle: custody at local
+//	or its                                              head, gate reset to it
+//	evidence                                            (CAS), any surviving
+//	conflicts                                           copy of P pinned first
+//
+// The last row is the self-inconsistent record of issue #824: a record that
+// contradicts itself has no verifiable head to protect, and refusing there
+// left the branch pipeline_owned with no command that could ever settle it.
+// recoverSettleInconsistent owns that reasoning and keeps it fail-closed for a
+// surviving-but-unanchorable head.
 //
 // The containment row exists because a cancelled validation routinely leaves P
 // as a REBASE of the local branch onto a newer base: the same logical commits
@@ -633,6 +642,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if gateAvailable {
 			compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 			if err != nil || !compatible {
+				if keepLocal {
+					return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				}
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 			}
 		}
@@ -651,15 +663,24 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if gateAnchorExists {
 		gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
 		if err != nil {
+			if keepLocal {
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved))
 		}
 		if gateAnchored != preserved {
+			if keepLocal {
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
 		}
 		gateAnchorAvailable = true
 	}
 	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
+			if keepLocal {
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
@@ -676,6 +697,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
+			if keepLocal {
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 		}
 	}
@@ -722,6 +746,55 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
+}
+
+// recoverSettleInconsistent is the explicit keep-local settlement of a
+// SELF-INCONSISTENT custody record: a terminal run whose recorded pipeline
+// head cannot be verified at all, because no reachable object store still has
+// it or because the run's own recovery evidence names a different object. Such
+// a record used to have no supported exit - every guarded recovery refused on
+// the same unverifiable head, abort of the already-terminal run was an
+// idempotent no-op, and the branch stayed pipeline_owned forever (issue #824).
+//
+// The settlement is deliberately narrow. It is reached only with --keep-local,
+// which is the operator stating that the head they want is the one already in
+// their worktree, and it is a shortcut for a record that contradicts itself,
+// never for a record protecting unique unpublished content:
+//
+//   - Every reachable copy of the recorded pipeline head is pinned first, at
+//     RecoveryStrandedRef, so a head that still exists survives the settlement
+//     as inspectable evidence. If such a head exists and CANNOT be pinned, the
+//     settlement refuses: that is exactly the "unique unpublished pipeline
+//     commits that cannot be anchored" case, and it stays fail-closed.
+//   - A head that no store still has cannot be pinned and cannot be lost. It
+//     is already unrecoverable, so refusing protects nothing and only strands
+//     the branch.
+//   - The gate branch then moves through the ordinary keep-local path, which
+//     anchors an independently moved gate head before an atomic
+//     compare-and-swap. The gate is never force-moved, so a concurrent gate
+//     push still wins and the settlement refuses.
+func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, state State, gateDir, preserved string) State {
+	strandedRef := custody.RecoveryStrandedRef(run.ID)
+	for _, dir := range []string{s.workDir(), strings.TrimSpace(gateDir)} {
+		if dir == "" || !objectExists(ctx, dir, preserved) {
+			continue
+		}
+		if err := custody.PreserveRecoveryAnchor(ctx, dir, strandedRef, preserved); err != nil {
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("the recorded pipeline head %s still exists but could not be anchored at %s, so custody cannot be settled without stranding it; inspect that object before retrying; no files or refs were changed", preserved, strandedRef))
+			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			return blocked
+		}
+	}
+	if strings.TrimSpace(gateDir) == "" {
+		return s.finishRecover(ctx, run, false)
+	}
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	if err != nil {
+		// The gate no longer carries this branch, so nothing there holds
+		// custody and there is no ref to compare-and-swap.
+		return s.finishRecover(ctx, run, false)
+	}
+	return s.recoverKeepLocal(ctx, run, state, gateHead)
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the
@@ -1436,6 +1509,16 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	if terminalRunStatus(run.Status) {
 		if !s.recoverySourceAvailable(ctx, state, run) {
 			state.Safety = "blocked_recover_preserved_head_missing"
+			// A record that contradicts itself must still name an exit that
+			// can complete: `--keep-local` settles it at the head the operator
+			// already has (issue #824). Only a record that keeps its own
+			// evidence intact falls back to manual reconciliation, because
+			// there the refusal is protecting something real.
+			if s.selfInconsistentCustodyRecord(ctx, run) {
+				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head cannot be verified in the invoking worktree or local gate; return custody at the current local head, which also points the gate branch at it"
+				state.NextAction = &NextAction{Code: "return_custody_keep_local", Command: "no-mistakes axi sync --recover --keep-local"}
+				return
+			}
 			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
@@ -1448,6 +1531,45 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+}
+
+// selfInconsistentCustodyRecord reports the exact class of stranded record
+// that `--recover --keep-local` can settle: the recorded pipeline head is not
+// in any reachable object store, or the run's own recovery evidence names
+// something other than that head. Both mean nothing about the record can be
+// verified, so a refusal protects nothing and only strands the branch.
+//
+// It is deliberately conservative. A record whose evidence is intact but whose
+// recovery is merely blocked (a genuinely diverged head, an absent gate that
+// might just be unmounted) is NOT self-inconsistent: settlement there would
+// abandon a preserved head that recovery can still import, so those keep
+// pointing at manual reconciliation.
+func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, run *db.Run) bool {
+	if run == nil {
+		return false
+	}
+	preserved := strings.TrimSpace(run.HeadSHA)
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	if preserved == "" {
+		return true
+	}
+	wd := s.workDir()
+	if !objectExists(ctx, wd, preserved) && !objectExists(ctx, gateDir, preserved) {
+		return true
+	}
+	for _, dir := range []string{gateDir, wd} {
+		compatible, err := recoveryAnchorCompatible(ctx, dir, run.ID, preserved)
+		if err == nil && !compatible {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {

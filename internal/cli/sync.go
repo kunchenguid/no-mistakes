@@ -34,7 +34,9 @@ func newSyncCmd() *cobra.Command {
 			"carry every local change. Unproven divergence refuses. A run cancelled before\n" +
 			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
 			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"instead, never touches the worktree, and points the gate branch at the kept\n" +
+			"head with a compare-and-swap; that is also the settlement for a record whose\n" +
+			"preserved head can no longer be verified.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -55,7 +57,7 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; surviving preserved commits stay anchored and the gate branch compare-and-swaps onto the kept head, which also settles a record whose preserved head can no longer be verified")
 	return cmd
 }
 
@@ -72,7 +74,9 @@ func newAxiSyncCmd() *cobra.Command {
 			"verified pipeline head with reset semantics.\n" +
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
 			"--recover performs the guarded custody return offered by\n" +
-			"next_action.code: recover_custody; --keep-local keeps the current local head.",
+			"next_action.code: recover_custody; --keep-local keeps the current local head\n" +
+			"and moves the gate branch to it, which is also the settlement offered by\n" +
+			"next_action.code: return_custody_keep_local.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -88,7 +92,7 @@ func newAxiSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; surviving preserved commits stay anchored and the gate branch compare-and-swaps onto the kept head, which also settles a record whose preserved head can no longer be verified")
 	return cmd
 }
 

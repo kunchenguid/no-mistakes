@@ -49,6 +49,12 @@ var canonicalBranchSyncPhrases = []string{
 	// that it needs no recovery.
 	"user_owned",
 	"before changing the submitted head",
+	// Settlement of a self-inconsistent custody record (issue #824): a record
+	// whose recorded pipeline head can no longer be verified has no preserved
+	// head to take, so every surface must name the keep-local settlement that
+	// can actually complete instead of a recovery that always refuses.
+	"return_custody_keep_local",
+	"no-mistakes axi sync --recover --keep-local",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"

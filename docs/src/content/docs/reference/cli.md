@@ -205,7 +205,7 @@ no-mistakes axi sync --recover --keep-local
 | -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree, and points the gate branch at the kept head |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -231,12 +231,17 @@ For behind or diverged worktrees, recovery verifies the preserved head at the ru
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
 This covers a pipeline rebase onto a newer base without requiring the gate branch to advance to the preserved head.
-Terminalization pins a verified unpublished pipeline head under a run-specific recovery ref, so recovery does not require the gate branch itself to have advanced. If the recorded head is genuinely missing, status reports manual reconciliation instead of advertising `recover_custody`.
+Terminalization pins a verified unpublished pipeline head under a run-specific recovery ref, so recovery does not require the gate branch itself to have advanced. If the recorded head can no longer be verified - it is missing from every reachable object store, or the run's own recovery ref names a different object - status reports `next_action.code: return_custody_keep_local` instead of advertising `recover_custody`, and `--recover --keep-local` settles that self-inconsistent record.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it. If the gate branch moved independently, recovery first preserves that head under `refs/no-mistakes/recover-gate/<run>`; a conflicting pre-existing anchor makes recovery refuse, and a concurrent gate push wins the compare-and-swap and also makes recovery refuse.
+
+`--keep-local` is also the settlement for a self-inconsistent custody record: a terminal run whose recorded pipeline head cannot be verified has no preserved head to import, so the default `--recover` refuses with `safety: blocked_recover_preserved_head_missing` or `blocked_recover_anchor_mismatch` and nothing else could settle the branch.
+Settlement pins every reachable copy of the recorded head under `refs/no-mistakes/recover-stranded/<run>` first, so a head that still exists survives as inspectable evidence; if such a head exists and cannot be pinned, the settlement refuses with `safety: blocked_recover_preserve_failed` rather than stranding it.
+The gate branch then moves by the same compare-and-swap, so a concurrent gate push still wins and the settlement refuses.
+`no-mistakes axi abort` on an already-terminal run stays an idempotent no-op - there is nothing left to cancel - but its response names that settlement command when the invoking worktree's branch is still held by that run.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
@@ -363,7 +368,7 @@ no-mistakes sync --recover --keep-local
 | `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree, and points the gate branch at the kept head |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
