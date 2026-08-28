@@ -104,6 +104,13 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	opts.Session = &agent.SessionRef{}
 	opts.SessionFallback = true
 	opts.SessionFallbackReason = classifyFallbackReason(err)
+	if opts.OnLifecycle != nil {
+		opts.OnLifecycle(agent.LifecycleEvent{
+			Agent:   a.Name(),
+			Phase:   agent.LifecyclePhaseFallback,
+			Message: fmt.Sprintf("%s session resume failed; starting a fresh %s session", a.Name(), role),
+		})
+	}
 	result, err = a.Run(ctx, opts)
 	if err != nil {
 		return nil, err
