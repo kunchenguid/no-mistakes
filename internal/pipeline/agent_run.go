@@ -85,8 +85,8 @@ func invokeAgent(parent context.Context, timeout time.Duration, activity *agentA
 }
 
 // agentActivity records when an in-flight invocation last produced anything
-// observable: streamed assistant text, a native lifecycle transition, or raw
-// subprocess bytes (agent.LifecyclePhaseActivity).
+// observable: streamed assistant text or raw subprocess bytes
+// (agent.LifecyclePhaseActivity). Lifecycle control metadata is not output.
 //
 // It exists because the timeout diagnostics used to assert that the agent had
 // been "silent for <budget>" without ever measuring silence - the budget was
@@ -180,6 +180,8 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 		case agent.LifecyclePhaseStart:
 			// Launching proves the binary ran, not that it is doing anything.
 			activity.observeLaunch(event.PID)
+		case agent.LifecyclePhaseActivity:
+			activity.observe()
 		case agent.LifecyclePhaseExit:
 			// Exit is the deadline's own consequence: cancelling the context
 			// kills the subprocess and the adapter reports it. Counting that as
@@ -187,7 +189,8 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 			// until the last instant, which is the fabricated-evidence problem
 			// this measurement replaces.
 		default:
-			activity.observe()
+			// Retry and unknown lifecycle phases are adapter control metadata,
+			// not evidence of assistant text or subprocess output.
 		}
 		if onLifecycle != nil {
 			onLifecycle(event)

@@ -333,6 +333,49 @@ func TestRunAgent_NativeSubprocessLivenessCountsAsObservedOutput(t *testing.T) {
 	}
 }
 
+func TestRunAgent_RetryMetadataIsNotObservedOutput(t *testing.T) {
+	t.Parallel()
+	// Retry is adapter control metadata, not evidence that the assistant or its
+	// subprocess produced output. A silent invocation that retries must retain
+	// the same diagnosis as any other launched-but-mute invocation.
+	ag := &hangingAgent{
+		name: "retrying",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "retrying", Phase: agent.LifecyclePhaseStart, PID: 5150})
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "retrying", Phase: agent.LifecyclePhaseRetry})
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	var retries int
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 20 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt: "work",
+		OnLifecycle: func(event agent.LifecycleEvent) {
+			if event.Phase == agent.LifecyclePhaseRetry {
+				retries++
+			}
+		},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "produced no output at all") {
+		t.Fatalf("error = %q, want retry-only invocation reported as silent", err)
+	}
+	if strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, retry metadata must not count as output", err)
+	}
+	if retries != 1 {
+		t.Fatalf("forwarded retry events = %d, want 1", retries)
+	}
+}
+
 func TestRunAgent_SubprocessStartAloneIsNotObservedOutput(t *testing.T) {
 	t.Parallel()
 	// Launching proves the binary ran, not that it is doing anything. Counting
