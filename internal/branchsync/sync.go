@@ -592,23 +592,25 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits; no files or refs were changed")
 	}
 	if !terminalRunStatus(run.Status) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
+		blocked.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+		return blocked
 	}
 	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
 		}
 		gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 		if err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
 		}
 		if gateHead != run.HeadSHA {
 			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
+				return recoverBlocked(state, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
 			}
 			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+				return recoverBlocked(state, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
 			}
 			run.HeadSHA = gateHead
 			state.Pipeline.CurrentHead = gateHead
@@ -659,13 +661,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if !gateAvailable {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be imported; no files or refs were changed")
+		return recoverBlocked(state, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be imported; no files or refs were changed")
 	}
 	gateAnchor := custody.RecoveryRef(run.ID)
 	gateAnchorAvailable := false
 	gateAnchorTarget, gateAnchorExists, targetErr := git.ExactRefTarget(ctx, gateDir, gateAnchor)
 	if targetErr != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
+		return recoverBlocked(state, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
 	}
 	if gateAnchorExists {
 		gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
@@ -691,7 +693,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
+			return recoverBlocked(state, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
 	}
 
@@ -701,7 +703,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !anchored {
 		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
 			if keepLocal {
@@ -720,7 +722,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 			if err != nil {
-				return keepLocalBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
 			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
@@ -735,7 +737,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 			if err != nil {
-				return keepLocalBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
 			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
@@ -844,66 +846,78 @@ func anchoredElsewhere(pinned []string, ref string) string {
 	return fmt.Sprintf("; the recorded head is now anchored at %s in %s", ref, strings.Join(pinned, " and "))
 }
 
+// recoverBlocked is the one constructor for a recovery refusal that has no
+// more specific exit to offer, because blockedPlan clears NextAction and a
+// refusal naming no exit is itself the R1/R5 dead end this subsystem exists to
+// remove. That principle does not depend on --keep-local: a default --recover
+// that refuses strands the operator exactly as badly. Manual reconciliation is
+// the honest exit here - recovery is already the recorded head's last resort,
+// so a refusal has nothing further to prescribe. Building it in one place is
+// what keeps the guarantee true as new refusal sites appear.
+func recoverBlocked(state State, safety, message string) State {
+	blocked := blockedPlan(state, StatePipelineOwned, safety, message)
+	blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+	return blocked
+}
+
 // recoverKeepLocal performs the explicit keep-local custody return: the
 // worktree is never touched; the gate branch moves to the kept local head with
 // an atomic compare-and-swap so a concurrent gate push refuses instead of
 // being clobbered. The kept head's objects reach the gate through a gate-side
 // fetch - never a push, which would fire the gate's receive hooks and start a
 // pipeline run. The preserved head stays reachable through the anchor ref.
-// keepLocalBlocked is the one constructor for a keep-local refusal, because
-// blockedPlan clears NextAction and every refusal on this path must still name
-// an exit that completes. Manual reconciliation is that exit: the settlement
-// is already the last resort, so a refusal here has nothing further to
-// prescribe. Building it in one place is what keeps the guarantee true as new
-// refusal sites appear.
-func keepLocalBlocked(state State, safety, message string) State {
-	blocked := blockedPlan(state, StatePipelineOwned, safety, message)
-	blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
-	return blocked
-}
-
 func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
+	gateHeadAnchored := false
 	if gateHead != state.Local.Head {
 		if gateHead != run.HeadSHA {
 			gateAnchor := custody.RecoveryGateRef(run.ID)
 			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
 			if err != nil || (exists && existing != gateHead) {
-				return keepLocalBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
+				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
 			}
 			if !exists {
 				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)
 			}
 			if err != nil {
-				return keepLocalBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
+				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
 			}
+			gateHeadAnchored = true
 		}
 		head, err := git.HeadSHA(ctx, s.workDir())
 		if err != nil || head != state.Local.Head {
-			return keepLocalBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
 		}
 		// The fetch source must be absolute: the command runs inside the gate
 		// directory, where a relative invoking-worktree path would resolve to
 		// the gate itself.
 		source, err := filepath.Abs(s.workDir())
 		if err != nil {
-			return keepLocalBlocked(state, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
 		}
 		stagingRef := "refs/no-mistakes/custody-return/" + run.ID
 		if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
-			return keepLocalBlocked(state, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
 		}
 		staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
 		if err != nil || staged != state.Local.Head {
 			_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
-			return keepLocalBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
 		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
 		_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
 		if casErr != nil {
-			return keepLocalBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; while the run recovery anchor %s still names the gate head this attempt observed, a further attempt refuses on that conflict, so reconcile that anchor against the live gate head before returning custody; no local files or refs were changed", custody.RecoveryGateRef(run.ID)))
+			// The displaced-gate-head anchor is written only above, when the
+			// gate had already moved off the recorded head. Without it a retry
+			// simply observes the new head and succeeds; with it, the retry
+			// hits the anchor conflict instead, so only then is reconciling
+			// the anchor the honest advice.
+			if gateHeadAnchored {
+				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; no local files or refs were changed", custody.RecoveryGateRef(run.ID)))
+			}
+			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no run recovery anchor was written, so re-run the recovery to return custody against the new gate head; no local files or refs were changed")
 		}
 	}
 	return s.finishRecover(ctx, run, false)

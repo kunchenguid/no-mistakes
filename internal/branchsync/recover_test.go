@@ -1346,7 +1346,12 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	raced := false
 	f.service.beforeGateReset = func() {
+		if raced {
+			return
+		}
+		raced = true
 		writer := filepath.Join(t.TempDir(), "racer")
 		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
 		configureIdentity(t, writer)
@@ -1362,6 +1367,25 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("racing recover stamped custody")
+	}
+	// The gate sat exactly at the recorded head, so no displaced-gate-head
+	// anchor was written and a retry genuinely succeeds. The refusal must say
+	// so rather than sending the operator to reconcile a ref that is absent.
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, custody.RecoveryGateRef(f.run.ID)); err != nil || exists {
+		t.Fatalf("fixture invariant broken: gate anchor exists=%v err=%v", exists, err)
+	}
+	if strings.Contains(state.Error, custody.RecoveryGateRef(f.run.ID)) {
+		t.Fatalf("refusal pointed at an anchor that was never written: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, "re-run the recovery") {
+		t.Fatalf("refusal withheld the retry guidance that is correct here: %q", state.Error)
+	}
+	if state.NextAction == nil {
+		t.Fatalf("racing keep-local recover named no exit = %#v", state)
+	}
+	retry := f.service.Recover(f.ctx, true)
+	if !retry.Recovered {
+		t.Fatalf("the retry the refusal prescribes did not succeed = %#v", retry)
 	}
 }
 
@@ -2422,6 +2446,12 @@ func TestInspectDoesNotAdvertiseSettlementForSymbolicGateAnchor(t *testing.T) {
 	if recovered.Recovered || recovered.Safety != "blocked_recover_preserve_failed" {
 		t.Fatalf("keep-local with a symbolic gate anchor = %#v", recovered)
 	}
+	// This is the acceptance criterion's own shape: the preserved commits
+	// still exist in the gate and cannot be anchored, so the refusal has to
+	// name an exit rather than strand the operator.
+	if recovered.NextAction == nil || recovered.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("unanchorable preserved head named no completable exit = %#v", recovered)
+	}
 	if f.custodyReturned() {
 		t.Fatal("a symbolic gate anchor stamped custody")
 	}
@@ -2470,5 +2500,96 @@ func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicGateAnchor(t *test
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
 		t.Fatalf("gate branch = %s, want the kept local head %s", got, f.submitted)
+	}
+}
+
+// TestRecoverRefusalAlwaysNamesAnExit is the durable pin for the R1/R5
+// invariant the CLI reference states: a `--recover` that refuses while the
+// branch stays held must name a next action the operator can actually run.
+// blockedPlan nils NextAction, so every new refusal site starts out violating
+// this; enumerating the sites one review round at a time is exactly how the
+// documented claim kept outrunning the code, hence one table over real git
+// states rather than four isolated assertions.
+func TestRecoverRefusalAlwaysNamesAnExit(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		wantSafety string
+		setup      func(t *testing.T) *recoverFixture
+	}{
+		{
+			name:       "no gate configured",
+			wantSafety: "blocked_recover_gate_unavailable",
+			setup: func(t *testing.T) *recoverFixture {
+				f := newRecoverFixture(t, types.RunCancelled)
+				f.service.GateDir = ""
+				return f
+			},
+		},
+		{
+			name:       "unverified head with no gate",
+			wantSafety: "blocked_recover_unverified_head",
+			setup: func(t *testing.T) *recoverFixture {
+				f := newRecoverFixture(t, types.RunCancelled)
+				if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
+					t.Fatal(err)
+				}
+				run, err := f.db.GetRun(f.run.ID)
+				if err != nil || run == nil {
+					t.Fatalf("reload run: %#v, %v", run, err)
+				}
+				f.run = run
+				f.service.GateDir = ""
+				return f
+			},
+		},
+		{
+			name:       "unverified head with an unreadable gate branch",
+			wantSafety: "blocked_recover_unverified_head",
+			setup: func(t *testing.T) *recoverFixture {
+				f := newRecoverFixture(t, types.RunCancelled)
+				if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
+					t.Fatal(err)
+				}
+				run, err := f.db.GetRun(f.run.ID)
+				if err != nil || run == nil {
+					t.Fatalf("reload run: %#v, %v", run, err)
+				}
+				f.run = run
+				mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+				return f
+			},
+		},
+		{
+			name:       "the owning run is still active",
+			wantSafety: "blocked_recover_run_active",
+			setup: func(t *testing.T) *recoverFixture {
+				return newRecoverFixture(t, types.RunRunning)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, keepLocal := range []bool{false, true} {
+				f := tc.setup(t)
+				state := f.service.Recover(f.ctx, keepLocal)
+				if state.Recovered {
+					t.Fatalf("keepLocal=%v recovered instead of refusing = %#v", keepLocal, state)
+				}
+				if state.Safety != tc.wantSafety {
+					t.Fatalf("keepLocal=%v safety = %q, want %q: %#v", keepLocal, state.Safety, tc.wantSafety, state)
+				}
+				if state.NextAction == nil || strings.TrimSpace(state.NextAction.Command) == "" {
+					t.Fatalf("keepLocal=%v refusal named no runnable exit = %#v", keepLocal, state)
+				}
+				if f.custodyReturned() {
+					t.Fatalf("keepLocal=%v refusal stamped custody", keepLocal)
+				}
+			}
+		})
 	}
 }
