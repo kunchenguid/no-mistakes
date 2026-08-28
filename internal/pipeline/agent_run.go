@@ -97,7 +97,7 @@ func invokeAgent(parent context.Context, timeout time.Duration, activity *agentA
 // the agent CLI. Everything reported now is measured.
 type agentActivity struct {
 	mu sync.Mutex
-	// begun is when the invocation was handed to the agent.
+	// begun is when the current attempt was handed to the agent.
 	begun time.Time
 	// last is when output was most recently observed; zero when none ever was.
 	last time.Time
@@ -131,6 +131,7 @@ func (a *agentActivity) beginAttempt() {
 		return
 	}
 	a.mu.Lock()
+	a.begun = time.Now()
 	a.last = time.Time{}
 	a.observed = 0
 	a.launchedPID = 0

@@ -426,6 +426,57 @@ func TestRunAgent_FallbackResetsPriorAttemptActivity(t *testing.T) {
 	}
 }
 
+func TestRunAgent_FallbackWithoutLaunchMeasuresSilenceFromAttempt(t *testing.T) {
+	t.Parallel()
+	const firstAttemptDuration = 100 * time.Millisecond
+	var fallbackStarted time.Time
+	first := &hangingAgent{
+		name: "unavailable",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			time.Sleep(firstAttemptDuration)
+			return nil, errors.New("unavailable exited: before replacement")
+		},
+	}
+	second := &hangingAgent{
+		name: "never-launched",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			fallbackStarted = time.Now()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  agent.NewFallback([]agent.Agent{first, second}),
+		Config: &config.Config{AgentTimeout: 250 * time.Millisecond},
+	}
+
+	invocationStarted := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	prefix := "produced no output at all in "
+	text := err.Error()
+	start := strings.Index(text, prefix)
+	if start < 0 || !strings.Contains(text, "never reported a subprocess start") {
+		t.Fatalf("error = %q, want measured pre-launch fallback silence", text)
+	}
+	durationText := strings.Fields(text[start+len(prefix):])[0]
+	reported, parseErr := time.ParseDuration(durationText)
+	if parseErr != nil {
+		t.Fatalf("parse reported duration %q: %v", durationText, parseErr)
+	}
+	fallbackElapsed := time.Since(fallbackStarted)
+	invocationElapsed := time.Since(invocationStarted)
+	if delta := fallbackElapsed - reported; delta < -20*time.Millisecond || delta > 20*time.Millisecond {
+		t.Fatalf("reported silence = %s, fallback elapsed = %s", reported, fallbackElapsed)
+	}
+	if reported >= invocationElapsed-firstAttemptDuration/2 {
+		t.Fatalf("reported silence = %s, invocation elapsed = %s; want first attempt excluded", reported, invocationElapsed)
+	}
+}
+
 func TestRunAgent_SubprocessStartAloneIsNotObservedOutput(t *testing.T) {
 	t.Parallel()
 	// Launching proves the binary ran, not that it is doing anything. Counting
