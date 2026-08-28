@@ -99,7 +99,7 @@ $ no-mistakes
 # opens the TUI for the active run
 ```
 
-For GitHub fork contributions, keep `origin` pointed at the parent repository and initialize with `no-mistakes init --fork-url <your-fork-url>`. A fork run that should open a PR must start with `no-mistakes axi run --intent "..."`, with `PR destination: parent-owner/repo` as the first intent line; the `/no-mistakes` skill drives that command for you. A direct `git push no-mistakes` has no authoritative destination, so it may validate and push to the fork but refuses PR creation.
+For GitHub fork contributions, keep `origin` pointed at the parent repository and initialize with `no-mistakes init --fork-url <your-fork-url>`. PR-producing fork runs follow the [explicit-destination workflow](https://kunchenguid.github.io/no-mistakes/guides/provider-integration/#github-fork-contributions).
 
 From the TUI you act on each **finding**: **auto-fix** ones are applied for you (or approve to let them), **ask-user** ones are a judgement call you approve, fix, or skip.
 Once every check is green, the gate forwards your branch to the configured push target and opens the PR for you, so there is no manual `git push origin` and no hand-written PR body.

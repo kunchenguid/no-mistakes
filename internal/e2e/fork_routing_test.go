@@ -96,6 +96,87 @@ func TestForkRouting(t *testing.T) {
 	}
 }
 
+// TestForkRoutingDirectPushRefusesPRWithoutDestination exercises the documented
+// direct-push fork workflow through the real daemon and CLI. A direct gate push
+// has no authoritative intent, so it may deliver the branch to the fork but
+// must fail before any GitHub PR lookup or publication.
+func TestForkRoutingDirectPushRefusesPRWithoutDestination(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	ctx := context.Background()
+
+	parentURL := "https://github.com/parent-owner/no-mistakes.git"
+	forkURL := "https://github.com/fork-owner/no-mistakes.git"
+	branch := "feature/fork-routing-direct-push"
+
+	forkDir := filepath.Join(filepath.Dir(h.UpstreamDir), "fork.git")
+	if err := os.MkdirAll(forkDir, 0o755); err != nil {
+		t.Fatalf("mkdir fork: %v", err)
+	}
+	if out, err := h.runGit(ctx, forkDir, "init", "--bare", "--initial-branch=main"); err != nil {
+		t.Fatalf("init fork: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", forkDir, "main"); err != nil {
+		t.Fatalf("seed fork main: %v\n%s", err, out)
+	}
+
+	configureGitURLRewrite(t, h, parentURL, h.UpstreamDir)
+	configureGitURLRewrite(t, h, forkURL, forkDir)
+	if out, err := h.runGit(ctx, h.WorkDir, "remote", "set-url", "origin", parentURL); err != nil {
+		t.Fatalf("set parent origin: %v\n%s", err, out)
+	}
+
+	ghLog := filepath.Join(filepath.Dir(h.AgentLog), "gh-fork-routing-direct-push.log")
+	t.Setenv("FAKEAGENT_GH_MODE", "fork-pr")
+	t.Setenv("FAKEAGENT_GH_LOG", ghLog)
+	t.Setenv("FAKEAGENT_GH_PARENT", "parent-owner/no-mistakes")
+
+	if out, err := h.Run("init", "--fork-url", forkURL); err != nil {
+		t.Fatalf("init with fork URL: %v\n%s", err, out)
+	}
+
+	headSHA := h.CommitChange(branch, "fork-direct.txt", "fork direct push\n", "add direct fork route")
+	h.PushToGate(branch)
+	run := h.WaitForRun(branch, 90*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("direct-push run status = %s, want failed; error=%v", run.Status, deref(run.Error))
+	}
+	if run.Error == nil || !strings.Contains(*run.Error, "authoritative run intent does not identify a leading PR destination") {
+		t.Fatalf("direct-push run error = %q, want caller-visible missing-destination refusal", deref(run.Error))
+	}
+
+	statusOut, err := h.Run("axi", "status")
+	if err != nil {
+		t.Fatalf("axi status failed: %v\n%s", err, statusOut)
+	}
+	for _, want := range []string{
+		"outcome: failed",
+		"refusing GitHub fork PR publication",
+		"authoritative run intent does not identify a leading PR destination",
+	} {
+		if !strings.Contains(statusOut, want) {
+			t.Errorf("axi status missing %q in:\n%s", want, statusOut)
+		}
+	}
+	t.Logf("direct-push fork refusal shown by axi status:\n%s", statusOut)
+
+	forkSHA, err := h.runGit(ctx, forkDir, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		t.Fatalf("fork branch missing: %v\n%s", err, forkSHA)
+	}
+	if got := strings.TrimSpace(string(forkSHA)); got != headSHA {
+		t.Fatalf("fork branch SHA = %s, want direct-push head %s", got, headSHA)
+	}
+	if out, err := h.runGit(ctx, h.UpstreamDir, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		t.Fatalf("parent unexpectedly received feature branch at %s", bytes.TrimSpace(out))
+	}
+
+	for _, inv := range readGHStubInvocations(t, ghLog) {
+		if len(inv.Args) > 0 && inv.Args[0] == "pr" {
+			t.Fatalf("destination refusal reached a GitHub PR operation: %+v", inv)
+		}
+	}
+}
+
 func configureGitURLRewrite(t *testing.T, h *Harness, rawURL, repoDir string) {
 	t.Helper()
 	rewrite := pathFileURL(t, repoDir)

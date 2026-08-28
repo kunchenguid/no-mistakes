@@ -99,7 +99,7 @@ $ no-mistakes
 # 打开当前运行的 TUI
 ```
 
-如果是 GitHub fork 贡献，让 `origin` 指向父仓库，并用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
+如果是 GitHub fork 贡献，让 `origin` 指向父仓库，并用 `no-mistakes init --fork-url <your-fork-url>` 初始化。需要创建 PR 的 fork 运行请遵循[显式目标工作流](https://kunchenguid.github.io/no-mistakes/guides/provider-integration/#github-fork-contributions)。
 
 在 TUI 里你逐条处理 **finding**：**auto-fix** 类自动替你应用（或由你 approve 放行），**ask-user** 类需要你判断，由你 approve、fix 或 skip。
 每项检查变绿后，网关会把你的分支转发到配置的推送目标并替你开好 PR，不用手动 `git push origin`，也不用手写 PR 正文。
