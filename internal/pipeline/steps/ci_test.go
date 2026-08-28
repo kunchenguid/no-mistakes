@@ -228,6 +228,9 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	defer cancel()
 	sctx.Ctx = ctx
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()

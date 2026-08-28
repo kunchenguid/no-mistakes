@@ -13,6 +13,8 @@ Customization is welcome exactly as far as it strengthens what a pass means; no 
 A person may explicitly skip steps for one run; a standing rule may never skip them on anyone's behalf.
 A gate that cannot run completely refuses loudly with guidance; it never degrades silently into a weaker check.
 Efficiency never buys itself a skipped check: when a shortcut fails, the gate falls back to the slower correct path instead of skipping the validation.
+Cost is a user-visible property of the gate, not an implementation detail: pipeline latency and total token spend are already among the first things users raise, so any design that clearly adds significant end-to-end latency or token consumption must be opt-in, or confined to the extremely rare cases where it is genuinely necessary.
+The default path buys the strongest guarantee it can at a price a user will keep paying; a stronger guarantee that costs another full pass over the change is offered, never imposed.
 
 ## Never lose work
 

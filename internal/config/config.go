@@ -76,6 +76,16 @@ const (
 	// with an agent round, but they are not free: each one keeps the monitor
 	// polling the same commit, so the budget stays small by construction.
 	MaxCIRerunTransient = 5
+	// DefaultCIRevalidateRepairs is the policy the CI step uses when
+	// ci.revalidate_repairs is unset. It is false because restarting the whole
+	// pipeline at Review for every CI repair is the single most expensive
+	// thing the pipeline can do to a run: it replays Review, Test, Document,
+	// Lint, Push, and PR against the repaired head, so one repair costs
+	// another full agent pass over the whole change. VISION.md's cost
+	// constraint makes that opt-in. The default publishes the repair through
+	// the same guarded push path the Push step uses and keeps monitoring CI,
+	// which is what every release before v1.58.1 did.
+	DefaultCIRevalidateRepairs = false
 	// DefaultEvalMaxCases caps the auto-captured local eval corpus. Cases
 	// share one object pool per repository, so the marginal cost of a case is
 	// its JSON records plus the objects its commits actually introduced, not a
@@ -454,6 +464,10 @@ type AutoFixRaw struct {
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
 	RerunTransient *int `yaml:"rerun_transient"`
+	// RevalidateRepairs is a pointer so an explicit `false` in a repository's
+	// config can override a global `true`, which a plain bool could not
+	// express (it would be indistinguishable from "not set").
+	RevalidateRepairs *bool `yaml:"revalidate_repairs"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -464,6 +478,22 @@ type CI struct {
 	// an approval gate. 0 disables reruns and restores the behavior of
 	// escalating every failure on sight.
 	RerunTransient int
+	// RevalidateRepairs selects what happens after the CI step's fix agent
+	// produces a real repair commit.
+	//
+	// false (default): the repair is published immediately through the same
+	// guarded force-push path the Push step uses - review-approved-head
+	// continuity, the force-with-lease anchor, remote verification, push
+	// binding, and the gate-mirror update all still apply - and the CI monitor
+	// keeps watching the same run for the new head. The run's review approval
+	// stays valid because the repair is a descendant of the approved head.
+	//
+	// true: the repair is kept local, the run's review approval is revoked,
+	// and the pipeline restarts at Review so the repaired head re-passes
+	// Review, Test, Document, and Lint before Push republishes it. Safer, and
+	// materially more expensive in wall-clock time and tokens - which is why
+	// it is opt-in (see VISION.md).
+	RevalidateRepairs bool
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
@@ -861,6 +891,15 @@ auto_fix:
 # default branch overrides this value.
 ci:
   rerun_transient: 0
+  # Whether a CI repair commit must re-pass the whole pipeline before it is
+  # published. Defaults to false: the repair is published through the same
+  # guarded force-push path the Push step uses and CI keeps monitoring, so one
+  # repair costs one agent round. Set true to restart validation at Review so
+  # the repaired head re-passes Review, Test, Document, and Lint before Push
+  # republishes it - safer, and it pays for another full pipeline pass in wall
+  # clock and tokens every time CI is repaired. A repository that sets
+  # ci.revalidate_repairs on its own default branch overrides this value.
+  revalidate_repairs: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
 # Repo config may override this value.
@@ -2121,10 +2160,14 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// default-branch copy so a pushed branch cannot self-declare no-CI and
 		// bypass checks that the default branch still expects.
 		effective.NoCI = trusted.NoCI
-		// ci.rerun_transient spends the maintainer's resources rather than the
-		// contributor's: every rerun is another provider-side workflow run
-		// billed to the repository. It is trusted-only for that reason, so a
-		// pushed branch cannot raise its own rerun budget to the cap.
+		// The whole ci block is trusted-only. ci.rerun_transient spends the
+		// maintainer's resources rather than the contributor's: every rerun is
+		// another provider-side workflow run billed to the repository, so a
+		// pushed branch must not be able to raise its own rerun budget to the
+		// cap. ci.revalidate_repairs is a validation boundary in the same
+		// sense: it decides whether a CI repair commit must re-pass Review
+		// before it is published, so a pushed branch must not be able to turn
+		// the maintainer's revalidation requirement off for its own repairs.
 		effective.CI = trusted.CI
 		// test.evidence.branch names the git ref evidence commits are pushed
 		// to with the maintainer's credentials. It is trusted-only so a pushed
@@ -2386,8 +2429,14 @@ func autoFixDefaults() AutoFix {
 // safe baseline is to escalate rather than risk restarting a job a maintainer
 // or a concurrency rule deliberately stopped. Repositories that know their
 // cancellations are provider-side opt in via ci.rerun_transient.
+// Post-repair revalidation is off for the reason recorded on
+// DefaultCIRevalidateRepairs: it is the pipeline's most expensive single
+// behavior, so it is opted into rather than paid for by default.
 func ciDefaults() CI {
-	return CI{RerunTransient: DefaultCIRerunTransient}
+	return CI{
+		RerunTransient:    DefaultCIRerunTransient,
+		RevalidateRepairs: DefaultCIRevalidateRepairs,
+	}
 }
 
 // applyCIOverrides applies non-nil raw values onto resolved defaults, clamping
@@ -2395,10 +2444,16 @@ func ciDefaults() CI {
 // inverting the bound, and anything above MaxCIRerunTransient is capped so a
 // typo cannot keep a run polling one commit indefinitely.
 func applyCIOverrides(dst *CI, src *CIRaw) {
-	if src.RerunTransient == nil {
-		return
+	if src.RerunTransient != nil {
+		dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
 	}
-	dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
+	// Applied independently of the rerun budget so a config that sets only one
+	// of the two keys does not silently discard the other, and so an explicit
+	// `revalidate_repairs: false` in the later (repository) source overrides an
+	// earlier `true` rather than reading as "unset".
+	if src.RevalidateRepairs != nil {
+		dst.RevalidateRepairs = *src.RevalidateRepairs
+	}
 }
 
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.

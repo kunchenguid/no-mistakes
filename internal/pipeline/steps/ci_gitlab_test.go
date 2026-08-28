@@ -244,6 +244,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -226,6 +226,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	} else {
 		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
 	}
+	// State the repair policy once, at entry, rather than at every poll: which
+	// of the two very differently priced paths a repair will take is the single
+	// most useful thing to know when reading a CI step log after the fact, and
+	// it cannot be inferred from the repair line alone until a repair happens.
+	sctx.Log(fmt.Sprintf("CI repair policy: %s (ci.revalidate_repairs: %t)", ciRepairPolicyDescription(sctx), ciRevalidatesRepairs(sctx)))
 	now := s.now
 	if now == nil {
 		now = time.Now
@@ -523,7 +528,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
-						return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+						if ciRevalidatesRepairs(sctx) {
+							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+						}
+						// Default policy: the repair is already published, so
+						// the monitor stays on this run and waits for the
+						// provider to re-run the checks against the new head.
 					} else {
 						sctx.Log("CI fix produced no changes, returning for manual intervention...")
 						return ciFailureOutcome(reportedIssues, mergeConflict, "CI fix produced no changes - failures require manual intervention"), nil
@@ -557,7 +567,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
-						return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+						if ciRevalidatesRepairs(sctx) {
+							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+						}
+						// Default policy: the repair is already published, so
+						// the monitor stays on this run and waits for the
+						// provider to re-run the checks against the new head.
 					} else {
 						// No changes produced - don't set lastFixedChecks so next
 						// poll treats this as a new failure and retries if attempts remain.

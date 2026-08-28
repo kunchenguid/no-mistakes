@@ -76,6 +76,7 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	sctx.UserIntent = "user wanted CI autofix to preserve the extracted intent"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -241,6 +242,7 @@ func TestCIStep_CIAutoFixLimitExhausted(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1} // only 1 attempt allowed
+	sctx.Config.CI.RevalidateRepairs = true
 	stepResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +333,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -404,6 +407,7 @@ func TestCIStep_CIAutoFixRetriesWhenGitHubClockLagsLocalClock(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 5 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	localNow := start.Add(30 * time.Minute)
 	step := &CIStep{
@@ -486,6 +490,7 @@ func TestCIStep_CIAutoFixRetriesWhenFastChecksSkipPendingObservation(t *testing.
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 1 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -571,6 +576,7 @@ func TestCIStep_CIAutoFixRetriesWhenSomeChecksStayFailing(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -642,6 +648,7 @@ func TestCIStep_DoesNotRetryOnUnrelatedPendingCheck(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -720,6 +727,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 2}
+	sctx.Config.CI.RevalidateRepairs = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -796,6 +804,7 @@ func TestCIStep_FixMode_ManualInterventionRunsCIFix(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI.RevalidateRepairs = true
 	sctx.Fixing = true
 	sctx.PreviousFindings = string(findingsJSON)
 

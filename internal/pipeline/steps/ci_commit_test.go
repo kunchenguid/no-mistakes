@@ -49,6 +49,9 @@ func TestCIStep_CommitAndPush_CommitsLocallyWithoutPushing(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitRepair(sctx, "stabilize Windows path test")
 	if err != nil {
@@ -120,6 +123,9 @@ func TestCIStep_CommitAndPushDoesNotPushForkWhenConfigured(t *testing.T) {
 	sctx.Repo.ForkURL = fork
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -269,6 +275,9 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -346,6 +355,9 @@ func TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv(t *testing.T) 
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -387,6 +399,9 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA(t *testin
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -450,6 +465,9 @@ func TestCIStep_CommitAndPush_NoChanges_ReconcilesStaleDatabaseHeadSHA_UsesStepE
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -505,6 +523,9 @@ func TestCIStep_CommitAndPush_NoDirtyChangesRecordsAdvancedLocalHead(t *testing.
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {
@@ -561,6 +582,9 @@ func TestCIStep_CommitAndPush_UpdatesLocalBranchRefWithoutDetachedPush(t *testin
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	changed, err := step.commitAndPush(sctx)
 	if err != nil {

@@ -75,6 +75,7 @@ auto_fix:
 
 ci:
   rerun_transient: 0
+  revalidate_repairs: false
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -363,7 +364,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
-If it later develops an actual GitHub, GitLab, Forgejo, or Azure DevOps merge conflict, the CI auto-fix path rebases it, restarts validation at Review, and publishes it through Push, while a clean behind PR needs no command.
+If it later develops an actual GitHub, GitLab, Forgejo, or Azure DevOps merge conflict, the CI auto-fix path rebases it and publishes it, restarting validation from Review first when [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) is enabled, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
@@ -573,6 +574,34 @@ Each rerun is another provider-side workflow run billed to the repository being 
 Set `0` here to never spend someone else's CI minutes; this is the only place to make that choice for a repository whose default branch you do not control.
 
 The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) overrides this value and owns the classification, the trust boundary, and every case that skips the rerun.
+
+### ci.revalidate_repairs
+
+Whether a CI repair commit must re-pass the whole pipeline before it is published.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+```yaml
+ci:
+  revalidate_repairs: false
+```
+
+At the default `false`, a repair the CI step's fix agent produces is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses, and the CI monitor keeps watching the same run for the new head.
+One repair costs one agent round.
+
+At `true`, the repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.
+That is stricter, and it pays for another full pipeline pass in wall-clock time and tokens **every time CI is repaired** - on a run that repairs CI three times, three extra passes over the whole change.
+[VISION.md](https://github.com/kunchenguid/no-mistakes/blob/main/VISION.md) is why that cost is opt-in rather than the default.
+
+The safety difference is real and worth stating plainly.
+With `false`, a CI repair reaches the PR without having been reviewed; the force-push lease, the review-approved-head continuity check, remote verification, and the push binding all still apply, but no agent reviews the repair's content before it lands.
+With `true`, no CI repair is ever published until Review has approved it.
+Turn it on for repositories where an unreviewed CI repair is unacceptable - for example when CI failures are frequently product-behavior findings from a review bot rather than mechanical test breakage, so a repair can quietly change what the change does.
+
+The per-repo [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) overrides this value in both directions: a repository that sets `true` gets revalidation even when this is `false`, and a repository that explicitly sets `false` opts out even when this is `true`.
 
 ### commit.fix_message
 

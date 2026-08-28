@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -23,71 +24,107 @@ func fileAtRef(t *testing.T, dir, ref, path string) bool {
 // and force-pushes - discarding the origin-only commit. The lease was anchored
 // to a freshly-read ls-remote SHA, which never refuses.
 //
-// CI repairs stay local, so even a stale worktree cannot overwrite a commit
-// that reached the remote out of band. The later push step owns that check.
+// The out-of-band commit must survive under BOTH ci.revalidate_repairs
+// policies, for two different reasons, so the guarantee is pinned on each:
+// with revalidation the repair never leaves the worktree at all, and without
+// it the shared guarded publication path refuses the force-push rather than
+// discarding a commit this run never incorporated.
 func TestCIStep_CommitAndPush_DoesNotClobberUnseenUpstreamCommit(t *testing.T) {
 	t.Parallel()
-	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
+	for _, tc := range []struct {
+		name              string
+		revalidateRepairs bool
+		wantChanged       bool
+		wantRefusal       bool
+	}{
+		{name: "revalidation_keeps_the_repair_local", revalidateRepairs: true, wantChanged: true},
+		{name: "publication_refuses_to_discard_the_unseen_commit", revalidateRepairs: false, wantRefusal: true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
 
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
+			dir := t.TempDir()
+			gitCmd(t, dir, "init")
+			gitCmd(t, dir, "config", "user.name", "test")
+			gitCmd(t, dir, "config", "user.email", "test@test.com")
+			gitCmd(t, dir, "checkout", "-b", "main")
+			os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "initial")
+			baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "remote", "add", "origin", upstream)
+			gitCmd(t, dir, "push", "origin", "main")
 
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "feature") // origin feature == H1, what no-mistakes last saw
+			gitCmd(t, dir, "checkout", "-b", "feature")
+			os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "feature")
+			headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "push", "origin", "feature") // origin feature == H1, what no-mistakes last saw
 
-	// Out-of-band: a reviewed commit is pushed to origin only, via a separate
-	// clone, so the gate worktree never sees it.
-	other := t.TempDir()
-	gitCmd(t, other, "clone", upstream, ".")
-	gitCmd(t, other, "config", "user.name", "other")
-	gitCmd(t, other, "config", "user.email", "other@test.com")
-	gitCmd(t, other, "checkout", "feature")
-	os.WriteFile(filepath.Join(other, "approved.txt"), []byte("approved review fix"), 0o644)
-	gitCmd(t, other, "add", "-A")
-	gitCmd(t, other, "commit", "-m", "approved review fix")
-	approvedSHA := gitCmd(t, other, "rev-parse", "HEAD")
-	gitCmd(t, other, "push", "origin", "feature") // origin feature == H2 (has approved.txt)
+			// Out-of-band: a reviewed commit is pushed to origin only, via a separate
+			// clone, so the gate worktree never sees it.
+			other := t.TempDir()
+			gitCmd(t, other, "clone", upstream, ".")
+			gitCmd(t, other, "config", "user.name", "other")
+			gitCmd(t, other, "config", "user.email", "other@test.com")
+			gitCmd(t, other, "checkout", "feature")
+			os.WriteFile(filepath.Join(other, "approved.txt"), []byte("approved review fix"), 0o644)
+			gitCmd(t, other, "add", "-A")
+			gitCmd(t, other, "commit", "-m", "approved review fix")
+			approvedSHA := gitCmd(t, other, "rev-parse", "HEAD")
+			gitCmd(t, other, "push", "origin", "feature") // origin feature == H2 (has approved.txt)
 
-	// The CI auto-fix agent produces a new head in the worktree that does NOT
-	// contain the approved commit (simulating a rebase from stale local state).
-	os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("ci fix"), 0o644)
+			// The CI auto-fix agent produces a new head in the worktree that does NOT
+			// contain the approved commit (simulating a rebase from stale local state).
+			os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("ci fix"), 0o644)
 
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
-	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Run.HeadSHA = headSHA // gate's last-recorded head == H1
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Repo.UpstreamURL = upstream
+			sctx.Run.Branch = "refs/heads/feature"
+			sctx.Run.HeadSHA = headSHA // gate's last-recorded head == H1
+			sctx.Config.CI.RevalidateRepairs = tc.revalidateRepairs
+			// Review approved H1, so the publication path's review-continuity
+			// guard passes and the force-push lease is the check under test.
+			if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, headSHA); err != nil {
+				t.Fatal(err)
+			}
 
-	step := &CIStep{}
-	changed, err := step.commitAndPush(sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed {
-		t.Fatal("expected the CI repair to be committed locally")
-	}
+			step := &CIStep{}
+			changed, err := step.commitAndPush(sctx)
+			switch {
+			case tc.wantRefusal:
+				if err == nil {
+					t.Fatal("expected the publication path to refuse the force-push")
+				}
+				if !strings.Contains(err.Error(), "refusing to force-push") {
+					t.Fatalf("error = %v, want a force-push refusal", err)
+				}
+				if changed {
+					t.Fatal("a refused publication must not report the repair as delivered")
+				}
+			default:
+				if err != nil {
+					t.Fatal(err)
+				}
+				if changed != tc.wantChanged {
+					t.Fatalf("changed = %v, want %v", changed, tc.wantChanged)
+				}
+			}
 
-	// The approved commit must still be on origin.
-	originSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if originSHA != approvedSHA {
-		t.Fatalf("origin feature SHA = %s, want %s (approved commit must be preserved)", originSHA, approvedSHA)
-	}
-	if !fileAtRef(t, upstream, "refs/heads/feature", "approved.txt") {
-		t.Fatalf("approved.txt was discarded from origin - data loss")
+			// The approved commit must still be on origin.
+			originSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+			if originSHA != approvedSHA {
+				t.Fatalf("origin feature SHA = %s, want %s (approved commit must be preserved)", originSHA, approvedSHA)
+			}
+			if !fileAtRef(t, upstream, "refs/heads/feature", "approved.txt") {
+				t.Fatalf("approved.txt was discarded from origin - data loss")
+			}
+		})
 	}
 }
 

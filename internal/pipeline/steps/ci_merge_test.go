@@ -289,6 +289,9 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	step := &CIStep{}
 	host, skip := buildHost(sctx, scm.ProviderGitHub)
 	if host == nil {
@@ -331,6 +334,9 @@ func TestCIStep_AutoFixUsesExistingPRBaseAfterConfigChanges(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Config.PR.BaseBranch = "main"
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	// This test pins the ci.revalidate_repairs: true path, where the
+	// repair is held locally until Review re-approves it.
+	sctx.Config.CI.RevalidateRepairs = true
 	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42", BaseBranch: "develop"}
 
 	var prompt string

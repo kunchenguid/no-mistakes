@@ -219,6 +219,24 @@ func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, fo
 	return err
 }
 
+// stepGitPushCommit pushes an explicit commit to a remote ref with the
+// StepContext's environment, mirroring git.PushCommit's argument assembly. The
+// explicit source SHA (rather than HEAD) is what lets a caller publish exactly
+// the commit it verified, even if the worktree moves underneath it.
+func stepGitPushCommit(sctx *pipeline.StepContext, remote, commitSHA, ref, expectedSHA string, forceWithLease bool) error {
+	args := []string{"push", remote}
+	if forceWithLease {
+		if expectedSHA != "" {
+			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
+		} else {
+			args = append(args, "--force-with-lease")
+		}
+	}
+	args = append(args, commitSHA+":"+ref)
+	_, err := stepGitRun(sctx, args...)
+	return err
+}
+
 // stepCLIAvailable checks whether the provider CLI binary is available,
 // respecting any custom PATH in sctx.Env.
 func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {

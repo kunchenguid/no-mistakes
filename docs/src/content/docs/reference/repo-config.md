@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, and `test.evidence.branch` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -70,9 +70,11 @@ auto_fix:
   lint: 5
   ci: 3
 
-# Read only from the trusted default branch: each rerun is another workflow run.
+# Read only from the trusted default branch: each rerun is another workflow run,
+# and revalidation decides whether a CI repair may ship without review.
 ci:
   rerun_transient: 0
+  revalidate_repairs: false
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -415,6 +417,48 @@ Reruns are skipped when:
 - The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, Azure DevOps, and Gitea reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a cancelled check naming only the workflow run re-runs the whole workflow, while other run-only links re-run failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
+
+### ci.revalidate_repairs
+
+Whether a CI repair commit must re-pass the whole pipeline before it is published.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  revalidate_repairs: true
+```
+
+At the default `false`, a repair the CI step's fix agent produces is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses - review-approved-head continuity, the force-with-lease anchor, remote verification, the push binding, and the gate-mirror update all still apply - and the CI monitor keeps watching the same run for the new head.
+One repair costs one agent round.
+
+At `true`, the repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.
+No CI repair is ever published without having been reviewed.
+
+The tradeoff is cost against an unreviewed repair:
+
+| | `false` (default) | `true` |
+|---|---|---|
+| Cost of one CI repair | one agent round | one agent round plus a full Review, Test, Document, Lint, Push, PR pass |
+| Repair reaches the PR | immediately | only after Review approves it |
+| Repair is reviewed | no | yes |
+| Steps that re-run | none | Review onward (Intent and Rebase do not) |
+| Run identity | unchanged | unchanged; the restart is a same-run rewind |
+
+Turn it on where an unreviewed CI repair is unacceptable.
+The concrete case this exists for: when a review bot posts product-behavior findings as a failing check, the fix agent treats them as CI failures and can reverse what the change was supposed to do.
+On [firstmate#3250](https://github.com/kunchenguid/firstmate/pull/3250) a CI repair made a `--changed` test run serial by default, contradicting the change's stated intent; the restarted Review caught it and reversed it. Without revalidation that repair would have shipped.
+That is the safety this option buys, and the reason it is offered rather than removed.
+
+This value is read only from the trusted default-branch copy of this file, like `ci.rerun_transient` and `disable_project_settings`.
+A pushed branch cannot turn a maintainer's revalidation requirement off for its own repairs, and cannot turn it on either.
+
+A value set here always wins over the operator's own [`ci.revalidate_repairs`](/no-mistakes/reference/global-config/#cirevalidate_repairs), in both directions: `true` here enables revalidation even when the global value is `false`, and an explicit `false` here opts out even when the global value is `true`.
+With no trusted copy of this file, the operator's global value applies, then the built-in default of `false`.
 
 ### commit.fix_message
 
