@@ -160,7 +160,7 @@ func TestAssertReviewApprovedPushHead(t *testing.T) {
 			}
 			recordReviewApproval(t, sctx, approval)
 			proposed := tt.proposed(t, dir, baseSHA, headSHA)
-			err := assertReviewApprovedPushHead(sctx, proposed, publishContinuity{})
+			err := assertReviewApprovedPushHead(sctx, proposed)
 			if tt.wantError == "" {
 				if err != nil {
 					t.Fatalf("expected continuity approval, got %v", err)
@@ -177,7 +177,7 @@ func TestAssertReviewApprovedPushHead(t *testing.T) {
 func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	err := assertReviewApprovedPushHead(sctx, headSHA, publishContinuity{})
+	err := assertReviewApprovedPushHead(sctx, headSHA)
 	if err == nil || !strings.Contains(err.Error(), "no durably recorded review-approved head") {
 		t.Fatalf("expected missing legacy approval refusal, got %v", err)
 	}
@@ -208,7 +208,7 @@ func TestAssertReviewApprovedPushHead_UsesStepScopedGit(t *testing.T) {
 		"FAKE_CLI_LOG=" + logFile,
 	}
 
-	if err := assertReviewApprovedPushHead(sctx, proposedHead, publishContinuity{}); err != nil {
+	if err := assertReviewApprovedPushHead(sctx, proposedHead); err != nil {
 		t.Fatalf("expected descendant approval, got %v", err)
 	}
 	logBytes, err := os.ReadFile(logFile)

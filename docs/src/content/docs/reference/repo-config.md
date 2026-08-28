@@ -420,7 +420,7 @@ Reruns are skipped when:
 
 ### ci.revalidate_repairs
 
-Whether a CI repair commit must re-pass the whole pipeline before it is published.
+Whether every CI repair must re-pass the pipeline before it is published, or only the ones whose continuity with the reviewed head cannot be proven.
 
 | | |
 |---|---|
@@ -433,24 +433,34 @@ ci:
   revalidate_repairs: true
 ```
 
-At the default `false`, a repair the CI step's fix agent produces is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses - review-approved-head continuity, the force-with-lease anchor, remote verification, and the durable push binding all still apply - and the CI monitor keeps watching the same run for the new head.
-The path also attempts to synchronize the local gate mirror. Because the remote repair is already verified and durably bound by then, a late mirror failure is logged as a warning and does not misreport the publication as failed or spend another repair attempt; ordinary Push-step mirror failures still fail that step so it can retry.
-One repair costs one agent round.
+One rule decides how every CI repair is delivered, on every CI-fix path - automatic and manual, CI failure and merge conflict alike:
 
-At `true`, the repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.
-No CI repair is ever published without having been reviewed.
+> A repair is published without revalidating only when its continuity with the reviewed, published head can be **proven**. When that continuity cannot be proven, the repair revalidates from Review.
 
-The tradeoff is cost against an unreviewed repair:
+Continuity is proven when the repaired head is the run's durably review-approved commit or a descendant of it. That is the same fact the Push step's publication guard enforces, so the decision to publish and the guard that permits the push can never disagree.
+
+`revalidate_repairs` sets the intent, identically on every path:
+
+- **`false` (default)** asks to publish when it is safe to. A repair that builds on the reviewed head - the ordinary case, where the fix agent adds a commit - is committed and published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses (review-approved-head continuity, the force-with-lease anchor, remote verification, and the durable push binding all still apply), and the CI monitor keeps watching the same run for the new head. One repair costs one agent round.
+- **`true`** asks for revalidation outright: every repair is kept local, the run's review approval is revoked, and validation restarts at Review so the repaired head re-passes Review, Test, Document, and Lint before Push republishes it.
+
+The publication path also attempts to synchronize the local gate mirror. Because the remote repair is already verified and durably bound by then, a late mirror failure is logged as a warning and does not misreport the publication as failed or spend another repair attempt; ordinary Push-step mirror failures still fail that step so it can retry.
+
+**Merge-conflict repairs always revalidate, under either setting.** They are not carved out - they simply always land in the cannot-be-proven half. A conflict repair rebases, so the repaired head is never a descendant of the reviewed head; resolving a conflict changes the commit's patch-id; and no content-based guard can separate "rebased and resolved" from "dropped the work". Revalidating is what keeps that safe: the rewritten head is not published until Review has approved it, so the reviewed commits stay on the remote in the meantime.
+
+Provenance is deliberately not accepted as a substitute for that proof. In the reproduction this rule exists for, the repair that deleted a reviewed commit was authored by no-mistakes' own CI repair agent: it reset to the rebase base, left a clean tree, and the pipeline reported success while the remote lost the work. Who wrote a repair says nothing about what it did to the reviewed commits.
+
+The tradeoff `true` buys is cost against an unreviewed repair:
 
 | | `false` (default) | `true` |
 |---|---|---|
-| Cost of one CI repair | one agent round | one agent round plus a full Review, Test, Document, Lint, Push, PR pass |
-| Repair reaches the PR | immediately | only after Review approves it |
-| Repair is reviewed | no | yes |
-| Steps that re-run | none | Review onward (Intent and Rebase do not) |
-| Run identity | unchanged | unchanged; the restart is a same-run rewind |
+| Ordinary repair that builds on the reviewed head | published immediately, one agent round | revalidated: one agent round plus a full Review, Test, Document, Lint, Push, PR pass |
+| Merge-conflict repair | revalidated | revalidated |
+| Ordinary repair is reviewed before it reaches the PR | no | yes |
+| Steps that re-run when a repair revalidates | Review onward; Intent and Rebase do not | same |
+| Run identity | unchanged; a restart is a same-run rewind | same |
 
-Turn it on where an unreviewed CI repair is unacceptable.
+Turn it on where even an ordinary unreviewed CI repair is unacceptable.
 The concrete case this exists for: when a review bot posts product-behavior findings as a failing check, the fix agent treats them as CI failures and can reverse what the change was supposed to do.
 On [firstmate#3250](https://github.com/kunchenguid/firstmate/pull/3250) a CI repair made a `--changed` test run serial by default, contradicting the change's stated intent; the restarted Review caught it and reversed it. Without revalidation that repair would have shipped.
 That is the safety this option buys, and the reason it is offered rather than removed.

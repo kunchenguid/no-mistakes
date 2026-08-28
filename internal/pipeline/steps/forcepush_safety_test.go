@@ -95,7 +95,7 @@ func TestCIStep_CommitAndPush_DoesNotClobberUnseenUpstreamCommit(t *testing.T) {
 			}
 
 			step := &CIStep{}
-			changed, err := step.commitAndPush(sctx)
+			repair, err := step.commitAndPush(sctx)
 			switch {
 			case tc.wantRefusal:
 				if err == nil {
@@ -104,15 +104,15 @@ func TestCIStep_CommitAndPush_DoesNotClobberUnseenUpstreamCommit(t *testing.T) {
 				if !strings.Contains(err.Error(), "refusing to force-push") {
 					t.Fatalf("error = %v, want a force-push refusal", err)
 				}
-				if changed {
+				if repair.HeadAdvanced {
 					t.Fatal("a refused publication must not report the repair as delivered")
 				}
 			default:
 				if err != nil {
 					t.Fatal(err)
 				}
-				if changed != tc.wantChanged {
-					t.Fatalf("changed = %v, want %v", changed, tc.wantChanged)
+				if repair.HeadAdvanced != tc.wantChanged {
+					t.Fatalf("HeadAdvanced = %v, want %v", repair.HeadAdvanced, tc.wantChanged)
 				}
 			}
 

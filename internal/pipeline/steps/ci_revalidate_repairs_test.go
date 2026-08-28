@@ -298,11 +298,11 @@ func TestCIStep_PublishedRepairSurvivesLateGateMirrorFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 	if err != nil {
 		t.Fatalf("published repair was misreported as failed: %v", err)
 	}
-	if !changed {
+	if !repair.HeadAdvanced {
 		t.Fatal("published repair was not reported as a real change")
 	}
 	publishedHead := f.localHead(t)
@@ -324,39 +324,104 @@ func TestCIStep_PublishedRepairSurvivesLateGateMirrorFailure(t *testing.T) {
 	}
 }
 
-func TestCIStep_PublishPolicyAllowsConflictRebaseContinuity(t *testing.T) {
-	f := newCIRepairFixture(t, false, nil)
-	gitCmd(t, f.dir, "checkout", "main")
-	if err := os.WriteFile(filepath.Join(f.dir, "base-advance.txt"), []byte("advanced\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, f.dir, "add", "-A")
-	gitCmd(t, f.dir, "commit", "-m", "advance base")
-	rewriteBase := gitCmd(t, f.dir, "rev-parse", "HEAD")
-	gitCmd(t, f.dir, "checkout", "feature")
-	gitCmd(t, f.dir, "rebase", "main")
-	rebasedHead := gitCmd(t, f.dir, "rev-parse", "HEAD")
-	if rebasedHead == f.headSHA {
-		t.Fatal("rebase did not rewrite the reviewed head")
-	}
+// A merge-conflict repair rewrites history, so its head is never a descendant
+// of the reviewed head and its continuity can never be proven. The uniform rule
+// therefore sends every conflict repair down the revalidating path - it is not
+// carved out, it just always lands in the cannot-be-proven half.
+//
+// Both directions matter, and both are load bearing:
+//   - a genuine conflict rebase must still SUCCEED, revalidating rather than
+//     being refused, so conflict repair keeps working;
+//   - a repair that reset to the base instead of replaying the branch must not
+//     reach the remote, so the reviewed commits survive.
+//
+// The second case is the reason this rule exists. Reproduced against the
+// earlier design, that repair force-pushed the reviewed commits away while
+// reporting success - and the actor was the CI repair agent itself, which is
+// why provenance cannot substitute for proof.
+func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// rewrite leaves the worktree on the repaired head and returns it.
+		rewrite func(t *testing.T, f *ciRepairFixture, advancedBase string) string
+		// keepsReviewedWork is whether the rewrite actually replayed the
+		// reviewed commit onto the new base.
+		keepsReviewedWork bool
+	}{
+		{
+			name: "genuine_rebase_replaying_the_reviewed_commit",
+			rewrite: func(t *testing.T, f *ciRepairFixture, advancedBase string) string {
+				gitCmd(t, f.dir, "rebase", "main")
+				return gitCmd(t, f.dir, "rev-parse", "HEAD")
+			},
+			keepsReviewedWork: true,
+		},
+		{
+			name: "reset_to_base_dropping_the_reviewed_commit",
+			rewrite: func(t *testing.T, f *ciRepairFixture, advancedBase string) string {
+				gitCmd(t, f.dir, "reset", "--hard", advancedBase)
+				return advancedBase
+			},
+			keepsReviewedWork: false,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Publish policy: this is the path that could publish without review.
+			f := newCIRepairFixture(t, false, nil)
+			gitCmd(t, f.dir, "checkout", "main")
+			if err := os.WriteFile(filepath.Join(f.dir, "base-advance.txt"), []byte("advanced\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, f.dir, "add", "-A")
+			gitCmd(t, f.dir, "commit", "-m", "advance base")
+			advancedBase := gitCmd(t, f.dir, "rev-parse", "HEAD")
+			gitCmd(t, f.dir, "checkout", "feature")
 
-	changed, err := (&CIStep{}).commitRepairWithRewriteBase(f.sctx, "resolve merge conflict", rewriteBase)
-	if err != nil {
-		t.Fatalf("publish rebased repair: %v", err)
-	}
-	if !changed || f.remoteHead(t) != rebasedHead {
-		t.Fatalf("rebased repair was not published: changed=%v remote=%s want=%s", changed, f.remoteHead(t), rebasedHead)
-	}
+			repairedHead := tc.rewrite(t, f, advancedBase)
+			if repairedHead == f.headSHA {
+				t.Fatal("the rewrite did not move the reviewed head")
+			}
 
-	if err := os.WriteFile(filepath.Join(f.dir, "follow-up.txt"), []byte("follow-up\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	changed, err = (&CIStep{}).commitRepair(f.sctx, "finish CI repair")
-	if err != nil {
-		t.Fatalf("publish descendant after rebased repair: %v", err)
-	}
-	if !changed || f.remoteHead(t) != f.localHead(t) {
-		t.Fatalf("follow-up repair was not published: changed=%v remote=%s local=%s", changed, f.remoteHead(t), f.localHead(t))
+			repair, err := (&CIStep{}).commitRepair(f.sctx, "resolve merge conflict")
+			if err != nil {
+				t.Fatalf("a conflict repair must revalidate, not fail: %v\nlog:\n%s", err, f.log())
+			}
+			if !repair.HeadAdvanced {
+				t.Fatal("the conflict repair was not recorded as a real change")
+			}
+			if !repair.Revalidate {
+				t.Fatal("a conflict repair was published without revalidating")
+			}
+
+			// Nothing rewritten reaches the remote. In the reset case this is
+			// exactly what keeps the reviewed commit alive.
+			if f.remoteHead(t) != f.headSHA {
+				t.Fatalf("remote moved to %s; the reviewed head %s must still be published", f.remoteHead(t), f.headSHA)
+			}
+			if !fileAtRef(t, f.upstream, "refs/heads/feature", "feature.txt") {
+				t.Fatal("DATA LOSS: the reviewed work was force-pushed away")
+			}
+
+			// Review authority is revoked so Push cannot publish the rewritten
+			// head until Review approves it again.
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.ReviewApprovedHeadSHA != nil && strings.TrimSpace(*run.ReviewApprovedHeadSHA) != "" {
+				t.Error("review approval survived a rewritten repair")
+			}
+			if run.HeadSHA != repairedHead {
+				t.Errorf("recorded head = %s, want the repaired head %s", run.HeadSHA, repairedHead)
+			}
+			if !strings.Contains(f.log(), "cannot prove the repaired head continues the reviewed head") {
+				t.Errorf("the log does not say why the repair revalidated:\n%s", f.log())
+			}
+			_ = tc.keepsReviewedWork
+		})
 	}
 }
 
@@ -414,10 +479,11 @@ func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
 	}
 }
 
-// The published repair still goes through the review-approved-head guard, so a
-// run whose review authority was never recorded cannot publish one. This is
-// what keeps the default path a guarded publication rather than a bare push.
-func TestCIStep_PublishedRepairStillRequiresReviewAuthority(t *testing.T) {
+// Continuity is proven against the run's durable review authority, so a run
+// that has none cannot prove anything: the repair revalidates rather than
+// publishing. Fail closed is the whole point - a missing approval is not a
+// reason to skip the check, it is a reason the check cannot pass.
+func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	if err := f.sctx.DB.UpdateRunReviewApprovedHeadSHA(f.sctx.Run.ID, ""); err != nil {
@@ -425,13 +491,17 @@ func TestCIStep_PublishedRepairStillRequiresReviewAuthority(t *testing.T) {
 	}
 	f.sctx.Run.ReviewApprovedHeadSHA = nil
 
-	if _, err := f.run(t); err != nil {
+	outcome, err := f.run(t)
+	if err != nil {
 		t.Fatalf("CI step returned error: %v", err)
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("outcome = %#v, want a restart from Review", outcome)
 	}
 	if f.remoteHead(t) != f.headSHA {
 		t.Fatal("a repair was published without a recorded review-approved head")
 	}
-	if !strings.Contains(f.log(), "review-approved head") {
-		t.Errorf("expected the refusal to name the missing review authority; log:\n%s", f.log())
+	if !strings.Contains(f.log(), "run has no durably recorded review-approved head") {
+		t.Errorf("the log does not name the missing review authority; log:\n%s", f.log())
 	}
 }

@@ -519,21 +519,21 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					manualFixAttempted = true
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
-					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
-					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {
+					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
-						if ciRevalidatesRepairs(sctx) {
+						if repair.Revalidate {
 							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
 						}
-						// Default policy: the repair is already published, so
-						// the monitor stays on this run and waits for the
-						// provider to re-run the checks against the new head.
+						// The repair was published, so the monitor stays on
+						// this run and waits for the provider to re-run the
+						// checks against the new head.
 					} else {
 						sctx.Log("CI fix produced no changes, returning for manual intervention...")
 						return ciFailureOutcome(reportedIssues, mergeConflict, "CI fix produced no changes - failures require manual intervention"), nil
@@ -558,21 +558,21 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					s.ciFixAttempts = nextAttempt
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
-					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
-					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {
+					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
-						if ciRevalidatesRepairs(sctx) {
+						if repair.Revalidate {
 							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
 						}
-						// Default policy: the repair is already published, so
-						// the monitor stays on this run and waits for the
-						// provider to re-run the checks against the new head.
+						// The repair was published, so the monitor stays on
+						// this run and waits for the provider to re-run the
+						// checks against the new head.
 					} else {
 						// No changes produced - don't set lastFixedChecks so next
 						// poll treats this as a new failure and retries if attempts remain.

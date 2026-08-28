@@ -36,11 +36,11 @@ func TestCIFixTreatsForgejoLogsAsOptionalEvidence(t *testing.T) {
 			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			host := &forgejoLogTestHost{logs: tt.logs, err: tt.fetchErr}
 
-			pushed, err := (&CIStep{}).autoFixCI(sctx, host, &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}, []string{"CI / test (pull_request)"}, false)
+			repair, err := (&CIStep{}).autoFixCI(sctx, host, &scm.PR{Number: "42", URL: "https://forge.example/octo/widgets/pulls/42"}, []string{"CI / test (pull_request)"}, false)
 			if err != nil {
 				t.Fatalf("autoFixCI() error = %v", err)
 			}
-			if pushed {
+			if repair.HeadAdvanced {
 				t.Fatal("autoFixCI() pushed without agent changes")
 			}
 			if host.calls != 1 {

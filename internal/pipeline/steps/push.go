@@ -65,7 +65,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, publishContinuity{}); err != nil {
+	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, false); err != nil {
 		return nil, err
 	}
 
@@ -88,12 +88,16 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // because the CI step runs with a step-local PATH and credential environment
 // that a plain runner would not see. Gate-mirror calls stay on git.Run: they
 // operate on the bare gate directory, not the run worktree.
-type publishContinuity struct {
-	ciRepair    bool
-	rewriteBase string
-}
-
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, continuity publishContinuity) error {
+// ciRepair marks the caller as a CI repair rather than the Push step. It
+// changes exactly one thing: a gate-mirror failure after the remote push and
+// its durable binding have both succeeded is a warning rather than an error,
+// because the CI monitor has no later Push step to retry it and must not spend
+// another fix attempt on an already published repair.
+//
+// It deliberately does NOT relax the review-approved-head check. Whether a
+// repair may be published at all is decided before publication, by
+// ciRepairContinuityProven.
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, ciRepair bool) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -108,7 +112,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
 	}
 
-	if err := assertReviewApprovedPushHead(sctx, headBeingPushed, continuity); err != nil {
+	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
 		return err
 	}
 
@@ -177,7 +181,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// retry a mirror failure, but the CI monitor must not call an already
 	// published repair failed and spend another fix attempt on it.
 	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
-		if continuity.ciRepair {
+		if ciRepair {
 			sctx.Log(fmt.Sprintf("warning: CI repair was published, but gate mirror synchronization failed: %v", err))
 			return nil
 		}
@@ -233,51 +237,45 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	return nil
 }
 
-func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string, continuity publishContinuity) error {
+// assertReviewApprovedPushHead refuses to publish a head that is not the
+// durably review-approved commit or a descendant of it. There is no exception:
+// a head that cannot show that ancestry has not been reviewed, and the CI
+// repair path answers that case by revalidating instead of publishing.
+func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		return fmt.Errorf("load durable review approval before push: %w", err)
 	}
-	if run == nil || run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
-		return fmt.Errorf("refusing to push: run has no durably recorded review-approved head")
-	}
-	approvedHead := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
-	if !isFullGitObjectID(approvedHead) {
-		return fmt.Errorf("refusing to push: durable review-approved head is malformed")
-	}
-	resolved, err := stepGitRun(sctx, "rev-parse", "--verify", approvedHead+"^{commit}")
-	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), approvedHead) {
-		return fmt.Errorf("refusing to push: durable review-approved head is unreachable")
+	approvedHead, reason := reviewApprovedHead(sctx, run)
+	if approvedHead == "" {
+		return fmt.Errorf("refusing to push: %s", reason)
 	}
 	if proposedHead == approvedHead {
 		return nil
 	}
-	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", approvedHead, proposedHead); err == nil {
-		return nil
+	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", approvedHead, proposedHead); err != nil {
+		return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
 	}
-	if continuity.ciRepair && ciRepairHeadContinuity(sctx, run, proposedHead, continuity.rewriteBase) {
-		return nil
-	}
-	return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
+	return nil
 }
 
-func ciRepairHeadContinuity(sctx *pipeline.StepContext, run *db.Run, proposedHead, rewriteBase string) bool {
-	recordedHead := strings.TrimSpace(run.HeadSHA)
-	if recordedHead == "" || recordedHead != strings.TrimSpace(sctx.Run.HeadSHA) || run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != recordedHead {
-		return false
+// reviewApprovedHead returns the run's durable review-approved commit, or ""
+// plus the reason it is unusable. It is the single reader of that authority, so
+// the pre-publication continuity decision and the publication guard itself can
+// never disagree about what "reviewed" means.
+func reviewApprovedHead(sctx *pipeline.StepContext, run *db.Run) (string, string) {
+	if run == nil || run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+		return "", "run has no durably recorded review-approved head"
 	}
-	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", recordedHead, proposedHead); err == nil {
-		return true
+	approvedHead := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	if !isFullGitObjectID(approvedHead) {
+		return "", "durable review-approved head is malformed"
 	}
-	if rewriteBase == "" || !isFullGitObjectID(rewriteBase) {
-		return false
+	resolved, err := stepGitRun(sctx, "rev-parse", "--verify", approvedHead+"^{commit}")
+	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), approvedHead) {
+		return "", "durable review-approved head is unreachable"
 	}
-	resolved, err := stepGitRun(sctx, "rev-parse", "--verify", rewriteBase+"^{commit}")
-	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), rewriteBase) {
-		return false
-	}
-	_, err = stepGitRun(sctx, "merge-base", "--is-ancestor", rewriteBase, proposedHead)
-	return err == nil
+	return approvedHead, ""
 }
 
 func isFullGitObjectID(value string) bool {
