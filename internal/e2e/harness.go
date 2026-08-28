@@ -44,6 +44,7 @@ type Harness struct {
 
 	agentName         string // claude / codex / grok / opencode / antigravity
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
+	globalConfigExtra string // mirrors SetupOpts.GlobalConfigExtra
 	daemonOwn         *e2edaemon.Ownership
 }
 
@@ -68,6 +69,12 @@ type SetupOpts struct {
 	// (commands must come from the trusted default branch) pass a pointer
 	// to false to exercise the secure default.
 	AllowRepoCommands *bool
+
+	// GlobalConfigExtra is appended verbatim to the generated global
+	// config.yaml. It exists for operator-only settings a test must exercise
+	// through the real loader - agent_timeout and review_agent_timeout, whose
+	// production defaults are half an hour, are the reason it was added.
+	GlobalConfigExtra string
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -102,6 +109,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		Scenario:          opts.Scenario,
 		agentName:         opts.Agent,
 		allowRepoCommands: opts.AllowRepoCommands,
+		globalConfigExtra: opts.GlobalConfigExtra,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -213,6 +221,9 @@ auto_fix:
   document: 0
   ci: 0
 `, h.agentName, h.agentName, binLink)
+	if extra := strings.TrimSpace(h.globalConfigExtra); extra != "" {
+		cfg += extra + "\n"
+	}
 	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
 		h.t.Fatalf("write config: %v", err)
 	}

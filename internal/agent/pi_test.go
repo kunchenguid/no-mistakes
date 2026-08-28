@@ -611,3 +611,96 @@ sleep 30
 		t.Logf("got error: %v", err)
 	}
 }
+
+// TestPiAgent_ToolOnlyStreamStillReportsSubprocessLiveness pins the proof of
+// life that separates a working native agent from a wedged one.
+//
+// Verified against pi 0.84.3: a turn that uses tools emits tool_execution_start
+// / tool_execution_update / tool_execution_end and toolcall_* assistant events,
+// and no text_delta at all until the very end. Every adapter forwards only
+// assistant prose to OnChunk, so for the whole tool-using stretch - which is
+// most of a fix round - the pipeline saw nothing and could not tell the agent
+// was alive. Subprocess byte liveness is that missing signal.
+func TestPiAgent_ToolOnlyStreamStillReportsSubprocessLiveness(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakePi(t, dir, `#!/bin/sh
+cat > /dev/null
+printf '%s\n' '{"type":"tool_execution_start","tool":"bash"}'
+printf '%s\n' '{"type":"tool_execution_update","tool":"bash"}'
+printf '%s\n' '{"type":"tool_execution_end","tool":"bash"}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}]}]}'
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo {\"type\":\"tool_execution_start\",\"tool\":\"bash\"}",
+		"echo {\"type\":\"tool_execution_update\",\"tool\":\"bash\"}",
+		"echo {\"type\":\"tool_execution_end\",\"tool\":\"bash\"}",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}]}",
+	}, "\r\n"))
+
+	var chunks []string
+	var phases []string
+	pa := &piAgent{bin: bin}
+	if _, err := pa.Run(context.Background(), RunOpts{
+		Prompt:      "fix ci",
+		CWD:         t.TempDir(),
+		OnChunk:     func(s string) { chunks = append(chunks, s) },
+		OnLifecycle: func(e LifecycleEvent) { phases = append(phases, e.Phase) },
+	}); err != nil {
+		t.Fatalf("run pi: %v", err)
+	}
+
+	if len(chunks) != 0 {
+		t.Fatalf("OnChunk = %q, want a tool-only turn to stream no assistant prose", chunks)
+	}
+	activityAt := -1
+	exitAt := -1
+	for i, phase := range phases {
+		if phase == LifecyclePhaseActivity && activityAt < 0 {
+			activityAt = i
+		}
+		if phase == LifecyclePhaseExit {
+			exitAt = i
+		}
+	}
+	if activityAt < 0 {
+		t.Fatalf("lifecycle phases = %v, want subprocess liveness reported for a tool-only turn", phases)
+	}
+	if exitAt < 0 || activityAt > exitAt {
+		t.Fatalf("lifecycle phases = %v, want liveness reported while the agent was still running", phases)
+	}
+}
+
+// TestPiAgent_SilentSubprocessReportsNoLiveness is the counter-test: an agent
+// that produces no bytes must produce no liveness, or the signal would say
+// every agent is fine and the wedge would stay invisible.
+func TestPiAgent_SilentSubprocessReportsNoLiveness(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakePi(t, dir, `#!/bin/sh
+cat > /dev/null
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"exit 0",
+	}, "\r\n"))
+
+	var phases []string
+	pa := &piAgent{bin: bin}
+	// A pi run with no events yields no text; the error is expected and is not
+	// what this test is about.
+	_, _ = pa.Run(context.Background(), RunOpts{
+		Prompt:      "fix ci",
+		CWD:         t.TempDir(),
+		OnLifecycle: func(e LifecycleEvent) { phases = append(phases, e.Phase) },
+	})
+
+	for _, phase := range phases {
+		if phase == LifecyclePhaseActivity {
+			t.Fatalf("lifecycle phases = %v, want no liveness from a subprocess that emitted nothing", phases)
+		}
+	}
+	if len(phases) == 0 {
+		t.Fatal("expected start and exit lifecycle events even for a silent subprocess")
+	}
+}

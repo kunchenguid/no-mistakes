@@ -515,6 +515,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
 					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+						return outcome, nil
+					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {
@@ -546,6 +549,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+						return outcome, nil
+					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if changed || sctx.Run.HeadSHA != previousHeadSHA {

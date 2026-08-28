@@ -98,7 +98,7 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	cmd.Env = a.gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "antigravity"))
 	if err != nil {
 		return nil, fmt.Errorf("antigravity start: %w", err)
 	}

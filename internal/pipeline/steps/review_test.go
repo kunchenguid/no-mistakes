@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,12 +43,61 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	if run.Status != types.RunFailed {
 		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
 	}
-	if run.Error == nil || !strings.Contains(*run.Error, "review agent silent for 20ms") {
-		var got string
-		if run.Error != nil {
-			got = *run.Error
-		}
-		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	var got string
+	if run.Error != nil {
+		got = *run.Error
+	}
+	// The diagnostic must name the budget that expired AND report what was
+	// actually observed. An agent that never emitted anything is a different
+	// operator problem from one that streamed until the deadline, and the run
+	// error is the only place that distinction survives.
+	if !strings.Contains(got, "timed out after 20ms") {
+		t.Fatalf("run error = %q, want the expired review budget named", got)
+	}
+	if !strings.Contains(got, "produced no output at all") {
+		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
+	}
+	if strings.Contains(got, "silent for 20ms") {
+		t.Fatalf("run error = %q, must not restate the budget as if it were a measurement", got)
+	}
+}
+
+// TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport pins the other half
+// of the diagnostic contract at the review round budget: whatever the adapter
+// managed to report reaches the operator. For a native agent that error is the
+// killed subprocess's exit status and stderr - the only account of what the
+// process was actually doing - and it is what makes a silent 30-minute review
+// timeout diagnosable instead of a dead end.
+func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "reporting-review-agent",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, errors.New("pi exited: signal: killed: pi: provider authentication required")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 20 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected the review round budget to fail the run")
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	var got string
+	if run.Error != nil {
+		got = *run.Error
+	}
+	if !strings.Contains(got, "provider authentication required") {
+		t.Fatalf("run error = %q, want the agent's own report preserved", got)
+	}
+	if !strings.Contains(got, "timed out after 20ms") {
+		t.Fatalf("run error = %q, want the expired review budget named", got)
 	}
 }
 

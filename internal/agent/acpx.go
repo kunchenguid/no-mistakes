@@ -53,7 +53,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if err != nil {
 		return nil, fmt.Errorf("acpx stdin pipe: %w", err)
 	}
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, a.Name()))
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("acpx start: %w", err)

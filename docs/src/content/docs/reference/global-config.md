@@ -397,6 +397,15 @@ Review still uses [`review_agent_timeout`](#review_agent_timeout) as a per-round
 When this deadline expires, the agent is cancelled and the invocation returns a timeout diagnostic instead of remaining active indefinitely. Agent-driven mutation steps fail the run, while PR drafting follows its existing agent-error fallback and continues with deterministic content.
 A late successful return after the deadline is rejected, so post-agent commits and PR content cannot use work from a timed-out turn.
 
+The diagnostic reports what was actually measured, not the budget restated:
+
+- `agent produced no output at all in 30m0s after its subprocess started (pid=1234)` - the agent launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
+- `agent last produced output 4s ago (312 observed)` - the agent was working right up to the deadline. The turn needs a larger budget, or the request is too large for one turn.
+- `agent produced no output at all in 30m0s and never reported a subprocess start` - the invocation never reached a running agent process.
+
+Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr. Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
+Whatever the agent adapter reported - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`.
+
 |         |                        |
 | ------- | ---------------------- |
 | Type    | `string` (Go duration) |
@@ -412,6 +421,7 @@ It is global-only: repository config and environment variables cannot override i
 Maximum wall-clock time for the Review step's agent turns in one review round.
 The budget starts at that round's first agent turn and covers its optional review-fix turn plus the rereview turn together; every later auto-fix round starts a fresh budget.
 When the deadline expires, the review agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+That diagnostic carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 
 |         |                        |
 | ------- | ---------------------- |
@@ -427,6 +437,7 @@ Raise it for repositories whose reviews legitimately run long; it bounds only th
 Maximum wall-clock time for one Test-step agent invocation.
 The budget covers the post-test evidence-gathering turn, and a Test-repair turn gets its own budget of the same length.
 When the deadline expires, the test agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
+That diagnostic carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 
 |         |                        |
 | ------- | ---------------------- |

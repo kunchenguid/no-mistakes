@@ -184,3 +184,246 @@ func TestExecutor_DirectAgentRunIsDeadlineBounded(t *testing.T) {
 		t.Fatalf("run error = %q, want timeout diagnostic", msg)
 	}
 }
+
+// The next three tests pin the diagnostic contract that a silent-agent timeout
+// has to satisfy for an operator to act on it. Before this contract the
+// invocation-timeout error printed the configured budget twice ("agent timed
+// out after 30m0s (agent silent for 30m0s)") and discarded whatever the adapter
+// had reported, so a wedged agent, a busy one, and a crashed one all produced
+// the same undiagnosable line.
+
+func TestRunAgent_TimeoutReportsMeasuredSilenceWhenTheAgentNeverEmits(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "mute",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 30 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "produced no output at all") {
+		t.Fatalf("error = %q, want the measured absence of output", err)
+	}
+	if strings.Contains(err.Error(), "silent for 30ms") {
+		t.Fatalf("error = %q, must not restate the budget as if it were a measurement", err)
+	}
+}
+
+func TestRunAgent_TimeoutReportsRecentOutputWhenTheAgentWasStreaming(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "busy",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A working agent: it streams right up to the deadline. This must
+			// never be described the same way as an agent that emitted nothing.
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(2 * time.Millisecond):
+					opts.OnChunk("thinking\n")
+				}
+			}
+		},
+	}
+	var logged strings.Builder
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 60 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt:  "work",
+		OnChunk: func(text string) { logged.WriteString(text) },
+	})
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, want the measured recency of the agent's last output", err)
+	}
+	if strings.Contains(err.Error(), "no output at all") {
+		t.Fatalf("error = %q, must not report silence for an agent that was streaming", err)
+	}
+	// Observation must stay an observation: the caller's own callback still runs.
+	if logged.Len() == 0 {
+		t.Fatal("streamed chunks did not reach the caller's OnChunk")
+	}
+}
+
+func TestRunAgent_TimeoutPreservesWhatTheAdapterReported(t *testing.T) {
+	t.Parallel()
+	// A killed native agent's error is the only account of what its process was
+	// doing - it carries the exit status and the subprocess stderr. Dropping it
+	// is what left a real 30-minute failure with nothing to diagnose.
+	adapterErr := errors.New("pi exited: signal: killed: pi: provider authentication required")
+	ag := &hangingAgent{
+		name: "native",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, adapterErr
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 20 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "provider authentication required") {
+		t.Fatalf("error = %q, want the adapter's own report preserved", err)
+	}
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout to stay matchable", err)
+	}
+	if !errors.Is(err, adapterErr) {
+		t.Fatalf("error = %v, want the adapter error to stay matchable", err)
+	}
+}
+
+func TestRunAgent_NativeSubprocessLivenessCountsAsObservedOutput(t *testing.T) {
+	t.Parallel()
+	// Adapters forward only assistant prose to OnChunk, so a long tool-using
+	// turn is prose-silent while the subprocess streams events. Subprocess
+	// liveness is what separates "working" from "wedged", so it has to count.
+	ag := &hangingAgent{
+		name: "tooling",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "tooling", Phase: agent.LifecyclePhaseStart, PID: 4242})
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(2 * time.Millisecond):
+					opts.OnLifecycle(agent.LifecycleEvent{Agent: "tooling", Phase: agent.LifecyclePhaseActivity})
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 60 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt:      "work",
+		OnLifecycle: func(agent.LifecycleEvent) {},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, want subprocess liveness counted as observed output", err)
+	}
+}
+
+func TestRunAgent_SubprocessStartAloneIsNotObservedOutput(t *testing.T) {
+	t.Parallel()
+	// Launching proves the binary ran, not that it is doing anything. Counting
+	// the start event as output would erase the exact distinction this
+	// measurement exists to expose.
+	ag := &hangingAgent{
+		name: "launched",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "launched", Phase: agent.LifecyclePhaseStart, PID: 777})
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 20 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt:      "work",
+		OnLifecycle: func(agent.LifecycleEvent) {},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "produced no output at all") {
+		t.Fatalf("error = %q, want a launched-but-mute agent still reported as silent", err)
+	}
+	if !strings.Contains(err.Error(), "pid=777") {
+		t.Fatalf("error = %q, want the launched subprocess identified", err)
+	}
+}
+
+func TestRunAgent_OperatorCancellationIsNotDressedUpAsAnAgentFault(t *testing.T) {
+	t.Parallel()
+	parent, cancel := context.WithCancel(context.Background())
+	ag := &hangingAgent{
+		name: "cancelled",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    parent,
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: time.Minute},
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if strings.Contains(err.Error(), "produced no output") {
+		t.Fatalf("error = %q, an abort must not be reported as an agent silence diagnosis", err)
+	}
+}
+
+// TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork pins the
+// executor backstop for the one shape it exists to cover: a step that calls
+// Agent.Run itself, under a context whose deadline someone else owns. The
+// invocation must still not hand back work produced after that deadline.
+func TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	ag := &hangingAgent{
+		name: "late",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Text: "produced after the deadline"}, nil
+		},
+	}
+	step := &adaptiveCallStep{
+		name: types.StepDocument,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			bounded, cancel := context.WithTimeout(sctx.Ctx, 20*time.Millisecond)
+			defer cancel()
+			result, err := sctx.Agent.Run(bounded, agent.RunOpts{Prompt: "work"})
+			if err == nil {
+				t.Fatalf("agent result %#v accepted after its caller's deadline expired", result)
+			}
+			return nil, err
+		},
+	}
+	cfg := &config.Config{AgentTimeout: time.Hour}
+	exec := NewExecutor(database, p, cfg, ag, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("expected the expired caller deadline to fail the run")
+	}
+}

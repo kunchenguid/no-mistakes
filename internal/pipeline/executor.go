@@ -774,6 +774,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, nil); dbErr != nil {
 				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
 			}
+		case agent.LifecyclePhaseActivity:
+			// Subprocess liveness, not narrative: record that the agent is still
+			// producing bytes so `axi status` can distinguish a working fix round
+			// from a wedged one, but never write it to the step log. A long turn
+			// emits these every few seconds and the log is what an operator reads.
+			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+			}
+			return
 		default:
 			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1232,5 +1233,149 @@ func TestFormatReviewComments_FramesAndBoundsUntrustedText(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "additional review comments omitted") {
 		t.Fatalf("review comment prompt lacks truncation marker")
+	}
+}
+
+// TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying pins the
+// bounded outcome for a CI auto-fix agent that burns its whole invocation
+// budget without finishing.
+//
+// The failure this replaces: the timeout was downgraded to a step-log warning
+// and the poll loop re-issued the identical request on the next tick, up to
+// auto_fix.ci attempts. Each retry cost another full agent budget, produced no
+// operator-visible signal outside the CI step log, and ended the run at
+// ci_timeout hours later with nothing to act on.
+func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"greptile","state":"FAILURE","bucket":"fail"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	var invocations int
+	ag := &mockAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			invocations++
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/3195"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 10}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 3 {
+				t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+	}
+	if invocations != 1 {
+		t.Fatalf("agent invocations = %d, want exactly one budget spent before asking", invocations)
+	}
+
+	var findings Findings
+	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %#v, want one gate finding", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
+	}
+	if !strings.Contains(item.Description, "greptile") {
+		t.Fatalf("finding %q, want the check it was repairing named", item.Description)
+	}
+	if !strings.Contains(item.Description, "produced no output at all") {
+		t.Fatalf("finding %q, want the measured silence carried into the gate", item.Description)
+	}
+}
+
+// TestCIStep_NonTimeoutFixFailureKeepsRetrying is the counter-test: only a
+// proven full-budget burn parks. An ordinary transient fix failure keeps its
+// existing warn-and-retry behaviour, because repeating it is cheap and often
+// works.
+func TestCIStep_NonTimeoutFixFailureKeepsRetrying(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"greptile","state":"FAILURE","bucket":"fail"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	var invocations int
+	ag := &mockAgent{
+		name: "flaky",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			invocations++
+			return nil, errors.New("transient provider hiccup")
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/3195"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 10}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
+
+	outcome, _ := step.Execute(sctx)
+	if outcome != nil && outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a transient fix failure to keep retrying rather than park", outcome)
+	}
+	if invocations == 0 {
+		t.Fatal("expected the fix agent to be invoked")
+	}
+	warned := false
+	for _, l := range logs {
+		if strings.Contains(l, "CI auto-fix failed") {
+			warned = true
+		}
+		if strings.Contains(l, "exceeded its invocation budget") {
+			t.Fatalf("logs = %v, a transient failure must not be reported as a budget burn", logs)
+		}
+	}
+	if !warned {
+		t.Fatalf("logs = %v, want the transient failure still warned about", logs)
 	}
 }

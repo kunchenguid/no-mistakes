@@ -414,9 +414,13 @@ func reviewAgentContext(sctx *pipeline.StepContext) (context.Context, context.Ca
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
+// reviewAgentError renders a review-round budget expiry. The measured activity
+// evidence comes from the shared agent-run seam; the budget is never restated
+// as if it were the silence, because the two are different facts and only one
+// of them was observed.
 func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s (review agent silent for %s): %w", prefix, timeout, timeout, err)
+		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }

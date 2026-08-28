@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -139,6 +140,31 @@ CI logs:
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair summary: %v", summaryErr))
 	}
 	return s.commitRepair(sctx, summary)
+}
+
+// ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
+// agent budget into a bounded ask-user gate, and returns nil for every other
+// result so ordinary transient fix failures keep their existing warn-and-retry
+// behaviour. Only a proven full-budget burn parks: it is the one failure that
+// is guaranteed to cost the same again on the next poll.
+func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+	if err == nil || !errors.Is(err, pipeline.ErrAgentTimeout) {
+		return nil
+	}
+	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
+	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
+}
+
+// dirtyRunWorktree reports the run worktree path when the timed-out agent left
+// uncommitted work there, so the gate can say where it is instead of letting it
+// disappear with the worktree at cleanup. Best effort: an unreadable status
+// simply omits the detail.
+func dirtyRunWorktree(sctx *pipeline.StepContext) string {
+	status, err := stepGitRun(sctx, "status", "--porcelain")
+	if err != nil || strings.TrimSpace(status) == "" {
+		return ""
+	}
+	return sctx.WorkDir
 }
 
 const maxReviewCommentsPromptBytes = 32 * 1024

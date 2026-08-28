@@ -224,6 +224,45 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	}
 }
 
+// ciFixAgentTimeoutOutcome parks the CI step for a decision after the auto-fix
+// agent burned its whole invocation budget without finishing.
+//
+// The previous behaviour downgraded this to a log warning and let the poll loop
+// issue the same request again on the next tick, up to auto_fix.ci attempts -
+// each one another full agent budget, all of it invisible except for warning
+// lines inside the CI step log, until ci_timeout ended the run hours later with
+// nothing to act on. That is the same invisible spin consecutiveCheckErrorLimit
+// exists to prevent, and repeating an invocation that has already proven it
+// cannot finish is a blind retry, not a recovery.
+//
+// Parking instead is bounded (one budget, then a decision), keeps the run and
+// its worktree alive rather than tearing them down, and leaves any further
+// attempt to the operator, who can respond with a fix selection to spend
+// another budget deliberately.
+func ciFixAgentTimeoutOutcome(issueDesc string, dirtyWorktree string, err error) *pipeline.StepOutcome {
+	description := fmt.Sprintf(
+		"The CI auto-fix agent did not finish within its invocation budget while repairing: %s. "+
+			"Reported: %v. Re-running the same request costs another full budget, so no further attempt is made automatically. "+
+			"Check that the configured agent CLI is authenticated and responsive, then respond with a fix selection to spend another budget, or resolve the CI failure outside the pipeline.",
+		issueDesc, err)
+	if dirtyWorktree != "" {
+		description += fmt.Sprintf(" The timed-out agent left uncommitted changes in the run worktree at %s; they are not committed or pushed.", dirtyWorktree)
+	}
+	findings := Findings{
+		Summary: "CI auto-fix agent exceeded its invocation budget",
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: description,
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
 func ciMergeabilityOutcome(summary, description string) *pipeline.StepOutcome {
 	findings := Findings{
 		Summary: summary,

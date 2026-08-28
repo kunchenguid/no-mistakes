@@ -290,9 +290,16 @@ func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.Canc
 
 var errTestAgentTimeout = errors.New("test agent timeout")
 
+// testAgentError renders a Test-invocation budget expiry. It keeps the agent's
+// own error rather than replacing it with the bare context cause: for a native
+// agent that error carries the killed subprocess's exit status and stderr, and
+// is the only account of what the process was doing when the budget ran out.
 func testAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(context.Cause(ctx), errTestAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s (test agent silent for %s): %w", prefix, timeout, timeout, context.Cause(ctx))
+		if err == nil {
+			err = context.Cause(ctx)
+		}
+		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", prefix, err)

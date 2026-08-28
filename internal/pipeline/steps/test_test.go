@@ -41,12 +41,18 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 	if run.Status != types.RunFailed {
 		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
 	}
-	if run.Error == nil || !strings.Contains(*run.Error, "test agent silent for 20ms") {
-		var got string
-		if run.Error != nil {
-			got = *run.Error
-		}
-		t.Fatalf("run error = %q, want timeout diagnostic", got)
+	var got string
+	if run.Error != nil {
+		got = *run.Error
+	}
+	if !strings.Contains(got, "timed out after 20ms") {
+		t.Fatalf("run error = %q, want the expired test budget named", got)
+	}
+	if !strings.Contains(got, "produced no output at all") {
+		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
+	}
+	if strings.Contains(got, "silent for 20ms") {
+		t.Fatalf("run error = %q, must not restate the budget as if it were a measurement", got)
 	}
 }
 

@@ -457,3 +457,89 @@ func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 		t.Error("review log should not contain test message")
 	}
 }
+
+// TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog pins
+// how the executor consumes an agent's subprocess-liveness signal.
+//
+// The signal has to reach step activity, because that is the only thing that
+// tells `axi status` a long tool-using fix round is alive rather than wedged.
+// It must NOT reach the step log: a real turn emits it every few seconds for
+// half an hour, and the step log is what an operator actually reads.
+func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	livenessAgent := &lifecycleEmittingAgent{
+		events: []agent.LifecycleEvent{
+			{Agent: "pi", Phase: agent.LifecyclePhaseStart, PID: 1234, Message: "pi started pid=1234"},
+			{Agent: "pi", Phase: agent.LifecyclePhaseActivity, Message: "pi producing output"},
+			{Agent: "pi", Phase: agent.LifecyclePhaseActivity, Message: "pi producing output"},
+		},
+	}
+
+	var stepResultID string
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			stepResultID = sctx.StepResultID
+			if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"}); err != nil {
+				t.Fatalf("run agent: %v", err)
+			}
+			got, err := database.GetStepResult(sctx.StepResultID)
+			if err != nil {
+				t.Fatalf("get step result: %v", err)
+			}
+			if got.LastActivity == nil || !strings.Contains(*got.LastActivity, "producing output") {
+				var activity string
+				if got.LastActivity != nil {
+					activity = *got.LastActivity
+				}
+				t.Fatalf("last_activity = %q, want the subprocess liveness signal recorded", activity)
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, livenessAgent, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	sr, err := database.GetStepResult(stepResultID)
+	if err != nil {
+		t.Fatalf("get step result: %v", err)
+	}
+	if sr.LogPath == nil {
+		t.Fatal("expected a step log path")
+	}
+	logBytes, err := os.ReadFile(*sr.LogPath)
+	if err != nil {
+		t.Fatalf("read step log: %v", err)
+	}
+	log := string(logBytes)
+	if !strings.Contains(log, "pi started pid=1234") {
+		t.Fatalf("step log = %q, want the subprocess start still logged", log)
+	}
+	if strings.Contains(log, "producing output") {
+		t.Fatalf("step log = %q, liveness ticks must not be written to the step log", log)
+	}
+}
+
+// lifecycleEmittingAgent replays a fixed lifecycle sequence, standing in for a
+// native adapter without spawning a subprocess.
+type lifecycleEmittingAgent struct {
+	events []agent.LifecycleEvent
+}
+
+func (a *lifecycleEmittingAgent) Name() string { return "pi" }
+
+func (a *lifecycleEmittingAgent) Close() error { return nil }
+
+func (a *lifecycleEmittingAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	for _, event := range a.events {
+		if opts.OnLifecycle != nil {
+			opts.OnLifecycle(event)
+		}
+	}
+	return &agent.Result{Text: "done"}, nil
+}

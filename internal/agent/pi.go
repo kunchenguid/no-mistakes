@@ -72,7 +72,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("pi stdin pipe: %w", err)
 	}
 
-	started, err := startNativeAgentCommand(cmd)
+	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "pi"))
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("pi start: %w", err)
