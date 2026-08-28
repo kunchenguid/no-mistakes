@@ -56,7 +56,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 - **Document after test** so docs are updated against code that's known to work.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass.
-  A CI repair restarts the pipeline at Review, so the repaired commit passes the local checks before the Push step publishes it through the same overwrite protection.
+  By default, CI publishes its repairs through the Push step's guarded path and keeps monitoring; repositories that require another full local pass can opt into post-repair revalidation with [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs).
   CI is the only step that talks to the outside world for validation.
 
 ## What each step can do
