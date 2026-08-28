@@ -23,6 +23,8 @@ import (
 // hand-rebases, and `no-mistakes rerun` is only the dead-monitor recovery.
 var canonicalStaleMonitorPhrases = []string{
 	"never hand-rebase",
+	"revalidates from Review",
+	"cannot prove continuity with the reviewed head",
 	"re-pushes",
 	"no-mistakes rerun",
 }
