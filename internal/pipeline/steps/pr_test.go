@@ -576,11 +576,39 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 }
 
+func TestPRStep_GitHubForkSkipsWhenProviderCLIUnavailable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			t.Fatal("expected PR content generation to be skipped when gh is unavailable")
+			return nil, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
+	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
+	sctx.Env = []string{"PATH=" + t.TempDir()}
+
+	outcome, err := (&PRStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected unavailable gh to skip before destination validation, got: %v", err)
+	}
+	if !outcome.Skipped {
+		t.Fatalf("outcome = %#v, want skipped", outcome)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no agent calls when gh is unavailable, got %d", len(ag.calls))
+	}
+}
+
 func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
+		upstreamURL string
 		intent      string
 		wantErrPart string
 	}{
@@ -599,6 +627,27 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			intent:      "PR destination: parent-owner/no-mistakes\nPR destination: fork-owner/no-mistakes",
 			wantErrPart: "ambiguous",
 		},
+		{
+			name:        "indented destination example",
+			intent:      "Keep this work fork-local.\n    PR destination: parent-owner/no-mistakes",
+			wantErrPart: "does not identify",
+		},
+		{
+			name:        "fenced destination example",
+			intent:      "Keep this work fork-local.\n```text\nPR destination: parent-owner/no-mistakes\n```",
+			wantErrPart: "does not identify",
+		},
+		{
+			name:        "quoted destination example",
+			intent:      "Keep this work fork-local.\nPR destination: `parent-owner/no-mistakes`",
+			wantErrPart: "invalid",
+		},
+		{
+			name:        "unicode lookalike destination",
+			upstreamURL: "https://github.com/kunchenguid/no-mistakes.git",
+			intent:      "PR destination: Kunchenguid/no-mistakes",
+			wantErrPart: "invalid",
+		},
 	}
 
 	for _, tc := range tests {
@@ -615,7 +664,10 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			}
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Env = env
-			sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
+			sctx.Repo.UpstreamURL = tc.upstreamURL
+			if sctx.Repo.UpstreamURL == "" {
+				sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
+			}
 			sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 			sctx.UserIntent = tc.intent
 			sctx.IntentSource = db.RunIntentSourceAgent
@@ -627,10 +679,15 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantErrPart) {
 				t.Fatalf("Execute() error = %q, want substring %q", err, tc.wantErrPart)
 			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("destination refusal drafted PR content with %d agent calls", len(ag.calls))
+			}
 
 			if logData, readErr := os.ReadFile(logFile); readErr == nil {
-				if strings.Contains(string(logData), "pr create") {
-					t.Fatalf("destination refusal reached PR publication:\n%s", logData)
+				for _, forbidden := range []string{"pr list", "pr edit", "pr create"} {
+					if strings.Contains(string(logData), forbidden) {
+						t.Fatalf("destination refusal reached %q:\n%s", forbidden, logData)
+					}
 				}
 			} else if !os.IsNotExist(readErr) {
 				t.Fatal(readErr)

@@ -74,9 +74,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
-	if err := validatePRDestination(sctx, provider); err != nil {
-		return nil, err
-	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
@@ -85,6 +82,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
+	if err := validatePRDestination(sctx, provider); err != nil {
+		return nil, err
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -152,7 +152,7 @@ func validatePRDestination(sctx *pipeline.StepContext, provider scm.Provider) er
 	if err != nil {
 		return fmt.Errorf("refusing GitHub fork PR publication: %w", err)
 	}
-	if !strings.EqualFold(intended, selected) {
+	if !equalASCIIFold(intended, selected) {
 		return fmt.Errorf("refusing GitHub fork PR publication: explicit destination %q does not match selected PR repository %q", intended, selected)
 	}
 	return nil
@@ -167,16 +167,31 @@ func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
 	}
 
 	var destination string
-	for _, line := range strings.Split(sctx.UserIntent, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) < len(prDestinationIntentPrefix) || !strings.EqualFold(line[:len(prDestinationIntentPrefix)], prDestinationIntentPrefix) {
+	var fenceMarker byte
+	var fenceLength int
+	for _, rawLine := range strings.Split(sctx.UserIntent, "\n") {
+		line := strings.TrimSuffix(rawLine, "\r")
+		marker, length, rest, isFence := intentFenceLine(line)
+		if fenceMarker != 0 {
+			if isFence && marker == fenceMarker && length >= fenceLength && strings.TrimSpace(rest) == "" {
+				fenceMarker = 0
+				fenceLength = 0
+			}
+			continue
+		}
+		if isFence {
+			fenceMarker = marker
+			fenceLength = length
+			continue
+		}
+		if len(line) < len(prDestinationIntentPrefix) || !equalASCIIFold(line[:len(prDestinationIntentPrefix)], prDestinationIntentPrefix) {
 			continue
 		}
 		candidate, ok := normalizePRDestination(line[len(prDestinationIntentPrefix):])
 		if !ok {
 			return "", fmt.Errorf("PR destination is invalid; use %q", prDestinationIntentPrefix+" owner/repo")
 		}
-		if destination != "" && !strings.EqualFold(destination, candidate) {
+		if destination != "" && !equalASCIIFold(destination, candidate) {
 			return "", fmt.Errorf("PR destination is ambiguous: intent names both %q and %q", destination, candidate)
 		}
 		destination = candidate
@@ -189,19 +204,89 @@ func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
 
 func normalizePRDestination(value string) (string, bool) {
 	value = strings.TrimSpace(value)
-	if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
-		value = strings.TrimSpace(value[1 : len(value)-1])
-	}
 	parts := strings.Split(value, "/")
 	if len(parts) != 2 {
 		return "", false
 	}
-	owner := strings.TrimSpace(parts[0])
-	repo := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git")
-	if owner == "" || repo == "" || strings.ContainsAny(owner+repo, " \t\r\n`") {
+	owner := parts[0]
+	repo := strings.TrimSuffix(parts[1], ".git")
+	if !validGitHubOwner(owner) || !validGitHubRepository(repo) {
 		return "", false
 	}
 	return owner + "/" + repo, true
+}
+
+func intentFenceLine(line string) (byte, int, string, bool) {
+	indent := 0
+	for indent < len(line) && indent < 4 && line[indent] == ' ' {
+		indent++
+	}
+	if indent > 3 || indent >= len(line) {
+		return 0, 0, "", false
+	}
+	marker := line[indent]
+	if marker != '`' && marker != '~' {
+		return 0, 0, "", false
+	}
+	end := indent
+	for end < len(line) && line[end] == marker {
+		end++
+	}
+	if end-indent < 3 {
+		return 0, 0, "", false
+	}
+	return marker, end - indent, line[end:], true
+}
+
+func validGitHubOwner(value string) bool {
+	if value == "" || len(value) > 39 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if !isASCIIAlphaNumeric(value[i]) && value[i] != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitHubRepository(value string) bool {
+	if value == "" || len(value) > 100 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if !isASCIIAlphaNumeric(value[i]) && value[i] != '-' && value[i] != '_' && value[i] != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
+}
+
+func equalASCIIFold(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := 0; i < len(left); i++ {
+		l := left[i]
+		r := right[i]
+		if l >= 0x80 || r >= 0x80 {
+			return false
+		}
+		if l >= 'A' && l <= 'Z' {
+			l += 'a' - 'A'
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		if l != r {
+			return false
+		}
+	}
+	return true
 }
 
 func describePR(pr *scm.PR) string {
