@@ -103,6 +103,11 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// tool call. Some thinking-enabled models reject that combination. Retry
 	// once without the native format, while keeping the schema in the prompt
 	// and validating the returned JSON against it in finalizeTextResult.
+	emitAgentControl(opts, LifecycleEvent{
+		Agent:   a.Name(),
+		Phase:   LifecyclePhaseFallback,
+		Message: "opencode starting a fresh prompt-only structured output session",
+	})
 	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false)
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)

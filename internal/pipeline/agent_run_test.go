@@ -426,6 +426,40 @@ func TestRunAgent_FallbackResetsPriorAttemptActivity(t *testing.T) {
 	}
 }
 
+func TestRunAgent_PromptFormatFallbackResetsPriorAttemptActivity(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "format-fallback",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "format-fallback", Phase: agent.LifecyclePhaseStart, PID: 8181})
+			opts.OnChunk("thinking before conflict")
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "format-fallback", Phase: agent.LifecyclePhaseFallback})
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "format-fallback", Phase: agent.LifecyclePhaseStart, PID: 8282})
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: 20 * time.Millisecond},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err == nil {
+		t.Fatal("expected the prompt-only fallback to time out")
+	}
+	if !strings.Contains(err.Error(), "produced no output at all") {
+		t.Fatalf("error = %q, want prompt-only fallback silence", err)
+	}
+	if strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, native-format output must not describe the prompt-only fallback", err)
+	}
+	if !strings.Contains(err.Error(), "pid=8282") {
+		t.Fatalf("error = %q, want silence attributed to the prompt-only subprocess", err)
+	}
+}
+
 func TestRunAgent_FallbackWithoutLaunchMeasuresSilenceFromAttempt(t *testing.T) {
 	t.Parallel()
 	const firstAttemptDuration = 100 * time.Millisecond

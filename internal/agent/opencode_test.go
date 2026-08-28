@@ -524,6 +524,7 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 
 func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *testing.T) {
 	var sessions atomic.Int32
+	var eventStreams atomic.Int32
 	var nativeFormatSeen atomic.Bool
 	var fallbackFormatSeen atomic.Bool
 
@@ -534,6 +535,10 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 			fmt.Fprintf(w, `{"id":"s%d"}`, id)
 
 		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			if eventStreams.Add(1) == 1 {
+				fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"s1\",\"part\":{\"id\":\"p1\",\"messageID\":\"msg1\",\"type\":\"text\",\"text\":\"thinking before conflict\"}}}}\n\n")
+				fmt.Fprint(w, "data: {\"payload\":{\"type\":\"message.updated\",\"properties\":{\"sessionID\":\"s1\",\"info\":{\"id\":\"msg1\",\"role\":\"assistant\"}}}}\n\n")
+			}
 			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
 
 		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
@@ -567,10 +572,18 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 		bin:    "opencode",
 		server: &managedServer{port: mustParsePort(server.URL)},
 	}
+	var chunks []string
+	var fallbackEvents int
 	result, err := a.Run(context.Background(), RunOpts{
 		Prompt:     "review the changes",
 		CWD:        t.TempDir(),
 		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+		OnChunk:    func(text string) { chunks = append(chunks, text) },
+		OnLifecycle: func(event LifecycleEvent) {
+			if event.Phase == LifecyclePhaseFallback {
+				fallbackEvents++
+			}
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -586,6 +599,12 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	}
 	if got := sessions.Load(); got != 2 {
 		t.Fatalf("sessions = %d, want 2", got)
+	}
+	if !strings.Contains(strings.Join(chunks, ""), "thinking before conflict") {
+		t.Fatalf("chunks = %q, want output from the failed native-format attempt", chunks)
+	}
+	if fallbackEvents != 1 {
+		t.Fatalf("fallback lifecycle events = %d, want one fresh prompt-only attempt boundary", fallbackEvents)
 	}
 	t.Logf("native format=%v; fallback format=%v; validated output=%s", nativeFormatSeen.Load(), fallbackFormatSeen.Load(), result.Output)
 }
