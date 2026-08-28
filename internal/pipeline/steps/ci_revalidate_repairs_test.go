@@ -280,6 +280,42 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	}
 }
 
+func TestCIStep_PublishPolicyAllowsConflictRebaseContinuity(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	gitCmd(t, f.dir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(f.dir, "base-advance.txt"), []byte("advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, f.dir, "add", "-A")
+	gitCmd(t, f.dir, "commit", "-m", "advance base")
+	rewriteBase := gitCmd(t, f.dir, "rev-parse", "HEAD")
+	gitCmd(t, f.dir, "checkout", "feature")
+	gitCmd(t, f.dir, "rebase", "main")
+	rebasedHead := gitCmd(t, f.dir, "rev-parse", "HEAD")
+	if rebasedHead == f.headSHA {
+		t.Fatal("rebase did not rewrite the reviewed head")
+	}
+
+	changed, err := (&CIStep{}).commitRepairWithRewriteBase(f.sctx, "resolve merge conflict", rewriteBase)
+	if err != nil {
+		t.Fatalf("publish rebased repair: %v", err)
+	}
+	if !changed || f.remoteHead(t) != rebasedHead {
+		t.Fatalf("rebased repair was not published: changed=%v remote=%s want=%s", changed, f.remoteHead(t), rebasedHead)
+	}
+
+	if err := os.WriteFile(filepath.Join(f.dir, "follow-up.txt"), []byte("follow-up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err = (&CIStep{}).commitRepair(f.sctx, "finish CI repair")
+	if err != nil {
+		t.Fatalf("publish descendant after rebased repair: %v", err)
+	}
+	if !changed || f.remoteHead(t) != f.localHead(t) {
+		t.Fatalf("follow-up repair was not published: changed=%v remote=%s local=%s", changed, f.remoteHead(t), f.localHead(t))
+	}
+}
+
 // A manual repair - the one a person authorized by answering the CI gate with
 // a fix - takes exactly the same delivery decision as an automatic one. The
 // policy is about the cost of revalidating a repair, not about who asked for

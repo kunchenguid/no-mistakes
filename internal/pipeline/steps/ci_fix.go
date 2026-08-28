@@ -141,7 +141,11 @@ CI logs:
 	if summaryErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair summary: %v", summaryErr))
 	}
-	return s.commitRepair(sctx, summary)
+	rewriteBase := ""
+	if mergeConflict {
+		rewriteBase = rebaseBaseSHA
+	}
+	return s.commitRepairWithRewriteBase(sctx, summary, rewriteBase)
 }
 
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
@@ -215,6 +219,10 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool, error) {
+	return s.commitRepairWithRewriteBase(sctx, summary, "")
+}
+
+func (s *CIStep) commitRepairWithRewriteBase(sctx *pipeline.StepContext, summary, rewriteBase string) (bool, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
@@ -223,7 +231,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool,
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
-			return s.recordRepair(sctx, headSHA)
+			return s.recordRepair(sctx, headSHA, rewriteBase)
 		}
 		return false, nil
 	}
@@ -246,7 +254,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool,
 		return false, fmt.Errorf("resolve head after commit: %w", err)
 	}
 
-	return s.recordRepair(sctx, headSHA)
+	return s.recordRepair(sctx, headSHA, rewriteBase)
 }
 
 // ciRevalidatesRepairs reports whether this run must re-run the whole pipeline
@@ -273,11 +281,11 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // configured ci.revalidate_repairs policy. Both branches advance the run's
 // recorded head; they differ in whether the repair is published now or held
 // back until it has re-passed Review.
-func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (bool, error) {
+func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA, rewriteBase string) (bool, error) {
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}
-	return s.publishRepair(sctx, headSHA)
+	return s.publishRepair(sctx, headSHA, rewriteBase)
 }
 
 // recordLocalRepair keeps the repair local (ci.revalidate_repairs: true) and
@@ -303,15 +311,16 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // the default) through publishRunHead - the same guarded path the Push step
 // uses, so force-push lease safety, remote verification, the push binding, and
 // the gate-mirror update all still apply. The run's review approval is
-// deliberately NOT revoked: the repair is a descendant of the approved head, so
-// the push guard's continuity rule already covers it, and the monitor stays on
-// this run to watch the checks re-run against the published head.
+// deliberately NOT revoked: the push guard binds ordinary repairs to the
+// previously published run head and conflict rebases to their resolved base,
+// and the monitor stays on this run to watch the checks re-run against the
+// published head.
 //
 // publishRunHead advances the recorded head only after the push is verified, so
 // a failed publication leaves sctx.Run.HeadSHA on the pre-repair commit and the
 // next poll retries rather than believing the repair shipped.
-func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (bool, error) {
-	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
+func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA, rewriteBase string) (bool, error) {
+	if err := publishRunHead(sctx, headSHA, headSHA, publishContinuity{ciRepair: true, rewriteBase: rewriteBase}); err != nil {
 		return false, err
 	}
 	sctx.Log("committed and pushed CI repair")

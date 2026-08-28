@@ -65,7 +65,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
+	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, publishContinuity{}); err != nil {
 		return nil, err
 	}
 
@@ -88,7 +88,12 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // because the CI step runs with a step-local PATH and credential environment
 // that a plain runner would not see. Gate-mirror calls stay on git.Run: they
 // operate on the bare gate directory, not the run worktree.
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) error {
+type publishContinuity struct {
+	ciRepair    bool
+	rewriteBase string
+}
+
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, continuity publishContinuity) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -103,7 +108,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
 	}
 
-	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
+	if err := assertReviewApprovedPushHead(sctx, headBeingPushed, continuity); err != nil {
 		return err
 	}
 
@@ -213,7 +218,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	return nil
 }
 
-func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
+func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string, continuity publishContinuity) error {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		return fmt.Errorf("load durable review approval before push: %w", err)
@@ -225,16 +230,39 @@ func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead strin
 	if !isFullGitObjectID(approvedHead) {
 		return fmt.Errorf("refusing to push: durable review-approved head is malformed")
 	}
-	resolved, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", approvedHead+"^{commit}")
+	resolved, err := stepGitRun(sctx, "rev-parse", "--verify", approvedHead+"^{commit}")
 	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), approvedHead) {
 		return fmt.Errorf("refusing to push: durable review-approved head is unreachable")
 	}
-	if proposedHead != approvedHead {
-		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approvedHead, proposedHead); err != nil {
-			return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
-		}
+	if proposedHead == approvedHead {
+		return nil
 	}
-	return nil
+	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", approvedHead, proposedHead); err == nil {
+		return nil
+	}
+	if continuity.ciRepair && ciRepairHeadContinuity(sctx, run, proposedHead, continuity.rewriteBase) {
+		return nil
+	}
+	return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
+}
+
+func ciRepairHeadContinuity(sctx *pipeline.StepContext, run *db.Run, proposedHead, rewriteBase string) bool {
+	recordedHead := strings.TrimSpace(run.HeadSHA)
+	if recordedHead == "" || recordedHead != strings.TrimSpace(sctx.Run.HeadSHA) || run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) != recordedHead {
+		return false
+	}
+	if _, err := stepGitRun(sctx, "merge-base", "--is-ancestor", recordedHead, proposedHead); err == nil {
+		return true
+	}
+	if rewriteBase == "" || !isFullGitObjectID(rewriteBase) {
+		return false
+	}
+	resolved, err := stepGitRun(sctx, "rev-parse", "--verify", rewriteBase+"^{commit}")
+	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), rewriteBase) {
+		return false
+	}
+	_, err = stepGitRun(sctx, "merge-base", "--is-ancestor", rewriteBase, proposedHead)
+	return err == nil
 }
 
 func isFullGitObjectID(value string) bool {
