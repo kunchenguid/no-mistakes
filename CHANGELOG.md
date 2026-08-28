@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.60.0](https://github.com/kunchenguid/no-mistakes/compare/v1.59.3...v1.60.0) (2026-08-28)
+
+
+### Features
+
+* **pipeline:** ingest review comments and synchronize gate refs ([#873](https://github.com/kunchenguid/no-mistakes/issues/873)) ([605481b](https://github.com/kunchenguid/no-mistakes/commit/605481b9e3523fb7c11acf671826b22b8076b2fa))
+
+
+### Bug Fixes
+
+* **pipeline:** make native agent timeouts observable and bounded ([#877](https://github.com/kunchenguid/no-mistakes/issues/877)) ([dc45531](https://github.com/kunchenguid/no-mistakes/commit/dc4553128e4e29c78b7f5223daa9d9aabcca5471))
+
 ## [1.59.3](https://github.com/kunchenguid/no-mistakes/compare/v1.59.2...v1.59.3) (2026-08-27)
 
 
