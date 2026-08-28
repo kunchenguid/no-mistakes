@@ -46,7 +46,16 @@ jobs:
           violated=""
           for path in CHANGELOG.md .release-please-manifest.json; do
             if printf '%s\n' "$files" | grep -qxF -- "$path"; then
-              violated="${violated} ${path}"
+              # Official release-please commits are the legitimate writers of
+              # these files. A human PR that only carries those already-authored
+              # commits (a fork fast-forward of an upstream release) is not a
+              # hand-edit. Fail only when a non-bot commit in the range touched
+              # the file.
+              if git log --format='%an' "${BASE_SHA}...${HEAD_SHA}" -- "$path" \
+                  | grep -v -e '^github-actions\[bot\]$' -e '^release-please\[bot\]$' \
+                  | grep -q .; then
+                violated="${violated} ${path}"
+              fi
             fi
           done
 

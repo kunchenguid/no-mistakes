@@ -24,6 +24,8 @@ When set, everything else moves under this root:
 - Local evaluation cases and registry: `$NM_HOME/eval/` (created by automatic collection or an explicit `no-mistakes eval` command)
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
+Managed receive hooks bind `NM_HOME` to the physical home that owns the gate (`<gate-dir>/../..`) instead of inheriting the pushing process's value, so `daemon admit-push` and `daemon notify-push` always use that home's socket.
+
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
 Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.

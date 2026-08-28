@@ -216,7 +216,8 @@ Also check `<gate-path>/notify-push.log`. The hook now appends daemon notificati
 
 ### Check the daemon socket
 
-Both receive hooks talk to the daemon over `~/.no-mistakes/socket`. If the daemon is not running, pre-receive admission fails closed and the push is rejected before any gate ref changes. Start the daemon and push again.
+Both receive hooks talk to the daemon socket of the [home that owns the gate](/no-mistakes/reference/environment/#nm_home), normally `~/.no-mistakes/socket`. If that daemon is not running, pre-receive admission fails closed and the push is rejected before any gate ref changes. Start the daemon and push again.
+If `notify-push.log` mentions `home/gate mismatch`, the hook reached a daemon that does not own that gate; refresh the managed hooks so they bind `NM_HOME` to the gate home, then push again.
 
 If the gate is older, re-running `no-mistakes init` or restarting the daemon also reapplies hook-path isolation when Git supports `config --worktree`.
 That protects the gate hook if a tool such as Husky wrote `core.hookspath` into shared git config from inside a linked worktree. [Crash recovery](/no-mistakes/concepts/daemon/#crash-recovery) owns the gate validation and migration rules used during restart.

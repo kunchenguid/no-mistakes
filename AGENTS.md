@@ -134,10 +134,12 @@ Safest local verification sequence after non-trivial changes:
 - The daemon runs `gh` from the detached bare gate repo whose HEAD is the default branch, so every PR-targeting command must name the exact PR explicitly: an empty positional makes `gh pr <verb>` infer the cwd branch (`main`) and return `no pull requests found for branch main` even when the feature PR's checks are green. `GetChecks`, `GetPRState`, `GetMergeableState`, and `UpdatePR` route through the shared `prSelector` (number, else URL, else fail closed) — never append a bare `pr.Number`/`pr.URL` that can be empty. This is the `gh` analogue of the git bare-gate-repo trap above.
 - Regressions: `TestGetChecksTargetsKnownPRByURLWhenNumberMissing`, `TestPRTargetingReadsFailClosedWithoutIdentity`, `TestPRStateAndMergeableTargetKnownPRByURL`, `TestUpdatePRTargetsKnownPRByURLWhenNumberMissing`, `TestUpdatePRFailsClosedWithoutIdentity`.
 
-**Post-Receive Hook Gate Path Resolution (`internal/git/hook.go`)**
+**Managed Gate Hook Routing (`internal/git/hook.go`)**
 
 - The hook's `--gate` value must never come from a bare `$(pwd)`: Git can invoke `post-receive` from a cwd that collapses to `.` (issue #269), which the daemon rejects and the pipeline silently never starts. The hook script resolves an absolute gate dir (git first, hook location fallback), and `normalizeNotifyGatePath` in `internal/cli/daemon_cmd.go` is an independent second layer that absolutizes whatever an already-installed older hook sends.
-- Regressions: `TestPostReceiveHook_ResolvesAbsoluteGateDir`, `TestPostReceiveHook_FallsBackToHookLocationForGateDir`, `TestNormalizeNotifyGatePathResolvesLegacyDotGate`.
+- Managed hooks must also bind `NM_HOME` to the physical gate home (`$GATE_DIR/../..`) when invoking `daemon admit-push` and `daemon notify-push`. Inherited `NM_HOME` from the pushing process is ignored so a push cannot notify the wrong home's socket. Pre-receive fails closed if that home cannot be derived; post-receive stays non-blocking and logs the failure. `HandlePushReceived` then requires `params.Gate` to equal `m.paths.RepoDir(repoID)` and rejects a mismatch instead of using the wrong mirror. Stale managed hooks refresh through the normal gate-migration fingerprint.
+- User-facing `NM_HOME` layout lives in `docs/src/content/docs/reference/environment.md`.
+- Regressions: `TestPostReceiveHook_ResolvesAbsoluteGateDir`, `TestPostReceiveHook_FallsBackToHookLocationForGateDir`, `TestNormalizeNotifyGatePathResolvesLegacyDotGate`, `TestReceiveHooksRouteToGateHome`, `TestPreReceiveHookFailsClosedWhenGateHomeCannotBeDerived`, `TestPostReceiveHookStaysNonBlockingWhenGateHomeCannotBeDerived`, `TestPushReceivedRejectsGateFromDifferentHome`.
 
 **Daemon Singleton Lock (`internal/daemon/lock.go`)**
 
