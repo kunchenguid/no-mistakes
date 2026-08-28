@@ -859,7 +859,9 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			gateAnchor := custody.RecoveryGateRef(run.ID)
 			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
 			if err != nil || (exists && existing != gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
+				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
+				blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+				return blocked
 			}
 			if !exists {
 				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)
@@ -1602,13 +1604,13 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 // even earlier, so both disqualify the record and keep the honest
 // manual-reconciliation pointer.
 //
-// The gate BRANCH is probed for the same reason, exactly the way the
-// settlement probes it: recoverSettleInconsistent compare-and-swaps
-// refs/heads/<branch>, so a branch ref that cannot be read or does not name a
-// commit refuses inside the settlement instead of completing. A gate branch
-// PROVEN absent is the deliberate exception - the settlement legitimately
-// completes there with no swap at all, because nothing in the gate holds
-// custody - so absent stays advertisable while unreadable does not.
+// The three refs the settlement itself writes or swaps are probed for the same
+// reason, exactly the way it probes them, because these refuse INSIDE the
+// settlement rather than at a guard Recover reaches first: the gate BRANCH it
+// compare-and-swaps (a ref that cannot be read or does not name a commit
+// refuses, while one PROVEN absent is the deliberate exception, since the
+// settlement completes there with no swap at all), and the stranded and gate
+// anchor refs of settlementAnchorsFree.
 //
 // An UNVERIFIED terminal head is excluded for a different reason: Recover
 // refuses it at the unverified-head guard, strictly before any keep-local
@@ -1641,6 +1643,9 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *Stat
 		return false
 	}
 	if !s.settlementGateBranchUsable(ctx, state, gateDir) {
+		return false
+	}
+	if !s.settlementAnchorsFree(ctx, state, run, gateDir, preserved) {
 		return false
 	}
 	gateCompatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
@@ -1690,6 +1695,57 @@ func (s *Service) settlementGateBranchUsable(ctx context.Context, state *State, 
 	}
 	_, err = git.Run(ctx, gateDir, "rev-parse", ref+"^{commit}")
 	return err == nil
+}
+
+// settlementAnchorsFree answers the other two questions the settlement asks
+// before it can complete, both of which refuse INSIDE it rather than at a
+// guard Recover reaches first.
+//
+// The stranded ref is where the pin loop puts every still-reachable copy of
+// the recorded head; PreserveRecoveryAnchor refuses to overwrite a ref that
+// already names something else, so a leftover anchor at another commit makes
+// the settlement refuse permanently.
+//
+// The gate ref is where recoverKeepLocal pins an independently moved gate head
+// before its compare-and-swap. It is written BEFORE the swap, so a settlement
+// that lost one race leaves it pinned at the head observed then; once the gate
+// has moved on, that stale pin conflicts with every later attempt and nothing
+// retires it. Probing both keeps the advertisement honest: a record that can
+// only refuse falls back to manual reconciliation.
+func (s *Service) settlementAnchorsFree(ctx context.Context, state *State, run *db.Run, gateDir, preserved string) bool {
+	anchorFreeAt := func(dir, ref, want string) bool {
+		target, exists, err := git.ExactRefTarget(ctx, dir, ref)
+		if err != nil {
+			return false
+		}
+		if !exists {
+			return true
+		}
+		if target == want {
+			return true
+		}
+		resolved, err := git.Run(ctx, dir, "rev-parse", ref+"^{commit}")
+		return err == nil && resolved == want
+	}
+	stranded := custody.RecoveryStrandedRef(run.ID)
+	if preserved != "" {
+		for _, dir := range []string{s.workDir(), gateDir} {
+			if dir == "" || !objectExists(ctx, dir, preserved) {
+				continue
+			}
+			if !anchorFreeAt(dir, stranded, preserved) {
+				return false
+			}
+		}
+	}
+	if state == nil || strings.TrimSpace(state.Local.Branch) == "" {
+		return false
+	}
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	if err != nil || gateHead == state.Local.Head || gateHead == preserved {
+		return true
+	}
+	return anchorFreeAt(gateDir, custody.RecoveryGateRef(run.ID), gateHead)
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {

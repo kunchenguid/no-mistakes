@@ -2032,6 +2032,12 @@ func TestRecoverKeepLocalRefusesWhenStillPresentPreservedHeadCannotBeAnchored(t 
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
 	mustRun(t, f.gate, "update-ref", custody.RecoveryStrandedRef(f.run.ID), f.submitted)
 
+	// The settlement can only refuse here, so inspection must not prescribe it.
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("occupied-stranded-anchor next action = %#v", inspected.NextAction)
+	}
+
 	state := f.service.Recover(f.ctx, true)
 	if state.Recovered || state.Changed {
 		t.Fatalf("keep-local settled a record whose preserved head could not be anchored = %#v", state)
@@ -2091,6 +2097,28 @@ func TestRecoverKeepLocalSettlementLosesConcurrentGatePushCleanly(t *testing.T) 
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != raced {
 		t.Fatalf("gate branch = %s, want the concurrent push %s", got, raced)
+	}
+
+	// The lost swap leaves refs/no-mistakes/recover-gate/<run> pinned at the
+	// head observed before the race, and nothing retires it. The retry the
+	// refusal invites therefore hits the anchor conflict permanently, so it
+	// must name a completable exit and status must stop prescribing it.
+	retry := f.service.Recover(f.ctx, true)
+	if retry.Recovered {
+		t.Fatalf("retry after a lost compare-and-swap settled the record = %#v", retry)
+	}
+	if retry.NextAction == nil {
+		t.Fatalf("permanently refusing retry named no exit at all = %#v", retry)
+	}
+	if retry.NextAction.Code == "return_custody_keep_local" {
+		t.Fatalf("retry prescribed the settlement that just refused = %#v", retry.NextAction)
+	}
+	if f.custodyReturned() {
+		t.Fatal("refused retry stamped custody")
+	}
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.NextAction == nil || inspected.NextAction.Code == "return_custody_keep_local" {
+		t.Fatalf("wedged-anchor next action = %#v", inspected.NextAction)
 	}
 }
 
