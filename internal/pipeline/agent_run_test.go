@@ -376,6 +376,51 @@ func TestRunAgent_RetryMetadataIsNotObservedOutput(t *testing.T) {
 	}
 }
 
+func TestRunAgent_FallbackNoticeIsLoggedWithoutBecomingObservedOutput(t *testing.T) {
+	t.Parallel()
+	first := &hangingAgent{
+		name: "missing",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return nil, errors.New("missing start: executable not found")
+		},
+	}
+	second := &hangingAgent{
+		name: "silent",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "silent", Phase: agent.LifecyclePhaseStart, PID: 6161})
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  agent.NewFallback([]agent.Agent{first, second}),
+		Config: &config.Config{AgentTimeout: 20 * time.Millisecond},
+	}
+
+	var lifecycleLog strings.Builder
+	_, err := sctx.RunAgent(agent.RunOpts{
+		Prompt: "work",
+		OnLifecycle: func(event agent.LifecycleEvent) {
+			if event.Message != "" {
+				lifecycleLog.WriteString(event.Message)
+			}
+		},
+	})
+	if err == nil || !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if !strings.Contains(lifecycleLog.String(), "falling back to silent") {
+		t.Fatalf("lifecycle log = %q, want operator-visible fallback notice", lifecycleLog.String())
+	}
+	if !strings.Contains(err.Error(), "produced no output at all") {
+		t.Fatalf("error = %q, want silent fallback agent reported as producing no output", err)
+	}
+	if strings.Contains(err.Error(), "last produced output") {
+		t.Fatalf("error = %q, fallback control metadata must not count as output", err)
+	}
+}
+
 func TestRunAgent_SubprocessStartAloneIsNotObservedOutput(t *testing.T) {
 	t.Parallel()
 	// Launching proves the binary ran, not that it is doing anything. Counting

@@ -107,9 +107,7 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return nil, err
 		}
 		next := candidates[i+1]
-		if opts.OnChunk != nil {
-			opts.OnChunk(fmt.Sprintf("\nagent %s failed (%s); falling back to %s\n", current.Name(), fallbackReason(err), next.Name()))
-		}
+		emitAgentFallback(opts, current.Name(), next.Name(), err)
 	}
 	return nil, lastErr
 }

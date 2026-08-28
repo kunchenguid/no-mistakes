@@ -13,6 +13,8 @@ const (
 	LifecyclePhaseExit = "exit"
 	// LifecyclePhaseRetry marks a transient retry before the next subprocess attempt.
 	LifecyclePhaseRetry = "retry"
+	// LifecyclePhaseFallback marks a provider fallback before the next agent attempt.
+	LifecyclePhaseFallback = "fallback"
 	// LifecyclePhaseActivity marks observed liveness of a running native
 	// subprocess: bytes arrived on its stdout or stderr.
 	//
@@ -85,16 +87,28 @@ func nativeAgentActivityObserver(opts RunOpts, name string) func() {
 
 func emitAgentRetry(opts RunOpts, name string, label string, attempt, max int) {
 	message := fmt.Sprintf("%s retrying after transient error %q (attempt %d/%d)", name, label, attempt, max)
+	emitAgentControl(opts, LifecycleEvent{
+		Agent:   name,
+		Phase:   LifecyclePhaseRetry,
+		Message: message,
+	})
+}
+
+func emitAgentFallback(opts RunOpts, current, next string, err error) {
+	emitAgentControl(opts, LifecycleEvent{
+		Agent:   current,
+		Phase:   LifecyclePhaseFallback,
+		Message: fmt.Sprintf("agent %s failed (%s); falling back to %s", current, fallbackReason(err), next),
+	})
+}
+
+func emitAgentControl(opts RunOpts, event LifecycleEvent) {
 	if opts.OnLifecycle != nil {
-		emitLifecycle(opts, LifecycleEvent{
-			Agent:   name,
-			Phase:   LifecyclePhaseRetry,
-			Message: message,
-		})
+		emitLifecycle(opts, event)
 		return
 	}
 	if opts.OnChunk != nil {
-		opts.OnChunk(message)
+		opts.OnChunk(event.Message)
 	}
 }
 
