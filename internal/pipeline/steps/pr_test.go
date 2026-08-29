@@ -2031,36 +2031,50 @@ func TestPRStep_PrependsSupersedingIntentDecisions(t *testing.T) {
 		"Out of scope: issue #552 and host-qualified destination authorization.",
 	}, "\n\n")
 
-	const decision = "Authoritative structure-preserved explicit intent from axi run --intent, rerun --intent, or notify-push push-option intent may authorize publication when the destination matches the selected parent; only a bare direct push without authoritative intent validates and pushes before PR refusal."
-	initial := types.Findings{Items: []types.Finding{{
-		ID:          "captain-authoritative-intent-transport-decision",
-		Severity:    types.FindingSeverityError,
-		Description: "The generated PR body must reflect the captain's later delivery decision.",
-		Action:      types.ActionAskUser,
-	}}}
-	initialJSON, err := json.Marshal(initial)
-	if err != nil {
-		t.Fatal(err)
+	const (
+		decisionA = "Authoritative structure-preserved explicit intent from axi run --intent, rerun --intent, or notify-push push-option intent may authorize publication when the destination matches the selected parent."
+		decisionB = "Only axi run --intent may authorize fork PR publication."
+	)
+	recordDecision := func(stepName types.StepName, findingID, decision string) {
+		t.Helper()
+		initial := types.Findings{Items: []types.Finding{{
+			ID:          findingID,
+			Severity:    types.FindingSeverityError,
+			Description: "The generated PR body must reflect this delivery decision.",
+			Action:      types.ActionAskUser,
+		}}}
+		initialJSON, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, err := sctx.DB.InsertStepResult(sctx.Run.ID, stepName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		initialRaw := string(initialJSON)
+		round, err := sctx.DB.InsertStepRound(step.ID, 1, "initial", &initialRaw, nil, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectedJSON, err := json.Marshal([]string{findingID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected := string(selectedJSON)
+		initial.Items[0].UserInstructions = decision
+		mergedJSON, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mergedRaw := string(mergedJSON)
+		if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &mergedRaw); err != nil {
+			t.Fatal(err)
+		}
 	}
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initialRaw := string(initialJSON)
-	round, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &initialRaw, nil, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	selected := `["captain-authoritative-intent-transport-decision"]`
-	initial.Items[0].UserInstructions = decision
-	mergedJSON, err := json.Marshal(initial)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mergedRaw := string(mergedJSON)
-	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &mergedRaw); err != nil {
-		t.Fatal(err)
-	}
+
+	recordDecision(types.StepTest, "authoritative-transports-a", decisionA)
+	recordDecision(types.StepCI, "axi-only-intermediate", decisionB)
+	recordDecision(types.StepReview, "authoritative-transports-restored", decisionA)
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -2071,7 +2085,8 @@ func TestPRStep_PrependsSupersedingIntentDecisions(t *testing.T) {
 		"## Intent",
 		"### Superseding Decisions",
 		"Later recorded decisions take precedence over conflicting wording in the original intent below.",
-		decision,
+		decisionA,
+		decisionB,
 		"### Original Intent",
 		"https://github.com/kunchenguid/no-mistakes/issues/884",
 		"We do not yet carry a local automatic guard ourselves and currently check the target manually.",
@@ -2085,8 +2100,15 @@ func TestPRStep_PrependsSupersedingIntentDecisions(t *testing.T) {
 			t.Fatalf("generated PR body missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Index(body, "### Superseding Decisions") > strings.Index(body, "### Original Intent") {
+	decisionsStart := strings.Index(body, "### Superseding Decisions")
+	originalIntentStart := strings.Index(body, "### Original Intent")
+	if decisionsStart > originalIntentStart {
 		t.Fatalf("superseding decisions must precede the original intent:\n%s", body)
+	}
+	decisionBlock := body[decisionsStart:originalIntentStart]
+	wantSequence := "- " + decisionA + "\n\n- " + decisionB + "\n\n- " + decisionA
+	if !strings.Contains(decisionBlock, wantSequence) {
+		t.Fatalf("superseding decisions do not preserve chronological A -> B -> A history:\n%s", decisionBlock)
 	}
 }
 

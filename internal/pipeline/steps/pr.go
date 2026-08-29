@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -531,28 +532,35 @@ func supersedingPRIntentDecisions(sctx *pipeline.StepContext) []string {
 		return nil
 	}
 
-	var decisions []string
-	seen := make(map[string]bool)
-	for i := len(sctx.PriorBranchDecisions) - 1; i >= 0; i-- {
-		entry := sctx.PriorBranchDecisions[i]
+	var rounds []*db.StepRound
+	for _, entry := range sctx.PriorBranchDecisions {
 		if entry != nil {
-			decisions = appendSupersedingPRIntentRound(decisions, seen, entry.Round)
+			rounds = append(rounds, entry.Round)
 		}
 	}
 	for _, step := range steps {
-		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		stepRounds, err := sctx.DB.GetRoundsByStep(step.ID)
 		if err != nil {
 			slog.Warn("failed to query rounds for PR intent decisions", "step", step.StepName, "error", err)
 			continue
 		}
-		for _, round := range rounds {
-			decisions = appendSupersedingPRIntentRound(decisions, seen, round)
+		rounds = append(rounds, stepRounds...)
+	}
+	sort.SliceStable(rounds, func(i, j int) bool {
+		if rounds[i].CreatedAt != rounds[j].CreatedAt {
+			return rounds[i].CreatedAt < rounds[j].CreatedAt
 		}
+		return rounds[i].ID < rounds[j].ID
+	})
+
+	var decisions []string
+	for _, round := range rounds {
+		decisions = appendSupersedingPRIntentRound(decisions, round)
 	}
 	return decisions
 }
 
-func appendSupersedingPRIntentRound(decisions []string, seen map[string]bool, round *db.StepRound) []string {
+func appendSupersedingPRIntentRound(decisions []string, round *db.StepRound) []string {
 	if round == nil || round.SelectionSource == nil || *round.SelectionSource != db.RoundSelectionSourceUser || round.SelectedFindingIDs == nil || round.UserFindingsJSON == nil {
 		return decisions
 	}
@@ -577,10 +585,9 @@ func appendSupersedingPRIntentRound(decisions []string, seen map[string]bool, ro
 			decision = finding.Description
 		}
 		decision = cleanedUserIntent(&pipeline.StepContext{UserIntent: decision})
-		if decision == "" || seen[decision] {
+		if decision == "" {
 			continue
 		}
-		seen[decision] = true
 		decisions = append(decisions, decision)
 	}
 	return decisions
