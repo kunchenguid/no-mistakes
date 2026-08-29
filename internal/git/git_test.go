@@ -158,16 +158,17 @@ func TestRemoveRemote(t *testing.T) {
 	}
 }
 
-func TestCopyLocalUserIdentity(t *testing.T) {
+func TestCopyLocalCommitSettings(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)
 	dst := initTestRepo(t)
+	run(t, src, "git", "config", "commit.gpgsign", "false")
 
 	run(t, dst, "git", "config", "--local", "--unset", "user.name")
 	run(t, dst, "git", "config", "--local", "--unset", "user.email")
 
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
-		t.Fatalf("CopyLocalUserIdentity failed: %v", err)
+	if err := CopyLocalCommitSettings(ctx, src, dst); err != nil {
+		t.Fatalf("CopyLocalCommitSettings failed: %v", err)
 	}
 
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Test" {
@@ -175,6 +176,90 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	}
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
 		t.Fatalf("user.email = %q, want %q", got, "test@test.com")
+	}
+	if got := run(t, dst, "git", "config", "--local", "--get", "commit.gpgsign"); got != "false" {
+		t.Fatalf("commit.gpgsign = %q, want false", got)
+	}
+}
+
+func TestCopyLocalCommitSettings_ExplicitUnsignedPolicySurvivesFailingSigner(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	dst := initTestRepo(t)
+	run(t, src, "git", "config", "commit.gpgsign", "false")
+	run(t, dst, "git", "config", "commit.gpgsign", "true")
+	run(t, dst, "git", "config", "gpg.program", filepath.Join(t.TempDir(), "missing-signer"))
+	run(t, dst, "git", "config", "user.signingkey", "test-signing-key")
+
+	writeFile(t, filepath.Join(dst, "generated-fix.txt"), "generated review fix\n")
+	run(t, dst, "git", "add", "generated-fix.txt")
+	before := run(t, dst, "git", "rev-parse", "HEAD")
+	cmd := exec.Command("git", "commit", "-m", "pipeline review fix")
+	cmd.Dir = dst
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("signed control commit unexpectedly succeeded with a missing signer:\n%s", out)
+	}
+	if got := run(t, dst, "git", "rev-parse", "HEAD"); got != before {
+		t.Fatalf("failed signed commit moved HEAD to %s, want %s", got, before)
+	}
+	if got := run(t, dst, "git", "diff", "--cached", "--name-only"); got != "generated-fix.txt" {
+		t.Fatalf("failed signed commit lost staged fixes: %q", got)
+	}
+
+	if err := CopyLocalCommitSettings(ctx, src, dst); err != nil {
+		t.Fatalf("CopyLocalCommitSettings failed: %v", err)
+	}
+	if _, err := Run(ctx, dst, "commit", "-m", "pipeline review fix"); err != nil {
+		t.Fatalf("explicitly unsigned pipeline commit failed: %v", err)
+	}
+	commit := run(t, dst, "git", "cat-file", "commit", "HEAD")
+	if strings.Contains(commit, "\ngpgsig ") || strings.HasPrefix(commit, "gpgsig ") {
+		t.Fatalf("explicitly unsigned pipeline commit contains a signature:\n%s", commit)
+	}
+	if got := run(t, src, "git", "config", "--local", "--get", "commit.gpgsign"); got != "false" {
+		t.Fatalf("source signing policy changed to %q", got)
+	}
+}
+
+func TestCopyLocalCommitSettings_PreservesSignedAndDefaultBehavior(t *testing.T) {
+	tests := []struct {
+		name         string
+		sourcePolicy string
+		targetPolicy string
+		wantPolicy   string
+	}{
+		{name: "explicit signed", sourcePolicy: "true", targetPolicy: "false", wantPolicy: "true"},
+		{name: "unspecified", targetPolicy: "true", wantPolicy: "true"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			src := initTestRepo(t)
+			dst := initTestRepo(t)
+			if tt.sourcePolicy != "" {
+				run(t, src, "git", "config", "commit.gpgsign", tt.sourcePolicy)
+			}
+			run(t, dst, "git", "config", "commit.gpgsign", tt.targetPolicy)
+			run(t, dst, "git", "config", "gpg.program", filepath.Join(t.TempDir(), "missing-signer"))
+			run(t, dst, "git", "config", "user.signingkey", "test-signing-key")
+
+			if err := CopyLocalCommitSettings(ctx, src, dst); err != nil {
+				t.Fatalf("CopyLocalCommitSettings failed: %v", err)
+			}
+			if got := run(t, dst, "git", "config", "--local", "--get", "commit.gpgsign"); got != tt.wantPolicy {
+				t.Fatalf("commit.gpgsign = %q, want %q", got, tt.wantPolicy)
+			}
+			writeFile(t, filepath.Join(dst, "generated-fix.txt"), "generated review fix\n")
+			run(t, dst, "git", "add", "generated-fix.txt")
+			cmd := exec.Command("git", "commit", "-m", "pipeline review fix")
+			cmd.Dir = dst
+			if out, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("signed commit unexpectedly bypassed the missing signer:\n%s", out)
+			}
+			if got := run(t, dst, "git", "diff", "--cached", "--name-only"); got != "generated-fix.txt" {
+				t.Fatalf("failed signed commit lost staged fixes: %q", got)
+			}
+		})
 	}
 }
 

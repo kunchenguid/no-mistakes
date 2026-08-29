@@ -962,10 +962,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
-	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
+	if err := git.CopyLocalCommitSettings(ctx, repo.WorkingPath, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git commit settings: %s", err))
 		trackStartFailure("configure_worktree_identity")
-		return "", fmt.Errorf("configure worktree git identity: %w", err)
+		return "", fmt.Errorf("configure worktree git commit settings: %w", err)
 	}
 	// Fetch the trusted default branch and resolve it to an exact commit SHA
 	// before any read. Reading the trusted config at this pinned SHA (rather
