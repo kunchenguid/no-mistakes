@@ -3861,6 +3861,37 @@ func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 			safety: "blocked_recover_assumptions_changed",
 		},
 		{
+			// PAST the branch swap: a checkout landing after the branch has
+			// already moved rolls the branch back and refuses. The recovery is
+			// half applied at that point, so the operator reconciles by hand
+			// with both anchors on disk and the refusal has to say where they
+			// are.
+			name:    "adoption rolls back after a checkout that follows the branch move",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "branch", "other-clean-branch", f.submitted)
+				f.service.afterRecoverBranchMove = func() {
+					mustRun(t, f.local, "checkout", "other-clean-branch")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
+		},
+		{
+			// The working-tree update itself refuses: an untracked file the
+			// adoption would overwrite aborts read-tree inside Git, after both
+			// the recorded head and the pre-recovery head were anchored.
+			name:    "adoption's worktree update is blocked by an untracked file it would overwrite",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				f.service.beforeRecoverBranchMove = func() {
+					// upstream.txt exists only on the advanced base, so
+					// adopting the preserved head must write it.
+					mustWrite(t, filepath.Join(f.local, "upstream.txt"), "uncommitted local draft\n")
+				}
+			},
+			safety: "blocked_recover_worktree_busy",
+		},
+		{
 			// The claim is not scoped to the default flow: --keep-local pins
 			// the same anchors and then refuses when the gate branch it would
 			// move is gone. The behind arm reaches that refusal.
