@@ -577,7 +577,7 @@ The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_
 
 ### ci.revalidate_repairs
 
-Whether every CI repair must re-pass the pipeline before it is published, or only the ones whose continuity with the reviewed head cannot be proven.
+The operator-level fallback for [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), whose per-repository reference owns the repair-delivery semantics, safety rationale, and trust boundary.
 
 | | |
 |---|---|
@@ -589,15 +589,7 @@ ci:
   revalidate_repairs: false
 ```
 
-One rule decides how every CI repair is delivered, on every CI-fix path: a repair is published without revalidating only when its continuity with the reviewed, published head can be **proven** - that is, the repaired head is the run's durably review-approved commit or a descendant of it. When that cannot be proven, the repair revalidates from Review instead.
-
-At the default `false`, an ordinary repair that builds on the reviewed head is published immediately through the same guarded path the [Push step](/no-mistakes/reference/pipeline-steps/#push) uses, and the CI monitor keeps watching the same run. One repair costs one agent round.
-
-At `true`, every repair is kept local, the run's review approval is revoked, and validation restarts at Review before Push republishes it. That pays for another full pipeline pass in wall-clock time and tokens on **every** CI repair; [VISION.md](https://github.com/kunchenguid/no-mistakes/blob/main/VISION.md) is why that cost is opt-in rather than the default.
-
-Merge-conflict repairs revalidate under either setting, because a rebase makes the repaired head a non-descendant of the reviewed head and no content-based guard can prove the reviewed work survived it. The per-repo [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs) owns the full semantics, the safety rationale, and the trust boundary.
-
-The per-repo value overrides this one in both directions: a repository that sets `true` gets revalidation even when this is `false`, and a repository that explicitly sets `false` opts out even when this is `true`.
+A value in the trusted repository config overrides this global value in both directions: an explicit repository `true` enables revalidation when this is `false`, and an explicit repository `false` disables opt-in revalidation when this is `true`. When the trusted repository config omits the key, this global value applies.
 
 ### commit.fix_message
 
