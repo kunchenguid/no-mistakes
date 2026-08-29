@@ -661,7 +661,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	waitForRunTerminalState(t, d, first.RunID)
 	selectedIntent := "  selected exact requirements\n"
-	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
+	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1, LeadingStructurePreserved: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -692,6 +692,39 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+	if !got.IntentLeadingStructurePreserved {
+		t.Fatal("rerun lost selected intent leading-structure evidence")
+	}
+
+	legacyIntent := "PR destination: parent-owner/no-mistakes"
+	legacy, err := d.InsertRunWithIntent("selected-rerun-repo", "main", headSHA, headSHA, &db.RunIntent{
+		Summary: legacyIntent,
+		Source:  db.RunIntentSourceAgent,
+		Score:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(legacy.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	var legacyRerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "selected-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: legacy.ID,
+	}, &legacyRerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyGot := waitForRunTerminalState(t, d, legacyRerun.RunID)
+	if legacyGot.Intent == nil || *legacyGot.Intent != legacyIntent {
+		t.Fatalf("legacy intent = %v, want %q", legacyGot.Intent, legacyIntent)
+	}
+	if legacyGot.IntentLeadingStructurePreserved {
+		t.Fatal("rerun upgraded legacy intent leading-structure evidence")
 	}
 }
 

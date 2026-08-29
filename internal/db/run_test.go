@@ -63,7 +63,7 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 func TestInsertRunWithIntent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
-	intent := RunIntent{Summary: "  exact requirements\n", Source: RunIntentSourceRerun, Score: 1}
+	intent := RunIntent{Summary: "  exact requirements\n", Source: RunIntentSourceRerun, Score: 1, LeadingStructurePreserved: true}
 
 	run, err := d.InsertRunWithIntent(repo.ID, "feature", "abc123", "def456", &intent)
 	if err != nil {
@@ -78,6 +78,9 @@ func TestInsertRunWithIntent(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != intent.Source {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, intent.Source)
+	}
+	if !got.IntentLeadingStructurePreserved {
+		t.Fatal("intent lost leading-structure evidence")
 	}
 }
 

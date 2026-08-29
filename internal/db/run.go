@@ -66,16 +66,17 @@ type Run struct {
 	// ParkedMS accumulates the run's total parked-at-gate wall time in
 	// milliseconds across every gate wait (local performance telemetry;
 	// step duration_ms values exclude this time).
-	ParkedMS        int64
-	Intent          *string
-	IntentSource    *string
-	IntentSessionID *string
-	IntentScore     *float64
-	CreatedAt       int64
-	UpdatedAt       int64
+	ParkedMS                        int64
+	Intent                          *string
+	IntentSource                    *string
+	IntentSessionID                 *string
+	IntentScore                     *float64
+	IntentLeadingStructurePreserved bool
+	CreatedAt                       int64
+	UpdatedAt                       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, COALESCE(intent_leading_structure_preserved, 0), created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -86,7 +87,7 @@ func scanRun(row interface {
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
-		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
+		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.IntentLeadingStructurePreserved,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -128,10 +129,11 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		r.IntentSource = &intent.Source
 		r.IntentSessionID = &intent.SessionID
 		r.IntentScore = &intent.Score
+		r.IntentLeadingStructurePreserved = intent.LeadingStructurePreserved
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, intent_leading_structure_preserved, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.IntentLeadingStructurePreserved, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -684,19 +686,20 @@ func IsAuthoritativeRunIntentSource(source string) bool {
 	return source == RunIntentSourceAgent || source == RunIntentSourceRerun
 }
 
-// RunIntent carries the four intent-related columns persisted on a run.
+// RunIntent carries the intent-related fields persisted on a run.
 type RunIntent struct {
-	Summary   string
-	Source    string
-	SessionID string
-	Score     float64
+	Summary                   string
+	Source                    string
+	SessionID                 string
+	Score                     float64
+	LeadingStructurePreserved bool
 }
 
 // UpdateRunIntent persists the inferred user intent for a run.
 func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	_, err := d.sql.Exec(
-		`UPDATE runs SET intent = ?, intent_source = ?, intent_session_id = ?, intent_score = ?, updated_at = ? WHERE id = ?`,
-		intent.Summary, intent.Source, intent.SessionID, intent.Score, now(), id,
+		`UPDATE runs SET intent = ?, intent_source = ?, intent_session_id = ?, intent_score = ?, intent_leading_structure_preserved = ?, updated_at = ? WHERE id = ?`,
+		intent.Summary, intent.Source, intent.SessionID, intent.Score, intent.LeadingStructurePreserved, now(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update run intent: %w", err)

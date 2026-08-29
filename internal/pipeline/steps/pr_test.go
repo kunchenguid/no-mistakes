@@ -538,6 +538,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.UserIntent = "PR destination: parent-owner/no-mistakes"
 	sctx.IntentSource = db.RunIntentSourceAgent
+	sctx.Run.IntentLeadingStructurePreserved = true
 	forgeCtx, err := forgecontext.Resolve(context.Background(), config.ForgeProfiles{
 		"github.com": {GHConfigDir: profileDir},
 	}, sctx.Repo.UpstreamURL, sctx.Repo.ForkURL)
@@ -607,11 +608,18 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		upstreamURL string
-		intent      string
-		wantErrPart string
+		name             string
+		upstreamURL      string
+		intent           string
+		legacyNormalized bool
+		wantErrPart      string
 	}{
+		{
+			name:             "legacy normalized destination lacks structure evidence",
+			intent:           "PR destination: parent-owner/no-mistakes",
+			legacyNormalized: true,
+			wantErrPart:      "lacks preserved leading structure",
+		},
 		{
 			name:        "explicit fork disagrees with selected parent",
 			intent:      "PR destination: fork-owner/no-mistakes",
@@ -676,6 +684,7 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 			sctx.UserIntent = tc.intent
 			sctx.IntentSource = db.RunIntentSourceAgent
+			sctx.Run.IntentLeadingStructurePreserved = !tc.legacyNormalized
 
 			_, err := (&PRStep{}).Execute(sctx)
 			if err == nil {

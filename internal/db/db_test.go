@@ -78,7 +78,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
-	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at"} {
+	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "intent_leading_structure_preserved"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}
@@ -129,6 +129,9 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
+	}
+	if run.IntentLeadingStructurePreserved {
+		t.Fatalf("legacy run gained intent leading-structure evidence: %#v", run)
 	}
 	// Placement cannot be recovered for a row written before it was recorded,
 	// so it reads back as unknown rather than as a guessed directory; callers

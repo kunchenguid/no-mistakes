@@ -177,6 +177,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	`ALTER TABLE runs ADD COLUMN intent_leading_structure_preserved INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run

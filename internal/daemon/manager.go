@@ -777,6 +777,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	intentSource := db.RunIntentSourceAgent
+	intentLeadingStructurePreserved := strings.TrimSpace(intent) != ""
 	if strings.TrimSpace(intent) == "" {
 		intentSource = ""
 		if selectedRun.Intent != nil && selectedRun.IntentSource != nil &&
@@ -786,10 +787,11 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 			// replacement run.
 			intent = *selectedRun.Intent
 			intentSource = db.RunIntentSourceRerun
+			intentLeadingStructurePreserved = selectedRun.IntentLeadingStructurePreserved
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, intentLeadingStructurePreserved)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -851,13 +853,13 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, true)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, intentLeadingStructurePreserved bool) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -904,7 +906,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		if source == "" {
 			source = db.RunIntentSourceAgent
 		}
-		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
+		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1, LeadingStructurePreserved: intentLeadingStructurePreserved}
 	}
 
 	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
