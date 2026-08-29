@@ -64,7 +64,7 @@ Each step either passes on its own or stops with a **finding** for you to act on
 Safe, mechanical fixes are applied automatically; anything that touches your intent is escalated for you to **approve**, **fix**, or **skip**.
 The initial change reaches the configured push target only after every local gate is green.
 
-When CI itself fails, the pipeline repairs it and publishes that repair through the same guarded force-push path - but only when it can prove the repair builds on the head you already reviewed. When it cannot prove that, the repair goes back through Review before it is published, so a repair can never overwrite reviewed work. Merge-conflict repairs rewrite history, so they always take that safer route.
+When CI itself fails, the pipeline repairs it and publishes that repair through the same guarded force-push path - but only when it can prove the repair builds on the head you already reviewed. When it cannot prove that, the repair goes back through Review before it is published, so unrelated history cannot replace the reviewed commit. Merge-conflict repairs rewrite history, so they always take that safer route.
 Set [`ci.revalidate_repairs: true`](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#cirevalidate_repairs) if *every* CI repair must itself be reviewed, at the cost of another full pass over your change each time CI is repaired.
 
 ## Install
