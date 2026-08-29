@@ -897,6 +897,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
+	// Preserve leading whitespace exactly as supplied. PR destination
+	// authorization treats indentation as context, so trimming it could turn an
+	// example into a top-level declaration. Legacy inherited intents retain
+	// their false preservation marker and therefore continue to fail closed.
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
 		storedIntent = strings.TrimRightFunc(storedIntent, unicode.IsSpace)

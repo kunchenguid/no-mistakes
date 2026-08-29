@@ -55,6 +55,8 @@ func TestForkRouting(t *testing.T) {
 	h.CommitChange(branch, "fork.txt", "fork route\n", "add fork route")
 	if out, err := h.Run("axi", "run", "--intent", "PR destination: parent-owner/no-mistakes"); err != nil {
 		t.Fatalf("axi run with explicit parent destination: %v\n%s", err, out)
+	} else {
+		t.Logf("explicit-parent fork route shown by axi run:\n%s", out)
 	}
 
 	run := h.WaitForRun(branch, 90*time.Second)
@@ -102,6 +104,7 @@ func TestForkRouting(t *testing.T) {
 	if err == nil {
 		t.Fatalf("axi run accepted an indented destination declaration:\n%s", out)
 	}
+	t.Logf("indented destination refusal shown by axi run:\n%s", out)
 	for _, want := range []string{
 		"outcome: failed",
 		"authoritative run intent does not identify a leading PR destination",
