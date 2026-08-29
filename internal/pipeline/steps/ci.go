@@ -40,18 +40,10 @@ type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
-	// pendingPublishHead is the repair commit whose publication this step
-	// began but could not settle. It is the ONLY evidence that authorizes
-	// retryPendingRepair, so a head that merely differs from the recorded one -
-	// an agent commit from a fix that then failed, a live PR head in a test
-	// fixture - is never mistaken for an unsettled publication.
-	pendingPublishHead string
-	// pendingPublishAttempts bounds how many polls are spent on that retry.
-	pendingPublishAttempts int
-	transientReruns        checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride   time.Duration    // if set, overrides computed poll interval (for testing)
-	waitForNextPoll        func(context.Context, time.Duration) error
-	now                    func() time.Time
+	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
+	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
+	waitForNextPoll      func(context.Context, time.Duration) error
+	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
@@ -163,10 +155,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		if stepResult != nil {
 			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
-			if stepResult.CIPendingPublishHead != nil {
-				s.pendingPublishHead = strings.TrimSpace(*stepResult.CIPendingPublishHead)
-			}
-			s.pendingPublishAttempts = max(s.pendingPublishAttempts, stepResult.CIPendingPublishAttempts)
 		}
 	}
 	// A run recovered after a restart resumes the rerun budget it already
@@ -303,33 +291,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
-		}
-
-		pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
-		if pending {
-			if pendingErr != nil {
-				clearCIMonitorReady(sctx)
-				lastMonitorLog = ""
-				sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
-				if err := waitForPoll(); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			if pendingRepair.Revalidate {
-				return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
-			}
-			if err := waitForPoll(); err != nil {
-				return nil, err
-			}
-			continue
-		} else if pendingErr != nil {
-			return nil, pendingErr
-		}
-		if s.pendingPublishHead != "" && s.pendingPublishAttempts >= maxPendingPublishRetries {
-			clearCIMonitorReady(sctx)
-			sctx.Log(fmt.Sprintf("unsettled CI repair publication for %s exhausted its %d retries; the repair is on the remote but publication settlement is incomplete", shortObjectID(s.pendingPublishHead), maxPendingPublishRetries))
-			return ciUnsettledPublicationOutcome(s.pendingPublishHead), nil
 		}
 
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
@@ -588,10 +549,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
-						if s.pendingPublishHead != "" {
-							s.lastFixedChecks = fixKey
-							s.lastFixedCompletedAt = fixCompletedAt
-						}
 					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
@@ -631,10 +588,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
-						if s.pendingPublishHead != "" {
-							s.lastFixedChecks = fixKey
-							s.lastFixedCompletedAt = fixCompletedAt
-						}
 					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt

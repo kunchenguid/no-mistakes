@@ -285,18 +285,16 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	}
 }
 
-// Publication is all-or-nothing. A gate-mirror failure happens after the
-// remote already carries the head, so the tempting shortcuts are to record the
-// publication and return the error, or to record it and swallow the error.
-// Both are wrong: the first makes the monitor treat an already published repair
-// as failed and then see "no changes" on its next attempt, and the second
-// strands the gate behind the remote, where `no-mistakes rerun` would resolve
-// the stale gate head and silently omit the repair.
+// Publication is all-or-nothing: the remote push, the gate mirror, the push
+// binding, and the recorded head either all land or none of them are recorded.
+// A gate-mirror failure happens after the remote already carries the head, so
+// the tempting shortcut is to record the publication anyway. Recording it would
+// leave the gate behind the remote, where `no-mistakes rerun` resolves the
+// stale gate head and silently omits the repair.
 //
-// Instead nothing is recorded until every part succeeds, so the failure is
-// simply retryable: the next attempt re-enters the same path, finds the remote
-// already at this head, and completes the publication once the mirror works.
-func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
+// Nothing is recorded until every part succeeds, so the failure is simply
+// something the next fix attempt re-enters and completes.
+func TestCIStep_PartialPublicationRecordsNothing(t *testing.T) {
 	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	writeCIFix(f.dir)
@@ -318,8 +316,6 @@ func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
 	if repairCommit == f.headSHA {
 		t.Fatal("the repair commit was never created")
 	}
-	// Nothing durable was written, so the run still points at the pre-repair
-	// head and the next attempt can complete the publication.
 	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -331,15 +327,15 @@ func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
 		t.Error("an unsettled publication was recorded in the push binding")
 	}
 
-	// Retry with a working gate: the same path completes, and the no-op push
-	// over the already-pushed head is not an obstacle.
+	// With a working gate the same path completes, and the no-op push over the
+	// already-pushed head is not an obstacle.
 	f.sctx.GateDir = f.gateDir
 	repair, err = (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 	if err != nil {
-		t.Fatalf("the retry did not complete the publication: %v\nlog:\n%s", err, f.log())
+		t.Fatalf("the next attempt did not complete the publication: %v\nlog:\n%s", err, f.log())
 	}
 	if !repair.HeadAdvanced || repair.Revalidate {
-		t.Fatalf("retry result = %#v, want a published repair", repair)
+		t.Fatalf("result = %#v, want a published repair", repair)
 	}
 	if f.remoteHead(t) != repairCommit {
 		t.Errorf("remote head = %s, want the repair %s", f.remoteHead(t), repairCommit)
@@ -350,218 +346,6 @@ func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
 	}
 	if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
 		t.Errorf("run did not record the settled publication: head=%s pushed=%v", run.HeadSHA, run.LastPushedSHA)
-	}
-}
-
-func TestCIStep_PreRemotePublicationFailureDoesNotAuthorizeSettlementRetry(t *testing.T) {
-	f := newCIRepairFixture(t, false, nil)
-	stepResult, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.StepResultID = stepResult.ID
-	f.sctx.Repo.UpstreamURL = filepath.Join(t.TempDir(), "missing", "upstream.git")
-	f.sctx.Repo.URLsVerified = true
-	writeCIFix(f.dir)
-
-	step := &CIStep{}
-	if _, err := step.commitRepair(f.sctx, "repair the failing check"); err == nil {
-		t.Fatal("an unreachable remote was reported as a successful publication")
-	}
-	if step.pendingPublishHead != "" {
-		t.Fatalf("pre-remote failure authorized retry for %s", step.pendingPublishHead)
-	}
-	stored, err := f.sctx.DB.GetStepResult(stepResult.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.CIPendingPublishHead != nil {
-		t.Fatalf("durable pending head = %q, want none", *stored.CIPendingPublishHead)
-	}
-}
-
-func TestCIStep_PendingPublicationRetrySurvivesRestartAndKeepsItsBound(t *testing.T) {
-	f := newCIRepairFixture(t, false, nil)
-	stepResult, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.StepResultID = stepResult.ID
-	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
-	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.GateDir = brokenGate
-	writeCIFix(f.dir)
-	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check"); err == nil {
-		t.Fatal("broken gate was reported as a settled publication")
-	}
-
-	for attempt := 1; attempt <= maxPendingPublishRetries; attempt++ {
-		step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { return context.Canceled }}
-		_, err := step.Execute(f.sctx)
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("restart %d did not retry pending publication: %v\nlog:\n%s", attempt, err, f.log())
-		}
-		stored, getErr := f.sctx.DB.GetStepResult(stepResult.ID)
-		if getErr != nil {
-			t.Fatal(getErr)
-		}
-		if stored.CIPendingPublishAttempts != attempt {
-			t.Fatalf("durable retry attempts after restart %d = %d", attempt, stored.CIPendingPublishAttempts)
-		}
-	}
-
-	outcome, err := (&CIStep{}).Execute(f.sctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome after durable retry bound = %#v", outcome)
-	}
-}
-
-func TestCIStep_PendingPublicationSettlesBeforeExpiredTimeout(t *testing.T) {
-	f := newCIRepairFixture(t, false, writeCIFix)
-	f.sctx.Config.CITimeout = time.Second
-	clock := time.Unix(1_700_000_000, 0)
-	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
-	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.GateDir = brokenGate
-	polls := 0
-	step := &CIStep{
-		now: func() time.Time { return clock },
-		waitForNextPoll: func(context.Context, time.Duration) error {
-			polls++
-			if polls == 1 {
-				clock = clock.Add(2 * time.Second)
-				f.sctx.GateDir = f.gateDir
-				return nil
-			}
-			return context.Canceled
-		},
-	}
-	outcome, err := step.Execute(f.sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("pending publication lost to timeout: outcome=%#v err=%v\nlog:\n%s", outcome, err, f.log())
-	}
-	repairHead := f.localHead(t)
-	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.HeadSHA != repairHead || run.LastPushedSHA == nil || *run.LastPushedSHA != repairHead {
-		t.Fatalf("publication did not settle before timeout: head=%s pushed=%v want=%s", run.HeadSHA, run.LastPushedSHA, repairHead)
-	}
-}
-
-func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
-	t.Parallel()
-	agentCalls := 0
-	f := newCIRepairFixture(t, false, func(workDir string) {
-		agentCalls++
-		writeCIFix(workDir)
-	})
-	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
-	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.GateDir = brokenGate
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	f.sctx.Ctx = ctx
-	polls := 0
-	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
-		polls++
-		if polls == 1 {
-			f.sctx.GateDir = f.gateDir
-			return nil
-		}
-		return context.Canceled
-	}}
-	outcome, err := step.Execute(f.sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("monitor did not continue after settling publication: outcome=%#v err=%v\nlog:\n%s", outcome, err, f.log())
-	}
-	if agentCalls != 1 {
-		t.Fatalf("fix agent calls = %d, want 1; retry must not spend another fix attempt", agentCalls)
-	}
-	repairCommit := f.localHead(t)
-	if f.remoteHead(t) != repairCommit {
-		t.Fatalf("remote head = %s, want settled repair %s", f.remoteHead(t), repairCommit)
-	}
-	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
-		t.Fatalf("settled publication not recorded: head=%s pushed=%v", run.HeadSHA, run.LastPushedSHA)
-	}
-	if !strings.Contains(f.log(), "retrying unsettled CI repair publication") {
-		t.Fatalf("monitor did not retry the existing repair before its exhausted budget; log:\n%s", f.log())
-	}
-}
-
-func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		checkState string
-		wantLog    string
-	}{
-		{name: "checks pending", checkState: `[{"name":"test","state":"PENDING","bucket":"pending"}]`, wantLog: ciChecksRunningMsg},
-		{name: "checks passing", checkState: `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, wantLog: ciChecksPassedMsg},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			agentCalls := 0
-			f := newCIRepairFixture(t, false, func(workDir string) {
-				agentCalls++
-				writeCIFix(workDir)
-			})
-			f.sctx.Env = fakeCIGHSequence(t, "OPEN", []string{
-				`[{"name":"test","state":"FAILURE","bucket":"fail"}]`,
-				tc.checkState,
-			})
-			brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
-			if err := os.MkdirAll(brokenGate, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			f.sctx.GateDir = brokenGate
-
-			f.sctx.Ctx = context.Background()
-			polls := 0
-			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
-				polls++
-				if polls == 1 {
-					f.sctx.GateDir = f.gateDir
-				}
-				if polls < 3 {
-					return nil
-				}
-				return context.Canceled
-			}}
-			outcome, err := step.Execute(f.sctx)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("monitor did not continue after settling publication: outcome=%#v err=%v\nlog:\n%s", outcome, err, f.log())
-			}
-			if agentCalls != 1 {
-				t.Fatalf("fix agent calls = %d, want 1", agentCalls)
-			}
-			repairCommit := f.localHead(t)
-			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
-				t.Fatalf("settled publication not recorded before %s checks: head=%s pushed=%v", tc.name, run.HeadSHA, run.LastPushedSHA)
-			}
-			if !strings.Contains(f.log(), tc.wantLog) {
-				t.Fatalf("new head check state was not monitored after settlement; want %q in log:\n%s", tc.wantLog, f.log())
-			}
-		})
 	}
 }
 
@@ -766,102 +550,6 @@ func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *t
 	if !strings.Contains(f.log(), "run has no durably recorded review-approved head") {
 		t.Errorf("the log does not name the missing review authority; log:\n%s", f.log())
 	}
-}
-
-// The unsettled-publication retry must fire only on evidence that a
-// publication was actually attempted. A worktree head that merely differs from
-// the run's recorded head is not that evidence - a fix agent that committed and
-// then failed leaves exactly that state, and so does a fixture whose recorded
-// head trails the branch. Treating it as pending swallowed the fix round
-// entirely: the monitor "retried" a publication that had never been attempted
-// and the repair agent was never called.
-func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t *testing.T) {
-	t.Parallel()
-	agentCalls := 0
-	f := newCIRepairFixture(t, false, func(workDir string) {
-		agentCalls++
-		writeCIFix(workDir)
-	})
-
-	// The worktree is ahead of the run's recorded head, with a clean tree and
-	// no publication ever attempted for it.
-	if err := os.WriteFile(filepath.Join(f.dir, "unrelated.txt"), []byte("unrelated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, f.dir, "add", "-A")
-	gitCmd(t, f.dir, "commit", "-m", "a commit the run has not recorded")
-	if f.localHead(t) == f.sctx.Run.HeadSHA {
-		t.Fatal("the fixture no longer models a head the run has not recorded")
-	}
-
-	if _, err := f.run(t); err != nil {
-		t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
-	}
-	if agentCalls == 0 {
-		t.Fatalf("the repair agent was never called; log:\n%s", f.log())
-	}
-	if strings.Contains(f.log(), "retrying unsettled CI repair publication") {
-		t.Errorf("a head with no attempted publication was treated as pending; log:\n%s", f.log())
-	}
-}
-
-// A publication that reaches the remote but can never settle its gate mirror
-// must not retry forever. The retry costs no repair attempt by design, so
-// without a bound a permanently unreachable gate would re-try on every poll
-// until the CI idle timeout - seven days by default - while the repaired commit
-// already sits on the remote. After the bound it parks for a person, naming the
-// published head, because a rerun would resume from the stale gate head.
-func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
-	t.Parallel()
-	agentCalls := 0
-	f := newCIRepairFixture(t, false, func(workDir string) {
-		agentCalls++
-		writeCIFix(workDir)
-	})
-	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
-	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.GateDir = brokenGate
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	f.sctx.Ctx = ctx
-	polls := 0
-	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
-		polls++
-		if polls > maxPendingPublishRetries+3 {
-			cancel()
-			return context.Canceled
-		}
-		return nil
-	}}
-
-	outcome, err := step.Execute(f.sctx)
-	if err != nil {
-		t.Fatalf("the monitor never stopped retrying: %v\nlog:\n%s", err, f.log())
-	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, want a parked approval gate", outcome)
-	}
-	if !strings.Contains(outcome.Findings, "gate mirror") {
-		t.Errorf("the finding does not explain the stale gate mirror: %s", outcome.Findings)
-	}
-	publishedHead := f.localHead(t)
-	if !strings.Contains(outcome.Findings, shortObjectID(publishedHead)) {
-		t.Errorf("the finding does not name the published head %s: %s", publishedHead, outcome.Findings)
-	}
-	if f.remoteHead(t) != publishedHead {
-		t.Errorf("remote head = %s, want the published repair %s", f.remoteHead(t), publishedHead)
-	}
-	if agentCalls != 1 {
-		t.Errorf("fix agent calls = %d, want 1; retries must not spend repair attempts", agentCalls)
-	}
-	if step.pendingPublishAttempts > maxPendingPublishRetries {
-		t.Errorf("retry attempts = %d, want at most %d", step.pendingPublishAttempts, maxPendingPublishRetries)
-	}
-	t.Logf("observable unsettled publication: published_head=%s remote_head=%s fix_agent_calls=%d settlement_attempts=%d parked=%t\nfinding: %s",
-		publishedHead, f.remoteHead(t), agentCalls, step.pendingPublishAttempts, outcome.NeedsApproval, outcome.Findings)
 }
 
 // Durable state is written before the live head advances, so a failed write

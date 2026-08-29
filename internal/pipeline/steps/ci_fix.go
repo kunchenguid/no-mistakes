@@ -145,26 +145,6 @@ CI logs:
 	return s.commitRepair(sctx, summary)
 }
 
-// ciUnsettledPublicationOutcome parks the run when a repair reached the remote
-// but publication could never be settled. The commit is published and CI is
-// testing it, so this is not a code failure and no fix agent can help.
-func ciUnsettledPublicationOutcome(publishedHead string) *pipeline.StepOutcome {
-	findings := Findings{
-		Summary: "CI repair is published but its publication is unsettled",
-		Items: []Finding{{
-			Severity: "warning",
-			Description: fmt.Sprintf(
-				"The CI repair %s was pushed and verified on the remote, but settling its local publication state failed %d times and is not being retried further. "+
-					"CI may already be testing the published commit, but rerunning is unsafe until the gate mirror and durable run state are inspected and reconciled. "+
-					"Inspect the gate repository and run record before rerunning, or continue watching the PR.",
-				shortObjectID(publishedHead), maxPendingPublishRetries),
-			Action: types.ActionAskUser,
-		}},
-	}
-	findingsJSON, _ := json.Marshal(findings)
-	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(findingsJSON)}
-}
-
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
 // agent budget into a bounded ask-user gate, and returns nil for every other
 // result so ordinary transient fix failures keep their existing warn-and-retry
@@ -244,60 +224,6 @@ type ciRepairResult struct {
 // commitAndPush remains as the narrow test seam for the default summary.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, error) {
 	return s.commitRepair(sctx, "")
-}
-
-// retryPendingRepair settles a publication this step already began and could
-// not finish, without spending another fix attempt on work the agent has
-// already done.
-//
-// It fires ONLY on positive evidence: pendingPublishHead is set exactly when a
-// publication for that commit failed part way, so an ordinary head difference
-// is never mistaken for one. A repair whose fix agent errored or timed out
-// after committing leaves no such evidence and is handled by the next fix
-// attempt, which is the honest accounting - nothing was published, so nothing
-// is pending.
-// maxPendingPublishRetries bounds how many polls may be spent settling one
-// stalled publication. The retry deliberately costs no repair attempt, so
-// without a bound a persistently unreachable gate mirror would retry on every
-// poll until the CI idle timeout - seven days by default - while the repaired
-// commit already sits on the remote. Three is enough to ride out a transient
-// filesystem or lock problem and short enough that a real one is surfaced
-// while someone is still watching.
-const maxPendingPublishRetries = 3
-
-func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairResult, error) {
-	if s.pendingPublishHead == "" {
-		return false, ciRepairResult{}, nil
-	}
-	status, err := stepGitRun(sctx, "status", "--porcelain")
-	if err != nil {
-		return false, ciRepairResult{}, fmt.Errorf("check for pending CI repair: %w", err)
-	}
-	if strings.TrimSpace(status) != "" {
-		return false, ciRepairResult{}, nil
-	}
-	headSHA, err := stepGitHeadSHA(sctx)
-	if err != nil {
-		return false, ciRepairResult{}, fmt.Errorf("resolve pending CI repair: %w", err)
-	}
-	if strings.EqualFold(headSHA, s.pendingPublishHead) && strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
-		if err := s.setPendingPublication(sctx, "", 0); err != nil {
-			return true, ciRepairResult{}, err
-		}
-		return true, ciRepairResult{HeadAdvanced: true}, nil
-	}
-	// The worktree must still be on the commit whose publication stalled. If
-	// it moved on, that commit is no longer what this run would publish.
-	if !strings.EqualFold(headSHA, s.pendingPublishHead) || s.pendingPublishAttempts >= maxPendingPublishRetries {
-		return false, ciRepairResult{}, nil
-	}
-	nextAttempt := s.pendingPublishAttempts + 1
-	if err := s.setPendingPublication(sctx, headSHA, nextAttempt); err != nil {
-		return true, ciRepairResult{}, err
-	}
-	sctx.Log(fmt.Sprintf("retrying unsettled CI repair publication (attempt %d/%d)...", s.pendingPublishAttempts, maxPendingPublishRetries))
-	repair, err := s.recordRepair(sctx, headSHA)
-	return true, repair, err
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
@@ -380,16 +306,9 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if ciRevalidatesRepairs(sctx) {
-		if err := s.setPendingPublication(sctx, "", 0); err != nil {
-			return ciRepairResult{}, err
-		}
 		return s.recordLocalRepair(sctx, headSHA)
 	}
 	if reason := ciRepairContinuityGap(sctx, headSHA); reason != "" {
-		if err := s.setPendingPublication(sctx, "", 0); err != nil {
-			return ciRepairResult{}, err
-		}
-
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
 		return s.recordLocalRepair(sctx, headSHA)
 	}
@@ -457,36 +376,13 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // and publishRunHead enforces the same descendant-only rule. The monitor stays
 // on this run to watch the checks re-run against the published head.
 //
-// publishRunHead advances the recorded head only after the remote and gate
-// mirror settle and the database update succeeds. If the remote is verified at
-// the repair but local settlement fails, publishRepair durably marks that exact
-// head for bounded retry. Failures before remote verification are returned
-// without creating pending-publication evidence.
+// publishRunHead records nothing until the remote push, the gate mirror, and
+// the database write have all succeeded, so a partial failure leaves the run on
+// the pre-repair head and the next fix attempt re-enters this path.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	progress, publishErr := publishRunHead(sctx, headSHA, headSHA)
-	if publishErr != nil {
-		if !progress.remoteVerified {
-			return ciRepairResult{}, publishErr
-		}
-		if err := s.setPendingPublication(sctx, headSHA, s.pendingPublishAttempts); err != nil {
-			return ciRepairResult{}, errors.Join(publishErr, err)
-		}
-		return ciRepairResult{}, publishErr
-	}
-	if err := s.setPendingPublication(sctx, "", 0); err != nil {
+	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
 		return ciRepairResult{}, err
 	}
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
-}
-
-func (s *CIStep) setPendingPublication(sctx *pipeline.StepContext, head string, attempts int) error {
-	if sctx.StepResultID != "" {
-		if err := sctx.DB.SetCIPendingPublication(sctx.StepResultID, head, attempts); err != nil {
-			return err
-		}
-	}
-	s.pendingPublishHead = head
-	s.pendingPublishAttempts = attempts
-	return nil
 }
