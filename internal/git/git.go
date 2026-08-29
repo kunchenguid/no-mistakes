@@ -511,6 +511,13 @@ func PushCommit(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA st
 	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, nil)
 }
 
+// PushCommitWithOptions pushes one immutable commit with per-push options. It
+// is the proof-mode variant of PushWithOptions: a concurrent local HEAD move
+// cannot silently change the submitted commit after the caller captured it.
+func PushCommitWithOptions(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, pushOptions)
+}
+
 // PushWithOptions pushes HEAD to a remote with per-push options.
 func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
 	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions)

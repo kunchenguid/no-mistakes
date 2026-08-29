@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **cli:** add nonce-bound atomic AXI launch receipts ([#804](https://github.com/kunchenguid/no-mistakes/issues/804))
+
 ## [1.60.1](https://github.com/kunchenguid/no-mistakes/compare/v1.60.0...v1.60.1) (2026-08-29)
 
 

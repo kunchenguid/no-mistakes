@@ -81,6 +81,42 @@ func TestInsertRunWithIntent(t *testing.T) {
 	}
 }
 
+func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := d.InsertRun(repo.ID, "feature", "legacy-head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.GetRun(legacy.ID); err != nil || got.LaunchNonce != nil {
+		t.Fatalf("legacy launch nonce = %v, err = %v", got.LaunchNonce, err)
+	}
+
+	intent := RunIntent{Summary: "exact persisted intent\n", Source: RunIntentSourceAgent, Score: 1}
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" {
+		t.Fatalf("launch nonce = %v", run.LaunchNonce)
+	}
+	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1"); err == nil {
+		t.Fatal("duplicate nonce insert succeeded")
+	}
+
+	first, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1")
+	if err != nil || !claimed || first.ID != run.ID {
+		t.Fatalf("first claim = %#v, claimed=%v, err=%v", first, claimed, err)
+	}
+	replay, claimed, err := d.ClaimLaunchReceipt(repo.ID, "feature", "nonce-1")
+	if err != nil || claimed || replay.ID != run.ID {
+		t.Fatalf("replay claim = %#v, claimed=%v, err=%v", replay, claimed, err)
+	}
+}
+
 func TestRunCIReadinessStoresNoCIDeclaration(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

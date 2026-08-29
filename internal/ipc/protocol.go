@@ -9,20 +9,22 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived       = "push_received"
+	MethodStartFreshRun      = "start_fresh_run"
+	MethodGetLaunchReceipt   = "get_launch_receipt"
+	MethodClaimLaunchReceipt = "claim_launch_receipt"
+	MethodGetStepDiff      = "get_step_diff"
+	MethodGetRuns          = "get_runs"
+	MethodGetRunsForHead   = "get_runs_for_head"
+	MethodGetActiveRun     = "get_active_run"
+	MethodRerun            = "rerun"
+	MethodSubscribe        = "subscribe"
+	MethodRespond          = "respond"
+	MethodCancelRun        = "cancel_run"
+	MethodGateContext      = "gate_context"
+	MethodAdmitPush        = "admit_push"
+	MethodHealth           = "health"
+	MethodShutdown         = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -67,12 +69,35 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate        string           `json:"gate"`
+	Ref         string           `json:"ref"`
+	Old         string           `json:"old"`
+	New         string           `json:"new"`
+	SkipSteps   []types.StepName `json:"skip_steps,omitempty"`
+	Intent      string           `json:"intent,omitempty"`
+	LaunchNonce string           `json:"launch_nonce,omitempty"`
+}
+
+// StartFreshRunParams requests a nonce-bound, fresh launch for one exact gate
+// branch head. The daemon checks that the gate still names HeadSHA while it
+// holds its repository/branch lock, so a caller never receives a proof for a
+// drifting branch context.
+type StartFreshRunParams struct {
+	RepoID      string           `json:"repo_id"`
+	Branch      string           `json:"branch"`
+	HeadSHA     string           `json:"head_sha"`
+	SkipSteps   []types.StepName `json:"skip_steps,omitempty"`
+	Intent      string           `json:"intent"`
+	LaunchNonce string           `json:"launch_nonce"`
+}
+
+// GetLaunchReceiptParams resolves a receipt by its durable opaque binding.
+// It is deliberately receipt-specific: generic run/status surfaces do not
+// expose launch nonces or intent digests.
+type GetLaunchReceiptParams struct {
+	RepoID      string `json:"repo_id"`
+	Branch      string `json:"branch"`
+	LaunchNonce string `json:"launch_nonce"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -179,11 +204,36 @@ type ShutdownParams struct{}
 
 // --- Method results ---
 
-// PushReceivedResult confirms the push was accepted.
+// PushReceivedResult confirms the push was accepted. Receipt is populated for
+// every created run, while RunID remains for hook compatibility.
 type PushReceivedResult struct {
-	RunID string `json:"run_id"`
+	RunID   string         `json:"run_id"`
+	Receipt LaunchReceipt  `json:"receipt"`
 }
 
+// LaunchReceipt is the machine-readable, privacy-safe proof that the daemon
+// selected one durable run before the caller starts driving it. IntentDigest is
+// SHA-256 over the exact intent bytes persisted on the row; raw intent is never
+// present in this receipt or in generic status output.
+type LaunchReceipt struct {
+	RunID             string `json:"run_id"`
+	Disposition       string `json:"disposition"`
+	LaunchNonce       string `json:"launch_nonce"`
+	Branch            string `json:"branch"`
+	HeadSHA           string `json:"head_sha"`
+	SubmittedHeadSHA  string `json:"submitted_head_sha"`
+	IntentDigest      string `json:"intent_digest"`
+}
+
+// StartFreshRunResult is returned before any caller drives the run.
+type StartFreshRunResult struct {
+	Receipt LaunchReceipt `json:"receipt"`
+}
+
+// GetLaunchReceiptResult is empty when no durable nonce binding exists.
+type GetLaunchReceiptResult struct {
+	Receipt *LaunchReceipt `json:"receipt,omitempty"`
+}
 // GetRunResult wraps a single run.
 type GetRunResult struct {
 	Run *RunInfo `json:"run"`

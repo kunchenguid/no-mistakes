@@ -71,11 +71,16 @@ type Run struct {
 	IntentSource    *string
 	IntentSessionID *string
 	IntentScore     *float64
-	CreatedAt       int64
-	UpdatedAt       int64
+	// LaunchNonce is nullable for rows created before proof-mode launches. It
+	// binds one opaque caller request to this row; callers retrieve it only
+	// through the receipt-specific IPC method, never generic status output.
+	LaunchNonce            *string
+	LaunchReceiptClaimedAt *int64
+	CreatedAt              int64
+	UpdatedAt              int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, launch_nonce, launch_receipt_claimed_at, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -86,7 +91,7 @@ func scanRun(row interface {
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
-		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
+		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.LaunchNonce, &r.LaunchReceiptClaimedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -107,6 +112,12 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
+	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "")
+}
+// InsertRunWithIntentAndLaunchNonce persists an optional opaque launch
+// binding. The unique partial index is the final duplicate defense; callers
+// should still perform select-or-create under their branch lock.
+func (d *DB) InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA string, intent *RunIntent, launchNonce string) (*Run, error) {
 	ts := now()
 	version := buildinfo.CurrentVersion()
 	buildSHA := buildinfo.Commit
@@ -123,6 +134,9 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		CreatedAt:          ts,
 		UpdatedAt:          ts,
 	}
+	if launchNonce != "" {
+		r.LaunchNonce = &launchNonce
+	}
 	if intent != nil {
 		r.Intent = &intent.Summary
 		r.IntentSource = &intent.Source
@@ -130,8 +144,8 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		r.IntentScore = &intent.Score
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, launch_nonce, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.NoMistakesVersion, r.NoMistakesBuildSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.LaunchNonce, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -271,6 +285,45 @@ func (d *DB) GetRun(id string) (*Run, error) {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
 	return r, nil
+}
+
+// GetRunByLaunchNonce returns the one durable proof-mode binding for a
+// repository branch, or nil when this nonce has not created a run.
+func (d *DB) GetRunByLaunchNonce(repoID, branch, launchNonce string) (*Run, error) {
+	r := &Run{}
+	err := scanRun(d.sql.QueryRow(
+		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND launch_nonce = ?`,
+		repoID, branch, launchNonce,
+	), r)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run by launch nonce: %w", err)
+	}
+	return r, nil
+}
+
+// ClaimLaunchReceipt returns a nonce-bound run and whether this caller is the
+// first to receive its receipt. The conditional update is atomic in SQLite;
+// later retries retain the same run but receive a reused disposition.
+func (d *DB) ClaimLaunchReceipt(repoID, branch, launchNonce string) (*Run, bool, error) {
+	result, err := d.sql.Exec(
+		`UPDATE runs SET launch_receipt_claimed_at = ? WHERE repo_id = ? AND branch = ? AND launch_nonce = ? AND launch_receipt_claimed_at IS NULL`,
+		now(), repoID, branch, launchNonce,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("claim launch receipt: %w", err)
+	}
+	claimed, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("claim launch receipt rows: %w", err)
+	}
+	run, err := d.GetRunByLaunchNonce(repoID, branch, launchNonce)
+	if err != nil {
+		return nil, false, err
+	}
+	return run, claimed == 1, nil
 }
 
 // GetRunsByRepo returns all runs for a repo, newest first.

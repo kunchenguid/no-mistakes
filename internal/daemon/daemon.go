@@ -1186,6 +1186,65 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
 	})
 
+	srv.Handle(ipc.MethodGetLaunchReceipt, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetLaunchReceiptParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := validateLaunchNonce(p.LaunchNonce); err != nil {
+			return nil, err
+		}
+		run, err := d.GetRunByLaunchNonce(p.RepoID, p.Branch, p.LaunchNonce)
+		if err != nil {
+			return nil, fmt.Errorf("get launch receipt: %w", err)
+		}
+		if run == nil {
+			return &ipc.GetLaunchReceiptResult{}, nil
+		}
+		receipt, err := receiptForRun(run, false)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.GetLaunchReceiptResult{Receipt: &receipt}, nil
+	})
+
+	srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetLaunchReceiptParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := validateLaunchNonce(p.LaunchNonce); err != nil {
+			return nil, err
+		}
+		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce)
+		if err != nil {
+			return nil, fmt.Errorf("claim launch receipt: %w", err)
+		}
+		if run == nil {
+			return &ipc.GetLaunchReceiptResult{}, nil
+		}
+		receipt, err := receiptForRun(run, claimed)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.GetLaunchReceiptResult{Receipt: &receipt}, nil
+	})
+
+	srv.Handle(ipc.MethodStartFreshRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.StartFreshRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		receipt, err := mgr.HandleStartFreshRun(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.StartFreshRunResult{Receipt: receipt}, nil
+	})
+
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1212,11 +1271,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		slog.Info("push received", "ref", p.Ref, "old", p.Old, "new", p.New, "gate", p.Gate)
-		runID, err := mgr.HandlePushReceived(ctx, &p)
+		receipt, err := mgr.HandlePushReceived(ctx, &p)
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.PushReceivedResult{RunID: runID}, nil
+		return &ipc.PushReceivedResult{RunID: receipt.RunID, Receipt: receipt}, nil
 	})
 
 	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {

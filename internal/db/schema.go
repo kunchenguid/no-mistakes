@@ -38,9 +38,15 @@ CREATE TABLE IF NOT EXISTS runs (
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
+    launch_nonce        TEXT,
+    launch_receipt_claimed_at INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce
+    ON runs (repo_id, branch, launch_nonce)
+    WHERE launch_nonce IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
@@ -221,7 +227,15 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// A launch nonce binds a caller's proof request to one durable run. It is
+	// nullable so historical runs remain readable; the partial unique index
+	// makes concurrent same-nonce launches converge even across processes.
+	`ALTER TABLE runs ADD COLUMN launch_nonce TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce ON runs (repo_id, branch, launch_nonce) WHERE launch_nonce IS NOT NULL`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
+	// Receipt claiming distinguishes the one first caller-visible receipt from
+	// idempotent replays without ever exposing intent on generic run surfaces.
+	`ALTER TABLE runs ADD COLUMN launch_receipt_claimed_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,

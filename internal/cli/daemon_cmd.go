@@ -106,6 +106,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			launchNonce, err := parseLaunchNoncePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +128,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:        gatePath,
+				Ref:         ref,
+				Old:         oldSHA,
+				New:         newSHA,
+				SkipSteps:   skipSteps,
+				Intent:      intent,
+				LaunchNonce: launchNonce,
 			}, &result)
 		},
 	}
@@ -193,6 +198,39 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // The value is base64-encoded so multi-line or special-character intents
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
+
+// launchNoncePushOptionPrefix carries an opaque proof-mode request binding
+// through the line-oriented Git push-option transport.
+const launchNoncePushOptionPrefix = "no-mistakes.launch-nonce="
+
+func formatLaunchNoncePushOption(nonce string) string {
+	if nonce == "" {
+		return ""
+	}
+	return launchNoncePushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(nonce))
+}
+
+// parseLaunchNoncePushOptions rejects duplicate conflicting values instead of
+// silently selecting one, because that would manufacture a false proof.
+func parseLaunchNoncePushOptions(options []string) (string, error) {
+	nonce := ""
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, launchNoncePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", fmt.Errorf("decode launch nonce push option: %w", err)
+		}
+		value := string(decoded)
+		if nonce != "" && nonce != value {
+			return "", fmt.Errorf("conflicting launch nonce push options")
+		}
+		nonce = value
+	}
+	return nonce, nil
+}
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.

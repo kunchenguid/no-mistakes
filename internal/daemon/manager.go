@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"context"
 	"fmt"
 	"log/slog"
@@ -689,30 +690,181 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
-func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
+func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (ipc.LaunchReceipt, error) {
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
-		return "", fmt.Errorf("ref deletion push, no pipeline to run")
+		return ipc.LaunchReceipt{}, fmt.Errorf("ref deletion push, no pipeline to run")
 	}
 
 	repoID, err := repoIDFromGatePath(params.Gate)
 	if err != nil {
-		return "", err
+		return ipc.LaunchReceipt{}, err
 	}
-
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
-		return "", fmt.Errorf("get repo: %w", err)
+		return ipc.LaunchReceipt{}, fmt.Errorf("get repo: %w", err)
 	}
 	if repo == nil {
-		return "", fmt.Errorf("unknown repo for gate %s", params.Gate)
+		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo for gate %s", params.Gate)
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	if params.LaunchNonce != "" {
+		return m.startFreshLaunch(ctx, repo, branch, params.New, params.Old, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, "push")
+	}
+	runID, err := m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("read created run: %w", err)
+	}
+	return receiptForRun(run, true)
 }
 
+// HandleStartFreshRun creates or replays a proof-mode launch only when the
+// daemon can confirm the gate branch is still at the caller's exact head.
+func (m *RunManager) HandleStartFreshRun(ctx context.Context, params *ipc.StartFreshRunParams) (ipc.LaunchReceipt, error) {
+	repo, err := m.db.GetRepo(params.RepoID)
+	if err != nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("unknown repo %s", params.RepoID)
+	}
+	return m.startFreshLaunch(ctx, repo, params.Branch, params.HeadSHA, "", m.paths.RepoDir(repo.ID), params.SkipSteps, params.Intent, params.LaunchNonce, "fresh")
+}
+
+// startFreshLaunch owns proof-mode identity under the existing repository /
+// branch lock. It must not delegate the select-or-create decision to callers:
+// a same nonce is an idempotent replay, while a different nonce never aliases
+// a same-branch/head row.
+func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, gateDir string, skipSteps []types.StepName, intent, launchNonce, trigger string) (ipc.LaunchReceipt, error) {
+	if err := validateLaunchNonce(launchNonce); err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	if strings.TrimSpace(intent) == "" {
+		return ipc.LaunchReceipt{}, fmt.Errorf("intent is required with launch_nonce")
+	}
+	// Proof mode binds the bytes actually persisted, including leading/trailing
+	// whitespace. Ordinary AXI intent keeps its historical normalization.
+	persistedIntent := intent
+	requestDigest := digestIntent(persistedIntent)
+
+	var receipt ipc.LaunchReceipt
+	_, err := m.withBranchLock(repo.ID, branch, func() (string, error) {
+		existing, err := m.db.GetRunByLaunchNonce(repo.ID, branch, launchNonce)
+		if err != nil {
+			return "", err
+		}
+		if existing != nil {
+			replayed, err := receiptForRun(existing, false)
+			if err != nil {
+				return "", err
+			}
+			if replayed.HeadSHA != headSHA || replayed.SubmittedHeadSHA != headSHA || replayed.IntentDigest != requestDigest {
+				return "", fmt.Errorf("conflicting launch_nonce %q is already bound to a different branch, head, or intent", launchNonce)
+			}
+			receipt = replayed
+			return existing.ID, nil
+		}
+		gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+		if err != nil {
+			return "", fmt.Errorf("resolve gate head: %w", err)
+		}
+		if gateHead != headSHA {
+			return "", fmt.Errorf("launch context drift: gate branch %q is at %s, not requested %s", branch, gateHead, headSHA)
+		}
+		if baseSHA == "" {
+			runs, err := m.db.GetRunsByRepoHead(repo.ID, branch, headSHA)
+			if err != nil {
+				return "", err
+			}
+			baseSHA = headSHA
+			if len(runs) > 0 {
+				baseSHA = runs[0].BaseSHA
+			}
+		}
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce)
+		if err != nil {
+			return "", err
+		}
+		run, err := m.db.GetRun(runID)
+		if err != nil {
+			return "", fmt.Errorf("read created run: %w", err)
+		}
+		receipt, err = receiptForRun(run, true)
+		if err != nil {
+			return "", err
+		}
+		// A direct fresh/no-op fallback returns its receipt on this RPC, so
+		// consume the one created disposition now. Post-receive pushes leave
+		// it available for the initiating CLI's separate receipt claim.
+		if trigger != "push" {
+			if _, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce); err != nil {
+				return "", err
+			} else if !claimed {
+				return "", fmt.Errorf("claim newly created launch receipt")
+			}
+		}
+		slog.Info("proof-mode launch bound", "run_id", receipt.RunID, "disposition", receipt.Disposition, "branch", receipt.Branch, "submitted_head_sha", receipt.SubmittedHeadSHA, "launch_nonce", receipt.LaunchNonce, "intent_digest", receipt.IntentDigest)
+		return runID, nil
+	})
+	if err != nil {
+		return ipc.LaunchReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func validateLaunchNonce(nonce string) error {
+	if len(nonce) == 0 || len(nonce) > 128 {
+		return fmt.Errorf("launch_nonce must be 1 to 128 ASCII URL-safe characters")
+	}
+	for _, char := range nonce {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("._~-", char) {
+			continue
+		}
+		return fmt.Errorf("launch_nonce contains unsupported character %q", char)
+	}
+	return nil
+}
+
+func digestIntent(intent string) string {
+	sum := sha256.Sum256([]byte(intent))
+	return fmt.Sprintf("%x", sum)
+}
+
+func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
+	if run == nil {
+		return ipc.LaunchReceipt{}, fmt.Errorf("run is required")
+	}
+	if run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA == "" {
+		return ipc.LaunchReceipt{}, fmt.Errorf("run %s has no submitted head binding", run.ID)
+	}
+	launchNonce := ""
+	if run.LaunchNonce != nil {
+		launchNonce = *run.LaunchNonce
+	}
+	intent := ""
+	if run.Intent != nil {
+		intent = *run.Intent
+	}
+	disposition := "reused"
+	if created {
+		disposition = "created"
+	}
+	return ipc.LaunchReceipt{
+		RunID:            run.ID,
+		Disposition:      disposition,
+		LaunchNonce:      launchNonce,
+		Branch:           run.Branch,
+		HeadSHA:          run.HeadSHA,
+		SubmittedHeadSHA: *run.SubmittedHeadSHA,
+		IntentDigest:     digestIntent(intent),
+	}, nil
+}
 // HandleRerun creates a new run for the latest recoverable head on a branch:
 // normally the gate branch, or the latest terminal run's verified unpublished
 // head while custody remains outstanding. An explicit intent overrides the
@@ -857,6 +1009,23 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	return m.withBranchLock(repo.ID, branch, func() (string, error) {
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "")
+	})
+}
+
+func (m *RunManager) withBranchLock(repoID, branch string, action func() (string, error)) (string, error) {
+	lockKey := repoID + "/" + branch
+	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	branchMu := lockVal.(*sync.Mutex)
+	branchMu.Lock()
+	defer branchMu.Unlock()
+	return action()
+}
+
+// startRunWithIntentSourceLocked performs run creation while the caller owns
+// the repository/branch lock. launchNonce is optional for ordinary launches.
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -871,14 +1040,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
-
-	// Serialize per repo+branch to prevent two concurrent pushes from both
-	// passing cancelActiveRuns and creating duplicate pipelines.
-	lockKey := repo.ID + "/" + branch
-	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	branchMu := lockVal.(*sync.Mutex)
-	branchMu.Lock()
-	defer branchMu.Unlock()
 
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
@@ -895,7 +1056,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	m.cancelActiveRuns(repo.ID, branch)
 
 	storedIntent := intent
-	if source != db.RunIntentSourceRerun {
+	if source != db.RunIntentSourceRerun && launchNonce == "" {
 		storedIntent = strings.TrimSpace(storedIntent)
 	}
 	var runIntent *db.RunIntent
@@ -906,7 +1067,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
-	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
+	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
