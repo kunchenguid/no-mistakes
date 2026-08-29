@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.60.1](https://github.com/kunchenguid/no-mistakes/compare/v1.60.0...v1.60.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **pipeline:** keep review fixes within authorized scope ([#892](https://github.com/kunchenguid/no-mistakes/issues/892)) ([f1f249d](https://github.com/kunchenguid/no-mistakes/commit/f1f249d26ef14507757a85273ab3244d3bf5e6c6))
+* **pipeline:** safely publish CI repairs with proven continuity ([#887](https://github.com/kunchenguid/no-mistakes/issues/887)) ([5d5b650](https://github.com/kunchenguid/no-mistakes/commit/5d5b650300e51639c79f5516b4c8c11b4425b1c3))
+
 ## [1.60.0](https://github.com/kunchenguid/no-mistakes/compare/v1.59.3...v1.60.0) (2026-08-28)
 
 
