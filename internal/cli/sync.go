@@ -94,7 +94,7 @@ func newAxiSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; surviving preserved commits stay anchored and the gate branch compare-and-swaps onto the kept head, which also settles a record whose preserved head can no longer be verified")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the worktree is never touched, surviving preserved commits stay anchored, and where the gate branch still names a different head it compare-and-swaps onto the kept head; otherwise custody returns without moving any branch ref. Also settles a record whose preserved head can no longer be verified")
 	return cmd
 }
 
