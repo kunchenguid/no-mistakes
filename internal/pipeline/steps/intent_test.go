@@ -310,7 +310,7 @@ func TestIntentStep_PanicReturnsSkipped(t *testing.T) {
 
 func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
 	sctx := newIntentStepContext(t)
-	supplied := "agent-supplied: add retry to the uploader"
+	supplied := "agent-supplied: add retry to the uploader\nFirstmate-Validation-Generation: 0123456789abcdef0123456789abcdef\nsecret surrounding intent"
 	sctx.Run.Intent = &supplied
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -337,12 +337,22 @@ func TestIntentStep_UsesSuppliedIntent(t *testing.T) {
 		t.Errorf("supplied intent was mutated: %v", sctx.Run.Intent)
 	}
 	found := false
-	for _, l := range logs {
-		if strings.Contains(l, "using intent supplied by the agent") {
+	marker := "Firstmate-Validation-Generation: 0123456789abcdef0123456789abcdef"
+	for _, line := range logs {
+		if strings.Contains(line, "using intent supplied by the agent") {
 			found = true
+		}
+		if line == marker {
+			marker = ""
+		}
+		if strings.Contains(line, "secret surrounding intent") {
+			t.Fatalf("intent log exposed raw intent: %q", line)
 		}
 	}
 	if !found {
 		t.Errorf("missing supplied-intent log line; logs: %v", logs)
+	}
+	if marker != "" {
+		t.Errorf("missing validation marker; logs: %v", logs)
 	}
 }

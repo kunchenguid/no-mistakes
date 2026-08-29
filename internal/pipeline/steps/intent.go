@@ -55,6 +55,13 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 	if sctx != nil && sctx.Run != nil && sctx.Run.Intent != nil && strings.TrimSpace(*sctx.Run.Intent) != "" {
 		if sctx.Log != nil {
 			sctx.Log("using intent supplied by the agent")
+			if marker := firstmateValidationGeneration(*sctx.Run.Intent); marker != "" {
+				// This bounded correlation marker is intentionally the only
+				// caller-provided intent content surfaced in the step log. It
+				// lets Firstmate bind its validation run without exposing the
+				// surrounding opaque intent to logs, status, or telemetry.
+				sctx.Log(marker)
+			}
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -156,6 +163,27 @@ func (s *IntentStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.Step
 
 	slog.Info("intent: attached", "run_id", sctx.Run.ID, "agent", matchedAgent, "score", score)
 	return &pipeline.StepOutcome{}, nil
+}
+
+const firstmateValidationGenerationPrefix = "Firstmate-Validation-Generation: "
+
+func firstmateValidationGeneration(intent string) string {
+	for _, line := range strings.Split(intent, "\n") {
+		if !strings.HasPrefix(line, firstmateValidationGenerationPrefix) {
+			continue
+		}
+		generation := strings.TrimPrefix(line, firstmateValidationGenerationPrefix)
+		if len(generation) != 32 {
+			return ""
+		}
+		for _, char := range generation {
+			if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+				return ""
+			}
+		}
+		return line
+	}
+	return ""
 }
 
 // errIntentEmptyDiff is returned by defaultRunIntent when the diff between
