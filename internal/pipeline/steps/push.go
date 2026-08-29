@@ -65,7 +65,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
+	if _, err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
 		return nil, err
 	}
 
@@ -94,7 +94,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // It deliberately does not relax the review-approved-head check for anyone.
 // Whether a CI repair may be published at all is decided before publication, by
 // ciRepairContinuityGap.
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) error {
+type publicationProgress struct {
+	remoteVerified bool
+}
+
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) (publicationProgress, error) {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -110,7 +114,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	}
 
 	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
-		return err
+		return publicationProgress{}, err
 	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
@@ -124,13 +128,13 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
 	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
 	if err != nil {
-		return fmt.Errorf("push to %s: %w", pushTarget, err)
+		return publicationProgress{}, fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).
 		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, "", false); err != nil {
-			return fmt.Errorf("push to %s: %w", pushTarget, err)
+			return publicationProgress{}, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	case decision.upToDate:
 		// Remote already at this exact head. This freshly verified equality is a
@@ -138,16 +142,17 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	default:
 		// Existing branch: force-with-lease anchored to the verified remote head.
 		if err := stepGitPushCommit(sctx, pushURL, headBeingPushed, ref, decision.remoteSHA, true); err != nil {
-			return fmt.Errorf("push to %s: %w", pushTarget, err)
+			return publicationProgress{}, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	}
 	verifiedRemote, err := lsRemoteSHA(gitRun, pushURL, ref)
 	if err != nil || verifiedRemote != headBeingPushed {
 		if err != nil {
-			return fmt.Errorf("verify successful push to %s: %w", pushTarget, err)
+			return publicationProgress{}, fmt.Errorf("verify successful push to %s: %w", pushTarget, err)
 		}
-		return fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, headBeingPushed)
+		return publicationProgress{}, fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, headBeingPushed)
 	}
+	progress := publicationProgress{remoteVerified: true}
 	// Settle the gate mirror BEFORE recording the publication. The remote
 	// already has the head, but a run is only "published" once the gate mirror
 	// carries it too: `no-mistakes rerun` resolves its starting head from the
@@ -163,12 +168,12 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// repair as a failed one, and recording first and swallowing the error
 	// strands the gate behind the remote for good.
 	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
-		return err
+		return progress, err
 	}
 
 	if localRefUpdate != "" {
 		if _, err := stepGitRun(sctx, "update-ref", ref, localRefUpdate); err != nil {
-			return fmt.Errorf("update local branch ref: %w", err)
+			return progress, fmt.Errorf("update local branch ref: %w", err)
 		}
 	}
 
@@ -178,10 +183,10 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		TargetFingerprint: branchsync.TargetFingerprint(pushURL),
 		Ref:               ref,
 	}); err != nil {
-		return err
+		return progress, err
 	}
 	sctx.Run.HeadSHA = headBeingPushed
-	return nil
+	return progress, nil
 }
 
 func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string) error {

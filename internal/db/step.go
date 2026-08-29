@@ -9,33 +9,47 @@ import (
 
 // StepResult represents the result of a pipeline step execution.
 type StepResult struct {
-	ID             string
-	RunID          string
-	StepName       types.StepName
-	StepOrder      int
-	Status         types.StepStatus
-	ExitCode       *int
-	DurationMS     *int64
-	LogPath        *string
-	FindingsJSON   *string
-	Error          *string
-	StartedAt      *int64
-	CompletedAt    *int64
-	LastActivityAt *int64
-	LastActivity   *string
-	AgentPID       *int
-	AutoFixLimit   *int
-	CIFixAttempts  int
+	ID                       string
+	RunID                    string
+	StepName                 types.StepName
+	StepOrder                int
+	Status                   types.StepStatus
+	ExitCode                 *int
+	DurationMS               *int64
+	LogPath                  *string
+	FindingsJSON             *string
+	Error                    *string
+	StartedAt                *int64
+	CompletedAt              *int64
+	LastActivityAt           *int64
+	LastActivity             *string
+	AgentPID                 *int
+	AutoFixLimit             *int
+	CIFixAttempts            int
+	CIPendingPublishHead     *string
+	CIPendingPublishAttempts int
 }
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
 
 func (d *DB) readableStepResultColumns() string {
+	columns := stepResultColumns
 	if d.hasColumn("step_results", "ci_fix_attempts") {
-		return stepResultColumns + ", ci_fix_attempts"
+		columns += ", ci_fix_attempts"
+	} else {
+		columns += ", 0 AS ci_fix_attempts"
 	}
-	// Read-only preflight can inspect a database before migrations run.
-	return stepResultColumns + ", 0 AS ci_fix_attempts"
+	if d.hasColumn("step_results", "ci_pending_publish_head") {
+		columns += ", ci_pending_publish_head"
+	} else {
+		columns += ", NULL AS ci_pending_publish_head"
+	}
+	if d.hasColumn("step_results", "ci_pending_publish_attempts") {
+		columns += ", ci_pending_publish_attempts"
+	} else {
+		columns += ", 0 AS ci_pending_publish_attempts"
+	}
+	return columns
 }
 
 // InsertStepResult creates a new step result record.
@@ -62,7 +76,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.CIPendingPublishHead, &s.CIPendingPublishAttempts)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -84,7 +98,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.CIPendingPublishHead, &s.CIPendingPublishAttempts); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -98,7 +112,8 @@ func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
 		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
 			findings_json = NULL, error = NULL, started_at = NULL,
 			completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
-			agent_pid = NULL, auto_fix_limit = NULL
+			agent_pid = NULL, auto_fix_limit = NULL,
+			ci_pending_publish_head = NULL, ci_pending_publish_attempts = 0
 		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
 	if err != nil {
 		return fmt.Errorf("reset steps for revalidation: %w", err)
@@ -192,6 +207,20 @@ func (d *DB) SetStepAutoFixLimit(id string, autoFixLimit int) error {
 func (d *DB) SetCIFixAttempts(id string, attempts int) error {
 	if _, err := d.sql.Exec(`UPDATE step_results SET ci_fix_attempts = ? WHERE id = ?`, attempts, id); err != nil {
 		return fmt.Errorf("set CI fix attempts: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) SetCIPendingPublication(id, head string, attempts int) error {
+	var persistedHead any
+	if head != "" {
+		persistedHead = head
+	}
+	if _, err := d.sql.Exec(
+		`UPDATE step_results SET ci_pending_publish_head = ?, ci_pending_publish_attempts = ? WHERE id = ?`,
+		persistedHead, attempts, id,
+	); err != nil {
+		return fmt.Errorf("set pending CI publication: %w", err)
 	}
 	return nil
 }

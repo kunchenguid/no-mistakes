@@ -44,9 +44,7 @@ type CIStep struct {
 	// began but could not settle. It is the ONLY evidence that authorizes
 	// retryPendingRepair, so a head that merely differs from the recorded one -
 	// an agent commit from a fix that then failed, a live PR head in a test
-	// fixture - is never mistaken for an unsettled publication. In memory only:
-	// after a daemon restart the next fix attempt's commitRepair settles it
-	// instead, at the cost of one attempt.
+	// fixture - is never mistaken for an unsettled publication.
 	pendingPublishHead string
 	// pendingPublishAttempts bounds how many polls are spent on that retry.
 	pendingPublishAttempts int
@@ -165,6 +163,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		if stepResult != nil {
 			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
+			if stepResult.CIPendingPublishHead != nil {
+				s.pendingPublishHead = strings.TrimSpace(*stepResult.CIPendingPublishHead)
+			}
+			s.pendingPublishAttempts = max(s.pendingPublishAttempts, stepResult.CIPendingPublishAttempts)
 		}
 	}
 	// A run recovered after a restart resumes the rerun budget it already
@@ -303,6 +305,33 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 
+		pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
+		if pending {
+			if pendingErr != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
+				if err := waitForPoll(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if pendingRepair.Revalidate {
+				return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			}
+			if err := waitForPoll(); err != nil {
+				return nil, err
+			}
+			continue
+		} else if pendingErr != nil {
+			return nil, pendingErr
+		}
+		if s.pendingPublishHead != "" && s.pendingPublishAttempts >= maxPendingPublishRetries {
+			clearCIMonitorReady(sctx)
+			sctx.Log(fmt.Sprintf("unsettled CI repair publication for %s exhausted its %d retries; the repair is on the remote but publication settlement is incomplete", shortObjectID(s.pendingPublishHead), maxPendingPublishRetries))
+			return ciUnsettledPublicationOutcome(s.pendingPublishHead), nil
+		}
+
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
 		}
@@ -331,33 +360,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
-		}
-
-		if s.pendingPublishHead != "" && s.pendingPublishAttempts >= maxPendingPublishRetries {
-			clearCIMonitorReady(sctx)
-			sctx.Log(fmt.Sprintf("unsettled CI repair publication for %s exhausted its %d retries; the repair is on the remote but the gate mirror is behind it", shortObjectID(s.pendingPublishHead), maxPendingPublishRetries))
-			return ciUnsettledPublicationOutcome(s.pendingPublishHead), nil
-		}
-		pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
-		if pending {
-			if pendingErr != nil {
-				clearCIMonitorReady(sctx)
-				lastMonitorLog = ""
-				sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
-				if err := waitForPoll(); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			if pendingRepair.Revalidate {
-				return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
-			}
-			if err := waitForPoll(); err != nil {
-				return nil, err
-			}
-			continue
-		} else if pendingErr != nil {
-			return nil, pendingErr
 		}
 
 		// Check PR state (merged/closed -> exit)
