@@ -3629,13 +3629,17 @@ func TestUnreadableGateSwapFailureDoesNotDisclaimARaceItCannotRuleOut(t *testing
 	}
 }
 
-// TestSuccessfulKeepLocalSurfacesAStagingRefItCouldNotRemove closes the one
-// path where releaseStagingRef's guarantee was dropped. Every refusal around
-// the compare-and-swap discloses a staging ref it could not remove, but the
-// SUCCESS path computed that clause and threw it away, so a failed cleanup left
-// refs/no-mistakes/custody-return/<run> in the gate reported nowhere at all -
-// one dangling ref per affected run, invisibly.
-func TestSuccessfulKeepLocalSurfacesAStagingRefItCouldNotRemove(t *testing.T) {
+// TestSuccessfulKeepLocalReportsNoFailureWhenOnlyCleanupFailed pins where the
+// staging-ref disclosure belongs. The obligation is a REFUSAL's: those deny
+// leaving anything behind, so a swallowed cleanup error would make that denial
+// false. A successful custody return makes no such claim, and State.Error is
+// the field every consumer reads as failure - `axi sync` emits it as a
+// top-level `error`, and the TUI raises an error banner on it - so putting the
+// leftover there made a fully completed settlement report itself failed.
+//
+// The leftover is benign: the next attempt's fetch force-overwrites the same
+// ref, and the kept head stays reachable from the gate branch regardless.
+func TestSuccessfulKeepLocalReportsNoFailureWhenOnlyCleanupFailed(t *testing.T) {
 	t.Parallel()
 
 	f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
@@ -3666,8 +3670,11 @@ func TestSuccessfulKeepLocalSurfacesAStagingRefItCouldNotRemove(t *testing.T) {
 	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, stagingRef); err != nil || !exists {
 		t.Fatalf("fixture invariant broken: the staging ref must have survived: exists=%v err=%v", exists, err)
 	}
-	if !strings.Contains(state.Error, stagingRef) || !strings.Contains(state.Error, "remains there") {
-		t.Fatalf("successful custody return did not report the staging ref it left behind: %q", state.Error)
+	if state.Error != "" {
+		t.Fatalf("a fully completed custody return reported a failure on the field every consumer reads as one: %q", state.Error)
+	}
+	if state.Safety != "custody_returned" {
+		t.Fatalf("cleanup failure changed the settlement's safety = %q", state.Safety)
 	}
 	if !f.custodyReturned() {
 		t.Fatal("custody was not stamped")

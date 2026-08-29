@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 )
@@ -31,12 +33,20 @@ import (
 // confirmation box, the agent guidance, the skill and the agents guide. Drift
 // on ANY of these now fails here.
 //
+// The population is enumerated in settlementClaimSurfaces and is exactly:
+// both `--keep-local` flag help lines, both sync Long descriptions, the
+// interactive consent prompt an operator reads immediately before typing `y`,
+// the live agent-guidance constant, the structured branch_sync error, the TUI
+// settlement confirmation, the generated skill, the agents guide, the CLI
+// reference, and the checked-in branch-sync agent skill. Adding a surface that
+// states the claim means adding it there.
+//
 // Where a surface has a real interface it is executed: cobra renders its own
-// help, the TUI renders its own confirmation, branchsync classifies a real
-// wedged record from a real repository, and the guidance constant is the value
-// the CLI emits. The generated skill and the two docs pages are read as the
-// owned text contracts they already are, following the precedent in
-// axi_guidance_test.go.
+// help, the recovery command renders its own consent prompt against a real
+// wedged repository, the TUI renders its own confirmation, branchsync
+// classifies that same record, and the guidance constant is the value the CLI
+// emits. The generated skill and the two docs pages are read as the owned text
+// contracts they already are, following the precedent in axi_guidance_test.go.
 func TestSettlementGateMovePromiseStaysConditional(t *testing.T) {
 	for name, text := range settlementClaimSurfaces(t) {
 		if offender := branchsync.UnqualifiedGateMovePromise(text); offender != "" {
@@ -80,8 +90,12 @@ func settlementClaimSurfaces(t *testing.T) map[string]string {
 	// directory to its operator worktree.
 	agentsGuide := readAgentsGuide(t)
 	cliReference := readDocsPage(t, "reference", "cli.md")
+	branchSyncSkill := readRepoFile(t, filepath.Join(".agents", "skills", "branch-sync-and-push-safety", "SKILL.md"))
 	generatedSkill := skill.Markdown()
-	advertisement := wedgedSettlementAdvertisement(t)
+
+	_, p, _ := wedgedCustodyAbortFixture(t)
+	advertisement := wedgedSettlementAdvertisement(t, p)
+	consent := keepLocalConsentPrompt(t)
 
 	return map[string]string{
 		// Keep the per-surface isolation the help contract test established:
@@ -91,22 +105,22 @@ func settlementClaimSurfaces(t *testing.T) map[string]string {
 		"sync long description":           helpLongDescription(t, humanHelp),
 		"axi sync --keep-local flag help": keepLocalFlagUsage(t, axiHelp),
 		"axi sync long description":       helpLongDescription(t, axiHelp),
+		"keep-local consent prompt":       consent,
 		"live branch-sync agent guidance": branchSyncAgentGuidance,
 		"structured branch_sync error":    advertisement,
 		"TUI settlement confirmation":     unboxed(tui.RenderSettleConfirmation(wedgedSettlementState(), 80)),
 		"generated skill":                 generatedSkill,
 		"agents guide":                    agentsGuide,
 		"cli reference":                   cliReference,
+		"branch-sync agent skill":         branchSyncSkill,
 	}
 }
 
 // wedgedSettlementAdvertisement returns the structured branch_sync error a real
 // wedged custody record produces, read from classifyPipelineOwned through the
 // same service the CLI surfaces build.
-func wedgedSettlementAdvertisement(t *testing.T) string {
+func wedgedSettlementAdvertisement(t *testing.T, p *paths.Paths) string {
 	t.Helper()
-	_, p, _ := wedgedCustodyAbortFixture(t)
-
 	database, err := db.Open(p.DB())
 	if err != nil {
 		t.Fatalf("open fixture database: %v", err)
@@ -130,6 +144,42 @@ func wedgedSettlementAdvertisement(t *testing.T) string {
 		t.Fatalf("fixture did not advertise the keep-local settlement: %#v", state.NextAction)
 	}
 	return state.Error
+}
+
+// keepLocalConsentPrompt drives the real `sync --recover --keep-local`
+// confirmation against the wedged record and returns only the consent block -
+// the sentences an operator reads immediately before typing y. The surrounding
+// state print is excluded so this surface cannot be satisfied by the structured
+// error that is already in the population separately.
+//
+// The answer is "n": the prompt is the surface under test, and declining leaves
+// the fixture untouched for any other surface.
+func keepLocalConsentPrompt(t *testing.T) string {
+	t.Helper()
+	previous := syncInteractive
+	syncInteractive = func() bool { return true }
+	t.Cleanup(func() { syncInteractive = previous })
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetIn(strings.NewReader("n\n"))
+	cmd.SetArgs([]string{"sync", "--recover", "--keep-local"})
+	_ = cmd.Execute()
+
+	out := buf.String()
+	const opener = "Recovery returns custody of this branch"
+	const closer = "Return custody of this branch?"
+	start := strings.Index(out, opener)
+	end := strings.Index(out, closer)
+	if start < 0 || end < start {
+		t.Fatalf("the keep-local consent prompt was not rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "Cancelled; no files or refs were changed.") {
+		t.Fatalf("declining the consent prompt did not cancel cleanly:\n%s", out)
+	}
+	return out[start:end]
 }
 
 // wedgedSettlementState is the state shape the TUI receives for that same
@@ -159,7 +209,12 @@ func unboxed(rendered string) string {
 
 func readDocsPage(t *testing.T, section, name string) string {
 	t.Helper()
-	path := filepath.Join("..", "..", "docs", "src", "content", "docs", section, name)
+	return readRepoFile(t, filepath.Join("docs", "src", "content", "docs", section, name))
+}
+
+func readRepoFile(t *testing.T, relative string) string {
+	t.Helper()
+	path := filepath.Join("..", "..", relative)
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

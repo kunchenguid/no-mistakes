@@ -218,14 +218,15 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			result = "refused"
 			return &exitError{code: 1}
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
+		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run.")
 		if keepLocal {
-			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the preserved pipeline commits and moving the")
-			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  Your worktree is never touched. Any surviving copy of the recorded pipeline")
+			fmt.Fprintln(cmd.OutOrStdout(), "  head is anchored first, and where the gate branch still names a different")
+			fmt.Fprintln(cmd.OutOrStdout(), "  head it is compare-and-swapped onto your current head.")
 		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
-			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
-			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses, and --keep-local keeps the current head.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  The only possible worktree change is a fast-forward of this clean behind")
+			fmt.Fprintln(cmd.OutOrStdout(), "  branch, or adoption of a diverged preserved head proven to carry every local")
+			fmt.Fprintln(cmd.OutOrStdout(), "  change; unproven divergence refuses, and --keep-local keeps the current head.")
 		}
 		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
@@ -275,11 +276,7 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 		fmt.Fprintf(w, "  target:   %s %s (%s)\n", state.Target.Remote, state.Target.Ref, state.Target.Kind)
 	}
 	if state.Error != "" {
-		label := "blocked:"
-		if state.Recovered {
-			label = "note:"
-		}
-		fmt.Fprintf(w, "  %-9s %s\n", label, state.Error)
+		fmt.Fprintf(w, "  blocked:  %s\n", state.Error)
 	}
 }
 
