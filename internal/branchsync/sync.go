@@ -1161,6 +1161,13 @@ func (s *Service) releaseStagingRef(ctx context.Context, stagingRef string) stri
 
 // recoverFastForward advances the clean checked-out branch to the preserved
 // pipeline head with the same strict fast-forward and honesty rules as Apply.
+// These mid-recovery failures never claimed nothing was written, so unlike the
+// refusals above they were not saying anything false. They still name the
+// anchor: the operator is left with a partly applied recovery to reconcile by
+// hand, the preserved head is sitting at exactly the ref that reconciliation
+// needs, and the sibling refusal in the same function already discloses it. A
+// function that disclosed in one arm and stayed silent in the next is not a
+// defensible resting place.
 func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state State, preserved string, anchoredNote recoveryAnchorNote) State {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
@@ -1179,7 +1186,7 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 	state.Local.Reason = finalReason
 	state.Changed = finalHead == preserved && finalHead != head
 	if mergeErr != nil || finalHead != preserved {
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("strict fast-forward to the preserved pipeline head failed; final HEAD is %s and no destructive recovery was attempted", finalHead))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("strict fast-forward to the preserved pipeline head failed; final HEAD is %s and no destructive recovery was attempted%s", finalHead, anchoredNote.clause()))
 		return blocked
 	}
 	if !finalClean {
@@ -1321,14 +1328,14 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
 			rollbackDetail = fmt.Sprintf("; the branch could not be restored to %s and still requires manual reconciliation", head)
 		}
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail))
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded%s", rollbackDetail, anchoredNote.clause()))
 	}
 	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
 		rolledBack := ""
 		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
 			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
 		}
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled%s", rolledBack, anchoredNote.clause()))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return blocked
 	}
@@ -1340,7 +1347,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	state.Local.Reason = finalReason
 	state.Changed = finalHead == preserved && finalHead != head
 	if finalHead != preserved {
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying%s", finalHead, localAnchor, anchoredNote.clause()))
 		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return blocked
 	}
