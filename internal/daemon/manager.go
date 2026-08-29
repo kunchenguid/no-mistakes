@@ -767,7 +767,17 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			if replayed.HeadSHA != headSHA || replayed.SubmittedHeadSHA != headSHA || replayed.IntentDigest != requestDigest {
 				return "", fmt.Errorf("conflicting launch_nonce %q is already bound to a different branch, head, or intent", launchNonce)
 			}
-			receipt = replayed
+			claimedRun, claimed, err := m.db.ClaimLaunchReceipt(repo.ID, branch, launchNonce)
+			if err != nil {
+				return "", err
+			}
+			if claimedRun == nil {
+				return "", fmt.Errorf("claimed launch receipt %q disappeared", launchNonce)
+			}
+			receipt, err = receiptForRun(claimedRun, claimed)
+			if err != nil {
+				return "", err
+			}
 			return existing.ID, nil
 		}
 		gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
@@ -860,7 +870,7 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 		Disposition:      disposition,
 		LaunchNonce:      launchNonce,
 		Branch:           run.Branch,
-		HeadSHA:          run.HeadSHA,
+		HeadSHA:          *run.SubmittedHeadSHA,
 		SubmittedHeadSHA: *run.SubmittedHeadSHA,
 		IntentDigest:     digestIntent(intent),
 	}, nil

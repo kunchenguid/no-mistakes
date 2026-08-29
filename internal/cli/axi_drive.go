@@ -144,6 +144,13 @@ func runAxiRunWithLaunchNonce(cmd *cobra.Command, autoYes bool, skipSteps []type
 				return emitError(cmd, 1, "conflicting launch receipt: nonce is already bound to a different head or intent",
 					"Use a new --launch-nonce for a changed request")
 			}
+			receipt, err = claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce)
+			if err != nil {
+				return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
+			}
+			if receipt == nil {
+				return emitError(cmd, 1, "claim launch receipt: receipt disappeared")
+			}
 			launchReceipt = receipt
 			runID = receipt.RunID
 		}

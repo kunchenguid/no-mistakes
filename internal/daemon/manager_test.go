@@ -210,6 +210,30 @@ func TestProofPushNonceAndConcurrentReplaysConverge(t *testing.T) {
 	if pushed.Receipt.Disposition != "created" || pushed.Receipt.LaunchNonce != "push-nonce" || pushed.Receipt.RunID == "" {
 		t.Fatalf("push receipt = %#v", pushed.Receipt)
 	}
+	replayPush := func() ipc.StartFreshRunResult {
+		var result ipc.StartFreshRunResult
+		if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: "push intent", LaunchNonce: "push-nonce",
+		}, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	firstDelivery := replayPush()
+	if firstDelivery.Receipt.RunID != pushed.Receipt.RunID || firstDelivery.Receipt.Disposition != "created" {
+		t.Fatalf("first caller receipt = %#v, push receipt = %#v", firstDelivery.Receipt, pushed.Receipt)
+	}
+	replayedPush := replayPush()
+	if replayedPush.Receipt.RunID != pushed.Receipt.RunID || replayedPush.Receipt.Disposition != "reused" {
+		t.Fatalf("replayed push receipt = %#v, first = %#v", replayedPush.Receipt, firstDelivery.Receipt)
+	}
+	if err := d.UpdateRunHeadSHA(pushed.Receipt.RunID, "pipeline-fix-head"); err != nil {
+		t.Fatal(err)
+	}
+	immutableReplay := replayPush()
+	if immutableReplay.Receipt.HeadSHA != headSHA || immutableReplay.Receipt.SubmittedHeadSHA != headSHA || immutableReplay.Receipt.Disposition != "reused" {
+		t.Fatalf("immutable replay receipt = %#v, want submitted head %q", immutableReplay.Receipt, headSHA)
+	}
 
 	const callers = 4
 	results := make(chan ipc.StartFreshRunResult, callers)
