@@ -23,6 +23,9 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			if recoverableBranchSync(state) {
 				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
 				footer = "u recover custody"
+			} else if settleableBranchSync(state) {
+				message = "Run ended terminally and its recorded pipeline head can no longer be verified, so there is nothing to recover. Settle custody at your current head to take the branch back."
+				footer = "u settle custody at local head"
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
@@ -106,6 +109,23 @@ func recoverableBranchSync(state *branchsync.State) bool {
 	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 }
 
+// settleableBranchSync reports whether the state is the SELF-INCONSISTENT
+// terminal custody record whose only exit is the keep-local settlement (#824).
+//
+// It keys on the advertised next action rather than on a safety code, and that
+// is deliberate. A self-inconsistent record reaches the TUI under whichever
+// safety code described how it failed to verify - blocked_recover_preserved_
+// head_missing is only the commonest - so a safety-code list here would drift
+// out of agreement with the branchsync predicate that decides whether the
+// settlement can actually complete. Keying on the action the state machine
+// itself advertises is what makes this exactly the road the CLI offers: the
+// service never names return_custody_keep_local for a record the settlement
+// would only refuse, and the TUI must never offer one it does not.
+func settleableBranchSync(state *branchsync.State) bool {
+	return state != nil && state.State == branchsync.StatePipelineOwned &&
+		state.NextAction != nil && state.NextAction.Code == "return_custody_keep_local"
+}
+
 func renderRecoverConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
@@ -119,6 +139,26 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
 	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
+}
+
+// renderSettleConfirmation is deliberately NOT renderRecoverConfirmation with
+// different words. Recovery takes the preserved pipeline head; settlement
+// keeps the local head and moves the gate to it, abandoning a recorded head
+// that can no longer be verified. The CLI makes that an explicit --keep-local
+// choice, so the TUI has to state the same consequence before asking for it.
+func renderSettleConfirmation(state branchsync.State, width int) string {
+	if width < 40 {
+		width = 80
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "The run ended %s and its recorded pipeline head can no longer be verified,\n", state.Pipeline.Status)
+	fmt.Fprintf(&b, "so there is nothing to recover. Settling returns custody at the head you\n")
+	fmt.Fprintf(&b, "already have and points the gate branch at it.\n\n")
+	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
+	fmt.Fprintf(&b, "Kept HEAD:      %s\n", state.Local.Head)
+	fmt.Fprintf(&b, "Recorded HEAD:  %s (unverifiable)\n\n", state.Pipeline.CurrentHead)
+	b.WriteString("Your worktree is never touched. Any still-reachable copy of the recorded head is anchored first, and the settlement refuses rather than proceeding if one exists and cannot be anchored. The gate moves only by compare-and-swap, so a concurrent gate push wins. This is `no-mistakes sync --recover --keep-local`.")
+	return renderBoxWithFooter("Confirm custody settlement at local head", b.String(), width, "u/enter settle  ·  esc cancel")
 }
 
 func renderSyncConfirmation(state branchsync.State, width int) string {

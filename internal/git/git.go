@@ -432,6 +432,46 @@ func IsDetachedHEAD(ctx context.Context, dir string) (bool, error) {
 	return false, nil
 }
 
+// CommitPresence reports whether dir's object store holds sha as a commit,
+// and - unlike a bare boolean probe - separates a PROVEN absence from a store
+// that could not answer. `git cat-file -e <sha>` exits 1 only when the store
+// was read and the object genuinely is not there; every other failure (an
+// unreadable repository, a name Git cannot parse) exits 128. Peeling the
+// argument with ^{commit} collapses both onto 128, so it must not be used
+// where the difference is load bearing.
+//
+// A caller that only needs "can I use this object" should keep using the
+// simple probe; this exists for the callers whose safety argument is "nothing
+// still has this object, so nothing can be lost", which is a claim only exit 1
+// supports. For the same reason an object that is present but is not a commit
+// is reported as an error rather than as false: the store still has it, so it
+// is not an absence, and collapsing it into one would restore the hole.
+func CommitPresence(ctx context.Context, dir, sha string) (bool, error) {
+	if strings.TrimSpace(sha) == "" {
+		return false, nil
+	}
+	if _, err := Run(ctx, dir, "cat-file", "-e", sha); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	kind, err := Run(ctx, dir, "cat-file", "-t", sha)
+	if err != nil {
+		return false, err
+	}
+	if kind != "commit" {
+		// Present but the wrong type is NOT an absence - the store still has
+		// the object. Returning it as a plain false would send it back through
+		// the same door as a proven absence and re-open the very hole this
+		// function exists to close, so it is an error like every other answer
+		// that is not "the store was read and it is not there".
+		return false, fmt.Errorf("object %s is a %s, not a commit", sha, kind)
+	}
+	return true, nil
+}
+
 // DefaultBranch queries a remote to determine its default branch name.
 // Uses git ls-remote --symref to read the remote's HEAD symref.
 // Falls back to "main" if detection fails (e.g. empty remote, unreachable).

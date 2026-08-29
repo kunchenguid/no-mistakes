@@ -352,6 +352,7 @@ func TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 // already been taught not to emit.
 func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 	runID, _, _ := divergedReleasedBranchFixture(t)
+	assertDivergedReleasedFixtureInvariants(t)
 
 	t.Run("daemon unavailable", func(t *testing.T) {
 		out, err := executeCmd("axi", "abort", "--run", runID)
@@ -367,6 +368,7 @@ func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 // same guard on the daemon-up resolveInactiveAbortTruth path.
 func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergenceWithDaemon(t *testing.T) {
 	runID, p, _ := divergedReleasedBranchFixture(t)
+	assertDivergedReleasedFixtureInvariants(t)
 	startInactiveAbortDaemon(t, p, runID)
 
 	out, err := executeCmd("axi", "abort", "--run", runID)
@@ -417,6 +419,37 @@ func divergedReleasedBranchFixture(t *testing.T) (string, *paths.Paths, string) 
 		t.Fatal(err)
 	}
 	return runID, p, local
+}
+
+// assertDivergedReleasedFixtureInvariants proves what the `--run` abort sites
+// cannot show from their own output. Their guard is
+// `custodySettlementHelp(state.NextAction) != empty AND state ==
+// StatePipelineOwned`, but a `--run` response carries no branch_sync object at
+// all, so "no help was printed" is equally true when the fixture never reached
+// divergence, or when the branch carries no next action there was anything to
+// suppress. Those are exactly the two invariants the bare-abort sibling
+// asserts inline and these two sites dropped, leaving them unable to fail if
+// the StatePipelineOwned clause were deleted.
+//
+// The bare abort site reports the same branchsync.InspectCached read over the
+// same repository, and does render branch_sync, so it is where this fixture's
+// classification can be read directly. Call it before any fake daemon is
+// started, so it observes only the fixture.
+func assertDivergedReleasedFixtureInvariants(t *testing.T) {
+	t.Helper()
+	out, err := executeCmd("axi", "abort")
+	if err != nil {
+		t.Fatalf("reading the fixture classification must not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "safety: blocked_diverged") {
+		t.Fatalf("fixture did not reach ordinary divergence, so suppression proves nothing:\n%s", out)
+	}
+	// The branch's own next action is the value custodySettlementHelp would
+	// have turned into help, so its presence is what proves the
+	// pipeline_owned half of the guard is doing the suppressing.
+	if !strings.Contains(out, "code: inspect_and_reconcile_manually") {
+		t.Fatalf("fixture branch carries no next action for the guard to suppress:\n%s", out)
+	}
 }
 
 func assertNoAbortHelpEmitted(t *testing.T, out string) {

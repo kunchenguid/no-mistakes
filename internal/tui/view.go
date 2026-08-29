@@ -116,6 +116,9 @@ func (m Model) View() string {
 	if m.recoverConfirm && m.branchSync != nil {
 		extraSections = append(extraSections, renderRecoverConfirmation(*m.branchSync, rightWidth))
 	}
+	if m.settleConfirm && m.branchSync != nil {
+		extraSections = append(extraSections, renderSettleConfirmation(*m.branchSync, rightWidth))
+	}
 
 	// Modal editor takes priority over findings/logs so it always renders
 	// when active. Bypass the content budget so it never gets dropped on

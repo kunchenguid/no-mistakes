@@ -378,6 +378,26 @@ func (m Model) applyRecoverCmd() tea.Cmd {
 	}
 }
 
+// applySettleCmd runs the keep-local settlement. It is reported under its own
+// telemetry action so a settlement is never counted as a recovery: they end
+// the same state but keep opposite heads.
+func (m Model) applySettleCmd() tea.Cmd {
+	settle := m.syncSettle
+	if settle == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := settle()
+		result := "refused"
+		if state.Recovered {
+			result = "applied"
+		}
+		trackTUISyncAttempt("settle", state, result, started)
+		return syncAppliedMsg{state: state}
+	}
+}
+
 func (m Model) spinnerTickCmd() tea.Cmd {
 	return tea.Tick(spinnerTickInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{}

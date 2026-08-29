@@ -154,8 +154,20 @@ type Service struct {
 	lsRemote    func(context.Context, string, string, string) (string, error)
 	fetchRemote func(context.Context, string, string, string, string) error
 
+	// absPath resolves the invoking worktree to an absolute path. It is a
+	// seam because filepath.Abs fails only when the process working directory
+	// has been removed, which cannot be induced in-process without breaking
+	// every parallel test - and that refusal path has to prove it leaves no
+	// recovery anchor behind.
+	absPathFn func(string) (string, error)
+
+	// stampCustodyReturnedFn is the recovery's database write. Nil uses the
+	// production DB.
+	stampCustodyReturnedFn func(string) error
+
 	beforeApply               func()
 	beforeGateReset           func()
+	beforeGateStage           func()
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
@@ -657,7 +669,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 			}
 		}
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, keepLocal)
 	}
 
 	if !gateAvailable {
@@ -717,7 +729,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	case local == preserved, isAncestor(ctx, wd, preserved, local):
 		// Equal or ahead, discovered only after anchoring made the preserved
 		// head comparable locally.
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, keepLocal)
 	case isAncestor(ctx, wd, local, preserved):
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
@@ -803,7 +815,22 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 		{"the invoking worktree", s.workDir()},
 		{"the local gate", gateDir},
 	} {
-		if store.dir == "" || !objectExists(ctx, store.dir, preserved) {
+		if store.dir == "" {
+			continue
+		}
+		// The settlement's whole data-safety argument is "no store still has
+		// this head, so settling cannot lose it". That is a claim about proven
+		// absence, and a bare presence probe cannot make it: it reads an
+		// unreadable store exactly like an empty one and would skip the pin on
+		// evidence it never actually gathered. Only git.CommitPresence's exit-1
+		// answer proves absence; anything else is undetermined and refuses.
+		present, err := git.CommitPresence(ctx, store.dir, preserved)
+		if err != nil {
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("whether the recorded pipeline head %s still exists could not be determined in %s, so its absence cannot be proven and custody cannot be settled without risking it; inspect that object store before retrying; no branch, worktree, or file changes were made%s", preserved, store.name, anchoredElsewhere(pinned, strandedRef)))
+			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			return blocked
+		}
+		if !present {
 			continue
 		}
 		if err := custody.PreserveRecoveryAnchor(ctx, store.dir, strandedRef, preserved); err != nil {
@@ -814,7 +841,7 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 		pinned = append(pinned, store.name)
 	}
 	if gateDir == "" {
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, true)
 	}
 	gateBranchRef := "refs/heads/" + state.Local.Branch
 	_, gateBranchExists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
@@ -826,7 +853,7 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	if !gateBranchExists {
 		// Proven absent: the gate holds no branch ref for this run, so nothing
 		// there holds custody and there is no ref to compare-and-swap.
-		return s.finishRecover(ctx, run, false)
+		return s.finishRecover(ctx, run, false, true)
 	}
 	gateHead, err := git.Run(ctx, gateDir, "rev-parse", gateBranchRef+"^{commit}")
 	if err != nil {
@@ -866,14 +893,39 @@ func recoverBlocked(state State, safety, message string) State {
 // being clobbered. The kept head's objects reach the gate through a gate-side
 // fetch - never a push, which would fire the gate's receive hooks and start a
 // pipeline run. The preserved head stays reachable through the anchor ref.
+//
+// Write ordering is load-bearing, not incidental. The displaced-gate-head
+// anchor (RecoveryGateRef) is the ref whose staleness wedges every later
+// attempt: settlementAnchorsFree stops advertising the settlement once it
+// names a commit the gate has since moved off, PreserveRecoveryAnchor then
+// refuses to retarget it, and nothing in the product retires it. So a refusal
+// that leaves it behind recreates exactly the #824 dead end this settlement
+// exists to clear - while telling the operator that nothing changed.
+//
+// The anchor therefore protects exactly one operation: the compare-and-swap
+// that moves the gate branch off gateHead. Nothing before that swap can strand
+// gateHead, because refs/heads/<branch> still names it. So every check that can
+// refuse - the local head re-read, the worktree path resolution, the staging
+// fetch, and the staged-head verification - runs BEFORE the anchor is written,
+// and the write happens immediately before the swap it guards. That keeps
+// "no files or refs were changed" true on every one of those paths by
+// construction rather than by a cleanup that could itself fail.
+//
+// The anchor CONFLICT check is deliberately still read-only and still runs
+// first: it is the cheapest refusal and it must not be reached only after a
+// staging ref exists. Once the swap has been attempted, the anchor is load
+// bearing and is never retired - a failed compare-and-swap means the gate
+// moved, so gateHead may now be reachable through the anchor alone.
 func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
 	gateHeadAnchored := false
 	if gateHead != state.Local.Head {
+		gateAnchor := ""
+		writeGateAnchor := false
 		if gateHead != run.HeadSHA {
-			gateAnchor := custody.RecoveryGateRef(run.ID)
+			gateAnchor = custody.RecoveryGateRef(run.ID)
 			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
 			if err != nil || (exists && existing != gateHead) {
 				conflict := "could not be read"
@@ -882,13 +934,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				}
 				return recoverBlocked(state, "blocked_recover_preserve_failed", fmt.Sprintf("the independently moved gate head %s conflicts with the existing run recovery anchor %s in the local gate %s, which %s; nothing retires that anchor, so reconcile it there before returning custody; no files or branch refs were changed", gateHead, gateAnchor, s.GateDir, conflict))
 			}
-			if !exists {
-				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)
-			}
-			if err != nil {
-				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
-			}
+			// An anchor that already names this head needs no write, but it
+			// still guards the swap, so the race refusal below must know it
+			// is there.
 			gateHeadAnchored = true
+			writeGateAnchor = !exists
 		}
 		head, err := git.HeadSHA(ctx, s.workDir())
 		if err != nil || head != state.Local.Head {
@@ -897,18 +947,32 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		// The fetch source must be absolute: the command runs inside the gate
 		// directory, where a relative invoking-worktree path would resolve to
 		// the gate itself.
-		source, err := filepath.Abs(s.workDir())
+		source, err := s.absPath(s.workDir())
 		if err != nil {
 			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
 		}
+		if s.beforeGateStage != nil {
+			s.beforeGateStage()
+		}
 		stagingRef := "refs/no-mistakes/custody-return/" + run.ID
 		if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
+			// A partly completed fetch can still have created the staging ref,
+			// and the refusal claims nothing was left behind.
+			_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
 			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
 		}
 		staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
 		if err != nil || staged != state.Local.Head {
 			_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
 			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
+		}
+		// Point of no return: from here the gate branch is about to leave
+		// gateHead, so the anchor has to exist first.
+		if writeGateAnchor {
+			if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead); err != nil {
+				_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
+				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; no files or branch refs were changed")
+			}
 		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
 		_, _ = git.Run(ctx, s.GateDir, "update-ref", "-d", stagingRef)
@@ -917,14 +981,16 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			// gate had already moved off the recorded head. Without it a retry
 			// simply observes the new head and succeeds; with it, the retry
 			// hits the anchor conflict instead, so only then is reconciling
-			// the anchor the honest advice.
+			// the anchor the honest advice. It is never retired here: the swap
+			// failed because the gate moved, so gateHead may now be reachable
+			// through this anchor alone.
 			if gateHeadAnchored {
 				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; no local files or refs were changed", custody.RecoveryGateRef(run.ID)))
 			}
 			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no run recovery anchor was written, so re-run the recovery to return custody against the new gate head; no local files or refs were changed")
 		}
 	}
-	return s.finishRecover(ctx, run, false)
+	return s.finishRecover(ctx, run, false, true)
 }
 
 // recoverFastForward advances the clean checked-out branch to the preserved
@@ -958,7 +1024,7 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return state
 	}
-	return s.finishRecover(ctx, run, true)
+	return s.finishRecover(ctx, run, true, false)
 }
 
 // preservedContainsLocalWork proves the preserved pipeline head already carries
@@ -1120,7 +1186,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 		return state
 	}
-	return s.finishRecover(ctx, run, true)
+	return s.finishRecover(ctx, run, true, false)
 }
 
 func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string) (State, bool) {
@@ -1136,19 +1202,49 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 
 // finishRecover stamps custody returned and reports the fresh post-recovery
 // truth. changed reports whether this call moved the worktree HEAD.
-func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) State {
-	if err := s.DB.SetRunCustodyReturned(run.ID); err != nil {
+// finishRecover records the custody return. Its failure branch is the one
+// place in recovery where the Git side has ALREADY succeeded - a keep-local
+// settlement has moved the gate branch, a fast-forward or adoption has moved
+// the worktree - and only the database write failed. It therefore must never
+// be a dead end: leaving NextAction nil there reproduces the #824 shape one
+// layer down, a state that changed refs and then names nothing that can end
+// it. Re-running the SAME recovery command is genuinely completable, because
+// every Git step it repeats is idempotent once applied: the gate branch now
+// equals the kept head so recoverKeepLocal skips its whole move, and an
+// already-advanced worktree takes the equal/ahead path. That is why the retry
+// is named structurally here and not only in prose.
+func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed, keepLocal bool) State {
+	if err := s.stampCustodyReturned(run.ID); err != nil {
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed
 		state.Safety = "blocked_recover_stamp_failed"
-		state.Error = "the custody return could not be recorded; re-run the recovery"
-		state.NextAction = nil
+		state.Error = "the recovery's Git changes are already applied, but the custody return could not be recorded; re-run the same recovery to complete the record"
+		state.NextAction = recoveryRetryAction(keepLocal)
 		return state
 	}
 	state, _, _ := s.inspect(ctx)
 	state.Recovered = true
 	state.Changed = changed
 	return state
+}
+
+// recoveryRetryAction names the exact command that finishes an interrupted
+// recovery: the one the operator already ran.
+func recoveryRetryAction(keepLocal bool) *NextAction {
+	if keepLocal {
+		return &NextAction{Code: "return_custody_keep_local", Command: "no-mistakes axi sync --recover --keep-local"}
+	}
+	return &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+}
+
+// stampCustodyReturned is the recovery's only database write, behind a seam so
+// its failure - the one post-success failure recovery has - is reachable in a
+// test without corrupting a shared database.
+func (s *Service) stampCustodyReturned(runID string) error {
+	if s.stampCustodyReturnedFn != nil {
+		return s.stampCustodyReturnedFn(runID)
+	}
+	return s.DB.SetRunCustodyReturned(runID)
 }
 
 func recoverAnchorRef(runID string) string {
@@ -1463,6 +1559,15 @@ func (s *Service) remoteName(ctx context.Context) string {
 	return "origin"
 }
 
+// absPath resolves a path through the service's seam so the keep-local
+// custody return can prove what it does when that resolution fails.
+func (s *Service) absPath(path string) (string, error) {
+	if s.absPathFn != nil {
+		return s.absPathFn(path)
+	}
+	return filepath.Abs(path)
+}
+
 func (s *Service) workDir() string {
 	if strings.TrimSpace(s.WorkDir) == "" {
 		return "."
@@ -1735,11 +1840,14 @@ func (s *Service) settlementGateBranchUsable(ctx context.Context, state *State, 
 // the settlement refuse permanently.
 //
 // The gate ref is where recoverKeepLocal pins an independently moved gate head
-// before its compare-and-swap. It is written BEFORE the swap, so a settlement
-// that lost one race leaves it pinned at the head observed then; once the gate
-// has moved on, that stale pin conflicts with every later attempt and nothing
-// retires it. Probing both keeps the advertisement honest: a record that can
-// only refuse falls back to manual reconciliation.
+// immediately before its compare-and-swap. Every refusal that can precede that
+// write leaves the ref absent, so only a settlement that lost the swap race
+// itself leaves it pinned at the head observed then - and there it is load
+// bearing, because the gate has moved and that pin may be the only thing still
+// naming the displaced head. Once the gate moves on again, that pin conflicts
+// with every later attempt and nothing retires it. Probing both keeps the
+// advertisement honest: a record that can only refuse falls back to manual
+// reconciliation.
 func (s *Service) settlementAnchorsFree(ctx context.Context, state *State, run *db.Run, gateDir, preserved string) bool {
 	anchorFreeAt := func(dir, ref, want string) bool {
 		// PreserveRecoveryAnchor refuses ANY symbolic ref as its first check,
@@ -1766,7 +1874,18 @@ func (s *Service) settlementAnchorsFree(ctx context.Context, state *State, run *
 	stranded := custody.RecoveryStrandedRef(run.ID)
 	if preserved != "" {
 		for _, dir := range []string{s.workDir(), gateDir} {
-			if dir == "" || !objectExists(ctx, dir, preserved) {
+			if dir == "" {
+				continue
+			}
+			// Mirror the pin loop's probe, not a weaker one: a store that
+			// cannot answer makes the settlement refuse, so advertising it
+			// here would restore the advertised-action-that-always-refuses
+			// shape this whole change exists to remove.
+			present, err := git.CommitPresence(ctx, dir, preserved)
+			if err != nil {
+				return false
+			}
+			if !present {
 				continue
 			}
 			if !anchorFreeAt(dir, stranded, preserved) {

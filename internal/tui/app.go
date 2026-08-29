@@ -90,8 +90,10 @@ type Model struct {
 	syncRefresh    func() branchsync.State
 	syncApply      func() branchsync.State
 	syncRecover    func() branchsync.State
+	syncSettle     func() branchsync.State
 	syncConfirm    bool
 	recoverConfirm bool
+	settleConfirm  bool
 	syncRefreshing bool
 }
 
@@ -382,6 +384,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncRefreshing = false
 		m.syncConfirm = false
 		m.recoverConfirm = false
+		m.settleConfirm = false
 		m.branchSync = &msg.state
 		if msg.state.Error != "" {
 			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)
@@ -498,6 +501,10 @@ func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion 
 		model.syncRefresh = func() branchsync.State { return service.Refresh(context.Background()) }
 		model.syncApply = func() branchsync.State { return service.Apply(context.Background()) }
 		model.syncRecover = func() branchsync.State { return service.Recover(context.Background(), false) }
+		// keepLocal=true is the settlement exit for a self-inconsistent
+		// record; it is a separate seam so the plain recovery can never
+		// silently become one.
+		model.syncSettle = func() branchsync.State { return service.Recover(context.Background(), true) }
 		model.refreshCachedSync()
 	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
