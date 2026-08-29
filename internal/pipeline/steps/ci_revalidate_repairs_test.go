@@ -124,6 +124,7 @@ func writeCIFix(workDir string) {
 // core of ci.revalidate_repairs: the same failing check, the same repair, and
 // two entirely different deliveries.
 func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		revalidate       bool
@@ -145,19 +146,23 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCIRepairFixture(t, tc.revalidate, writeCIFix)
-			outcome, err := f.run(t)
+			t.Parallel()
+			f := newCIRepairFixture(t, tc.revalidate, nil)
+			writeCIFix(f.dir)
+			// commitRepair, not the whole monitor loop: the delivery decision
+			// is what this table is about, and driving Execute here spends a
+			// provider poll and several subprocesses per case for nothing.
+			// TestCIStep_MonitorRestartsAtReviewForAHeldRepair covers the
+			// monitor turning Revalidate into RestartFrom.
+			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 			if err != nil {
-				t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+				t.Fatalf("CI repair returned error: %v\nlog:\n%s", err, f.log())
 			}
-
-			restartFrom := types.StepName("")
-			if outcome != nil {
-				restartFrom = outcome.RestartFrom
+			if !repair.HeadAdvanced {
+				t.Fatal("the repair was not recorded as a real change")
 			}
-			gotRestart := restartFrom == types.StepReview
-			if gotRestart != tc.wantRestart {
-				t.Errorf("RestartFrom review = %v, want %v (outcome %#v)", gotRestart, tc.wantRestart, outcome)
+			if repair.Revalidate != tc.wantRestart {
+				t.Errorf("Revalidate = %v, want %v", repair.Revalidate, tc.wantRestart)
 			}
 
 			localHead := f.localHead(t)
@@ -201,12 +206,8 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 			if !strings.Contains(f.log(), tc.wantLog) {
 				t.Errorf("log missing %q; got:\n%s", tc.wantLog, f.log())
 			}
-			// The step states which policy is in force before it does anything.
-			if !strings.Contains(f.log(), "CI repair policy:") {
-				t.Errorf("CI step did not report its repair policy; log:\n%s", f.log())
-			}
-			t.Logf("observable delivery: restart_from=%q prior_head=%s local_head=%s remote_head=%s approval_retained=%t published_head=%s\nCI log:\n%s",
-				restartFrom, f.headSHA, localHead, f.remoteHead(t), approvalKept, publishedSHA, f.log())
+			t.Logf("observable delivery: revalidate=%t prior_head=%s local_head=%s remote_head=%s approval_retained=%t published_head=%s\nCI log:\n%s",
+				repair.Revalidate, f.headSHA, localHead, f.remoteHead(t), approvalKept, publishedSHA, f.log())
 		})
 	}
 }
@@ -215,6 +216,7 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 // commit, no publication, no restart, and the attempt budget still decides
 // when to stop.
 func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
+	t.Parallel()
 	for _, revalidate := range []bool{false, true} {
 		revalidate := revalidate
 		name := "publish_policy"
@@ -222,13 +224,14 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 			name = "revalidate_policy"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newCIRepairFixture(t, revalidate, nil)
-			outcome, err := f.run(t)
+			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 			if err != nil {
-				t.Fatalf("CI step returned error: %v", err)
+				t.Fatalf("CI repair returned error: %v", err)
 			}
-			if outcome != nil && outcome.RestartFrom != "" {
-				t.Errorf("a no-change repair requested a restart: %#v", outcome)
+			if repair.HeadAdvanced || repair.Revalidate {
+				t.Errorf("a no-change repair was reported as a delivery: %#v", repair)
 			}
 			if f.localHead(t) != f.headSHA {
 				t.Error("a no-change repair created a commit")
@@ -236,7 +239,7 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 			if f.remoteHead(t) != f.headSHA {
 				t.Error("a no-change repair published something")
 			}
-			if !strings.Contains(f.log(), "CI fix produced no changes") {
+			if !strings.Contains(f.log(), "no changes to commit") {
 				t.Errorf("log missing the no-change outcome; got:\n%s", f.log())
 			}
 		})
@@ -248,6 +251,7 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 // Both policies must recognize that as a real repair and deliver it their own
 // way, rather than reading the clean tree as "nothing happened".
 func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		revalidate      bool
@@ -259,22 +263,20 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			var f *ciRepairFixture
-			f = newCIRepairFixture(t, tc.revalidate, func(workDir string) {
-				os.WriteFile(filepath.Join(workDir, "resolved.txt"), []byte("resolved"), 0o644)
-				gitCmd(t, workDir, "add", "-A")
-				gitCmd(t, workDir, "commit", "-m", "agent resolved the failure")
-			})
-			outcome, err := f.run(t)
+			f := newCIRepairFixture(t, tc.revalidate, nil)
+			// The agent commits the repair itself and leaves a clean tree.
+			os.WriteFile(filepath.Join(f.dir, "resolved.txt"), []byte("resolved"), 0o644)
+			gitCmd(t, f.dir, "add", "-A")
+			gitCmd(t, f.dir, "commit", "-m", "agent resolved the failure")
+			repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 			if err != nil {
-				t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+				t.Fatalf("CI repair returned error: %v\nlog:\n%s", err, f.log())
 			}
 			if f.localHead(t) == f.headSHA {
 				t.Fatal("the agent's own commit was not detected")
 			}
-			gotRestart := outcome != nil && outcome.RestartFrom == types.StepReview
-			if gotRestart != tc.wantRestart {
-				t.Errorf("RestartFrom review = %v, want %v", gotRestart, tc.wantRestart)
+			if repair.Revalidate != tc.wantRestart {
+				t.Errorf("Revalidate = %v, want %v", repair.Revalidate, tc.wantRestart)
 			}
 			if moved := f.remoteHead(t) != f.headSHA; moved != tc.wantRemoteMoved {
 				t.Errorf("remote advanced = %v, want %v", moved, tc.wantRemoteMoved)
@@ -295,6 +297,7 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 // simply retryable: the next attempt re-enters the same path, finds the remote
 // already at this head, and completes the publication once the mirror works.
 func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	writeCIFix(f.dir)
 	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
@@ -455,6 +458,7 @@ func TestCIStep_PendingPublicationSettlesBeforeExpiredTimeout(t *testing.T) {
 }
 
 func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
+	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -577,6 +581,7 @@ func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T)
 // reporting success - and the actor was the CI repair agent itself, which is
 // why provenance cannot substitute for proof.
 func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// rewrite leaves the worktree on the repaired head and returns it.
@@ -687,6 +692,7 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 // policy is about the cost of revalidating a repair, not about who asked for
 // it.
 func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		revalidate      bool
@@ -739,18 +745,20 @@ func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
 // publishing. Fail closed is the whole point - a missing approval is not a
 // reason to skip the check, it is a reason the check cannot pass.
 func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *testing.T) {
-	f := newCIRepairFixture(t, false, writeCIFix)
+	t.Parallel()
+	f := newCIRepairFixture(t, false, nil)
+	writeCIFix(f.dir)
 	if err := f.sctx.DB.UpdateRunReviewApprovedHeadSHA(f.sctx.Run.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	f.sctx.Run.ReviewApprovedHeadSHA = nil
 
-	outcome, err := f.run(t)
+	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
 	if err != nil {
-		t.Fatalf("CI step returned error: %v", err)
+		t.Fatalf("CI repair returned error: %v", err)
 	}
-	if outcome == nil || outcome.RestartFrom != types.StepReview {
-		t.Fatalf("outcome = %#v, want a restart from Review", outcome)
+	if !repair.Revalidate {
+		t.Fatalf("repair = %#v, want it held for revalidation", repair)
 	}
 	if f.remoteHead(t) != f.headSHA {
 		t.Fatal("a repair was published without a recorded review-approved head")
@@ -768,6 +776,7 @@ func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *t
 // entirely: the monitor "retried" a publication that had never been attempted
 // and the repair agent was never called.
 func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t *testing.T) {
+	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -803,6 +812,7 @@ func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t
 // already sits on the remote. After the bound it parks for a person, naming the
 // published head, because a rerun would resume from the stale gate head.
 func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
+	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -876,5 +886,25 @@ func TestCIStep_FailedRevalidationWriteDoesNotAdvanceTheLiveHead(t *testing.T) {
 	}
 	if f.sctx.Run.ReviewApprovedHeadSHA != priorApproval {
 		t.Error("review approval was revoked in memory despite the failed write")
+	}
+}
+
+// The delivery decision itself is covered by
+// TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery without paying for a
+// monitor loop. This one test pays for it once, to pin the remaining wiring:
+// the monitor turns a held repair into a restart at Review, and states the
+// policy in force before it does anything.
+func TestCIStep_MonitorRestartsAtReviewForAHeldRepair(t *testing.T) {
+	t.Parallel()
+	f := newCIRepairFixture(t, true, writeCIFix)
+	outcome, err := f.run(t)
+	if err != nil {
+		t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || outcome.RestartFrom != types.StepReview {
+		t.Fatalf("outcome = %#v, want a restart from Review", outcome)
+	}
+	if !strings.Contains(f.log(), "CI repair policy:") {
+		t.Errorf("CI step did not report its repair policy; log:\n%s", f.log())
 	}
 }
