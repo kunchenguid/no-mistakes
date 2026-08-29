@@ -20,7 +20,9 @@ import (
 // ciRepairFixture is one CI monitor run wired to a real git worktree, a real
 // bare upstream, and a fake gh reporting one failing check, so a test can
 // observe what a repair does to the local head, the remote, and the run's
-// review authority.
+// review authority. Tests using this process-heavy fixture intentionally run
+// serially: running all of their git and fake-gh subprocesses in parallel can
+// exhaust macOS CI process capacity and stall a child indefinitely.
 type ciRepairFixture struct {
 	sctx     *pipeline.StepContext
 	dir      string
@@ -122,7 +124,6 @@ func writeCIFix(workDir string) {
 // core of ci.revalidate_repairs: the same failing check, the same repair, and
 // two entirely different deliveries.
 func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		revalidate       bool
@@ -144,7 +145,6 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			f := newCIRepairFixture(t, tc.revalidate, writeCIFix)
 			outcome, err := f.run(t)
 			if err != nil {
@@ -215,7 +215,6 @@ func TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery(t *testing.T) {
 // commit, no publication, no restart, and the attempt budget still decides
 // when to stop.
 func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
-	t.Parallel()
 	for _, revalidate := range []bool{false, true} {
 		revalidate := revalidate
 		name := "publish_policy"
@@ -223,7 +222,6 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 			name = "revalidate_policy"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			f := newCIRepairFixture(t, revalidate, nil)
 			outcome, err := f.run(t)
 			if err != nil {
@@ -250,7 +248,6 @@ func TestCIStep_NoChangeRepairNeitherPublishesNorRestarts(t *testing.T) {
 // Both policies must recognize that as a real repair and deliver it their own
 // way, rather than reading the clean tree as "nothing happened".
 func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		revalidate      bool
@@ -262,7 +259,6 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			var f *ciRepairFixture
 			f = newCIRepairFixture(t, tc.revalidate, func(workDir string) {
 				os.WriteFile(filepath.Join(workDir, "resolved.txt"), []byte("resolved"), 0o644)
@@ -299,7 +295,6 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 // simply retryable: the next attempt re-enters the same path, finds the remote
 // already at this head, and completes the publication once the mirror works.
 func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	writeCIFix(f.dir)
 	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
@@ -356,7 +351,6 @@ func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
 }
 
 func TestCIStep_PreRemotePublicationFailureDoesNotAuthorizeSettlementRetry(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	stepResult, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
 	if err != nil {
@@ -384,7 +378,6 @@ func TestCIStep_PreRemotePublicationFailureDoesNotAuthorizeSettlementRetry(t *te
 }
 
 func TestCIStep_PendingPublicationRetrySurvivesRestartAndKeepsItsBound(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	stepResult, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
 	if err != nil {
@@ -426,7 +419,6 @@ func TestCIStep_PendingPublicationRetrySurvivesRestartAndKeepsItsBound(t *testin
 }
 
 func TestCIStep_PendingPublicationSettlesBeforeExpiredTimeout(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	f.sctx.Config.CITimeout = time.Second
 	clock := time.Unix(1_700_000_000, 0)
@@ -463,7 +455,6 @@ func TestCIStep_PendingPublicationSettlesBeforeExpiredTimeout(t *testing.T) {
 }
 
 func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
-	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -511,7 +502,6 @@ func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
 }
 
 func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		checkState string
@@ -522,7 +512,6 @@ func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T)
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			agentCalls := 0
 			f := newCIRepairFixture(t, false, func(workDir string) {
 				agentCalls++
@@ -588,7 +577,6 @@ func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T)
 // reporting success - and the actor was the CI repair agent itself, which is
 // why provenance cannot substitute for proof.
 func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// rewrite leaves the worktree on the repaired head and returns it.
@@ -629,7 +617,6 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			// Publish policy: this is the path that could publish without review.
 			// The base and the feature edit the SAME line of the same file, so
 			// a rebase genuinely conflicts and the repair really is conflict
@@ -700,7 +687,6 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 // policy is about the cost of revalidating a repair, not about who asked for
 // it.
 func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		revalidate      bool
@@ -712,7 +698,6 @@ func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			f := newCIRepairFixture(t, tc.revalidate, writeCIFix)
 			// Automatic auto-fix off; the user answered the gate with "fix".
 			f.sctx.Config.AutoFix = config.AutoFix{CI: 0}
@@ -754,7 +739,6 @@ func TestCIStep_ManualRepairFollowsTheSamePolicy(t *testing.T) {
 // publishing. Fail closed is the whole point - a missing approval is not a
 // reason to skip the check, it is a reason the check cannot pass.
 func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, false, writeCIFix)
 	if err := f.sctx.DB.UpdateRunReviewApprovedHeadSHA(f.sctx.Run.ID, ""); err != nil {
 		t.Fatal(err)
@@ -784,7 +768,6 @@ func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *t
 // entirely: the monitor "retried" a publication that had never been attempted
 // and the repair agent was never called.
 func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t *testing.T) {
-	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -820,7 +803,6 @@ func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t
 // already sits on the remote. After the bound it parks for a person, naming the
 // published head, because a rerun would resume from the stale gate head.
 func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
-	t.Parallel()
 	agentCalls := 0
 	f := newCIRepairFixture(t, false, func(workDir string) {
 		agentCalls++
@@ -876,7 +858,6 @@ func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
 // cannot leave the monitor watching a head the run record does not know about
 // while its stale review approval still stands.
 func TestCIStep_FailedRevalidationWriteDoesNotAdvanceTheLiveHead(t *testing.T) {
-	t.Parallel()
 	f := newCIRepairFixture(t, true, nil)
 	writeCIFix(f.dir)
 	priorHead := f.sctx.Run.HeadSHA
