@@ -712,8 +712,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 
 	anchored := false
 	// What this attempt itself writes, so a later keep-local refusal reports
-	// the anchor rather than claiming nothing was written.
-	anchoredNote := ""
+	// the anchor rather than claiming nothing was written. This path can only
+	// ever pin in the invoking worktree, which is what scopes the no-change
+	// claims of the refusals it delegates to.
+	anchoredNote := recoveryAnchorNote{ref: anchorRef}
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
 	}
@@ -727,7 +729,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 		}
-		anchoredNote = anchoredElsewhere([]string{"the invoking worktree"}, anchorRef)
+		anchoredNote.stores = []string{invokingWorktreeStore}
 	}
 
 	switch {
@@ -815,10 +817,10 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	// The stranded anchor is the ONLY ref this function can write before the
 	// gate move, so a refusal reports precisely where it now exists rather
 	// than claiming nothing changed.
-	pinned := []string{}
+	pinned := recoveryAnchorNote{ref: strandedRef}
 	for _, store := range []struct{ name, dir string }{
-		{"the invoking worktree", s.workDir()},
-		{"the local gate", gateDir},
+		{invokingWorktreeStore, s.workDir()},
+		{localGateStore, gateDir},
 	} {
 		if store.dir == "" {
 			continue
@@ -831,7 +833,7 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 		// answer proves absence; anything else is undetermined and refuses.
 		present, err := git.CommitPresence(ctx, store.dir, preserved)
 		if err != nil {
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("whether the recorded pipeline head %s still exists could not be determined in %s, so its absence cannot be proven and custody cannot be settled without risking it; inspect that object store before retrying; no branch, worktree, or file changes were made%s", preserved, store.name, anchoredElsewhere(pinned, strandedRef)))
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("whether the recorded pipeline head %s still exists could not be determined in %s, so its absence cannot be proven and custody cannot be settled without risking it; inspect that object store before retrying; no branch, worktree, or file changes were made%s", preserved, store.name, pinned.clause()))
 			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return blocked
 		}
@@ -839,11 +841,11 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 			continue
 		}
 		if err := custody.PreserveRecoveryAnchor(ctx, store.dir, strandedRef, preserved); err != nil {
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("the recorded pipeline head %s still exists but could not be anchored at %s in %s, so custody cannot be settled without stranding it; inspect that object before retrying; no branch, worktree, or file changes were made%s", preserved, strandedRef, store.name, anchoredElsewhere(pinned, strandedRef)))
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", fmt.Sprintf("the recorded pipeline head %s still exists but could not be anchored at %s in %s, so custody cannot be settled without stranding it; inspect that object before retrying; no branch, worktree, or file changes were made%s", preserved, strandedRef, store.name, pinned.clause()))
 			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return blocked
 		}
-		pinned = append(pinned, store.name)
+		pinned.stores = append(pinned.stores, store.name)
 	}
 	if gateDir == "" {
 		return s.finishRecover(ctx, run, false, true)
@@ -851,7 +853,7 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	gateBranchRef := "refs/heads/" + state.Local.Branch
 	_, gateBranchExists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
 	if err != nil {
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be read, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be read, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, pinned.clause()))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 		return blocked
 	}
@@ -862,11 +864,41 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	}
 	gateHead, err := git.Run(ctx, gateDir, "rev-parse", gateBranchRef+"^{commit}")
 	if err != nil {
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s does not resolve to a commit, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, anchoredElsewhere(pinned, strandedRef)))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s does not resolve to a commit, so the kept local head cannot be compared and swapped onto it; no branch refs were changed%s", state.Local.Branch, pinned.clause()))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 		return blocked
 	}
-	return s.recoverKeepLocal(ctx, run, state, gateHead, anchoredElsewhere(pinned, strandedRef))
+	return s.recoverKeepLocal(ctx, run, state, gateHead, pinned)
+}
+
+// The two object stores a recovery can pin a surviving recorded head in. They
+// are named rather than spelled out at each site because a refusal's no-change
+// claim is scoped by WHICH of them holds the anchor, so a typo in one of them
+// would silently widen or narrow that claim.
+const (
+	invokingWorktreeStore = "the invoking worktree"
+	localGateStore        = "the local gate"
+)
+
+// recoveryAnchorNote records WHERE an earlier step of this recovery anchored a
+// surviving recorded head, not merely the sentence describing it. A refusal
+// needs the store and not only the prose: a claim scoped to LOCAL files and
+// refs is accurate beside a gate-side pin and self-contradictory beside one in
+// the invoking worktree, and a bare string cannot tell those apart.
+type recoveryAnchorNote struct {
+	ref    string
+	stores []string
+}
+
+func (n recoveryAnchorNote) clause() string { return anchoredElsewhere(n.stores, n.ref) }
+
+func (n recoveryAnchorNote) namesInvokingWorktree() bool {
+	for _, store := range n.stores {
+		if store == invokingWorktreeStore {
+			return true
+		}
+	}
+	return false
 }
 
 // anchoredElsewhere keeps a refusal honest about a recorded head its own
@@ -885,15 +917,34 @@ func anchoredElsewhere(pinned []string, ref string) string {
 // that carries no such anchor; otherwise the refusal reports exactly what it
 // did not change and hands over the anchor note naming where that head now is.
 //
-// The lost compare-and-swap is deliberately NOT built here. That refusal has
-// just written the displaced-gate-head anchor into the gate, so its narrower
-// "no LOCAL files or refs were changed" claim is the accurate one and the
-// anchor note is appended to it rather than replacing it.
+// The refusals that follow the swap are built by keepLocalPostSwapNoChangeClause
+// instead, because by then this function may have written a gate ref of its own.
 func keepLocalNoChangeClause(blanket, anchored string) string {
 	if anchored == "" {
 		return blanket
 	}
 	return "no branch, worktree, or file changes were made" + anchored
+}
+
+// keepLocalPostSwapNoChangeClause closes the refusals reachable only AFTER the
+// compare-and-swap was attempted. Those keep the narrower "no LOCAL files or
+// refs were changed" claim, because by then this function may have written the
+// displaced-gate-head anchor into the gate - a ref that is deliberately not
+// retired, so denying it outright would be false.
+//
+// That narrowing INVERTS when the caller's own anchor sits in the invoking
+// worktree, which is what the ordinary keep-local path always pins. The raw
+// claim would then deny changing local refs in the very sentence whose note
+// names one, so the refusal falls back to enumerating the categories it did
+// not change and disclosing the anchor separately, exactly as the pre-swap
+// sites do. The distinction is the store, not the caller: the settlement pins
+// the invoking worktree too whenever the recorded head still exists there.
+func keepLocalPostSwapNoChangeClause(anchoredNote recoveryAnchorNote) string {
+	const blanket = "no local files or refs were changed"
+	if anchoredNote.namesInvokingWorktree() {
+		return keepLocalNoChangeClause(blanket, anchoredNote.clause())
+	}
+	return blanket + anchoredNote.clause()
 }
 
 // recoverBlocked is the one constructor for a recovery refusal that has no
@@ -938,18 +989,21 @@ func recoverBlocked(state State, safety, message string) State {
 // after possibly anchoring a surviving recorded head of their own - Recover
 // pins the preserved head at the run recovery ref, and
 // recoverSettleInconsistent pins every surviving copy at the stranded ref.
-// anchoredNote carries that fact in, so the blanket claim is made only by a
-// delegation that wrote nothing and every other refusal names where the
-// anchor now is instead of reporting that nothing was written. The lost
-// compare-and-swap keeps its own narrower local-scoped claim and appends the
-// note, because by then this function has written the gate anchor itself.
+// anchoredNote carries that fact in - the ref AND the stores holding it - so
+// the blanket claim is made only by a delegation that wrote nothing and every
+// other refusal names where the anchor now is instead of reporting that
+// nothing was written. The refusals after the swap keep their own narrower
+// local-scoped claim and append the note, because by then this function may
+// have written the gate anchor itself; that narrowing is withdrawn when the
+// note names the invoking worktree, since the claim would otherwise deny a
+// local ref the same sentence discloses.
 //
 // The anchor CONFLICT check is deliberately still read-only and still runs
 // first: it is the cheapest refusal and it must not be reached only after a
 // staging ref exists. Once the swap has been attempted, the anchor is load
 // bearing and is never retired - a failed compare-and-swap means the gate
 // moved, so gateHead may now be reachable through the anchor alone.
-func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead, anchoredNote string) State {
+func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string, anchoredNote recoveryAnchorNote) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
@@ -965,7 +1019,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				if err == nil {
 					conflict = "names " + existing
 				}
-				return recoverBlocked(state, "blocked_recover_preserve_failed", fmt.Sprintf("the independently moved gate head %s conflicts with the existing run recovery anchor %s in the local gate %s, which %s; nothing retires that anchor, so reconcile it there before returning custody; %s", gateHead, gateAnchor, s.GateDir, conflict, keepLocalNoChangeClause("no files or branch refs were changed", anchoredNote)))
+				return recoverBlocked(state, "blocked_recover_preserve_failed", fmt.Sprintf("the independently moved gate head %s conflicts with the existing run recovery anchor %s in the local gate %s, which %s; nothing retires that anchor, so reconcile it there before returning custody; %s", gateHead, gateAnchor, s.GateDir, conflict, keepLocalNoChangeClause("no files or branch refs were changed", anchoredNote.clause())))
 			}
 			// An anchor that already names this head needs no write, but it
 			// still guards the swap, so the race refusal below must know it
@@ -975,14 +1029,14 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		}
 		head, err := git.HeadSHA(ctx, s.workDir())
 		if err != nil || head != state.Local.Head {
-			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote))
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 		}
 		// The fetch source must be absolute: the command runs inside the gate
 		// directory, where a relative invoking-worktree path would resolve to
 		// the gate itself.
 		source, err := s.absPath(s.workDir())
 		if err != nil {
-			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote))
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 		}
 		if s.beforeGateStage != nil {
 			s.beforeGateStage()
@@ -993,14 +1047,14 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			// and the refusal claims nothing was left behind - so a cleanup
 			// that itself fails has to be reported rather than swallowed,
 			// exactly like every other write this function denies making.
-			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote)+s.releaseStagingRef(ctx, stagingRef))
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())+s.releaseStagingRef(ctx, stagingRef))
 		}
 		if s.afterGateStage != nil {
 			s.afterGateStage()
 		}
 		staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
 		if err != nil || staged != state.Local.Head {
-			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote)+s.releaseStagingRef(ctx, stagingRef))
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())+s.releaseStagingRef(ctx, stagingRef))
 		}
 		// The staged head was read from the gate, not from the worktree, so it
 		// only proves what the fetch copied. Re-read the branch itself: a
@@ -1009,13 +1063,13 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		// leaving the operator ahead of the gate with the same stale-gate
 		// shape this settlement exists to clear.
 		if live, err := git.Run(ctx, s.workDir(), "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}"); err != nil || live != state.Local.Head {
-			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch moved after its head was staged into the gate; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote)+s.releaseStagingRef(ctx, stagingRef))
+			return recoverBlocked(state, "blocked_recover_assumptions_changed", "the local branch moved after its head was staged into the gate; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())+s.releaseStagingRef(ctx, stagingRef))
 		}
 		// Point of no return: from here the gate branch is about to leave
 		// gateHead, so the anchor has to exist first.
 		if writeGateAnchor {
 			if err := custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead); err != nil {
-				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; "+keepLocalNoChangeClause("no files or branch refs were changed", anchoredNote)+s.releaseStagingRef(ctx, stagingRef))
+				return recoverBlocked(state, "blocked_recover_preserve_failed", "the independently moved gate head could not be anchored before returning custody; "+keepLocalNoChangeClause("no files or branch refs were changed", anchoredNote.clause())+s.releaseStagingRef(ctx, stagingRef))
 			}
 		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
@@ -1041,7 +1095,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				if gateHeadAnchored {
 					wrote = fmt.Sprintf("; the run recovery anchor %s names the gate head this attempt observed and is not retired here", custody.RecoveryGateRef(run.ID))
 				}
-				return recoverBlocked(state, "blocked_recover_swap_failed", fmt.Sprintf("the compare-and-swap onto the kept local head failed and %s, so this is not a concurrent gate push; inspect the local gate %s before returning custody%s; no local files or refs were changed%s%s", detail, s.GateDir, wrote, anchoredNote, stagingLeft))
+				return recoverBlocked(state, "blocked_recover_swap_failed", fmt.Sprintf("the compare-and-swap onto the kept local head failed and %s, so this is not a concurrent gate push; inspect the local gate %s before returning custody%s; %s%s", detail, s.GateDir, wrote, keepLocalPostSwapNoChangeClause(anchoredNote), stagingLeft))
 			}
 			// The displaced-gate-head anchor is written only above, when the
 			// gate had already moved off the recorded head. Without it a retry
@@ -1051,9 +1105,9 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			// failed because the gate moved, so gateHead may now be reachable
 			// through this anchor alone.
 			if gateHeadAnchored {
-				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; no local files or refs were changed%s%s", custody.RecoveryGateRef(run.ID), anchoredNote, stagingLeft))
+				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; %s%s", custody.RecoveryGateRef(run.ID), keepLocalPostSwapNoChangeClause(anchoredNote), stagingLeft))
 			}
-			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no displaced-gate-head anchor was written, so re-run the recovery to return custody against the new gate head; no local files or refs were changed"+anchoredNote+stagingLeft)
+			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no displaced-gate-head anchor was written, so re-run the recovery to return custody against the new gate head; "+keepLocalPostSwapNoChangeClause(anchoredNote)+stagingLeft)
 		}
 	}
 	return s.finishRecover(ctx, run, false, true)
@@ -1912,10 +1966,36 @@ func (s *Service) selfInconsistentCustodyRecord(ctx context.Context, state *Stat
 	if !gateCompatible {
 		return true
 	}
-	if compatible, err := recoveryAnchorCompatible(ctx, wd, run.ID, preserved); err == nil && !compatible {
+	return recoveryAnchorIntercepts(ctx, wd, run.ID, preserved)
+}
+
+// recoveryAnchorIntercepts reports whether the invoking worktree's run
+// recovery ref is the evidence that makes Recover(keepLocal) hand over to the
+// settlement, decided with RECOVER'S OWN probe rather than a stricter one.
+//
+// recoveryAnchorCompatible cannot answer this: it rejects every symbolic ref,
+// while Recover asks only whether `rev-parse <ref>^{commit}` names the
+// recorded head - which DEREFERENCES a symref that resolves there. Such a
+// record is anchored as far as Recover is concerned, so it never reaches
+// PreserveRecoveryAnchor, never intercepts, and must not be advertised as
+// settleable. An ABSENT ref is not evidence of inconsistency either:
+// PreserveRecoveryAnchor simply creates it and Recover carries on down the
+// ordinary keep-local path, which has guards of its own that this predicate
+// does not model. What remains - a ref that exists in any form and does not
+// resolve to the recorded head - is exactly what PreserveRecoveryAnchor
+// refuses, and therefore exactly where the interception happens.
+func recoveryAnchorIntercepts(ctx context.Context, wd, runID, preserved string) bool {
+	anchorRef := custody.RecoveryRef(runID)
+	if resolved, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); err == nil && resolved == preserved {
+		return false
+	}
+	// A DANGLING symref is invisible to for-each-ref while symbolic-ref still
+	// succeeds, so existence has to be asked both ways.
+	if symbolic, err := git.Run(ctx, wd, "symbolic-ref", "-q", anchorRef); err == nil && symbolic != "" {
 		return true
 	}
-	return false
+	_, exists, err := git.ExactRefTarget(ctx, wd, anchorRef)
+	return err == nil && exists
 }
 
 // settlementGateBranchUsable answers the one question recoverSettleInconsistent
