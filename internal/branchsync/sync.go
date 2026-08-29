@@ -877,12 +877,17 @@ func anchoredElsewhere(pinned []string, ref string) string {
 	return fmt.Sprintf("; the recorded head is now anchored at %s in %s", ref, strings.Join(pinned, " and "))
 }
 
-// keepLocalNoChangeClause closes a recoverKeepLocal refusal with a claim that
-// stays true for its caller too. recoverKeepLocal writes nothing before its
-// compare-and-swap by construction, but its callers can already have anchored
-// a surviving recorded head, so the blanket claim belongs only to a delegation
+// keepLocalNoChangeClause closes a PRE-SWAP recoverKeepLocal refusal with a
+// claim that stays true for its caller too. Those refusals write nothing of
+// their own by construction, but their callers can already have anchored a
+// surviving recorded head, so the blanket claim belongs only to a delegation
 // that carries no such anchor; otherwise the refusal reports exactly what it
 // did not change and hands over the anchor note naming where that head now is.
+//
+// The lost compare-and-swap is deliberately NOT built here. That refusal has
+// just written the displaced-gate-head anchor into the gate, so its narrower
+// "no LOCAL files or refs were changed" claim is the accurate one and the
+// anchor note is appended to it rather than replacing it.
 func keepLocalNoChangeClause(blanket, anchored string) string {
 	if anchored == "" {
 		return blanket
@@ -934,7 +939,9 @@ func recoverBlocked(state State, safety, message string) State {
 // recoverSettleInconsistent pins every surviving copy at the stranded ref.
 // anchoredNote carries that fact in, so the blanket claim is made only by a
 // delegation that wrote nothing and every other refusal names where the
-// anchor now is instead of reporting that nothing was written.
+// anchor now is instead of reporting that nothing was written. The lost
+// compare-and-swap keeps its own narrower local-scoped claim and appends the
+// note, because by then this function has written the gate anchor itself.
 //
 // The anchor CONFLICT check is deliberately still read-only and still runs
 // first: it is the cheapest refusal and it must not be reached only after a
@@ -1010,9 +1017,9 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			// failed because the gate moved, so gateHead may now be reachable
 			// through this anchor alone.
 			if gateHeadAnchored {
-				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; %s", custody.RecoveryGateRef(run.ID), keepLocalNoChangeClause("no local files or refs were changed", anchoredNote)))
+				return recoverBlocked(state, "blocked_recover_gate_race", fmt.Sprintf("the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; the run recovery anchor %s still names the gate head this attempt observed, so a further attempt refuses on that conflict - reconcile that anchor against the live gate head before returning custody; no local files or refs were changed%s", custody.RecoveryGateRef(run.ID), anchoredNote))
 			}
-			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no displaced-gate-head anchor was written, so re-run the recovery to return custody against the new gate head; "+keepLocalNoChangeClause("no local files or refs were changed", anchoredNote))
+			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no displaced-gate-head anchor was written, so re-run the recovery to return custody against the new gate head; no local files or refs were changed"+anchoredNote)
 		}
 	}
 	return s.finishRecover(ctx, run, false, true)

@@ -2169,6 +2169,75 @@ func TestRecoverKeepLocalSettlementLosesConcurrentGatePushCleanly(t *testing.T) 
 	}
 }
 
+// TestSettlementLostSwapKeepsItsLocalScopedClaimBesideTheAnchorNote is the
+// review regression for the one refusal that must NOT take the anchor note as
+// a replacement for its own claim. The lost compare-and-swap has just written
+// refs/no-mistakes/recover-gate/<run> into the gate, which is exactly why its
+// message is scoped to LOCAL files and refs; substituting the settlement's
+// broader "no branch, worktree, or file changes were made" there would deny a
+// gate-side ref file this very attempt created.
+func TestSettlementLostSwapKeepsItsLocalScopedClaimBesideTheAnchorNote(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	// A later run parked the gate branch past the recorded head, so the swap
+	// has a displaced gate head to anchor, while conflicting gate evidence
+	// routes the recovery through the settlement and its pin.
+	later := filepath.Join(t.TempDir(), "later-run")
+	mustRun(t, filepath.Dir(later), "-c", "core.autocrlf=false", "clone", f.gate, later)
+	configureIdentity(t, later)
+	mustRun(t, later, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(later, "later.txt"), "later cancelled run\n")
+	mustRun(t, later, "add", "later.txt")
+	mustRun(t, later, "commit", "-m", "no-mistakes(review): later run fix")
+	mustRun(t, later, "push", "origin", "HEAD:refs/heads/feature/recover")
+	staleGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+
+	var raced string
+	f.service.beforeGateReset = func() {
+		if raced != "" {
+			return
+		}
+		mustWrite(t, filepath.Join(later, "raced.txt"), "raced\n")
+		mustRun(t, later, "add", "raced.txt")
+		mustRun(t, later, "commit", "-m", "concurrent gate push")
+		mustRun(t, later, "push", "origin", "HEAD:refs/heads/feature/recover")
+		raced = mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_gate_race" {
+		t.Fatalf("racing settlement = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("lost compare-and-swap stamped custody")
+	}
+	// The fixture has to have produced the exact state under test: a pinned
+	// recorded head, a written gate anchor, and a gate branch that moved on.
+	if got := mustRun(t, f.gate, "rev-parse", custody.RecoveryStrandedRef(f.run.ID)); got != f.preserved {
+		t.Fatalf("gate stranded anchor = %s, want the recorded head %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", custody.RecoveryGateRef(f.run.ID)); got != staleGate {
+		t.Fatalf("displaced gate head anchor = %s, want %s", got, staleGate)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != raced {
+		t.Fatalf("gate branch = %s, want the concurrent push %s", got, raced)
+	}
+	if !strings.Contains(state.Error, "no local files or refs were changed") {
+		t.Fatalf("refusal dropped the local qualifier it earned by writing a gate ref: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, custody.RecoveryStrandedRef(f.run.ID)) || !strings.Contains(state.Error, "the local gate") {
+		t.Fatalf("refusal did not name where the recorded head is now anchored: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, custody.RecoveryGateRef(f.run.ID)) {
+		t.Fatalf("refusal did not name the anchor to reconcile: %q", state.Error)
+	}
+	if state.NextAction == nil {
+		t.Fatalf("lost compare-and-swap named no exit at all = %#v", state)
+	}
+}
+
 // TestInspectNamesKeepLocalSettlementForWedgedCustodyRecord is the R5 half of
 // issue #824: a refused recovery must still name a supported exit. Inspection
 // must not advertise recover_custody for a record it cannot verify, but the

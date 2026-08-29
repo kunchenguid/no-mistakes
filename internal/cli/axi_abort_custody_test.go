@@ -351,8 +351,8 @@ func TestBareAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 // answered an abort with `git log` reconciliation advice the bare site had
 // already been taught not to emit.
 func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
-	runID, _, _ := divergedReleasedBranchFixture(t)
-	assertDivergedReleasedFixtureInvariants(t)
+	runID, p, _ := divergedReleasedBranchFixture(t)
+	assertDivergedReleasedFixtureInvariants(t, p, runID)
 
 	t.Run("daemon unavailable", func(t *testing.T) {
 		out, err := executeCmd("axi", "abort", "--run", runID)
@@ -368,7 +368,7 @@ func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergence(t *testing.T) {
 // same guard on the daemon-up resolveInactiveAbortTruth path.
 func TestRunScopedAbortNoOpEmitsNoHelpForOrdinaryDivergenceWithDaemon(t *testing.T) {
 	runID, p, _ := divergedReleasedBranchFixture(t)
-	assertDivergedReleasedFixtureInvariants(t)
+	assertDivergedReleasedFixtureInvariants(t, p, runID)
 	startInactiveAbortDaemon(t, p, runID)
 
 	out, err := executeCmd("axi", "abort", "--run", runID)
@@ -431,24 +431,45 @@ func divergedReleasedBranchFixture(t *testing.T) (string, *paths.Paths, string) 
 // asserts inline and these two sites dropped, leaving them unable to fail if
 // the StatePipelineOwned clause were deleted.
 //
-// The bare abort site reports the same branchsync.InspectCached read over the
-// same repository, and does render branch_sync, so it is where this fixture's
-// classification can be read directly. Call it before any fake daemon is
-// started, so it observes only the fixture.
-func assertDivergedReleasedFixtureInvariants(t *testing.T) {
+// It reads the classification the abort sites themselves consult - the same
+// branchsync.InspectCached over the same database, repository, and gate that
+// terminalRunCustodyHelpWithDB builds - rather than going through a CLI
+// surface. The bare `axi abort` renders it too, but that path ensures a live
+// daemon, which this package cannot start, so reading the service directly is
+// what keeps the invariant observable with or without a fake daemon.
+func assertDivergedReleasedFixtureInvariants(t *testing.T, p *paths.Paths, runID string) {
 	t.Helper()
-	out, err := executeCmd("axi", "abort")
+	database, err := db.Open(p.DB())
 	if err != nil {
-		t.Fatalf("reading the fixture classification must not fail: %v\n%s", err, out)
+		t.Fatalf("reading the fixture classification must not fail: %v", err)
 	}
-	if !strings.Contains(out, "safety: blocked_diverged") {
-		t.Fatalf("fixture did not reach ordinary divergence, so suppression proves nothing:\n%s", out)
+	defer database.Close()
+	repo, err := findRepo(database)
+	if err != nil || repo == nil {
+		t.Fatalf("reading the fixture classification must not fail: repo=%#v err=%v", repo, err)
+	}
+	service := &branchsync.Service{
+		DB:      database,
+		Repo:    repo,
+		WorkDir: ".",
+		GateDir: p.RepoDir(repo.ID),
+		Paths:   p,
+	}
+	state := service.InspectCached(context.Background())
+	if state.State != branchsync.StateDiverged || state.Safety != "blocked_diverged" {
+		t.Fatalf("fixture did not reach ordinary divergence, so suppression proves nothing: state=%q safety=%q", state.State, state.Safety)
+	}
+	// The run guard is the other half of the gate under test; if the branch
+	// stopped resolving to this run, removing the pipeline_owned clause would
+	// suppress the help anyway and the tests below could not fail.
+	if state.Pipeline.RunID != runID {
+		t.Fatalf("fixture branch resolves to run %q, want %q, so the pipeline_owned clause is not what suppresses the help", state.Pipeline.RunID, runID)
 	}
 	// The branch's own next action is the value custodySettlementHelp would
 	// have turned into help, so its presence is what proves the
 	// pipeline_owned half of the guard is doing the suppressing.
-	if !strings.Contains(out, "code: inspect_and_reconcile_manually") {
-		t.Fatalf("fixture branch carries no next action for the guard to suppress:\n%s", out)
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("fixture branch carries no next action for the guard to suppress: %#v", state.NextAction)
 	}
 }
 
