@@ -873,6 +873,28 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestUpdatePROmitsTitleWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{
+		Body: "marker only",
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := strings.Join(recorded[0], " ")
+	if strings.Contains(got, "--title") {
+		t.Fatalf("body-only UpdatePR must not pass --title, got %v", recorded[0])
+	}
+	if !strings.Contains(got, "--body-file") {
+		t.Fatalf("body-only UpdatePR must still pass --body-file, got %v", recorded[0])
+	}
+}
+
 // UpdatePR shares the same explicit-PR selector boundary as the read methods:
 // when the number is absent it must target the canonical PR URL, never an empty
 // positional that makes `gh pr edit` resolve the cwd branch (main) from the

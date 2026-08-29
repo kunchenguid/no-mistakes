@@ -469,12 +469,12 @@ func restampPublishedAttestation(sctx *pipeline.StepContext, headSHA string) err
 	return restampPRAttestation(sctx.Ctx, host, pr, headSHA, sctx.Log)
 }
 
-// restampPRAttestation fetches the current PR body, rebinds a live pipeline
-// attestation to newHeadSHA, and writes the body back. It does not insert an
-// attestation that was not already there. A host without PRContentReader is
-// skipped with a warning rather than failed: missing-reader is not a GitHub
-// settlement miss, and making it fatal parks every non-GitHub repair after
-// a successful push.
+// restampPRAttestation re-reads the current PR body, rewrites only the live
+// pipeline-attestation marker to newHeadSHA, and writes the body back without
+// sending a title. It does not insert an attestation that was not already
+// there. A host without PRContentReader is skipped with a warning rather than
+// failed: missing-reader is not a GitHub settlement miss, and making it fatal
+// parks every non-GitHub repair after a successful push.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
@@ -488,34 +488,21 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			// Refresh immediately before the full-content update. UpdatePR has no
-			// compare-and-swap contract, so writing the first snapshot could erase
-			// a title or body edit made while the attestation was being prepared.
-			content, err = reader.GetPRContent(ctx, pr)
-		}
-		if err == nil {
 			updated, rebound := rebindPipelineAttestationHead(content.Body, newHeadSHA)
 			if !rebound || updated == content.Body {
 				return nil
 			}
-			_, err = host.UpdatePR(ctx, pr, scm.PRContent{Title: content.Title, Body: updated})
-			if err == nil {
-				// Read back rather than treating transport success as settlement. If
-				// another edit won after our write, retry from that newer content so
-				// its title and body are retained by the next idempotent rewrite.
-				var settled scm.PRContent
-				settled, err = reader.GetPRContent(ctx, pr)
-				if err == nil {
-					settledBody, rebound := rebindPipelineAttestationHead(settled.Body, newHeadSHA)
-					if rebound && settledBody == settled.Body {
-						if logfn != nil {
-							logfn(fmt.Sprintf("rebound pipeline attestation to %s", shortObjectID(newHeadSHA)))
-						}
-						return nil
-					}
-					err = errors.New("PR content changed before attestation settlement")
-				}
+			// Body-only write of the just-read body with the marker rewritten.
+			// Do not send title: a full-content UpdatePR would clobber a
+			// concurrent title edit. rebindPipelineAttestationHead already
+			// leaves every other body byte untouched.
+			_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
+		}
+		if err == nil {
+			if logfn != nil {
+				logfn(fmt.Sprintf("rebound pipeline attestation to %s", shortObjectID(newHeadSHA)))
 			}
+			return nil
 		}
 		lastErr = err
 		if ctx.Err() != nil {

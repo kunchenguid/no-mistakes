@@ -115,21 +115,14 @@ func TestRebindPipelineAttestationHead_VerifyPyRoundTrip(t *testing.T) {
 
 type attestationTestHost struct {
 	scm.Host
-	title                   string
-	body                    string
-	updated                 scm.PRContent
-	updates                 int
-	failUpdates             int
-	reads                   int
-	contentBeforeSecondRead *scm.PRContent
+	title       string
+	body        string
+	updated     scm.PRContent
+	updates     int
+	failUpdates int
 }
 
 func (h *attestationTestHost) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
-	h.reads++
-	if h.reads == 2 && h.contentBeforeSecondRead != nil {
-		h.title = h.contentBeforeSecondRead.Title
-		h.body = h.contentBeforeSecondRead.Body
-	}
 	return scm.PRContent{Title: h.title, Body: h.body}, nil
 }
 
@@ -140,6 +133,9 @@ func (h *attestationTestHost) UpdatePR(_ context.Context, pr *scm.PR, content sc
 	}
 	h.updated = content
 	h.body = content.Body
+	if strings.TrimSpace(content.Title) != "" {
+		h.title = content.Title
+	}
 	return pr, nil
 }
 
@@ -206,22 +202,20 @@ func TestRestampPRAttestation_PreservesContentEditedWhilePreparingRewrite(t *tes
 	t.Parallel()
 	originalHead := testPipelineHeadSHA
 	repairHead := strings.Repeat("34", 20)
-	body := compliantPipelineBody(t, originalHead)
-	concurrent := scm.PRContent{
-		Title: "title edited by the user",
-		Body:  body + "\n\nUser edit made during settlement.",
-	}
+	body := compliantPipelineBody(t, originalHead) + "\n\nUser edit made during settlement."
 	host := &attestationTestHost{
-		title:                   "stale title",
-		body:                    body,
-		contentBeforeSecondRead: &concurrent,
+		title: "title edited by the user",
+		body:  body,
 	}
 
 	if err := restampPRAttestation(context.Background(), host, &scm.PR{Number: "42"}, repairHead, nil); err != nil {
 		t.Fatal(err)
 	}
-	if host.updated.Title != concurrent.Title {
-		t.Fatalf("updated title = %q, want concurrent title %q", host.updated.Title, concurrent.Title)
+	if host.updated.Title != "" {
+		t.Fatalf("restamp must not write a title, got %q", host.updated.Title)
+	}
+	if host.title != "title edited by the user" {
+		t.Fatalf("stored title = %q, want the concurrent title left untouched", host.title)
 	}
 	if !strings.Contains(host.updated.Body, "User edit made during settlement.") {
 		t.Fatalf("updated body lost concurrent user edit:\n%s", host.updated.Body)

@@ -312,7 +312,10 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		return nil, err
 	}
 	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
-	args = append(args, "--title", content.Title, "--body-file", "-")
+	if strings.TrimSpace(content.Title) != "" {
+		args = append(args, "--title", content.Title)
+	}
+	args = append(args, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	if out, err := cmd.CombinedOutput(); err != nil {
