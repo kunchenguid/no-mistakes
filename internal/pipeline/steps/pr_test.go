@@ -626,6 +626,11 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			wantErrPart: "does not match",
 		},
 		{
+			name:        "dot git suffix names a different repository",
+			intent:      "PR destination: parent-owner/no-mistakes.git",
+			wantErrPart: "does not match",
+		},
+		{
 			name:        "destination unknown",
 			intent:      "Deliver this change without naming a repository.",
 			wantErrPart: "does not identify",
@@ -707,6 +712,23 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 				t.Fatal(readErr)
 			}
 		})
+	}
+}
+
+func TestValidatePRDestination_AcceptsRepositoryNameEndingInDotGit(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{
+		Repo: &db.Repo{
+			UpstreamURL: "https://github.com/parent-owner/no-mistakes.git.git",
+			ForkURL:     "https://github.com/fork-owner/no-mistakes.git",
+		},
+		Run:          &db.Run{IntentLeadingStructurePreserved: true},
+		UserIntent:   "PR destination: parent-owner/no-mistakes.git",
+		IntentSource: db.RunIntentSourceAgent,
+	}
+
+	if err := validatePRDestination(sctx, scm.ProviderGitHub); err != nil {
+		t.Fatalf("repository name ending in .git was refused: %v", err)
 	}
 }
 
@@ -1980,6 +2002,91 @@ func TestPRStep_PrependsIntentSectionWhenIntentSet(t *testing.T) {
 	}
 	if !strings.Contains(ghLog, "user wanted to add a Bar() helper for foo callers") {
 		t.Fatalf("expected intent text in PR body, got:\n%s", ghLog)
+	}
+}
+
+func TestPRStep_PrependsSupersedingIntentDecisions(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: guard fork pr destinations","body":"## What Changed\n\n- guard fork PR publication"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.UserIntent = strings.Join([]string{
+		"PR destination: kunchenguid/no-mistakes",
+		"Implement https://github.com/kunchenguid/no-mistakes/issues/884.",
+		"We do not yet carry a local automatic guard ourselves and currently check the target manually.",
+		"Credit the maintainer reproduction on current main: buildHost selected --repo from Repo.UpstreamURL and Repo.ForkURL supplied only the --head owner.",
+		"Red before: mismatch, unknown, and ambiguous cases reached PR creation. Green after: the focused regression passed.",
+		"Require every PR-producing fork run to start axi run --intent. Do not add a push-time destination channel.",
+		"No earlier-failure implementation was added.",
+		"Preserve the provider-unavailable skip and mismatch refusal before PR operations.",
+		"Out of scope: issue #552 and host-qualified destination authorization.",
+	}, "\n\n")
+
+	const decision = "Authoritative structure-preserved explicit intent from axi run --intent, rerun --intent, or notify-push push-option intent may authorize publication when the destination matches the selected parent; only a bare direct push without authoritative intent validates and pushes before PR refusal."
+	initial := types.Findings{Items: []types.Finding{{
+		ID:          "captain-authoritative-intent-transport-decision",
+		Severity:    types.FindingSeverityError,
+		Description: "The generated PR body must reflect the captain's later delivery decision.",
+		Action:      types.ActionAskUser,
+	}}}
+	initialJSON, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialRaw := string(initialJSON)
+	round, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &initialRaw, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["captain-authoritative-intent-transport-decision"]`
+	initial.Items[0].UserInstructions = decision
+	mergedJSON, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergedRaw := string(mergedJSON)
+	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &mergedRaw); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := readFakeGHBodyArg(t, logFile)
+	for _, want := range []string{
+		"## Intent",
+		"### Superseding Decisions",
+		"Later recorded decisions take precedence over conflicting wording in the original intent below.",
+		decision,
+		"### Original Intent",
+		"https://github.com/kunchenguid/no-mistakes/issues/884",
+		"We do not yet carry a local automatic guard ourselves and currently check the target manually.",
+		"Credit the maintainer reproduction on current main",
+		"Red before: mismatch, unknown, and ambiguous cases reached PR creation. Green after: the focused regression passed.",
+		"No earlier-failure implementation was added.",
+		"Preserve the provider-unavailable skip and mismatch refusal before PR operations.",
+		"Out of scope: issue #552 and host-qualified destination authorization.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("generated PR body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, "### Superseding Decisions") > strings.Index(body, "### Original Intent") {
+		t.Fatalf("superseding decisions must precede the original intent:\n%s", body)
 	}
 }
 

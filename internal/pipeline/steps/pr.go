@@ -196,7 +196,7 @@ func normalizePRDestination(value string) (string, bool) {
 		return "", false
 	}
 	owner := parts[0]
-	repo := strings.TrimSuffix(parts[1], ".git")
+	repo := parts[1]
 	if !validGitHubOwner(owner) || !validGitHubRepository(repo) {
 		return "", false
 	}
@@ -500,12 +500,98 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
 }
 
+func cleanedPRIntent(sctx *pipeline.StepContext) string {
+	cleaned := cleanedUserIntent(sctx)
+	decisions := supersedingPRIntentDecisions(sctx)
+	if len(decisions) == 0 {
+		return cleaned
+	}
+
+	var b strings.Builder
+	b.WriteString("### Superseding Decisions\n\n")
+	b.WriteString("Later recorded decisions take precedence over conflicting wording in the original intent below. Within this list, later entries supersede earlier conflicting entries.")
+	for _, decision := range decisions {
+		b.WriteString("\n\n- ")
+		b.WriteString(strings.ReplaceAll(decision, "\n", "\n  "))
+	}
+	if cleaned != "" {
+		b.WriteString("\n\n### Original Intent\n\n")
+		b.WriteString(cleaned)
+	}
+	return b.String()
+}
+
+func supersedingPRIntentDecisions(sctx *pipeline.StepContext) []string {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
+		return nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		slog.Warn("failed to query steps for PR intent decisions", "error", err)
+		return nil
+	}
+
+	var decisions []string
+	seen := make(map[string]bool)
+	for i := len(sctx.PriorBranchDecisions) - 1; i >= 0; i-- {
+		entry := sctx.PriorBranchDecisions[i]
+		if entry != nil {
+			decisions = appendSupersedingPRIntentRound(decisions, seen, entry.Round)
+		}
+	}
+	for _, step := range steps {
+		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			slog.Warn("failed to query rounds for PR intent decisions", "step", step.StepName, "error", err)
+			continue
+		}
+		for _, round := range rounds {
+			decisions = appendSupersedingPRIntentRound(decisions, seen, round)
+		}
+	}
+	return decisions
+}
+
+func appendSupersedingPRIntentRound(decisions []string, seen map[string]bool, round *db.StepRound) []string {
+	if round == nil || round.SelectionSource == nil || *round.SelectionSource != db.RoundSelectionSourceUser || round.SelectedFindingIDs == nil || round.UserFindingsJSON == nil {
+		return decisions
+	}
+	var selectedIDs []string
+	if err := json.Unmarshal([]byte(*round.SelectedFindingIDs), &selectedIDs); err != nil {
+		return decisions
+	}
+	selected := make(map[string]bool, len(selectedIDs))
+	for _, id := range selectedIDs {
+		selected[id] = true
+	}
+	findings, err := types.ParseFindingsJSON(*round.UserFindingsJSON)
+	if err != nil {
+		return decisions
+	}
+	for _, finding := range findings.Items {
+		if !selected[finding.ID] {
+			continue
+		}
+		decision := finding.UserInstructions
+		if strings.TrimSpace(decision) == "" && finding.Source == types.FindingSourceUser {
+			decision = finding.Description
+		}
+		decision = cleanedUserIntent(&pipeline.StepContext{UserIntent: decision})
+		if decision == "" || seen[decision] {
+			continue
+		}
+		seen[decision] = true
+		decisions = append(decisions, decision)
+	}
+	return decisions
+}
+
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
 	// Neutralized for the same reason as in prependIntentSection: intent is
 	// agent-extracted text placed ahead of the pipeline section.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := neutralizeAttestationMarkers(cleanedPRIntent(sctx))
 	if cleaned == "" {
 		return sections
 	}
@@ -1254,16 +1340,15 @@ func isGeneratedSectionHeading(line string) bool {
 	}
 }
 
-// prependIntentSection prepends a "## Intent" section sourced from the
-// already-extracted user intent. The intent text is reused verbatim (after
-// the same secret/adversarial scrubbing the agent prompt path applies)
-// rather than being paraphrased by the agent. Returns body unchanged when
-// no intent is available.
+// prependIntentSection prepends a "## Intent" section containing recorded
+// superseding decisions followed by the original extracted user intent. Both
+// use the same secret/adversarial scrubbing as the agent prompt path. Returns
+// body unchanged when neither source is available.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	// Intent is agent-extracted text that lands ahead of the pipeline section,
 	// so it can shadow the real attestation the same way the Testing section
 	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := neutralizeAttestationMarkers(cleanedPRIntent(sctx))
 	if cleaned == "" {
 		return body
 	}
