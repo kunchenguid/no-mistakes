@@ -3683,91 +3683,194 @@ func TestSuccessfulKeepLocalReportsNoFailureWhenOnlyCleanupFailed(t *testing.T) 
 
 // TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote covers the sibling path
 // this change had scoped out, and which an automated reviewer caught: the
-// DEFAULT --recover flow fetches the preserved head and writes
-// refs/no-mistakes/recover/<run> into the invoking worktree before its own
-// refusals are reached, so a refusal claiming "no files or refs were changed"
-// denied a ref the same attempt had just created. The keep-local siblings
-// twenty lines away already appended the anchor note; these three did not.
+// DEFAULT --recover flow pins the recorded head at refs/no-mistakes/recover/<run>
+// - in the LOCAL GATE first, then in the invoking worktree after fetching it -
+// before its own refusals are reached, so a refusal claiming "no files or refs
+// were changed" denied a ref the same attempt had just created. The keep-local
+// siblings twenty lines away already appended the anchor note; these did not.
 //
-// Each case INDUCES the refusal and asserts against the anchor's real presence
-// rather than against the message text alone, because the whole class of defect
-// here is a sentence that disagrees with what the code actually did.
+// The claim spans BOTH stores, so the guard does too. Each case INDUCES the
+// refusal and asserts against the anchor's real presence in each store rather
+// than against the message text alone, because the whole class of defect here
+// is a sentence that disagrees with what the code actually did.
 func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name    string
 		fixture func(*testing.T) *recoverFixture
+		setup   func(*testing.T, *recoverFixture)
 		safety  string
 	}{
 		{
 			// Behind and dirty: local is an ancestor of the preserved head.
 			name:    "behind and dirty",
 			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
-			safety:  "blocked_recover_dirty",
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "feature.txt"), "uncommitted edit\n")
+			},
+			safety: "blocked_recover_dirty",
 		},
 		{
 			// Diverged, preserved head contains the local work, dirty.
 			name:    "diverged contained and dirty",
 			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
-			safety:  "blocked_recover_dirty",
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "feature.txt"), "uncommitted edit\n")
+			},
+			safety: "blocked_recover_dirty",
+		},
+		{
+			// Genuinely diverged: the preserved head does not contain the
+			// local work, so recovery refuses without any worktree move. This
+			// message already named the anchor and then denied writing any ref
+			// in the same sentence.
+			name:    "diverged and unproven",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "divergent.txt"), "unique local work\n")
+				mustRun(t, f.local, "add", "divergent.txt")
+				mustRun(t, f.local, "commit", "-m", "unique local work")
+			},
+			safety: "blocked_recover_diverged",
+		},
+		{
+			// The gate-side pin succeeds and the fetch that follows it fails,
+			// which is the refusal one layer ABOVE the three above: the note
+			// used to be constructed after that write, so it structurally
+			// could not report a gate-side anchor at all. A ref occupying
+			// refs/no-mistakes/fetch makes every fetch under that prefix
+			// unable to lock its temporary ref, which is a real Git state
+			// rather than a stubbed failure.
+			name:    "fetch fails after the local gate was pinned",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", "refs/no-mistakes/fetch", f.submitted)
+			},
+			safety: "blocked_recover_preserve_failed",
+		},
+		{
+			// Same gate-side pin, then the invoking worktree already holds a
+			// recovery ref at another commit so the worktree pin refuses.
+			name:    "worktree anchor conflicts after the local gate was pinned",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+			},
+			safety: "blocked_recover_anchor_mismatch",
+		},
+		{
+			// Both stores are pinned, then the clean fast-forward re-checks
+			// its assumptions and finds the worktree dirty. The refusal sits
+			// one function below the block that wrote the anchors, which is
+			// why the note has to travel with the delegation.
+			name:    "fast-forward assumptions change after both stores were pinned",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				f.service.beforeRecoverWorktreeMove = func() {
+					mustWrite(t, filepath.Join(f.local, "feature.txt"), "raced edit\n")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
+		},
+		{
+			// The same delegation on the adoption arm, whose refusal denied
+			// changing "files or refs" while both anchors existed.
+			name:    "adoption assumptions change after both stores were pinned",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				f.service.beforeRecoverWorktreeMove = func() {
+					mustWrite(t, filepath.Join(f.local, "feature.txt"), "raced edit\n")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := tc.fixture(t)
-			mustWrite(t, filepath.Join(f.local, "feature.txt"), "uncommitted edit\n")
+			tc.setup(t, f)
+			before := f.anchorPresence(t)
 
 			state := f.service.Recover(f.ctx, false)
 			if state.Safety != tc.safety {
 				t.Fatalf("safety = %q, want %q: %#v", state.Safety, tc.safety, state)
 			}
-			assertRefusalMatchesAnchorReality(t, f, state)
+			assertRefusalMatchesAnchorReality(t, f, before, state)
 		})
 	}
+}
 
-	// Genuinely diverged: the preserved head does not contain the local work,
-	// so recovery refuses without any worktree move. This message already
-	// named the anchor and then denied writing refs in the same sentence.
-	t.Run("diverged and unproven", func(t *testing.T) {
-		t.Parallel()
-		f := newRecoverFixture(t, types.RunCancelled)
-		mustWrite(t, filepath.Join(f.local, "divergent.txt"), "unique local work\n")
-		mustRun(t, f.local, "add", "divergent.txt")
-		mustRun(t, f.local, "commit", "-m", "unique local work")
+// anchorStore is one object store a recovery can pin the recorded head in,
+// paired with the name the refusals use for it.
+type anchorStore struct {
+	label string
+	dir   string
+}
 
-		state := f.service.Recover(f.ctx, false)
-		if state.Safety != "blocked_recover_diverged" {
-			t.Fatalf("safety = %q, want blocked_recover_diverged: %#v", state.Safety, state)
+func (f *recoverFixture) anchorStores() []anchorStore {
+	return []anchorStore{
+		{invokingWorktreeStore, f.local},
+		{localGateStore, f.gate},
+	}
+}
+
+// anchorPresence reads whether refs/no-mistakes/recover/<run> exists in each
+// store. Compared before and after an attempt, it is what separates a pin THIS
+// attempt made - the only kind a no-change claim can contradict - from one it
+// merely found already there.
+func (f *recoverFixture) anchorPresence(t *testing.T) map[string]bool {
+	t.Helper()
+	present := make(map[string]bool, 2)
+	for _, store := range f.anchorStores() {
+		_, exists, err := gitpkg.ExactRefTarget(f.ctx, store.dir, f.anchorRef())
+		if err != nil {
+			t.Fatalf("read %s in %s: %v", f.anchorRef(), store.label, err)
 		}
-		assertRefusalMatchesAnchorReality(t, f, state)
-	})
+		present[store.label] = exists
+	}
+	return present
 }
 
 // assertRefusalMatchesAnchorReality is the whole point: read whether the
-// recovery anchor actually exists in the invoking worktree, then require the
-// refusal's claim to agree with that fact in either direction.
-func assertRefusalMatchesAnchorReality(t *testing.T, f *recoverFixture, state State) {
+// recovery anchor actually exists in each store, then require the refusal's
+// claim to agree with that fact in either direction - the plain denial when
+// this attempt wrote nothing, and the anchor plus every store it wrote when it
+// did. A store holding no anchor at all may never be named as holding one.
+func assertRefusalMatchesAnchorReality(t *testing.T, f *recoverFixture, before map[string]bool, state State) {
 	t.Helper()
 	if state.Recovered || state.Changed {
 		t.Fatalf("refusal reported a change = %#v", state)
 	}
 	anchor := f.anchorRef()
-	target, exists, err := gitpkg.ExactRefTarget(f.ctx, f.local, anchor)
-	if err != nil {
-		t.Fatalf("read %s: %v", anchor, err)
+	after := f.anchorPresence(t)
+	var written []string
+	for _, store := range f.anchorStores() {
+		if after[store.label] && !before[store.label] {
+			written = append(written, store.label)
+		}
 	}
-	if !exists {
-		// Nothing was written, so the blanket denial is the honest claim.
+	for _, store := range f.anchorStores() {
+		if !after[store.label] && strings.Contains(state.Error, store.label) {
+			t.Fatalf("refusal named %s, which holds no %s at all: %q", store.label, anchor, state.Error)
+		}
+	}
+	if len(written) == 0 {
+		// This attempt wrote nothing, so the blanket denial is the honest claim.
 		if !strings.Contains(state.Error, "no files or refs were changed") {
 			t.Fatalf("no anchor was written, but the refusal withheld the plain claim: %q", state.Error)
 		}
 		return
 	}
 	if strings.Contains(state.Error, "no files or refs were changed") {
-		t.Fatalf("refusal denied changing refs while %s exists at %s: %q", anchor, target, state.Error)
+		t.Fatalf("refusal denied changing refs while this attempt wrote %s in %s: %q", anchor, strings.Join(written, " and "), state.Error)
 	}
 	if !strings.Contains(state.Error, anchor) {
-		t.Fatalf("refusal did not name the anchor it wrote (%s at %s): %q", anchor, target, state.Error)
+		t.Fatalf("refusal did not name the anchor it wrote (%s in %s): %q", anchor, strings.Join(written, " and "), state.Error)
+	}
+	for _, store := range written {
+		if !strings.Contains(state.Error, store) {
+			t.Fatalf("refusal did not name %s, where this attempt anchored %s: %q", store, anchor, state.Error)
+		}
 	}
 }

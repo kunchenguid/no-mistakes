@@ -643,6 +643,15 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		_, statErr := os.Stat(gateDir)
 		gateAvailable = statErr == nil
 	}
+	// What this attempt itself pins the recorded head at, and in WHICH store,
+	// so a later refusal reports that anchor rather than claiming nothing was
+	// written. It is hoisted above every write because this function can pin
+	// the recorded head in the local gate as well as in the invoking worktree,
+	// and a refusal claiming "no files or refs were changed" after EITHER write
+	// would deny a ref this same attempt created. Both the keep-local
+	// delegations and the default path's own refusals carry it, so the claim is
+	// true of the whole attempt rather than of the store we happened to look in.
+	anchoredNote := recoveryAnchorNote{ref: anchorRef}
 
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
@@ -651,7 +660,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
-		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
+		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved, &anchoredNote); !ok {
 			// The recovery ref in the invoking worktree is unusable, which is
 			// the same self-inconsistency the gate-side sites settle - and here
 			// the preserved head is already reachable from the local branch, so
@@ -667,7 +676,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 				if keepLocal {
 					return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
 				}
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; %s", keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 			}
 		}
 		return s.finishRecover(ctx, run, false, keepLocal)
@@ -708,35 +717,30 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
 			return recoverBlocked(state, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
+		// PreserveRecoveryHead returns nil both when it creates the ref and
+		// when it was already present at the recorded head, so the read-only
+		// probe above is what separates a pin THIS attempt made from one it
+		// merely found.
+		if !gateAnchorExists {
+			anchoredNote.record(localGateStore)
+		}
 	}
 
 	anchored := false
-	// What this attempt itself writes, so a later keep-local refusal reports
-	// the anchor rather than claiming nothing was written. This path can only
-	// ever pin in the invoking worktree, which is what scopes the no-change
-	// claims of the refusals it delegates to.
-	// Carried by BOTH paths. The keep-local delegations below pass it on, and
-	// the default path's own refusals append it too: this block can write
-	// refs/no-mistakes/recover/<run> into the invoking worktree, so a refusal
-	// reached afterwards that claimed "no files or refs were changed" would
-	// deny a ref this same attempt created. That is the identical defect this
-	// change fixes on the keep-local path, and leaving it on the sibling path
-	// would make the claim true only where we happened to look.
-	anchoredNote := recoveryAnchorNote{ref: anchorRef}
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
 	}
 	if !anchored {
 		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
-			return recoverBlocked(state, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
+			return recoverBlocked(state, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 		}
 		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
 			if keepLocal {
 				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
 			}
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; %s", keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 		}
-		anchoredNote.stores = []string{invokingWorktreeStore}
+		anchoredNote.record(invokingWorktreeStore)
 	}
 
 	switch {
@@ -758,7 +762,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 			return blocked
 		}
-		return s.recoverFastForward(ctx, run, state, preserved)
+		return s.recoverFastForward(ctx, run, state, preserved, anchoredNote)
 	default:
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
@@ -774,7 +778,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 				return blocked
 			}
-			return s.recoverAdoptPreserved(ctx, run, state, preserved)
+			return s.recoverAdoptPreserved(ctx, run, state, preserved, anchoredNote)
 		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; %s", anchorRef, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
@@ -899,6 +903,17 @@ type recoveryAnchorNote struct {
 
 func (n recoveryAnchorNote) clause() string { return anchoredElsewhere(n.stores, n.ref) }
 
+// record names a store this attempt pinned the recorded head in. A store is
+// recorded once: a re-entered write on the same store is still one anchor.
+func (n *recoveryAnchorNote) record(store string) {
+	for _, existing := range n.stores {
+		if existing == store {
+			return
+		}
+	}
+	n.stores = append(n.stores, store)
+}
+
 func (n recoveryAnchorNote) namesInvokingWorktree() bool {
 	for _, store := range n.stores {
 		if store == invokingWorktreeStore {
@@ -917,15 +932,18 @@ func anchoredElsewhere(pinned []string, ref string) string {
 	return fmt.Sprintf("; the recorded head is now anchored at %s in %s", ref, strings.Join(pinned, " and "))
 }
 
-// keepLocalNoChangeClause closes a PRE-SWAP recoverKeepLocal refusal with a
-// claim that stays true for its caller too. Those refusals write nothing of
-// their own by construction, but their callers can already have anchored a
-// surviving recorded head, so the blanket claim belongs only to a delegation
+// keepLocalNoChangeClause closes a refusal with a no-change claim that stays
+// true of the WHOLE attempt, not just of the site making it. Recover anchors a
+// surviving recorded head - in the local gate, in the invoking worktree, or in
+// both - before delegating, so the blanket claim belongs only to an attempt
 // that carries no such anchor; otherwise the refusal reports exactly what it
 // did not change and hands over the anchor note naming where that head now is.
+// Every refusal reachable after one of those writes uses it, on the keep-local
+// path and on the default one alike.
 //
-// The refusals that follow the swap are built by keepLocalPostSwapNoChangeClause
-// instead, because by then this function may have written a gate ref of its own.
+// The recoverKeepLocal refusals that follow the swap are built by
+// keepLocalPostSwapNoChangeClause instead, because by then that function may
+// have written a gate ref of its own.
 func keepLocalNoChangeClause(blanket, anchored string) string {
 	if anchored == "" {
 		return blanket
@@ -1143,7 +1161,7 @@ func (s *Service) releaseStagingRef(ctx context.Context, stagingRef string) stri
 
 // recoverFastForward advances the clean checked-out branch to the preserved
 // pipeline head with the same strict fast-forward and honesty rules as Apply.
-func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state State, preserved string) State {
+func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state State, preserved string, anchoredNote recoveryAnchorNote) State {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1151,7 +1169,7 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 	head, headErr := git.HeadSHA(ctx, s.workDir())
 	clean, _ := worktreeClean(ctx, s.workDir())
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 	}
 	_, mergeErr := git.Run(ctx, s.workDir(), "merge", "--ff-only", "--no-edit", preserved)
 	finalHead, _ := git.HeadSHA(ctx, s.workDir())
@@ -1238,7 +1256,7 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 // uncommitted changes and loses nothing: containment was proven before the move
 // and the pre-recovery head stays anchored. Custody is stamped only after the
 // whole move is verified.
-func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string) State {
+func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string, anchoredNote recoveryAnchorNote) State {
 	if s.beforeRecoverWorktreeMove != nil {
 		s.beforeRecoverWorktreeMove()
 	}
@@ -1247,12 +1265,12 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	head, headErr := git.HeadSHA(ctx, wd)
 	clean, _ := worktreeClean(ctx, wd)
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 	}
 	// The containment proof runs before the anchor and the move so that no
 	// slow work sits between the last guard and the mutation.
 	if !preservedContainsLocalWork(ctx, wd, head, preserved) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the containment proof changed while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 	}
 	localAnchor := recoverLocalAnchorRef(run.ID)
 	// Create-only: an empty old value requires the ref not to exist. A resumed
@@ -1260,15 +1278,15 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	// at any other commit is unexplained and refuses.
 	existingAnchor, existingErr := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}")
 	if existingErr == nil && existingAnchor != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 	}
 	if existingErr != nil {
 		if err := custody.PreserveRecoveryAnchor(ctx, wd, localAnchor, head); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 		}
 	}
 	if anchored, err := git.Run(ctx, wd, "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; "+keepLocalNoChangeClause("no files or worktree refs were changed", anchoredNote.clause()))
 	}
 
 	if s.beforeRecoverBranchMove != nil {
@@ -1277,10 +1295,10 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	branchRef := "refs/heads/" + state.Local.Branch
 	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
 	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; "+keepLocalNoChangeClause("no branch or worktree changes were made", anchoredNote.clause()))
 	}
 	if _, err := git.Run(ctx, wd, "update-ref", branchRef, preserved, head); err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 	}
 	if s.afterRecoverBranchMove != nil {
 		s.afterRecoverBranchMove()
@@ -1337,13 +1355,17 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	return s.finishRecover(ctx, run, true, false)
 }
 
-func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string) (State, bool) {
-	if err := custody.PreserveRecoveryHead(ctx, s.workDir(), runID, preserved); err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
-	}
+func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string, anchoredNote *recoveryAnchorNote) (State, bool) {
 	anchorRef := custody.RecoveryRef(runID)
+	_, anchorExisted, probeErr := git.ExactRefTarget(ctx, s.workDir(), anchorRef)
+	if err := custody.PreserveRecoveryHead(ctx, s.workDir(), runID, preserved); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())), false
+	}
+	if probeErr == nil && !anchorExisted {
+		anchoredNote.record(invokingWorktreeStore)
+	}
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())), false
 	}
 	return State{}, true
 }
