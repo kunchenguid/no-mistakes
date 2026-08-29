@@ -258,6 +258,7 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	gitCmd(t, workDir, "init")
 	gitCmd(t, workDir, "config", "user.email", "test@test.com")
 	gitCmd(t, workDir, "config", "user.name", "Test")
+	gitCmd(t, workDir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(workDir, "test.txt"), []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
