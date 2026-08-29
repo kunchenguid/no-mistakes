@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -14,14 +15,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
+// autoFixCI runs the agent to fix CI failures, review comments, and/or merge conflicts, then
 // records the repair under the run's uniform continuity rule: published
 // immediately through the guarded push path when its continuity with the
 // reviewed head is provable, held for revalidation when it is not or when
 // ci.revalidate_repairs asks for it outright. See recordRepair.
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (ciRepairResult, error) {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool, optionalReviews ...[]scm.ReviewComment) (ciRepairResult, error) {
+	var reviewComments []scm.ReviewComment
+	if len(optionalReviews) > 0 {
+		reviewComments = optionalReviews[0]
+	}
 	ctx := sctx.Ctx
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return ciRepairResult{}, err
@@ -51,11 +56,14 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	}
 
 	var reviewCommentsSection string
-	if host.Capabilities().ReviewComments {
+	reviewsProvided := len(optionalReviews) > 0
+	if len(reviewComments) > 0 {
+		reviewCommentsSection = formatReviewComments(reviewComments)
+	} else if !reviewsProvided && host.Capabilities().ReviewComments {
 		if rch, ok := host.(scm.ReviewCommentsHost); ok {
 			comments, err := rch.GetReviewComments(ctx, pr)
 			if err != nil && err != scm.ErrUnsupported {
-				slog.Warn("failed to fetch PR review comments", "err", err)
+				slog.Warn("failed to fetch PR review comments", "err", reviewProviderErrorSummary(err))
 			} else if len(comments) > 0 {
 				reviewCommentsSection = formatReviewComments(comments)
 			}
@@ -65,8 +73,19 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	// Build prompt based on what issues are present
 	var promptIntro string
 	var promptRules string
+	hasFailing := len(failingNames) > 0
+	hasReviews := reviewCommentsSection != ""
+
 	switch {
-	case len(failingNames) > 0 && mergeConflict:
+	case hasFailing && mergeConflict && hasReviews:
+		promptIntro = "The following CI checks have failed, the PR has merge conflicts with the base branch, and there are unresolved PR review comments. Diagnose and fix the CI issues, address the review comments, then rebase onto the base branch and resolve the merge conflicts."
+		promptRules = `- You MUST produce file changes that fix the failing checks and address the review comments. Do not conclude that nothing needs to change.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
+		- Make the smallest correct root-cause fix.
+		- Do not refactor beyond what is needed for that root-cause fix.
+		- Verify the fix by running the most relevant commands locally before finishing.`
+	case hasFailing && mergeConflict:
 		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
 		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
 		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
@@ -74,11 +93,30 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		- Make the smallest correct root-cause fix.
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
+	case mergeConflict && hasReviews:
+		promptIntro = "The PR has merge conflicts with the base branch and there are unresolved PR review comments. Address the review comments, rebase onto the base branch, and resolve the merge conflicts."
+		promptRules = `- Resolve the merge conflicts and address the review comments by applying the minimal necessary changes.
+		- Do not make unrelated file edits.
+		- Verify the rebase completes cleanly before finishing.`
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 		- Verify the rebase completes cleanly before finishing.`
+	case hasFailing && hasReviews:
+		promptIntro = "The following CI checks have failed and there are unresolved PR review comments on this PR. Diagnose and fix the CI issues and address the review comments."
+		promptRules = `- You MUST produce file changes that fix the failing checks and address the review comments. Do not conclude that nothing needs to change.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
+		- Make the smallest correct root-cause fix.
+		- Do not refactor beyond what is needed for that root-cause fix.
+		- Verify the fix by running the most relevant commands locally before finishing.`
+	case hasReviews:
+		promptIntro = "There are unresolved PR review comments on this PR. Diagnose and address the review comments."
+		promptRules = `- You MUST produce file changes that address the review comments. Do not conclude that nothing needs to change.
+		- Make the smallest correct root-cause fix.
+		- Do not refactor beyond what is needed for that root-cause fix.
+		- Verify the fix by running the most relevant commands locally before finishing.`
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
@@ -150,12 +188,12 @@ CI logs:
 // result so ordinary transient fix failures keep their existing warn-and-retry
 // behaviour. Only a proven full-budget burn parks: it is the one failure that
 // is guaranteed to cost the same again on the next poll.
-func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error, reviewTargets []scm.ReviewComment) *pipeline.StepOutcome {
 	if err == nil || !errors.Is(err, pipeline.ErrAgentTimeout) {
 		return nil
 	}
 	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
-	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
+	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err, reviewTargets)
 }
 
 // dirtyRunWorktree reports the run worktree path when the timed-out agent left
@@ -170,13 +208,28 @@ func dirtyRunWorktree(sctx *pipeline.StepContext) string {
 	return sctx.WorkDir
 }
 
-const maxReviewCommentsPromptBytes = 32 * 1024
+const (
+	maxReviewCommentsPromptBytes = 32 * 1024
+	maxCommentBodyBytes          = 4 * 1024
+)
 
 type promptReviewComment struct {
 	Author string `json:"author"`
 	Path   string `json:"path"`
 	Line   int    `json:"line,omitempty"`
 	Body   string `json:"body"`
+}
+
+func trimCommentBody(body string, maxBytes int) string {
+	body = strings.TrimSpace(body)
+	if len(body) <= maxBytes {
+		return body
+	}
+	truncated := body[:maxBytes]
+	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return strings.TrimSpace(truncated) + "... [truncated]"
 }
 
 func formatReviewComments(comments []scm.ReviewComment) string {
@@ -190,11 +243,12 @@ func formatReviewComments(comments []scm.ReviewComment) string {
 	b.WriteString("<untrusted-review-comments>\n")
 	omitted := false
 	for _, comment := range comments {
+		body := trimCommentBody(comment.Body, maxCommentBodyBytes)
 		payload, _ := json.Marshal(promptReviewComment{
 			Author: comment.Author,
 			Path:   comment.Path,
 			Line:   comment.Line,
-			Body:   strings.TrimSpace(comment.Body),
+			Body:   body,
 		})
 		entry := "- " + string(payload) + "\n"
 		if b.Len()+len(entry)+len(footer)+truncationReserve > maxReviewCommentsPromptBytes {

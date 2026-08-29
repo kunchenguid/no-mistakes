@@ -1,10 +1,15 @@
 package steps
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestAllChecksPassedFailsClosed(t *testing.T) {
@@ -53,6 +58,178 @@ func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	}
 	if pendingCheckMatchesLastFixed(checks, lastFixedChecks) {
 		t.Fatalf("expected unrelated pending check not to match encoded last fixed checks %q", lastFixedChecks)
+	}
+}
+
+func TestEncodeLastFixedChecks_UsesStableSortedReviewCommentKeys(t *testing.T) {
+	t.Parallel()
+
+	comments := []scm.ReviewComment{
+		{ID: "comment-b", Author: "bot", Path: "b.go", Line: 2},
+		{ID: "comment-a", Author: "bot", Path: "a.go", Line: 1},
+	}
+	first := encodeLastFixedChecks(nil, false, comments)
+	second := encodeLastFixedChecks(nil, false, []scm.ReviewComment{comments[1], comments[0]})
+	if first != second {
+		t.Fatalf("reordered review comments changed fix key: %q != %q", first, second)
+	}
+	replaced := encodeLastFixedChecks(nil, false, []scm.ReviewComment{
+		{ID: "comment-c", Author: "bot", Path: "b.go", Line: 2},
+		comments[1],
+	})
+	if first == replaced {
+		t.Fatalf("replaced review comment reused fix key: %q", first)
+	}
+}
+
+func TestCIFailureOutcomeBoundsReviewFindings(t *testing.T) {
+	t.Parallel()
+
+	comments := make([]scm.ReviewComment, 64)
+	for i := range comments {
+		comments[i] = scm.ReviewComment{
+			ID:     fmt.Sprintf("comment-%d", i),
+			Author: "review-bot",
+			Path:   "pkg/large.go",
+			Line:   i + 1,
+			Body:   strings.Repeat("x", maxCommentBodyBytes),
+		}
+	}
+
+	outcome := ciFailureOutcome(nil, false, comments, "review findings")
+	if len(outcome.Findings) > maxCIFindingsBytes {
+		t.Fatalf("findings payload is %d bytes, want <= %d", len(outcome.Findings), maxCIFindingsBytes)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("decode findings: %v", err)
+	}
+	var omitted bool
+	for _, finding := range findings.Items {
+		if finding.ID == "review-comments-omitted" {
+			omitted = true
+			if !strings.Contains(finding.Description, "additional unresolved PR review comments omitted") || !strings.Contains(finding.Description, "comment-") {
+				t.Fatalf("omission finding lacks count and identifiers: %#v", finding)
+			}
+		}
+	}
+	if !omitted {
+		t.Fatalf("expected oversized review findings to include an omission marker: %#v", findings.Items)
+	}
+}
+
+func TestCIFailureOutcomeSanitizesReviewCommentTerminalControls(t *testing.T) {
+	t.Parallel()
+
+	comment := scm.ReviewComment{
+		ID:     "terminal-control",
+		Author: "review-bot",
+		Path:   "pkg/foo.go",
+		Line:   12,
+		Body:   "before \x1b[31mred\x1b[0m \x1b]0;spoof\x07after\x07",
+	}
+	outcome := ciFailureOutcome(nil, false, []scm.ReviewComment{comment}, "review findings")
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("decode findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %#v, want one finding", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
+	}
+	description := findings.Items[0].Description
+	if strings.ContainsAny(description, "\x1b\x07") || strings.Contains(description, "spoof") {
+		t.Fatalf("terminal controls survived findings sanitization: %q", description)
+	}
+	if !strings.Contains(description, "before red after") {
+		t.Fatalf("sanitization removed printable review content: %q", description)
+	}
+	prompt := formatReviewComments([]scm.ReviewComment{comment})
+	if !strings.Contains(prompt, "\\u001b[31m") {
+		t.Fatalf("review prompt did not retain JSON-framed raw comment content: %q", prompt)
+	}
+}
+
+func TestCIReviewReadFailureOutcomeBoundsAndSanitizesProviderError(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("provider response: \x1b]0;spoof\x07 https://user:token@example.com/repo " + strings.Repeat("x", 10*1024))
+	outcome := ciReviewReadFailureOutcome(err)
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("decode findings: %v", err)
+	}
+	description := findings.Items[0].Description
+	if strings.ContainsAny(description, "\x1b\x07") || strings.Contains(description, "spoof") || strings.Contains(description, "token") {
+		t.Fatalf("provider controls survived findings sanitization: %q", description)
+	}
+	if !strings.Contains(description, "https://redacted@example.com/repo") {
+		t.Fatalf("provider URL was not redacted: %q", description)
+	}
+	if !strings.Contains(description, "... [truncated]") {
+		t.Fatalf("provider error was not bounded: %q", description)
+	}
+	if len(description) > maxCommentBodyBytes+256 {
+		t.Fatalf("provider error description is unbounded at %d bytes", len(description))
+	}
+}
+
+func TestSelectedReviewCommentsUsesSelectedFindingIDs(t *testing.T) {
+	t.Parallel()
+
+	comments := []scm.ReviewComment{
+		{ID: "1", Path: "one.go", Line: 10, Body: "first"},
+		{ID: "2", Path: "two.go", Line: 20, Body: "second"},
+	}
+	selected := selectedReviewComments(comments, `{"findings":[{"id":"review-comment-2"}]}`)
+	if len(selected) != 1 || selected[0].ID != "2" {
+		t.Fatalf("selected review comments = %#v, want comment 2", selected)
+	}
+	if got := selectedReviewComments(comments, `{"findings":[{"id":"ci-1"}]}`); len(got) != 0 {
+		t.Fatalf("unselected review comments = %#v, want none", got)
+	}
+	omitted := `{"findings":[{"id":"review-comments-omitted","description":"2 additional unresolved PR review comments omitted from gate details (identifiers: 1, 2)"}]}`
+	selected = selectedReviewComments(comments, omitted)
+	if len(selected) != 2 || selected[0].ID != "1" || selected[1].ID != "2" {
+		t.Fatalf("omitted review comments = %#v, want comments 1 and 2", selected)
+	}
+	aggregate := `{"findings":[{"id":"review-comments-omitted","review_comments_aggregate":true,"review_comment_exclusions":["1","2"]}]}`
+	selected = selectedReviewComments(append(comments, scm.ReviewComment{ID: "3"}), aggregate)
+	if len(selected) != 1 || selected[0].ID != "3" {
+		t.Fatalf("aggregate omitted review comments = %#v, want comment 3", selected)
+	}
+	scoped := reviewCommentsMatchingKey(comments, encodeLastFixedChecks(nil, false, []scm.ReviewComment{comments[1]}))
+	if len(scoped) != 1 || scoped[0].ID != "2" {
+		t.Fatalf("scoped review comments = %#v, want comment 2", scoped)
+	}
+}
+
+func TestCIFailureOutcomePreservesOversizedCIContext(t *testing.T) {
+	t.Parallel()
+
+	failing := []string{strings.Repeat("large-check-name", maxCIFindingsBytes)}
+	comments := []scm.ReviewComment{{ID: "review-1", Author: "review-bot", Path: "pkg/foo.go", Line: 7}}
+	outcome := ciFailureOutcome(failing, false, comments, "review findings")
+	if len(outcome.Findings) > maxCIFindingsBytes {
+		t.Fatalf("findings payload is %d bytes, want <= %d", len(outcome.Findings), maxCIFindingsBytes)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("decode findings: %v", err)
+	}
+	var hasCISummary, hasReviewSummary bool
+	for _, finding := range findings.Items {
+		switch finding.ID {
+		case "ci-findings-omitted":
+			hasCISummary = strings.Contains(finding.Description, "CI check failing:")
+		case "review-comments-omitted":
+			hasReviewSummary = strings.Contains(finding.Description, "review-1")
+		}
+	}
+	if !hasCISummary || !hasReviewSummary {
+		t.Fatalf("oversized findings lost CI or review context: %#v", findings.Items)
 	}
 }
 
@@ -108,5 +285,62 @@ func TestTerminalFailureCompletionTimesStillCoverFailingChecks(t *testing.T) {
 	})
 	if quiet != nil {
 		t.Fatalf("completion times = %v, want nothing recorded for non-failures", quiet)
+	}
+}
+
+func TestCIFixAgentTimeoutOutcomePreservesReviewTargets(t *testing.T) {
+	t.Parallel()
+
+	comments := []scm.ReviewComment{{ID: "review-1"}, {ID: "review-2"}}
+	outcome := ciFixAgentTimeoutOutcome("1 unresolved review comment", "", errors.New("timed out"), comments[:1])
+	if selected := selectedReviewComments(comments, outcome.Findings); len(selected) != 1 || selected[0].ID != "review-1" {
+		t.Fatalf("selected review comments = %#v, want only the timed-out target", selected)
+	}
+}
+
+func TestCIFixAgentTimeoutOutcomeBoundsLargeReviewTargets(t *testing.T) {
+	t.Parallel()
+
+	comments := make([]scm.ReviewComment, 1000)
+	for i := range comments {
+		comments[i] = scm.ReviewComment{
+			ID:     fmt.Sprintf("review-%d", i),
+			Author: "greptile-apps[bot]",
+			Path:   fmt.Sprintf("pkg/file_%d.go", i),
+			Line:   i + 1,
+			Body:   "large comment body",
+		}
+	}
+	outcome := ciFixAgentTimeoutOutcome("many unresolved review comments", "", errors.New("timed out"), comments)
+	if len(outcome.Findings) > maxCIFindingsBytes {
+		t.Fatalf("findings payload is %d bytes, want <= %d", len(outcome.Findings), maxCIFindingsBytes)
+	}
+	selected := selectedReviewComments(comments, outcome.Findings)
+	if len(selected) != len(comments) {
+		t.Fatalf("selected review comments count = %d, want %d", len(selected), len(comments))
+	}
+}
+
+func TestCICheckReadFailureOutcomePreservesReviewComments(t *testing.T) {
+	t.Parallel()
+
+	comments := []scm.ReviewComment{{
+		ID:     "123",
+		Author: "greptile-apps[bot]",
+		Path:   "pkg/foo.go",
+		Line:   10,
+		Body:   "fix bug",
+	}}
+	outcome := ciCheckReadFailureOutcome(errors.New("gh pr checks failed"), comments)
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 2 {
+		t.Fatalf("expected 2 findings (check error + review comment), got %d: %#v", len(findings.Items), findings.Items)
+	}
+	selected := selectedReviewComments(comments, outcome.Findings)
+	if len(selected) != 1 || selected[0].ID != "123" {
+		t.Fatalf("selected review comments = %#v, want comment 123", selected)
 	}
 }

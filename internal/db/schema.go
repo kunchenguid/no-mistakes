@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
-    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0
+    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
+    ci_review_state             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -226,6 +227,7 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE step_results ADD COLUMN ci_review_state TEXT`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,

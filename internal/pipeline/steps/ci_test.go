@@ -630,7 +630,7 @@ func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
 // unconditional instruction to install or upgrade `gh`, which is GitHub-only.
 func TestCICheckReadFailureOutcome_ProviderNeutral(t *testing.T) {
 	t.Parallel()
-	outcome := ciCheckReadFailureOutcome(errors.New("glab mr checks: failed to read checks"))
+	outcome := ciCheckReadFailureOutcome(errors.New("glab mr checks: failed to read checks"), nil)
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
@@ -1318,6 +1318,50 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected 'CI timeout reached' log for a stable base, got: %v", logs)
+	}
+}
+
+func TestCIStep_TimeoutPreservesSuccessfulReviewSnapshot(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	reviewsJSON := `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"comments":{"nodes":[{"databaseId":789,"body":"Review finding survives timeout","path":"pkg/foo.go","line":9,"url":"https://github.com/test/repo/pull/42#discussion_r789","createdAt":"2026-08-27T12:00:00Z","author":{"login":"greptile-apps[bot]"}}]}}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}`
+	env := fakeCIGHReviewComments(t, "OPEN", "[]", reviewsJSON)
+	env = append(env, "FAKE_CLI_CHECKS_ERR=provider unavailable")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	step := &CIStep{
+		now:           func() time.Time { return current },
+		baseBranchTip: func(context.Context) (string, bool) { return baseSHA, true },
+		waitForNextPoll: func(context.Context, time.Duration) error {
+			current = started.Add(12 * time.Second)
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected timeout outcome, got error %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected timeout to surface a needs-approval outcome, got %+v", outcome)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("decode timeout findings: %v", err)
+	}
+	if findings.Summary != "PR review comments require manual intervention" && !strings.Contains(findings.Summary, "unresolved PR review comments") {
+		t.Fatalf("timeout findings summary = %q, want review-specific timeout summary", findings.Summary)
+	}
+	if len(findings.Items) != 1 || !strings.Contains(findings.Items[0].Description, "Review finding survives timeout") {
+		t.Fatalf("timeout findings lost the successful review snapshot: %#v", findings.Items)
 	}
 }
 

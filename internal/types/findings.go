@@ -14,6 +14,36 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+type ReviewCommentExclusions string
+
+func (e ReviewCommentExclusions) IDs() []string {
+	if e == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(e), &ids); err != nil {
+		return nil
+	}
+	return ids
+}
+
+func (e ReviewCommentExclusions) MarshalJSON() ([]byte, error) {
+	return json.Marshal(e.IDs())
+}
+
+func (e *ReviewCommentExclusions) UnmarshalJSON(data []byte) error {
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	*e = ReviewCommentExclusions(string(encoded))
+	return nil
+}
+
 // Finding severity constants: the vocabulary the review prompt instructs
 // agents to use, ordered most to least severe.
 const (
@@ -91,15 +121,18 @@ const (
 
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
-	ID               string `json:"id,omitempty"`
-	Severity         string `json:"severity"`
-	File             string `json:"file,omitempty"`
-	Line             int    `json:"line,omitempty"`
-	Description      string `json:"description"`
-	Action           string `json:"action"`
-	Source           string `json:"source,omitempty"`
-	UserInstructions string `json:"user_instructions,omitempty"`
-	ReviewScope      string `json:"review_scope,omitempty"`
+	ID                      string                  `json:"id,omitempty"`
+	Severity                string                  `json:"severity"`
+	File                    string                  `json:"file,omitempty"`
+	Line                    int                     `json:"line,omitempty"`
+	Description             string                  `json:"description"`
+	Action                  string                  `json:"action"`
+	Source                  string                  `json:"source,omitempty"`
+	UserInstructions        string                  `json:"user_instructions,omitempty"`
+	ReviewScope             string                  `json:"review_scope,omitempty"`
+	ReviewCommentAggregate  bool                    `json:"review_comments_aggregate,omitempty"`
+	ReviewCommentExclusions ReviewCommentExclusions `json:"review_comment_exclusions,omitempty"`
+	ReviewCommentTargets    ReviewCommentExclusions `json:"review_comment_targets,omitempty"`
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates. Empty everywhere else.
 	Category string `json:"category,omitempty"`
@@ -115,17 +148,20 @@ type TestArtifact struct {
 }
 
 type findingWire struct {
-	ID                  string `json:"id,omitempty"`
-	Severity            string `json:"severity"`
-	File                string `json:"file,omitempty"`
-	Line                int    `json:"line,omitempty"`
-	Description         string `json:"description"`
-	Action              string `json:"action"`
-	Source              string `json:"source,omitempty"`
-	UserInstructions    string `json:"user_instructions,omitempty"`
-	ReviewScope         string `json:"review_scope,omitempty"`
-	Category            string `json:"category,omitempty"`
-	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
+	ID                      string                  `json:"id,omitempty"`
+	Severity                string                  `json:"severity"`
+	File                    string                  `json:"file,omitempty"`
+	Line                    int                     `json:"line,omitempty"`
+	Description             string                  `json:"description"`
+	Action                  string                  `json:"action"`
+	Source                  string                  `json:"source,omitempty"`
+	UserInstructions        string                  `json:"user_instructions,omitempty"`
+	ReviewScope             string                  `json:"review_scope,omitempty"`
+	ReviewCommentAggregate  bool                    `json:"review_comments_aggregate,omitempty"`
+	ReviewCommentExclusions ReviewCommentExclusions `json:"review_comment_exclusions,omitempty"`
+	ReviewCommentTargets    ReviewCommentExclusions `json:"review_comment_targets,omitempty"`
+	Category                string                  `json:"category,omitempty"`
+	RequiresHumanReview     *bool                   `json:"requires_human_review,omitempty"`
 }
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
@@ -387,6 +423,9 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
 	f.ReviewScope = wire.ReviewScope
+	f.ReviewCommentAggregate = wire.ReviewCommentAggregate
+	f.ReviewCommentExclusions = wire.ReviewCommentExclusions
+	f.ReviewCommentTargets = wire.ReviewCommentTargets
 	f.Category = wire.Category
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {

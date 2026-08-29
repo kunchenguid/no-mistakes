@@ -689,7 +689,11 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 // checks preserves the provider-attributed cause through the shared cancel
 // bucket so the approval result does not describe a setup failure as a
 // cancellation. reruns reports how many reruns this run spent on each check.
-func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns func(string) int) *pipeline.StepOutcome {
+func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns func(string) int, optionalReviews ...[]scm.ReviewComment) *pipeline.StepOutcome {
+	var reviewComments []scm.ReviewComment
+	if len(optionalReviews) > 0 {
+		reviewComments = optionalReviews[0]
+	}
 	unresolved := unresolvedTransientChecks(names, checks)
 	preRunCount := 0
 	for _, check := range unresolved {
@@ -705,7 +709,7 @@ func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns fun
 			Action:      types.ActionAskUser,
 		})
 	}
-	findingsJSON, _ := json.Marshal(findings)
+	findingsJSON := marshalCIFindingsWithinLimit(findings, reviewComments)
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),

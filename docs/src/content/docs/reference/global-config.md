@@ -534,6 +534,7 @@ The key is matched against the checkout path recorded at `init`. After moving a 
 ### auto_fix
 
 Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
+For review findings, including unresolved review comments surfaced by the CI step, `0` disables automatic repair; those blocking findings still require manual approval.
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
 For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings then pause for approval instead of starting another automatic fix loop.
 
@@ -544,11 +545,11 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | Field               | Type  | Default | Description                                                                                 |
 | ------------------- | ----- | ------- | ------------------------------------------------------------------------------------------- |
 | `auto_fix.rebase`   | `int` | `3`     | Rebase conflict auto-fix attempts                                                           |
-| `auto_fix.review`   | `int` | `0`     | Review finding auto-fix attempts                                                            |
+| `auto_fix.review`   | `int` | `0`     | Review findings and CI-discovered review-comment auto-fix attempts                          |
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
-| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, Forgejo, and Azure DevOps merge conflicts |
+| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, Forgejo, and Azure DevOps merge conflicts; review comments use `auto_fix.review`, and mixed repairs consume both |
 
 Legacy alias: `auto_fix.babysit`.
 

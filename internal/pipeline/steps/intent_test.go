@@ -216,17 +216,16 @@ func TestIntentStep_SlowExtractionPastOldTimeoutStillAttachesIntent(t *testing.T
 	sctx := newIntentStepContext(t)
 	step := &IntentStep{
 		runIntent: func(ctx context.Context, _ *pipeline.StepContext) (*intent.Result, error) {
-			select {
-			case <-time.After(31 * time.Second):
-				return &intent.Result{
-					Summary:   "user wanted slow transcript summarization to finish",
-					AgentName: "claude",
-					SessionID: "slow-session",
-					Score:     0.92,
-				}, nil
-			case <-ctx.Done():
-				return nil, ctx.Err()
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) < 200*time.Second {
+				return nil, errors.New("expected extraction deadline > 200s")
 			}
+			return &intent.Result{
+				Summary:   "user wanted slow transcript summarization to finish",
+				AgentName: "claude",
+				SessionID: "slow-session",
+				Score:     0.92,
+			}, nil
 		},
 	}
 

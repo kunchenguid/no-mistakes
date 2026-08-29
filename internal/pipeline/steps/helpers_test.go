@@ -472,6 +472,19 @@ func fakeCIGH(t *testing.T, state, checksJSON string) []string {
 	})
 }
 
+func fakeCIGHReviewComments(t *testing.T, state, checksJSON, reviewsJSON string) []string {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":            "ci-gh",
+		"FAKE_CLI_STATE":           state,
+		"FAKE_CLI_CHECKS":          checksJSON,
+		"FAKE_CLI_REVIEW_COMMENTS": reviewsJSON,
+		"FAKE_CLI_PR_HEAD_SHA":     "deadbeef",
+	})
+}
+
 func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

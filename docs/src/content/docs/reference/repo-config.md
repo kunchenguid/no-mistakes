@@ -356,10 +356,11 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
+For review findings, including unresolved review comments surfaced by the CI step, `0` disables automatic repair; those blocking findings still require manual approval.
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
 For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
 
-`auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
+`auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts. It does not enable automatic repair of review comments; those use `auto_fix.review`. When both kinds of issue are repaired together, one attempt is consumed from each applicable budget.
 
 Legacy alias: `auto_fix.babysit`.
 

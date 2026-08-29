@@ -67,6 +67,33 @@ func TestStepInsertAndGet(t *testing.T) {
 	}
 }
 
+func TestSetCIReviewState(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	state := `{"reviewFixAttempts":2,"manualReviewScope":"review-key","manualReviewScopeSet":true}`
+	if err := d.SetCIReviewState(step.ID, state); err != nil {
+		t.Fatalf("set CI review state: %v", err)
+	}
+	got, err := d.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatalf("get step: %v", err)
+	}
+	if got.CIReviewState == nil || *got.CIReviewState != state {
+		t.Fatalf("CI review state = %v, want %q", got.CIReviewState, state)
+	}
+}
+
 func TestStepsByRun(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
