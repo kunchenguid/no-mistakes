@@ -47,11 +47,13 @@ type CIStep struct {
 	// fixture - is never mistaken for an unsettled publication. In memory only:
 	// after a daemon restart the next fix attempt's commitRepair settles it
 	// instead, at the cost of one attempt.
-	pendingPublishHead   string
-	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
-	waitForNextPoll      func(context.Context, time.Duration) error
-	now                  func() time.Time
+	pendingPublishHead string
+	// pendingPublishAttempts bounds how many polls are spent on that retry.
+	pendingPublishAttempts int
+	transientReruns        checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
+	pollIntervalOverride   time.Duration    // if set, overrides computed poll interval (for testing)
+	waitForNextPoll        func(context.Context, time.Duration) error
+	now                    func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
@@ -331,6 +333,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return timeoutOutcome()
 		}
 
+		if s.pendingPublishHead != "" && s.pendingPublishAttempts >= maxPendingPublishRetries {
+			clearCIMonitorReady(sctx)
+			sctx.Log(fmt.Sprintf("unsettled CI repair publication for %s exhausted its %d retries; the repair is on the remote but the gate mirror is behind it", shortObjectID(s.pendingPublishHead), maxPendingPublishRetries))
+			return ciUnsettledPublicationOutcome(s.pendingPublishHead), nil
+		}
 		pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
 		if pending {
 			if pendingErr != nil {

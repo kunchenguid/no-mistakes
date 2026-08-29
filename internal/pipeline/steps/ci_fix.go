@@ -145,6 +145,28 @@ CI logs:
 	return s.commitRepair(sctx, summary)
 }
 
+// ciUnsettledPublicationOutcome parks the run when a repair reached the remote
+// but its gate mirror could never be settled. The commit is published and CI is
+// testing it, so this is not a code failure and no fix agent can help; what a
+// person needs to know is that the local gate is behind the remote, because
+// `no-mistakes rerun` would resolve the stale gate head and omit the repair.
+func ciUnsettledPublicationOutcome(publishedHead string) *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "CI repair is published but the local gate mirror is behind it",
+		Items: []Finding{{
+			Severity: "warning",
+			Description: fmt.Sprintf(
+				"The CI repair %s was pushed and verified on the remote, but synchronizing the local gate mirror to it failed %d times and is not being retried further. "+
+					"CI is testing the published commit, so the change itself is fine. The local gate is behind it, so `no-mistakes rerun` would resume from the older head and omit this repair. "+
+					"Inspect the gate repository before rerunning, or continue watching the PR.",
+				shortObjectID(publishedHead), maxPendingPublishRetries),
+			Action: types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(findingsJSON)}
+}
+
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
 // agent budget into a bounded ask-user gate, and returns nil for every other
 // result so ordinary transient fix failures keep their existing warn-and-retry
@@ -236,8 +258,20 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 // after committing leaves no such evidence and is handled by the next fix
 // attempt, which is the honest accounting - nothing was published, so nothing
 // is pending.
+// maxPendingPublishRetries bounds how many polls may be spent settling one
+// stalled publication. The retry deliberately costs no repair attempt, so
+// without a bound a persistently unreachable gate mirror would retry on every
+// poll until the CI idle timeout - seven days by default - while the repaired
+// commit already sits on the remote. Three is enough to ride out a transient
+// filesystem or lock problem and short enough that a real one is surfaced
+// while someone is still watching.
+const maxPendingPublishRetries = 3
+
 func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairResult, error) {
 	if s.pendingPublishHead == "" {
+		return false, ciRepairResult{}, nil
+	}
+	if s.pendingPublishAttempts >= maxPendingPublishRetries {
 		return false, ciRepairResult{}, nil
 	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
@@ -256,7 +290,8 @@ func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairR
 	if !strings.EqualFold(headSHA, s.pendingPublishHead) || strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
 		return false, ciRepairResult{}, nil
 	}
-	sctx.Log("retrying unsettled CI repair publication...")
+	s.pendingPublishAttempts++
+	sctx.Log(fmt.Sprintf("retrying unsettled CI repair publication (attempt %d/%d)...", s.pendingPublishAttempts, maxPendingPublishRetries))
 	repair, err := s.recordRepair(sctx, headSHA)
 	return true, repair, err
 }
@@ -344,6 +379,7 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 	}
 	if reason := ciRepairContinuityGap(sctx, headSHA); reason != "" {
 		s.pendingPublishHead = ""
+		s.pendingPublishAttempts = 0
 
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
 		return s.recordLocalRepair(sctx, headSHA)
@@ -389,10 +425,14 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 	if _, err := stepGitRun(sctx, "update-ref", ref, headSHA); err != nil {
 		return ciRepairResult{}, fmt.Errorf("update local branch ref: %w", err)
 	}
-	sctx.Run.HeadSHA = headSHA
+	// Durable first, then in memory. Advancing the live head before the write
+	// succeeds leaves the monitor watching a head the durable record does not
+	// know about, still holding its old review approval, with the revalidation
+	// this call exists to trigger silently lost.
 	if err := sctx.DB.UpdateRunHeadSHAForRevalidation(sctx.Run.ID, headSHA); err != nil {
 		return ciRepairResult{}, err
 	}
+	sctx.Run.HeadSHA = headSHA
 	sctx.Run.ReviewApprovedHeadSHA = nil
 	sctx.Log("committed CI repair for revalidation")
 	return ciRepairResult{HeadAdvanced: true, Revalidate: true}, nil
@@ -419,6 +459,7 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 		return ciRepairResult{}, err
 	}
 	s.pendingPublishHead = ""
+	s.pendingPublishAttempts = 0
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
 }

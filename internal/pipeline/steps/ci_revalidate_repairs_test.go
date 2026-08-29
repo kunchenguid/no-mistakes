@@ -704,3 +704,86 @@ func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t
 		t.Errorf("a head with no attempted publication was treated as pending; log:\n%s", f.log())
 	}
 }
+
+// A publication that reaches the remote but can never settle its gate mirror
+// must not retry forever. The retry costs no repair attempt by design, so
+// without a bound a permanently unreachable gate would re-try on every poll
+// until the CI idle timeout - seven days by default - while the repaired commit
+// already sits on the remote. After the bound it parks for a person, naming the
+// published head, because a rerun would resume from the stale gate head.
+func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
+	t.Parallel()
+	agentCalls := 0
+	f := newCIRepairFixture(t, false, func(workDir string) {
+		agentCalls++
+		writeCIFix(workDir)
+	})
+	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
+	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.GateDir = brokenGate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sctx.Ctx = ctx
+	polls := 0
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		polls++
+		if polls > maxPendingPublishRetries+3 {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	}}
+
+	outcome, err := step.Execute(f.sctx)
+	if err != nil {
+		t.Fatalf("the monitor never stopped retrying: %v\nlog:\n%s", err, f.log())
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want a parked approval gate", outcome)
+	}
+	if !strings.Contains(outcome.Findings, "gate mirror") {
+		t.Errorf("the finding does not explain the stale gate mirror: %s", outcome.Findings)
+	}
+	publishedHead := f.localHead(t)
+	if !strings.Contains(outcome.Findings, shortObjectID(publishedHead)) {
+		t.Errorf("the finding does not name the published head %s: %s", publishedHead, outcome.Findings)
+	}
+	if f.remoteHead(t) != publishedHead {
+		t.Errorf("remote head = %s, want the published repair %s", f.remoteHead(t), publishedHead)
+	}
+	if agentCalls != 1 {
+		t.Errorf("fix agent calls = %d, want 1; retries must not spend repair attempts", agentCalls)
+	}
+	if step.pendingPublishAttempts > maxPendingPublishRetries {
+		t.Errorf("retry attempts = %d, want at most %d", step.pendingPublishAttempts, maxPendingPublishRetries)
+	}
+}
+
+// Durable state is written before the live head advances, so a failed write
+// cannot leave the monitor watching a head the run record does not know about
+// while its stale review approval still stands.
+func TestCIStep_FailedRevalidationWriteDoesNotAdvanceTheLiveHead(t *testing.T) {
+	t.Parallel()
+	f := newCIRepairFixture(t, true, nil)
+	writeCIFix(f.dir)
+	priorHead := f.sctx.Run.HeadSHA
+	priorApproval := f.sctx.Run.ReviewApprovedHeadSHA
+
+	// Close the database so the durable revalidation write fails.
+	if err := f.sctx.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check"); err == nil {
+		t.Fatal("a failed durable write was reported as a recorded repair")
+	}
+	if f.sctx.Run.HeadSHA != priorHead {
+		t.Errorf("live head advanced to %s despite the failed write; want %s", f.sctx.Run.HeadSHA, priorHead)
+	}
+	if f.sctx.Run.ReviewApprovedHeadSHA != priorApproval {
+		t.Error("review approval was revoked in memory despite the failed write")
+	}
+}
