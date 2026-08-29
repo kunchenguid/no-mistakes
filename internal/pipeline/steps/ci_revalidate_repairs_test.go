@@ -26,6 +26,7 @@ type ciRepairFixture struct {
 	dir      string
 	upstream string
 	headSHA  string
+	gateDir  string
 	logs     *[]string
 }
 
@@ -85,7 +86,7 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 
 	logs := &[]string{}
 	sctx.Log = func(s string) { *logs = append(*logs, s) }
-	return &ciRepairFixture{sctx: sctx, dir: dir, upstream: upstream, headSHA: headSHA, logs: logs}
+	return &ciRepairFixture{sctx: sctx, dir: dir, upstream: upstream, headSHA: headSHA, gateDir: sctx.GateDir, logs: logs}
 }
 
 // run drives the monitor until it returns or the poll budget is spent.
@@ -286,41 +287,71 @@ func TestCIStep_AgentCommittedRepairFollowsThePolicy(t *testing.T) {
 	}
 }
 
-// Once a repair has reached the remote and its push binding is durable, a
-// later gate-mirror synchronization failure must not turn that successful
-// publication into a failed fix attempt. The mirror can be repaired by a
-// later Push step; the CI monitor must keep watching the published commit.
-func TestCIStep_PublishedRepairSurvivesLateGateMirrorFailure(t *testing.T) {
+// Publication is all-or-nothing. A gate-mirror failure happens after the
+// remote already carries the head, so the tempting shortcuts are to record the
+// publication and return the error, or to record it and swallow the error.
+// Both are wrong: the first makes the monitor treat an already published repair
+// as failed and then see "no changes" on its next attempt, and the second
+// strands the gate behind the remote, where `no-mistakes rerun` would resolve
+// the stale gate head and silently omit the repair.
+//
+// Instead nothing is recorded until every part succeeds, so the failure is
+// simply retryable: the next attempt re-enters the same path, finds the remote
+// already at this head, and completes the publication once the mirror works.
+func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
+	t.Parallel()
 	f := newCIRepairFixture(t, false, nil)
 	writeCIFix(f.dir)
-	f.sctx.GateDir = filepath.Join(t.TempDir(), "invalid-gate")
-	if err := os.MkdirAll(f.sctx.GateDir, 0o755); err != nil {
+	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
+	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	f.sctx.GateDir = brokenGate
 
 	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
-	if err != nil {
-		t.Fatalf("published repair was misreported as failed: %v", err)
+	if err == nil {
+		t.Fatal("a publication that could not settle the gate mirror was reported as complete")
 	}
-	if !repair.HeadAdvanced {
-		t.Fatal("published repair was not reported as a real change")
+	if repair.HeadAdvanced {
+		t.Fatal("an unsettled publication was reported as a delivered repair")
 	}
-	publishedHead := f.localHead(t)
-	if publishedHead == f.headSHA || f.remoteHead(t) != publishedHead {
-		t.Fatalf("repair was not published: prior=%s local=%s remote=%s", f.headSHA, publishedHead, f.remoteHead(t))
+
+	repairCommit := f.localHead(t)
+	if repairCommit == f.headSHA {
+		t.Fatal("the repair commit was never created")
 	}
+	// Nothing durable was written, so the run still points at the pre-repair
+	// head and the next attempt can complete the publication.
 	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.HeadSHA != publishedHead || run.LastPushedSHA == nil || *run.LastPushedSHA != publishedHead {
-		t.Fatalf("published repair was not durably bound to %s: %#v", publishedHead, run)
+	if run.HeadSHA != f.headSHA {
+		t.Errorf("recorded head = %s, want the pre-repair head %s until publication settles", run.HeadSHA, f.headSHA)
 	}
-	if !strings.Contains(f.log(), "CI repair was published, but gate mirror synchronization failed") {
-		t.Fatalf("late gate-mirror failure was not logged as a warning:\n%s", f.log())
+	if run.LastPushedSHA != nil && *run.LastPushedSHA == repairCommit {
+		t.Error("an unsettled publication was recorded in the push binding")
 	}
-	if !strings.Contains(f.log(), "committed and pushed CI repair") {
-		t.Fatalf("successful repair publication was not logged:\n%s", f.log())
+
+	// Retry with a working gate: the same path completes, and the no-op push
+	// over the already-pushed head is not an obstacle.
+	f.sctx.GateDir = f.gateDir
+	repair, err = (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
+	if err != nil {
+		t.Fatalf("the retry did not complete the publication: %v\nlog:\n%s", err, f.log())
+	}
+	if !repair.HeadAdvanced || repair.Revalidate {
+		t.Fatalf("retry result = %#v, want a published repair", repair)
+	}
+	if f.remoteHead(t) != repairCommit {
+		t.Errorf("remote head = %s, want the repair %s", f.remoteHead(t), repairCommit)
+	}
+	run, err = f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
+		t.Errorf("run did not record the settled publication: head=%s pushed=%v", run.HeadSHA, run.LastPushedSHA)
 	}
 }
 
@@ -352,7 +383,17 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 		{
 			name: "genuine_rebase_replaying_the_reviewed_commit",
 			rewrite: func(t *testing.T, f *ciRepairFixture, advancedBase string) string {
-				gitCmd(t, f.dir, "rebase", "main")
+				// Resolve the conflict the way a repair agent would: keep the
+				// feature's intent on top of the base's rewrite. That changes
+				// the commit's patch-id, which is exactly why continuity
+				// cannot be proven for a conflict repair.
+				if err := os.WriteFile(filepath.Join(f.dir, "feature.txt"), []byte("base rewrote this line\nthe user's feature, resolved\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, f.dir, "add", "-A")
+				if _, err := stepGitRun(f.sctx, "-c", "core.editor=true", "rebase", "--continue"); err != nil {
+					t.Fatalf("resolve the conflict: %v", err)
+				}
 				return gitCmd(t, f.dir, "rev-parse", "HEAD")
 			},
 			keepsReviewedWork: true,
@@ -360,6 +401,9 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 		{
 			name: "reset_to_base_dropping_the_reviewed_commit",
 			rewrite: func(t *testing.T, f *ciRepairFixture, advancedBase string) string {
+				// The repair agent gives up on the conflict and resets to the
+				// base, silently discarding the reviewed commit.
+				gitCmd(t, f.dir, "rebase", "--abort")
 				gitCmd(t, f.dir, "reset", "--hard", advancedBase)
 				return advancedBase
 			},
@@ -370,15 +414,21 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Publish policy: this is the path that could publish without review.
+			// The base and the feature edit the SAME line of the same file, so
+			// a rebase genuinely conflicts and the repair really is conflict
+			// resolution rather than a clean replay.
 			f := newCIRepairFixture(t, false, nil)
 			gitCmd(t, f.dir, "checkout", "main")
-			if err := os.WriteFile(filepath.Join(f.dir, "base-advance.txt"), []byte("advanced\n"), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(f.dir, "feature.txt"), []byte("base rewrote this line\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			gitCmd(t, f.dir, "add", "-A")
-			gitCmd(t, f.dir, "commit", "-m", "advance base")
+			gitCmd(t, f.dir, "commit", "-m", "advance base over the same line")
 			advancedBase := gitCmd(t, f.dir, "rev-parse", "HEAD")
 			gitCmd(t, f.dir, "checkout", "feature")
+			if _, err := stepGitRun(f.sctx, "rebase", "main"); err == nil {
+				t.Fatal("expected the rebase to conflict; the fixture no longer models a conflict repair")
+			}
 
 			repairedHead := tc.rewrite(t, f, advancedBase)
 			if repairedHead == f.headSHA {
@@ -401,8 +451,10 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 			if f.remoteHead(t) != f.headSHA {
 				t.Fatalf("remote moved to %s; the reviewed head %s must still be published", f.remoteHead(t), f.headSHA)
 			}
-			if !fileAtRef(t, f.upstream, "refs/heads/feature", "feature.txt") {
-				t.Fatal("DATA LOSS: the reviewed work was force-pushed away")
+			reviewedContent := gitCmd(t, f.dir, "show", f.headSHA+":feature.txt")
+			published := gitCmd(t, f.upstream, "show", "refs/heads/feature:feature.txt")
+			if published != reviewedContent {
+				t.Fatalf("DATA LOSS: published feature.txt = %q, want the reviewed content %q", published, reviewedContent)
 			}
 
 			// Review authority is revoked so Push cannot publish the rewritten

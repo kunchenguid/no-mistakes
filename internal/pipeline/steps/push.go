@@ -65,7 +65,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, false); err != nil {
+	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
 		return nil, err
 	}
 
@@ -88,16 +88,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // because the CI step runs with a step-local PATH and credential environment
 // that a plain runner would not see. Gate-mirror calls stay on git.Run: they
 // operate on the bare gate directory, not the run worktree.
-// ciRepair marks the caller as a CI repair rather than the Push step. It
-// changes exactly one thing: a gate-mirror failure after the remote push and
-// its durable binding have both succeeded is a warning rather than an error,
-// because the CI monitor has no later Push step to retry it and must not spend
-// another fix attempt on an already published repair.
+// Publication is all-or-nothing: the remote push, the gate mirror, the push
+// binding, and the recorded head either all land or none of them are recorded,
+// so a partial failure is always safe to retry.
 //
-// It deliberately does NOT relax the review-approved-head check. Whether a
-// repair may be published at all is decided before publication, using
+// It deliberately does not relax the review-approved-head check for anyone.
+// Whether a CI repair may be published at all is decided before publication, by
 // ciRepairContinuityGap.
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, ciRepair bool) error {
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -151,6 +149,24 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		}
 		return fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, headBeingPushed)
 	}
+	// Settle the gate mirror BEFORE recording the publication. The remote
+	// already has the head, but a run is only "published" once the gate mirror
+	// carries it too: `no-mistakes rerun` resolves its starting head from the
+	// gate, so a head recorded as published while the gate is behind is a head
+	// a later rerun silently omits.
+	//
+	// Ordering it here is what makes a mirror failure retryable instead of
+	// having to choose between two wrong answers. Nothing durable has been
+	// written yet, so the caller's next attempt re-enters this path, finds the
+	// remote already at this head (an up-to-date no-op push), and retries the
+	// mirror. The alternative orderings both lose: recording first and
+	// returning the error makes the CI monitor treat an already published
+	// repair as a failed one, and recording first and swallowing the error
+	// strands the gate behind the remote for good.
+	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
+		return err
+	}
+
 	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
 		HeadSHA:           headBeingPushed,
 		TargetKind:        pushTarget,
@@ -173,19 +189,6 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headBeingPushed); err != nil {
 			return err
 		}
-	}
-
-	// Update the gate mirror's ref so follow-up pushes to the gate proxy
-	// remain fast-forwardable after pipeline rebases. At this point the remote
-	// push and its durable binding have already succeeded. A Push-step retry can
-	// retry a mirror failure, but the CI monitor must not call an already
-	// published repair failed and spend another fix attempt on it.
-	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
-		if ciRepair {
-			sctx.Log(fmt.Sprintf("warning: CI repair was published, but gate mirror synchronization failed: %v", err))
-			return nil
-		}
-		return err
 	}
 	return nil
 }

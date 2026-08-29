@@ -377,7 +377,7 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // a failed publication leaves sctx.Run.HeadSHA on the pre-repair commit and the
 // next poll retries rather than believing the repair shipped.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	if err := publishRunHead(sctx, headSHA, headSHA, true); err != nil {
+	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
 		return ciRepairResult{}, err
 	}
 	sctx.Log("committed and pushed CI repair")

@@ -82,9 +82,13 @@ const (
 	// thing the pipeline can do to a run: it replays Review, Test, Document,
 	// Lint, Push, and PR against the repaired head, so one repair costs
 	// another full agent pass over the whole change. VISION.md's cost
-	// constraint makes that opt-in. The default publishes the repair through
-	// the same guarded push path the Push step uses and keeps monitoring CI,
-	// which is what every release before v1.58.1 did.
+	// constraint makes that opt-in.
+	//
+	// False does not mean "always publish". It means "publish when it is
+	// provably safe to": a repair is published only when its head is the run's
+	// review-approved commit or a descendant of it, and any repair that cannot
+	// show that - every merge-conflict repair, since a rebase rewrites the
+	// head - revalidates from Review instead. See CI.RevalidateRepairs.
 	DefaultCIRevalidateRepairs = false
 	// DefaultEvalMaxCases caps the auto-captured local eval corpus. Cases
 	// share one object pool per repository, so the marginal cost of a case is
@@ -481,14 +485,23 @@ type CI struct {
 	// RevalidateRepairs selects what happens after the CI step's fix agent
 	// produces a real repair commit.
 	//
-	// false (default): the repair is published immediately through the same
-	// guarded force-push path the Push step uses - review-approved-head
-	// continuity, the force-with-lease anchor, remote verification, and push
-	// binding all still apply - and the CI monitor keeps watching the same run
-	// for the new head. Gate-mirror synchronization is also attempted, but a
-	// failure after the verified remote binding is a warning rather than a
-	// reason to spend another repair attempt. The run's review approval stays
-	// valid because the repair is a descendant of the approved head.
+	// One rule decides delivery on every CI-fix path, automatic and manual, CI
+	// failure and merge conflict alike: a repair is published without
+	// revalidating only when its continuity with the reviewed, published head
+	// can be PROVEN - the repaired head is the run's review-approved commit or
+	// a descendant of it - and revalidates from Review when it cannot.
+	//
+	// false (default): a provable repair is published through the same guarded
+	// force-push path the Push step uses - review-approved-head continuity, the
+	// force-with-lease anchor, remote verification, the gate mirror, and the
+	// push binding all still apply, and none of it is recorded until all of it
+	// succeeds - and the CI monitor keeps watching the same run for the new
+	// head. The run's review approval stays valid because the repair descends
+	// from the approved head. A repair whose continuity cannot be proven takes
+	// the revalidating path below instead; a merge-conflict repair always does,
+	// because a rebase makes its head a non-descendant and resolving a conflict
+	// changes the commit's patch-id, so no content-based guard can tell a
+	// resolved rebase from one that dropped the work.
 	//
 	// true: the repair is kept local, the run's review approval is revoked,
 	// and the pipeline restarts at Review so the repaired head re-passes
@@ -893,14 +906,17 @@ auto_fix:
 # default branch overrides this value.
 ci:
   rerun_transient: 0
-  # Whether a CI repair commit must re-pass the whole pipeline before it is
-  # published. Defaults to false: the repair is published through the same
-  # guarded force-push path the Push step uses and CI keeps monitoring, so one
-  # repair costs one agent round. Set true to restart validation at Review so
-  # the repaired head re-passes Review, Test, Document, and Lint before Push
-  # republishes it - safer, and it pays for another full pipeline pass in wall
-  # clock and tokens every time CI is repaired. A repository that sets
-  # ci.revalidate_repairs on its own default branch overrides this value.
+  # Whether EVERY CI repair must re-pass the whole pipeline before it is
+  # published, or only the ones whose continuity with the reviewed head cannot
+  # be proven. Defaults to false: a repair that descends from the reviewed head
+  # is published through the same guarded force-push path the Push step uses and
+  # CI keeps monitoring, so one repair costs one agent round. A repair that
+  # cannot show that ancestry revalidates from Review anyway - a merge-conflict
+  # repair always does, because rebasing rewrites the head. Set true to restart
+  # validation at Review for every repair - safer, and it pays for another full
+  # pipeline pass in wall clock and tokens every time CI is repaired. A
+  # repository that sets ci.revalidate_repairs on its own default branch
+  # overrides this value.
   revalidate_repairs: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
