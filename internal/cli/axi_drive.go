@@ -303,6 +303,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
+	axiRunToken, err := prepareAXIRun(env.client, env.repo.ID, branch, headSHA, intent)
+	if err != nil {
+		return "", err
+	}
+	pushOptions = append(pushOptions, formatAXIRunPushOption(axiRunToken))
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
 		// Close the inspection-to-push race: if the pipeline advanced ownership
@@ -323,7 +328,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, axiRunToken), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -407,8 +412,19 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+func prepareAXIRun(client *ipc.Client, repoID, branch, headSHA, intent string) (string, error) {
+	var result ipc.PrepareAXIRunResult
+	if err := client.Call(ipc.MethodPrepareAXIRun, &ipc.PrepareAXIRunParams{RepoID: repoID, Branch: branch, HeadSHA: headSHA, Intent: intent}, &result); err != nil {
+		return "", fmt.Errorf("prepare AXI run: %w", err)
+	}
+	if result.Token == "" {
+		return "", fmt.Errorf("prepare AXI run: daemon returned an empty capability")
+	}
+	return result.Token, nil
+}
+
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, axiRunToken string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, AXIRunToken: axiRunToken}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

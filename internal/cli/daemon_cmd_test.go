@@ -109,3 +109,13 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestAXIRunPushOptionRoundTrip(t *testing.T) {
+	opt := formatAXIRunPushOption("token-1")
+	if got := parseAXIRunPushOptions([]string{"no-mistakes.skip=test", opt}); got != "token-1" {
+		t.Fatalf("parseAXIRunPushOptions() = %q, want token-1", got)
+	}
+	if got := formatAXIRunPushOption(""); got != "" {
+		t.Fatalf("formatAXIRunPushOption(empty) = %q, want empty", got)
+	}
+}

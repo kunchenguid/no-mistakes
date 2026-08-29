@@ -344,6 +344,8 @@ records the transcript source. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
 an active run; do not use it to bypass a gate.
+For a GitHub fork registration, neither inherited intent nor `rerun --intent`
+authorizes PR publication; start a new PR-producing run with `axi run --intent`.
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |

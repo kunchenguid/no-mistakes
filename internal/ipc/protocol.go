@@ -15,6 +15,7 @@ const (
 	MethodGetRuns        = "get_runs"
 	MethodGetRunsForHead = "get_runs_for_head"
 	MethodGetActiveRun   = "get_active_run"
+	MethodPrepareAXIRun  = "prepare_axi_run"
 	MethodRerun          = "rerun"
 	MethodSubscribe      = "subscribe"
 	MethodRespond        = "respond"
@@ -67,12 +68,24 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate        string           `json:"gate"`
+	Ref         string           `json:"ref"`
+	Old         string           `json:"old"`
+	New         string           `json:"new"`
+	SkipSteps   []types.StepName `json:"skip_steps,omitempty"`
+	Intent      string           `json:"intent,omitempty"`
+	AXIRunToken string           `json:"axi_run_token,omitempty"`
+}
+
+type PrepareAXIRunParams struct {
+	RepoID  string `json:"repo_id"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
+	Intent  string `json:"intent"`
+}
+
+type PrepareAXIRunResult struct {
+	Token string `json:"token"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -130,6 +143,7 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	AXIRunToken   string           `json:"axi_run_token,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

@@ -661,7 +661,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	waitForRunTerminalState(t, d, first.RunID)
 	selectedIntent := "  selected exact requirements\n"
-	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1, LeadingStructurePreserved: true}); err != nil {
+	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1, LeadingStructurePreserved: true, AXIRun: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -695,6 +695,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if !got.IntentLeadingStructurePreserved {
 		t.Fatal("rerun lost selected intent leading-structure evidence")
+	}
+	if got.IntentAXIRun {
+		t.Fatal("standalone rerun inherited AXI-run evidence")
 	}
 
 	legacyIntent := "PR destination: parent-owner/no-mistakes"
