@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -218,14 +219,14 @@ func FakeCLIBinDir(t *testing.T) string {
 // test binary as those names was ~0.8s per spawn and dominated CI-monitor tests.
 var fakeCLIHelperPath string
 
-func Init() error {
+func Init() (func() error, error) {
 	root, err := findModuleRoot()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	dir, err := os.MkdirTemp("", "fakecli-helper-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name := "fakecli"
 	if runtime.GOOS == "windows" {
@@ -237,10 +238,16 @@ func Init() error {
 	cmd.Env = goBuildEnvWithoutRace()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("go build fakecli: %w: %s", err, out)
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			return nil, fmt.Errorf("go build fakecli: %w: %s; cleanup: %v", err, out, cleanupErr)
+		}
+		return nil, fmt.Errorf("go build fakecli: %w: %s", err, out)
 	}
 	fakeCLIHelperPath = path
-	return nil
+	return func() error {
+		fakeCLIHelperPath = ""
+		return os.RemoveAll(dir)
+	}, nil
 }
 
 func goBuildEnvWithoutRace() []string {
@@ -269,8 +276,14 @@ func stripRaceFlag(flags string) string {
 	parts := strings.Fields(flags)
 	kept := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p == "-race" || p == "--race" {
-			continue
+		name, value, hasValue := strings.Cut(p, "=")
+		if name == "-race" || name == "--race" {
+			if !hasValue {
+				continue
+			}
+			if _, err := strconv.ParseBool(value); err == nil {
+				continue
+			}
 		}
 		kept = append(kept, p)
 	}

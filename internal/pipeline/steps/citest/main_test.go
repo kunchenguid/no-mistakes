@@ -10,9 +10,15 @@ import (
 
 func TestMain(m *testing.M) {
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	if err := stepstest.Init(); err != nil {
+	cleanup, err := stepstest.Init()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "init fake CLI helper: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if err := cleanup(); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup fake CLI helper: %v\n", err)
+		code = 1
+	}
+	os.Exit(code)
 }
