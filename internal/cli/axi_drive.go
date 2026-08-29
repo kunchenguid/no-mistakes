@@ -301,7 +301,7 @@ func custodySettlementHelp(action *branchsync.NextAction) []string {
 		return nil
 	}
 	switch action.Code {
-	case "recover_custody", "return_custody_keep_local", "inspect_and_reconcile_manually":
+	case "recover_custody", "return_custody_keep_local", "complete_custody_return", "inspect_and_reconcile_manually":
 		return []string{
 			"Run `" + action.Command + "`",
 			branchSyncAgentGuidance,
