@@ -3697,10 +3697,11 @@ func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name    string
-		fixture func(*testing.T) *recoverFixture
-		setup   func(*testing.T, *recoverFixture)
-		safety  string
+		name      string
+		fixture   func(*testing.T) *recoverFixture
+		setup     func(*testing.T, *recoverFixture)
+		keepLocal bool
+		safety    string
 	}{
 		{
 			// Behind and dirty: local is an ancestor of the preserved head.
@@ -3785,6 +3786,31 @@ func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 			},
 			safety: "blocked_recover_assumptions_changed",
 		},
+		{
+			// The claim is not scoped to the default flow: --keep-local pins
+			// the same anchors and then refuses when the gate branch it would
+			// move is gone. The behind arm reaches that refusal.
+			name:    "behind keep-local with the gate branch deleted",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+			},
+			keepLocal: true,
+			safety:    "blocked_recover_gate_unavailable",
+		},
+		{
+			// The identical sibling on the diverged arm.
+			name:    "diverged keep-local with the gate branch deleted",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustWrite(t, filepath.Join(f.local, "divergent.txt"), "unique local work\n")
+				mustRun(t, f.local, "add", "divergent.txt")
+				mustRun(t, f.local, "commit", "-m", "unique local work")
+				mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+			},
+			keepLocal: true,
+			safety:    "blocked_recover_gate_unavailable",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -3792,7 +3818,7 @@ func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 			tc.setup(t, f)
 			before := f.anchorPresence(t)
 
-			state := f.service.Recover(f.ctx, false)
+			state := f.service.Recover(f.ctx, tc.keepLocal)
 			if state.Safety != tc.safety {
 				t.Fatalf("safety = %q, want %q: %#v", state.Safety, tc.safety, state)
 			}

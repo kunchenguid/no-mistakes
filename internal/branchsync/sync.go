@@ -752,7 +752,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 			if err != nil {
-				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; %s", branch, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead, anchoredNote)
 		}
@@ -767,7 +767,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 			if err != nil {
-				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; no files or refs were changed", branch))
+				return recoverBlocked(state, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so it cannot be updated with the kept local head; %s", branch, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 			}
 			return s.recoverKeepLocal(ctx, run, state, gateHead, anchoredNote)
 		}
@@ -1361,7 +1361,7 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 	if err := custody.PreserveRecoveryHead(ctx, s.workDir(), runID, preserved); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())), false
 	}
-	if probeErr == nil && !anchorExisted {
+	if !anchorExisted || probeErr != nil {
 		anchoredNote.record(invokingWorktreeStore)
 	}
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
