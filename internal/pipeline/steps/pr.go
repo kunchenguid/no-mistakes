@@ -161,13 +161,10 @@ func validatePRDestination(sctx *pipeline.StepContext, provider scm.Provider) er
 // explicitPRDestination reads leading typed destination declarations from the
 // authoritative --intent text.
 func explicitPRDestination(sctx *pipeline.StepContext) (string, error) {
-	if sctx == nil || sctx.Run == nil || !sctx.Run.IntentAXIRun {
-		return "", fmt.Errorf("authoritative PR destination must come from no-mistakes axi run --intent")
-	}
 	if !intentSourceIsAuthoritative(sctx) {
 		return "", fmt.Errorf("authoritative run intent does not identify a leading PR destination; start --intent with %q", prDestinationIntentPrefix+" owner/repo")
 	}
-	if !sctx.Run.IntentLeadingStructurePreserved {
+	if sctx.Run == nil || !sctx.Run.IntentLeadingStructurePreserved {
 		return "", fmt.Errorf("authoritative run intent lacks preserved leading structure; rerun with a fresh --intent starting with %q", prDestinationIntentPrefix+" owner/repo")
 	}
 

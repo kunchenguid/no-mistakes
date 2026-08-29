@@ -256,17 +256,6 @@ func ancestry(pid int, parent func(int) (int, error)) (map[int]bool, error) {
 	return chain, nil
 }
 
-func ProcessDescendsFrom(pid, ancestorPID int) (bool, error) {
-	if pid <= 0 || ancestorPID <= 0 {
-		return false, nil
-	}
-	chain, err := ancestry(pid, processParentPID)
-	if err != nil {
-		return false, err
-	}
-	return chain[ancestorPID], nil
-}
-
 // canonicalPath is the shared worktree_roots canonicalization, so a path that
 // compares equal here compares equal everywhere placement is resolved.
 func canonicalPath(path string) string {

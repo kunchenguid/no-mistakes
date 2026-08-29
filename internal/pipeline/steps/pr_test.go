@@ -539,7 +539,6 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	sctx.UserIntent = "PR destination: parent-owner/no-mistakes"
 	sctx.IntentSource = db.RunIntentSourceAgent
 	sctx.Run.IntentLeadingStructurePreserved = true
-	sctx.Run.IntentAXIRun = true
 	forgeCtx, err := forgecontext.Resolve(context.Background(), config.ForgeProfiles{
 		"github.com": {GHConfigDir: profileDir},
 	}, sctx.Repo.UpstreamURL, sctx.Repo.ForkURL)
@@ -613,15 +612,8 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 		upstreamURL      string
 		intent           string
 		legacyNormalized bool
-		notAXIRun        bool
 		wantErrPart      string
 	}{
-		{
-			name:        "explicit push option destination lacks AXI provenance",
-			intent:      "PR destination: parent-owner/no-mistakes",
-			notAXIRun:   true,
-			wantErrPart: "must come from no-mistakes axi run --intent",
-		},
 		{
 			name:             "legacy normalized destination lacks structure evidence",
 			intent:           "PR destination: parent-owner/no-mistakes",
@@ -693,7 +685,6 @@ func TestPRStep_GitHubForkRefusesUnverifiedDestination(t *testing.T) {
 			sctx.UserIntent = tc.intent
 			sctx.IntentSource = db.RunIntentSourceAgent
 			sctx.Run.IntentLeadingStructurePreserved = !tc.legacyNormalized
-			sctx.Run.IntentAXIRun = !tc.notAXIRun
 
 			_, err := (&PRStep{}).Execute(sctx)
 			if err == nil {

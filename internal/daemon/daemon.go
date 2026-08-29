@@ -1186,21 +1186,6 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
 	})
 
-	srv.Handle(ipc.MethodPrepareAXIRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
-		if err := refuseNested(ctx, false); err != nil {
-			return nil, err
-		}
-		var p ipc.PrepareAXIRunParams
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
-		}
-		token, err := mgr.prepareAXIRun(p, ipc.PeerPID(ctx))
-		if err != nil {
-			return nil, err
-		}
-		return &ipc.PrepareAXIRunResult{Token: token}, nil
-	})
-
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1209,7 +1194,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.AXIRunToken)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent)
 		if err != nil {
 			return nil, err
 		}

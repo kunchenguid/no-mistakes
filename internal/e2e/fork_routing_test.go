@@ -5,7 +5,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -130,9 +129,11 @@ func TestForkRouting(t *testing.T) {
 	}
 }
 
-// TestForkRoutingDirectPushIntentCannotAuthorizePR exercises the documented
-// direct-push fork workflow through the real daemon and CLI.
-func TestForkRoutingDirectPushIntentCannotAuthorizePR(t *testing.T) {
+// TestForkRoutingDirectPushRefusesPRWithoutDestination exercises the documented
+// direct-push fork workflow through the real daemon and CLI. A direct gate push
+// has no authoritative intent, so it may deliver the branch to the fork but
+// must fail before any GitHub PR lookup or publication.
+func TestForkRoutingDirectPushRefusesPRWithoutDestination(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude"})
 	ctx := context.Background()
 
@@ -167,17 +168,13 @@ func TestForkRoutingDirectPushIntentCannotAuthorizePR(t *testing.T) {
 	}
 
 	headSHA := h.CommitChange(branch, "fork-direct.txt", "fork direct push\n", "add direct fork route")
-	destinationIntent := "PR destination: parent-owner/no-mistakes"
-	encodedIntent := base64.StdEncoding.EncodeToString([]byte(destinationIntent))
-	if out, err := h.runGit(ctx, h.WorkDir, "push", "-o", "no-mistakes.intent="+encodedIntent, "-o", "no-mistakes.axi-run=forged", "no-mistakes", branch); err != nil {
-		t.Fatalf("direct push with forged destination provenance: %v\n%s", err, out)
-	}
+	h.PushToGate(branch)
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunFailed {
 		t.Fatalf("direct-push run status = %s, want failed; error=%v", run.Status, deref(run.Error))
 	}
-	if run.Error == nil || !strings.Contains(*run.Error, "must come from no-mistakes axi run --intent") {
-		t.Fatalf("direct-push run error = %q, want caller-visible AXI provenance refusal", deref(run.Error))
+	if run.Error == nil || !strings.Contains(*run.Error, "authoritative run intent does not identify a leading PR destination") {
+		t.Fatalf("direct-push run error = %q, want caller-visible missing-destination refusal", deref(run.Error))
 	}
 
 	statusOut, err := h.Run("axi", "status")
@@ -187,7 +184,7 @@ func TestForkRoutingDirectPushIntentCannotAuthorizePR(t *testing.T) {
 	for _, want := range []string{
 		"outcome: failed",
 		"refusing GitHub fork PR publication",
-		"must come from no-mistakes axi run --intent",
+		"authoritative run intent does not identify a leading PR destination",
 	} {
 		if !strings.Contains(statusOut, want) {
 			t.Errorf("axi status missing %q in:\n%s", want, statusOut)
@@ -204,17 +201,6 @@ func TestForkRoutingDirectPushIntentCannotAuthorizePR(t *testing.T) {
 	}
 	if out, err := h.runGit(ctx, h.UpstreamDir, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
 		t.Fatalf("parent unexpectedly received feature branch at %s", bytes.TrimSpace(out))
-	}
-
-	if out, err := h.Run("rerun", "--intent", destinationIntent); err != nil {
-		t.Fatalf("standalone rerun with destination intent: %v\n%s", err, out)
-	}
-	rerun := h.WaitForRun(branch, 90*time.Second)
-	if rerun.ID == run.ID {
-		t.Fatalf("standalone rerun did not create a new run: %s", rerun.ID)
-	}
-	if rerun.Status != types.RunFailed || rerun.Error == nil || !strings.Contains(*rerun.Error, "must come from no-mistakes axi run --intent") {
-		t.Fatalf("standalone rerun status=%s error=%q, want AXI provenance refusal", rerun.Status, deref(rerun.Error))
 	}
 
 	for _, inv := range readGHStubInvocations(t, ghLog) {

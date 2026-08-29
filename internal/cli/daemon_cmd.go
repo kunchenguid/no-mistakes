@@ -106,7 +106,6 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			axiRunToken := parseAXIRunPushOptions(pushOptions)
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -125,13 +124,12 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:        gatePath,
-				Ref:         ref,
-				Old:         oldSHA,
-				New:         newSHA,
-				SkipSteps:   skipSteps,
-				Intent:      intent,
-				AXIRunToken: axiRunToken,
+				Gate:      gatePath,
+				Ref:       ref,
+				Old:       oldSHA,
+				New:       newSHA,
+				SkipSteps: skipSteps,
+				Intent:    intent,
 			}, &result)
 		},
 	}
@@ -195,7 +193,6 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // The value is base64-encoded so multi-line or special-character intents
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
-const axiRunPushOptionPrefix = "no-mistakes.axi-run="
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
@@ -222,23 +219,6 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
-}
-
-func formatAXIRunPushOption(token string) string {
-	if token == "" {
-		return ""
-	}
-	return axiRunPushOptionPrefix + token
-}
-
-func parseAXIRunPushOptions(options []string) string {
-	token := ""
-	for _, option := range options {
-		if value, ok := strings.CutPrefix(option, axiRunPushOptionPrefix); ok {
-			token = value
-		}
-	}
-	return token
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

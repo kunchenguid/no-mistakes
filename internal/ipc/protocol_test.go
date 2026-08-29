@@ -125,12 +125,11 @@ func TestResponseError(t *testing.T) {
 
 func TestPushReceivedParams(t *testing.T) {
 	params := PushReceivedParams{
-		Gate:        "/path/to/gate.git",
-		Ref:         "refs/heads/main",
-		Old:         "aaa",
-		New:         "bbb",
-		SkipSteps:   []types.StepName{types.StepTest, types.StepLint},
-		AXIRunToken: "token-1",
+		Gate:      "/path/to/gate.git",
+		Ref:       "refs/heads/main",
+		Old:       "aaa",
+		New:       "bbb",
+		SkipSteps: []types.StepName{types.StepTest, types.StepLint},
 	}
 	data, _ := json.Marshal(params)
 	var got PushReceivedParams
@@ -142,21 +141,6 @@ func TestPushReceivedParams(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.SkipSteps, params.SkipSteps) {
 		t.Errorf("skip_steps = %+v, want %+v", got.SkipSteps, params.SkipSteps)
-	}
-	if got.AXIRunToken != params.AXIRunToken {
-		t.Errorf("axi_run_token = %q, want %q", got.AXIRunToken, params.AXIRunToken)
-	}
-}
-
-func TestPrepareAXIRunParams(t *testing.T) {
-	params := PrepareAXIRunParams{RepoID: "repo456", Branch: "feature", HeadSHA: "abc123", Intent: "PR destination: owner/repo"}
-	data, _ := json.Marshal(params)
-	var got PrepareAXIRunParams
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, params) {
-		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, params)
 	}
 }
 
@@ -197,7 +181,7 @@ func TestGetActiveRunParams(t *testing.T) {
 }
 
 func TestRerunParams(t *testing.T) {
-	params := RerunParams{RepoID: "repo456", Branch: "feature", PreviousRunID: "run123", SkipSteps: []types.StepName{types.StepReview}, AXIRunToken: "token-1"}
+	params := RerunParams{RepoID: "repo456", Branch: "feature", PreviousRunID: "run123", SkipSteps: []types.StepName{types.StepReview}}
 	data, _ := json.Marshal(params)
 	var got RerunParams
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -214,9 +198,6 @@ func TestRerunParams(t *testing.T) {
 	}
 	if len(got.SkipSteps) != 1 || got.SkipSteps[0] != types.StepReview {
 		t.Errorf("skip_steps = %#v, want review", got.SkipSteps)
-	}
-	if got.AXIRunToken != params.AXIRunToken {
-		t.Errorf("axi_run_token = %q, want %q", got.AXIRunToken, params.AXIRunToken)
 	}
 }
 

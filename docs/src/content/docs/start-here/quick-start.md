@@ -49,7 +49,7 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 ```
 
 The gate pushes validated branches to the fork and can open PRs against the parent.
-The parent PR path is fail-closed: use the [`axi run` explicit-destination workflow](/no-mistakes/reference/cli/#no-mistakes-axi-run) when this run should open a PR. A direct-push run stops before PR publication and cannot acquire destination authorization by attaching later.
+The parent PR path is fail-closed: supply authoritative explicit intent with an unindented first-line `PR destination: owner/repo` declaration when this run should open a PR. [`axi run --intent`](/no-mistakes/reference/cli/#no-mistakes-axi-run) is the normal agent workflow. A bare direct push stops before PR publication, after validation and fork push, and attaching later cannot modify that run's intent.
 
 ```
 $ no-mistakes init

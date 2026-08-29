@@ -93,7 +93,7 @@ no-mistakes init --fork-url git@github.com:your-user/repo.git
 
 With this setup, the Push step updates the fork, including after a CI repair restarts validation, while the PR and CI steps stay scoped to the parent repository.
 The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
-Configuring a fork does not authorize publication to its parent. Start PR-producing fork runs through the [`axi run` explicit-destination workflow](/no-mistakes/reference/cli/#no-mistakes-axi-run); direct-push runs cannot acquire that authorization by attaching later.
+Configuring a fork does not authorize publication to its parent. PR-producing fork runs need authoritative explicit intent whose first line is `PR destination: owner/repo`; [`axi run --intent`](/no-mistakes/reference/cli/#no-mistakes-axi-run) is the normal agent workflow, while `rerun --intent` and the existing notify-push intent option carry the same authorization. A bare direct push has no destination, so it can finish validation and fork push before refusing PR publication; attaching later does not modify that run's intent.
 Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.

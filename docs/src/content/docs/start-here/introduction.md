@@ -39,8 +39,8 @@ touched, so you can keep coding while the pipeline runs.
   through the full gate.
 - For GitHub fork contributions, the configured push target can be your fork
   while `origin` stays pointed at the parent repository used for the PR base.
-  Parent PR publication is fail-closed; follow the
-  [`axi run` explicit-destination workflow](/no-mistakes/reference/cli/#no-mistakes-axi-run).
+  Parent PR publication is fail-closed and requires authoritative explicit intent
+  with a first-line `PR destination: owner/repo` declaration.
 
 That design matters for trust. The tool is not trying to hide Git from you. It
 is trying to make one deliberate path mean something consistent.

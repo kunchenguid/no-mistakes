@@ -52,9 +52,7 @@ type RunManager struct {
 	paths        *paths.Paths
 	steps        StepFactory
 
-	branchLocks    sync.Map // repoID+"/"+branch → *sync.Mutex
-	axiRunClaimsMu sync.Mutex
-	axiRunClaims   map[string]axiRunClaim
+	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
 	// evalCaptureMu serializes automatic eval collection. Concurrent runs
 	// finishing together would otherwise write the same per-repository object
@@ -95,7 +93,6 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		subscribers:   make(map[string][]*eventMailbox),
 		stateRevs:     make(map[string]int64),
 		completedRuns: make(map[string]bool),
-		axiRunClaims:  make(map[string]axiRunClaim),
 	}
 }
 
@@ -714,8 +711,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	intentAXIRun := m.consumeAXIRun(params.AXIRunToken, repo.ID, branch, params.New, params.Intent, ipc.PeerPID(ctx))
-	return m.startRunWithIntentSource(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, db.RunIntentSourceAgent, true, intentAXIRun)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
 }
 
 // HandleRerun creates a new run for the latest recoverable head on a branch:
@@ -723,7 +719,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // head while custody remains outstanding. An explicit intent overrides the
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
 // runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, axiRunToken string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -795,8 +791,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	intentAXIRun := m.consumeAXIRun(axiRunToken, repo.ID, branch, headSHA, intent, ipc.PeerPID(ctx))
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, intentLeadingStructurePreserved, intentAXIRun)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, intentLeadingStructurePreserved)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -858,13 +853,13 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, true, false)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, true)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, intentLeadingStructurePreserved, intentAXIRun bool) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, intentLeadingStructurePreserved bool) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -915,7 +910,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		if source == "" {
 			source = db.RunIntentSourceAgent
 		}
-		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1, LeadingStructurePreserved: intentLeadingStructurePreserved, AXIRun: intentAXIRun}
+		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1, LeadingStructurePreserved: intentLeadingStructurePreserved}
 	}
 
 	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
