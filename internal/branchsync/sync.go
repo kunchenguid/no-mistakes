@@ -958,11 +958,11 @@ func keepLocalNoChangeClause(blanket, anchored string) string {
 // retired, so denying it outright would be false.
 //
 // That narrowing INVERTS when the caller's own anchor sits in the invoking
-// worktree, which is what the ordinary keep-local path always pins. The raw
-// claim would then deny changing local refs in the very sentence whose note
-// names one, so the refusal falls back to enumerating the categories it did
-// not change and disclosing the anchor separately, exactly as the pre-swap
-// sites do. The distinction is the store, not the caller: the settlement pins
+// worktree, which is what the ordinary keep-local path pins whenever it writes
+// that anchor itself. The raw claim would then deny changing local refs in the
+// very sentence whose note names one, so the refusal falls back to enumerating
+// the categories it did not change and disclosing the anchor separately,
+// exactly as the pre-swap sites do. The distinction is the store, not the caller: the settlement pins
 // the invoking worktree too whenever the recorded head still exists there.
 func keepLocalPostSwapNoChangeClause(anchoredNote recoveryAnchorNote) string {
 	const blanket = "no local files or refs were changed"
@@ -1355,6 +1355,15 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	return s.finishRecover(ctx, run, true, false)
 }
 
+// anchorReachablePreserved pins a locally reachable recorded head in the
+// invoking worktree and reports that pin on the shared anchor note, so a later
+// refusal discloses it instead of denying every ref change.
+//
+// The read-only probe is what separates a pin THIS attempt made from one it
+// merely found, because PreserveRecoveryHead returns nil for both. An
+// UNDETERMINED probe records the store anyway: over-reporting an anchor is
+// noise, while under-reporting one hands every downstream refusal back the
+// blanket "no files or refs were changed" claim this note exists to prevent.
 func (s *Service) anchorReachablePreserved(ctx context.Context, state State, runID, preserved string, anchoredNote *recoveryAnchorNote) (State, bool) {
 	anchorRef := custody.RecoveryRef(runID)
 	_, anchorExisted, probeErr := git.ExactRefTarget(ctx, s.workDir(), anchorRef)
