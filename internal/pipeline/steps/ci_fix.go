@@ -226,7 +226,20 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 	return s.commitRepair(sctx, "")
 }
 
+// retryPendingRepair settles a publication this step already began and could
+// not finish, without spending another fix attempt on work the agent has
+// already done.
+//
+// It fires ONLY on positive evidence: pendingPublishHead is set exactly when a
+// publication for that commit failed part way, so an ordinary head difference
+// is never mistaken for one. A repair whose fix agent errored or timed out
+// after committing leaves no such evidence and is handled by the next fix
+// attempt, which is the honest accounting - nothing was published, so nothing
+// is pending.
 func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairResult, error) {
+	if s.pendingPublishHead == "" {
+		return false, ciRepairResult{}, nil
+	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, ciRepairResult{}, fmt.Errorf("check for pending CI repair: %w", err)
@@ -238,7 +251,9 @@ func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairR
 	if err != nil {
 		return false, ciRepairResult{}, fmt.Errorf("resolve pending CI repair: %w", err)
 	}
-	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
+	// The worktree must still be on the commit whose publication stalled. If
+	// it moved on, that commit is no longer what this run would publish.
+	if !strings.EqualFold(headSHA, s.pendingPublishHead) || strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
 		return false, ciRepairResult{}, nil
 	}
 	sctx.Log("retrying unsettled CI repair publication...")
@@ -328,6 +343,8 @@ func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRep
 		return s.recordLocalRepair(sctx, headSHA)
 	}
 	if reason := ciRepairContinuityGap(sctx, headSHA); reason != "" {
+		s.pendingPublishHead = ""
+
 		sctx.Log(fmt.Sprintf("cannot prove the repaired head continues the reviewed head: %s; revalidating from Review instead of publishing", reason))
 		return s.recordLocalRepair(sctx, headSHA)
 	}
@@ -396,8 +413,12 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // next poll retries rather than believing the repair shipped.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
+		// Remember exactly which commit this step tried and failed to publish,
+		// so a later poll can settle it without spending another fix attempt.
+		s.pendingPublishHead = headSHA
 		return ciRepairResult{}, err
 	}
+	s.pendingPublishHead = ""
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
 }

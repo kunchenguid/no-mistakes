@@ -40,8 +40,16 @@ type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
-	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
+	// pendingPublishHead is the repair commit whose publication this step
+	// began but could not settle. It is the ONLY evidence that authorizes
+	// retryPendingRepair, so a head that merely differs from the recorded one -
+	// an agent commit from a fix that then failed, a live PR head in a test
+	// fixture - is never mistaken for an unsettled publication. In memory only:
+	// after a daemon restart the next fix attempt's commitRepair settles it
+	// instead, at the cost of one attempt.
+	pendingPublishHead   string
+	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
+	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default

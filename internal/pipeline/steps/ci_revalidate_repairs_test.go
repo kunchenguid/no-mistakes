@@ -605,3 +605,40 @@ func TestCIStep_RepairWithoutReviewAuthorityRevalidatesRatherThanPublishing(t *t
 		t.Errorf("the log does not name the missing review authority; log:\n%s", f.log())
 	}
 }
+
+// The unsettled-publication retry must fire only on evidence that a
+// publication was actually attempted. A worktree head that merely differs from
+// the run's recorded head is not that evidence - a fix agent that committed and
+// then failed leaves exactly that state, and so does a fixture whose recorded
+// head trails the branch. Treating it as pending swallowed the fix round
+// entirely: the monitor "retried" a publication that had never been attempted
+// and the repair agent was never called.
+func TestCIStep_DifferingHeadWithoutAnAttemptedPublicationStillRunsTheFixAgent(t *testing.T) {
+	t.Parallel()
+	agentCalls := 0
+	f := newCIRepairFixture(t, false, func(workDir string) {
+		agentCalls++
+		writeCIFix(workDir)
+	})
+
+	// The worktree is ahead of the run's recorded head, with a clean tree and
+	// no publication ever attempted for it.
+	if err := os.WriteFile(filepath.Join(f.dir, "unrelated.txt"), []byte("unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, f.dir, "add", "-A")
+	gitCmd(t, f.dir, "commit", "-m", "a commit the run has not recorded")
+	if f.localHead(t) == f.sctx.Run.HeadSHA {
+		t.Fatal("the fixture no longer models a head the run has not recorded")
+	}
+
+	if _, err := f.run(t); err != nil {
+		t.Fatalf("CI step returned error: %v\nlog:\n%s", err, f.log())
+	}
+	if agentCalls == 0 {
+		t.Fatalf("the repair agent was never called; log:\n%s", f.log())
+	}
+	if strings.Contains(f.log(), "retrying unsettled CI repair publication") {
+		t.Errorf("a head with no attempted publication was treated as pending; log:\n%s", f.log())
+	}
+}
