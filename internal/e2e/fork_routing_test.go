@@ -94,6 +94,36 @@ func TestForkRouting(t *testing.T) {
 	if !sawParentCreate {
 		t.Fatalf("did not see parent PR create with fork owner head in gh log: %+v", invocations)
 	}
+
+	indentedBranch := "feature/fork-routing-indented-destination"
+	invocationCount := len(invocations)
+	h.CommitChange(indentedBranch, "fork-indented.txt", "fork indented route\n", "add indented fork route")
+	out, err = h.Run("axi", "run", "--intent", " PR destination: parent-owner/no-mistakes")
+	if err == nil {
+		t.Fatalf("axi run accepted an indented destination declaration:\n%s", out)
+	}
+	for _, want := range []string{
+		"outcome: failed",
+		"authoritative run intent does not identify a leading PR destination",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("axi run refusal missing %q in:\n%s", want, out)
+		}
+	}
+
+	indentedRun := h.WaitForRun(indentedBranch, 90*time.Second)
+	if indentedRun.Status != types.RunFailed {
+		t.Fatalf("indented-destination run status = %s, want failed; error=%v", indentedRun.Status, deref(indentedRun.Error))
+	}
+	if indentedRun.Error == nil || !strings.Contains(*indentedRun.Error, "authoritative run intent does not identify a leading PR destination") {
+		t.Fatalf("indented-destination run error = %q, want caller-visible destination refusal", deref(indentedRun.Error))
+	}
+
+	for _, inv := range readGHStubInvocations(t, ghLog)[invocationCount:] {
+		if len(inv.Args) > 0 && inv.Args[0] == "pr" {
+			t.Fatalf("indented destination refusal reached a GitHub PR operation: %+v", inv)
+		}
+	}
 }
 
 // TestForkRoutingDirectPushRefusesPRWithoutDestination exercises the documented

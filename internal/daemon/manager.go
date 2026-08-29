@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -896,7 +897,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
-		storedIntent = strings.TrimSpace(storedIntent)
+		storedIntent = strings.TrimRightFunc(storedIntent, unicode.IsSpace)
 	}
 	var runIntent *db.RunIntent
 	if strings.TrimSpace(storedIntent) != "" {
