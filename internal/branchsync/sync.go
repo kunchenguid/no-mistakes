@@ -715,6 +715,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// the anchor rather than claiming nothing was written. This path can only
 	// ever pin in the invoking worktree, which is what scopes the no-change
 	// claims of the refusals it delegates to.
+	// Carried by BOTH paths. The keep-local delegations below pass it on, and
+	// the default path's own refusals append it too: this block can write
+	// refs/no-mistakes/recover/<run> into the invoking worktree, so a refusal
+	// reached afterwards that claimed "no files or refs were changed" would
+	// deny a ref this same attempt created. That is the identical defect this
+	// change fixes on the keep-local path, and leaving it on the sibling path
+	// would make the claim true only where we happened to look.
 	anchoredNote := recoveryAnchorNote{ref: anchorRef}
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
 		anchored = true
@@ -747,7 +754,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		if !state.Local.Clean {
 			state.Relation = RelationBehind
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
+			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; %s", state.Local.Reason, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 			blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 			return blocked
 		}
@@ -763,14 +770,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if preservedContainsLocalWork(ctx, wd, local, preserved) {
 			if !state.Local.Clean {
 				state.Relation = RelationDiverged
-				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
+				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; %s", state.Local.Reason, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
 				return blocked
 			}
 			return s.recoverAdoptPreserved(ctx, run, state, preserved)
 		}
 		state.Relation = RelationDiverged
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; %s", anchorRef, keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
