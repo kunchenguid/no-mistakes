@@ -238,6 +238,7 @@ func TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation(t *testing.
 		"github.com/kunchenguid/no-mistakes/internal/git",
 		"github.com/kunchenguid/no-mistakes/internal/branchsync",
 		"github.com/kunchenguid/no-mistakes/internal/pipeline/steps",
+		"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/citest",
 	}
 	for _, pkg := range requiredGitHeavy {
 		if !slices.Contains(gitFromFilter, pkg) {

@@ -167,6 +167,11 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 	}
 }
 
+// BuildHostForTest exposes buildHost to tests in other packages.
+func BuildHostForTest(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
+	return buildHost(sctx, provider)
+}
+
 func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {
 	return scm.DetectProviderContextWithForgejoBaseURL(sctx.Ctx, remoteURL, forgejoBaseURLForStep(sctx))
 }

@@ -52,6 +52,40 @@ type CIStep struct {
 	baseBranchTip func(context.Context) (string, bool)
 }
 
+// SetPollIntervalOverride is a test hook; production leaves the override unset.
+func (s *CIStep) SetPollIntervalOverride(d time.Duration) *CIStep {
+	s.pollIntervalOverride = d
+	return s
+}
+
+// SetWaitForNextPoll is a test hook; production sleeps for the poll interval.
+func (s *CIStep) SetWaitForNextPoll(fn func(context.Context, time.Duration) error) *CIStep {
+	s.waitForNextPoll = fn
+	return s
+}
+
+// SetNow is a test hook; production uses time.Now.
+func (s *CIStep) SetNow(fn func() time.Time) *CIStep {
+	s.now = fn
+	return s
+}
+
+// SetBaseBranchTip is a test hook; production fetches the upstream default branch.
+func (s *CIStep) SetBaseBranchTip(fn func(context.Context) (string, bool)) *CIStep {
+	s.baseBranchTip = fn
+	return s
+}
+
+// TransientRerunRecorded reports whether a rerun budget entry exists for name.
+// Tests use this to assert monitor accounting without reading unexported state.
+func (s *CIStep) TransientRerunRecorded(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.transientReruns.rollup[name]
+	return ok
+}
+
 func (s *CIStep) Name() types.StepName { return types.StepCI }
 
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
