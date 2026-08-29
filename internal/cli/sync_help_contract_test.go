@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+// unconditionalGateMoveClaims are the phrasings that assert the gate
+// compare-and-swap as an unconditional consequence of --keep-local.
+var unconditionalGateMoveClaims = []string{
+	"anchored and the gate branch compare-and-swaps onto the kept head",
+	"and points the gate branch at the kept head",
+	"the preserved commits stay anchored and the gate follows the kept head",
+}
+
 // TestKeepLocalHelpSurfacesStayConditional pins the four operator-facing
 // descriptions of `--keep-local` to what the code actually does.
 //
@@ -19,40 +27,75 @@ import (
 // help string is an executable contract that had no executable check.
 //
 // The assertions drive the real cobra help output rather than reading source,
-// so they describe what an operator or agent actually receives.
+// so they describe what an operator or agent actually receives. Each of the
+// four surfaces is asserted on its own extracted text: greping the whole help
+// blob let one surface satisfy the check on another's behalf, which is how the
+// agent-facing flag line stayed unpinned through the first correction.
 func TestKeepLocalHelpSurfacesStayConditional(t *testing.T) {
-	for _, tc := range []struct{ name, command string }{
-		{"human sync", "sync"},
-		{"axi sync", "axi"},
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"human sync", []string{"sync", "--help"}},
+		{"axi sync", []string{"axi", "sync", "--help"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var out string
-			var err error
-			if tc.command == "sync" {
-				out, err = executeCmd("sync", "--help")
-			} else {
-				out, err = executeCmd("axi", "sync", "--help")
-			}
+			out, err := executeCmd(tc.args...)
 			if err != nil {
-				t.Fatalf("%s --help: %v\n%s", tc.command, err, out)
+				t.Fatalf("%s: %v\n%s", strings.Join(tc.args, " "), err, out)
 			}
-			if !strings.Contains(out, "--keep-local") {
-				t.Fatalf("%s help does not document --keep-local:\n%s", tc.command, out)
-			}
-			// Every surface must condition the gate move on the gate branch
-			// actually naming something else.
-			if !strings.Contains(out, "still names a different head") {
-				t.Errorf("%s help states the gate move unconditionally:\n%s", tc.command, out)
-			}
-			// And must not assert the swap as an unconditional consequence.
-			for _, overstatement := range []string{
-				"anchored and the gate branch compare-and-swaps onto the kept head",
-				"and points the gate branch at the kept head",
+
+			for _, surface := range []struct{ name, text string }{
+				{"flag help", keepLocalFlagUsage(t, out)},
+				{"long description", helpLongDescription(t, out)},
 			} {
-				if strings.Contains(out, overstatement) {
-					t.Errorf("%s help carries the unconditional claim %q:\n%s", tc.command, overstatement, out)
+				// Every surface must condition the gate move on the gate
+				// branch actually naming something else.
+				if !strings.Contains(surface.text, "still names a different head") {
+					t.Errorf("%s %s states the gate move unconditionally:\n%s", tc.name, surface.name, surface.text)
+				}
+				for _, overstatement := range unconditionalGateMoveClaims {
+					if strings.Contains(surface.text, overstatement) {
+						t.Errorf("%s %s carries the unconditional claim %q:\n%s", tc.name, surface.name, overstatement, surface.text)
+					}
 				}
 			}
 		})
 	}
 }
+
+// keepLocalFlagUsage returns the single `--keep-local` usage line from real
+// cobra help output, whitespace-normalized. pflag renders one flag per line and
+// does not wrap when no width is configured, so the flag's whole description is
+// on the one line whose first token is the flag name. That excludes the Long
+// description, which mentions `--keep-local` mid-sentence.
+func keepLocalFlagUsage(t *testing.T, help string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(help, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--keep-local") {
+			found = append(found, normalizeHelpText(line))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one --keep-local flag usage line, got %d:\n%s", len(found), help)
+	}
+	return found[0]
+}
+
+// helpLongDescription returns the command's Long text - everything cobra prints
+// before the usage block - whitespace-normalized so hard-wrapped phrases match.
+func helpLongDescription(t *testing.T, help string) string {
+	t.Helper()
+	long, _, ok := strings.Cut(help, "\nUsage:")
+	if !ok {
+		t.Fatalf("help output has no usage block to delimit the long description:\n%s", help)
+	}
+	long = normalizeHelpText(long)
+	if !strings.Contains(long, "--keep-local") {
+		t.Fatalf("long description does not document --keep-local:\n%s", long)
+	}
+	return long
+}
+
+func normalizeHelpText(s string) string { return strings.Join(strings.Fields(s), " ") }
