@@ -13,18 +13,19 @@ const (
 	MethodStartFreshRun      = "start_fresh_run"
 	MethodGetLaunchReceipt   = "get_launch_receipt"
 	MethodClaimLaunchReceipt = "claim_launch_receipt"
-	MethodGetStepDiff      = "get_step_diff"
-	MethodGetRuns          = "get_runs"
-	MethodGetRunsForHead   = "get_runs_for_head"
-	MethodGetActiveRun     = "get_active_run"
-	MethodRerun            = "rerun"
-	MethodSubscribe        = "subscribe"
-	MethodRespond          = "respond"
-	MethodCancelRun        = "cancel_run"
-	MethodGateContext      = "gate_context"
-	MethodAdmitPush        = "admit_push"
-	MethodHealth           = "health"
-	MethodShutdown         = "shutdown"
+	MethodGetRun             = "get_run"
+	MethodGetStepDiff        = "get_step_diff"
+	MethodGetRuns            = "get_runs"
+	MethodGetRunsForHead     = "get_runs_for_head"
+	MethodGetActiveRun       = "get_active_run"
+	MethodRerun              = "rerun"
+	MethodSubscribe          = "subscribe"
+	MethodRespond            = "respond"
+	MethodCancelRun          = "cancel_run"
+	MethodGateContext        = "gate_context"
+	MethodAdmitPush          = "admit_push"
+	MethodHealth             = "health"
+	MethodShutdown           = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -207,8 +208,8 @@ type ShutdownParams struct{}
 // PushReceivedResult confirms the push was accepted. Receipt is populated for
 // every created run, while RunID remains for hook compatibility.
 type PushReceivedResult struct {
-	RunID   string         `json:"run_id"`
-	Receipt LaunchReceipt  `json:"receipt"`
+	RunID   string        `json:"run_id"`
+	Receipt LaunchReceipt `json:"receipt"`
 }
 
 // LaunchReceipt is the machine-readable, privacy-safe proof that the daemon
@@ -216,13 +217,13 @@ type PushReceivedResult struct {
 // SHA-256 over the exact intent bytes persisted on the row; raw intent is never
 // present in this receipt or in generic status output.
 type LaunchReceipt struct {
-	RunID             string `json:"run_id"`
-	Disposition       string `json:"disposition"`
-	LaunchNonce       string `json:"launch_nonce"`
-	Branch            string `json:"branch"`
-	HeadSHA           string `json:"head_sha"`
-	SubmittedHeadSHA  string `json:"submitted_head_sha"`
-	IntentDigest      string `json:"intent_digest"`
+	RunID            string `json:"run_id"`
+	Disposition      string `json:"disposition"`
+	LaunchNonce      string `json:"launch_nonce"`
+	Branch           string `json:"branch"`
+	HeadSHA          string `json:"head_sha"`
+	SubmittedHeadSHA string `json:"submitted_head_sha"`
+	IntentDigest     string `json:"intent_digest"`
 }
 
 // StartFreshRunResult is returned before any caller drives the run.
@@ -234,6 +235,7 @@ type StartFreshRunResult struct {
 type GetLaunchReceiptResult struct {
 	Receipt *LaunchReceipt `json:"receipt,omitempty"`
 }
+
 // GetRunResult wraps a single run.
 type GetRunResult struct {
 	Run *RunInfo `json:"run"`

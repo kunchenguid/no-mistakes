@@ -44,10 +44,6 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce
-    ON runs (repo_id, branch, launch_nonce)
-    WHERE launch_nonce IS NOT NULL;
-
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

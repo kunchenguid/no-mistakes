@@ -114,6 +114,7 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
 	return d.InsertRunWithIntentAndLaunchNonce(repoID, branch, headSHA, baseSHA, intent, "")
 }
+
 // InsertRunWithIntentAndLaunchNonce persists an optional opaque launch
 // binding. The unique partial index is the final duplicate defense; callers
 // should still perform select-or-create under their branch lock.

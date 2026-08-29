@@ -1,8 +1,8 @@
 package daemon
 
 import (
-	"crypto/sha256"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"os"
@@ -865,6 +865,7 @@ func receiptForRun(run *db.Run, created bool) (ipc.LaunchReceipt, error) {
 		IntentDigest:     digestIntent(intent),
 	}, nil
 }
+
 // HandleRerun creates a new run for the latest recoverable head on a branch:
 // normally the gate branch, or the latest terminal run's verified unpublished
 // head while custody remains outstanding. An explicit intent overrides the
