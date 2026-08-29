@@ -3787,6 +3787,80 @@ func TestDefaultRecoverRefusalsDiscloseTheAnchorTheyWrote(t *testing.T) {
 			safety: "blocked_recover_assumptions_changed",
 		},
 		{
+			// The keep-local twin of the case above: the conflicting worktree
+			// ref sends --keep-local into the settlement, which pins the
+			// recorded head at its own stranded ref. It has to carry the gate
+			// anchor this attempt already wrote rather than start a fresh
+			// note. A held ref lock fails the swap so a refusal is reached.
+			name:    "settlement refuses after the local gate was pinned",
+			fixture: func(t *testing.T) *recoverFixture { return newRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+				lock := filepath.Join(f.gate, "refs", "heads", "feature", "recover.lock")
+				if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				f.service.afterGateStage = func() {
+					if err := os.WriteFile(lock, []byte(""), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Cleanup(func() { _ = os.Remove(lock) })
+			},
+			keepLocal: true,
+			safety:    "blocked_recover_swap_failed",
+		},
+		{
+			// Past both anchor writes and INTO the adoption, which pins the
+			// operator's pre-recovery head at a ref of its own before moving
+			// the branch. A commit landing after that pin loses the
+			// compare-and-swap, so the refusal is reached with a second,
+			// differently named anchor already on disk.
+			name:    "adoption races a concurrent commit after the pre-recovery head was anchored",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				f.service.beforeRecoverBranchMove = func() {
+					mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "work committed mid-recovery\n")
+					mustRun(t, f.local, "add", "concurrent.txt")
+					mustRun(t, f.local, "commit", "-m", "concurrent local commit")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
+		},
+		{
+			// The same adoption pin, reached on a RE-RUN: both copies of the
+			// run recovery ref already exist, so this attempt writes only the
+			// pre-recovery anchor and the shared note is empty. That is the
+			// shape where a blanket denial is not merely undisclosed but
+			// false, and only the pre-recovery anchor can contradict it.
+			name:    "adoption races a concurrent commit with the recorded head already anchored",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+				mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:"+f.anchorRef())
+				f.service.beforeRecoverBranchMove = func() {
+					mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "work committed mid-recovery\n")
+					mustRun(t, f.local, "add", "concurrent.txt")
+					mustRun(t, f.local, "commit", "-m", "concurrent local commit")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
+		},
+		{
+			// The branch-identity guard between the pre-recovery pin and the
+			// swap, whose claim is scoped to branch and worktree changes and
+			// so has to account for the worktree ref it just wrote.
+			name:    "adoption's branch identity changes after the pre-recovery head was anchored",
+			fixture: func(t *testing.T) *recoverFixture { return newRebasedRecoverFixture(t, types.RunCancelled) },
+			setup: func(t *testing.T, f *recoverFixture) {
+				mustRun(t, f.local, "branch", "other-clean-branch", f.submitted)
+				f.service.beforeRecoverBranchMove = func() {
+					mustRun(t, f.local, "checkout", "other-clean-branch")
+				}
+			},
+			safety: "blocked_recover_assumptions_changed",
+		},
+		{
 			// The claim is not scoped to the default flow: --keep-local pins
 			// the same anchors and then refuses when the gate branch it would
 			// move is gone. The behind arm reaches that refusal.
@@ -3841,44 +3915,63 @@ func (f *recoverFixture) anchorStores() []anchorStore {
 	}
 }
 
-// anchorPresence reads whether refs/no-mistakes/recover/<run> exists in each
-// store. Compared before and after an attempt, it is what separates a pin THIS
+// trackedAnchors are the recovery refs a --recover attempt can create before
+// refusing: the recorded pipeline head at the run recovery ref, and the
+// operator's pre-recovery head at the adoption's own ref. A guard that watched
+// only the first cannot see a refusal denying the second.
+func (f *recoverFixture) trackedAnchors() []string {
+	return []string{f.anchorRef(), f.localAnchorRef()}
+}
+
+// anchorPresence reads whether each tracked anchor exists in each store.
+// Compared before and after an attempt, it is what separates a pin THIS
 // attempt made - the only kind a no-change claim can contradict - from one it
 // merely found already there.
-func (f *recoverFixture) anchorPresence(t *testing.T) map[string]bool {
+func (f *recoverFixture) anchorPresence(t *testing.T) map[string]map[string]bool {
 	t.Helper()
-	present := make(map[string]bool, 2)
-	for _, store := range f.anchorStores() {
-		_, exists, err := gitpkg.ExactRefTarget(f.ctx, store.dir, f.anchorRef())
-		if err != nil {
-			t.Fatalf("read %s in %s: %v", f.anchorRef(), store.label, err)
+	present := make(map[string]map[string]bool, 2)
+	for _, ref := range f.trackedAnchors() {
+		byStore := make(map[string]bool, 2)
+		for _, store := range f.anchorStores() {
+			_, exists, err := gitpkg.ExactRefTarget(f.ctx, store.dir, ref)
+			if err != nil {
+				t.Fatalf("read %s in %s: %v", ref, store.label, err)
+			}
+			byStore[store.label] = exists
 		}
-		present[store.label] = exists
+		present[ref] = byStore
 	}
 	return present
 }
 
-// assertRefusalMatchesAnchorReality is the whole point: read whether the
+// assertRefusalMatchesAnchorReality is the whole point: read whether each
 // recovery anchor actually exists in each store, then require the refusal's
-// claim to agree with that fact in either direction - the plain denial when
-// this attempt wrote nothing, and the anchor plus every store it wrote when it
-// did. A store holding no anchor at all may never be named as holding one.
-func assertRefusalMatchesAnchorReality(t *testing.T, f *recoverFixture, before map[string]bool, state State) {
+// claim to agree with those facts in either direction - the plain denial when
+// this attempt wrote nothing, and EVERY anchor it wrote plus every store it
+// wrote them in when it did. A ref that exists in no store at all, and a store
+// holding no anchor at all, may never be named as holding one.
+func assertRefusalMatchesAnchorReality(t *testing.T, f *recoverFixture, before map[string]map[string]bool, state State) {
 	t.Helper()
 	if state.Recovered || state.Changed {
 		t.Fatalf("refusal reported a change = %#v", state)
 	}
-	anchor := f.anchorRef()
 	after := f.anchorPresence(t)
-	var written []string
-	for _, store := range f.anchorStores() {
-		if after[store.label] && !before[store.label] {
-			written = append(written, store.label)
+	written := make(map[string][]string, len(f.trackedAnchors()))
+	for _, anchor := range f.trackedAnchors() {
+		for _, store := range f.anchorStores() {
+			if after[anchor][store.label] && !before[anchor][store.label] {
+				written[anchor] = append(written[anchor], store.label)
+			}
+		}
+	}
+	for _, anchor := range f.trackedAnchors() {
+		if !anchorHeldAnywhere(f, after, anchor) && strings.Contains(state.Error, anchor) {
+			t.Fatalf("refusal named %s, which exists in no store at all: %q", anchor, state.Error)
 		}
 	}
 	for _, store := range f.anchorStores() {
-		if !after[store.label] && strings.Contains(state.Error, store.label) {
-			t.Fatalf("refusal named %s, which holds no %s at all: %q", store.label, anchor, state.Error)
+		if !storeHoldsAnyAnchor(f, after, store.label) && strings.Contains(state.Error, store.label) {
+			t.Fatalf("refusal named %s, which holds no recovery anchor at all: %q", store.label, state.Error)
 		}
 	}
 	if len(written) == 0 {
@@ -3889,14 +3982,48 @@ func assertRefusalMatchesAnchorReality(t *testing.T, f *recoverFixture, before m
 		return
 	}
 	if strings.Contains(state.Error, "no files or refs were changed") {
-		t.Fatalf("refusal denied changing refs while this attempt wrote %s in %s: %q", anchor, strings.Join(written, " and "), state.Error)
+		t.Fatalf("refusal denied changing refs while this attempt wrote %s: %q", describeAnchorWrites(f, written), state.Error)
 	}
-	if !strings.Contains(state.Error, anchor) {
-		t.Fatalf("refusal did not name the anchor it wrote (%s in %s): %q", anchor, strings.Join(written, " and "), state.Error)
-	}
-	for _, store := range written {
-		if !strings.Contains(state.Error, store) {
-			t.Fatalf("refusal did not name %s, where this attempt anchored %s: %q", store, anchor, state.Error)
+	for _, anchor := range f.trackedAnchors() {
+		stores := written[anchor]
+		if len(stores) == 0 {
+			continue
+		}
+		if !strings.Contains(state.Error, anchor) {
+			t.Fatalf("refusal did not name the anchor it wrote (%s in %s): %q", anchor, strings.Join(stores, " and "), state.Error)
+		}
+		for _, store := range stores {
+			if !strings.Contains(state.Error, store) {
+				t.Fatalf("refusal did not name %s, where this attempt anchored %s: %q", store, anchor, state.Error)
+			}
 		}
 	}
+}
+
+func anchorHeldAnywhere(f *recoverFixture, present map[string]map[string]bool, anchor string) bool {
+	for _, store := range f.anchorStores() {
+		if present[anchor][store.label] {
+			return true
+		}
+	}
+	return false
+}
+
+func storeHoldsAnyAnchor(f *recoverFixture, present map[string]map[string]bool, store string) bool {
+	for _, anchor := range f.trackedAnchors() {
+		if present[anchor][store] {
+			return true
+		}
+	}
+	return false
+}
+
+func describeAnchorWrites(f *recoverFixture, written map[string][]string) string {
+	var wrote []string
+	for _, anchor := range f.trackedAnchors() {
+		if stores := written[anchor]; len(stores) > 0 {
+			wrote = append(wrote, anchor+" in "+strings.Join(stores, " and "))
+		}
+	}
+	return strings.Join(wrote, ", ")
 }

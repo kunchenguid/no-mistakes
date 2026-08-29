@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -651,7 +652,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// would deny a ref this same attempt created. Both the keep-local
 	// delegations and the default path's own refusals carry it, so the claim is
 	// true of the whole attempt rather than of the store we happened to look in.
-	anchoredNote := recoveryAnchorNote{ref: anchorRef}
+	// The functions it is handed to extend their own copy with the anchors they
+	// write, so a refusal there reports its own ref as well as this one.
+	var anchoredNote recoveryAnchorNote
 
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
@@ -666,7 +669,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			// the preserved head is already reachable from the local branch, so
 			// keeping that head can lose nothing at all.
 			if keepLocal {
-				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 			}
 			return blocked
 		}
@@ -674,7 +677,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 			if err != nil || !compatible {
 				if keepLocal {
-					return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+					return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 				}
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; %s", keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 			}
@@ -695,13 +698,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
 		if err != nil {
 			if keepLocal {
-				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved))
 		}
 		if gateAnchored != preserved {
 			if keepLocal {
-				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
 		}
@@ -710,7 +713,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
 			if keepLocal {
-				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
@@ -722,7 +725,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		// probe above is what separates a pin THIS attempt made from one it
 		// merely found.
 		if !gateAnchorExists {
-			anchoredNote.record(localGateStore)
+			anchoredNote.record(recordedHeadSubject, anchorRef, localGateStore)
 		}
 	}
 
@@ -736,11 +739,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
 			if keepLocal {
-				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved)
+				return s.recoverSettleInconsistent(ctx, run, state, gateDir, preserved, anchoredNote)
 			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; %s", keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())))
 		}
-		anchoredNote.record(invokingWorktreeStore)
+		anchoredNote.record(recordedHeadSubject, anchorRef, invokingWorktreeStore)
 	}
 
 	switch {
@@ -822,13 +825,16 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 // default, and this function is the terminal settlement, so a refusal with no
 // next action would be the dead end the whole issue exists to remove - even for
 // a shape selfInconsistentCustodyRecord failed to disqualify.
-func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, state State, gateDir, preserved string) State {
+func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, state State, gateDir, preserved string, anchoredNote recoveryAnchorNote) State {
 	strandedRef := custody.RecoveryStrandedRef(run.ID)
 	gateDir = strings.TrimSpace(gateDir)
 	// The stranded anchor is the ONLY ref this function can write before the
 	// gate move, so a refusal reports precisely where it now exists rather
-	// than claiming nothing changed.
-	pinned := recoveryAnchorNote{ref: strandedRef}
+	// than claiming nothing changed. It extends the CALLER's note instead of
+	// starting over, because Recover can already have pinned the recorded head
+	// at the run recovery ref before delegating here, and nothing retires that
+	// ref either.
+	pinned := anchoredNote
 	for _, store := range []struct{ name, dir string }{
 		{invokingWorktreeStore, s.workDir()},
 		{localGateStore, gateDir},
@@ -856,7 +862,7 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 			blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return blocked
 		}
-		pinned.stores = append(pinned.stores, store.name)
+		pinned.record(recordedHeadSubject, strandedRef, store.name)
 	}
 	if gateDir == "" {
 		return s.finishRecover(ctx, run, false, true)
@@ -882,54 +888,93 @@ func (s *Service) recoverSettleInconsistent(ctx context.Context, run *db.Run, st
 	return s.recoverKeepLocal(ctx, run, state, gateHead, pinned)
 }
 
-// The two object stores a recovery can pin a surviving recorded head in. They
-// are named rather than spelled out at each site because a refusal's no-change
-// claim is scoped by WHICH of them holds the anchor, so a typo in one of them
-// would silently widen or narrow that claim.
+// The two object stores a recovery can pin a surviving head in. They are named
+// rather than spelled out at each site because a refusal's no-change claim is
+// scoped by WHICH of them holds the anchor, so a typo in one of them would
+// silently widen or narrow that claim.
 const (
 	invokingWorktreeStore = "the invoking worktree"
 	localGateStore        = "the local gate"
 )
 
-// recoveryAnchorNote records WHERE an earlier step of this recovery anchored a
-// surviving recorded head, not merely the sentence describing it. A refusal
-// needs the store and not only the prose: a claim scoped to LOCAL files and
-// refs is accurate beside a gate-side pin and self-contradictory beside one in
-// the invoking worktree, and a bare string cannot tell those apart.
-type recoveryAnchorNote struct {
-	ref    string
-	stores []string
+// The heads a recovery can anchor. A refusal has to name the head the ref on
+// ITS OWN path holds: the recorded pipeline head and the operator's
+// pre-recovery head live at different refs, so a note naming one of them says
+// nothing at all about the other.
+const (
+	recordedHeadSubject    = "the recorded head"
+	preRecoveryHeadSubject = "the pre-recovery head"
+)
+
+// recoveryAnchorPin is one anchor this attempt wrote: which head, at which
+// ref, and in which stores. The stores are plural because the same head is
+// pinned at the same ref in the local gate and in the invoking worktree alike.
+type recoveryAnchorPin struct {
+	subject string
+	ref     string
+	stores  []string
 }
 
-func (n recoveryAnchorNote) clause() string { return anchoredElsewhere(n.stores, n.ref) }
+// recoveryAnchorNote records WHERE an earlier step of this recovery anchored a
+// surviving head, not merely the sentence describing it. A refusal needs the
+// store and not only the prose: a claim scoped to LOCAL files and refs is
+// accurate beside a gate-side pin and self-contradictory beside one in the
+// invoking worktree, and a bare string cannot tell those apart.
+//
+// It holds a LIST of pins because one attempt can anchor more than one head at
+// more than one ref - the recorded head at the run recovery ref, the same head
+// at the stranded ref, the pre-recovery local head at its own ref - and a
+// refusal that discloses one of them while denying the others is the same
+// false claim, just narrower.
+type recoveryAnchorNote struct {
+	pins []recoveryAnchorPin
+}
 
-// record names a store this attempt pinned the recorded head in. A store is
-// recorded once: a re-entered write on the same store is still one anchor.
-func (n *recoveryAnchorNote) record(store string) {
-	for _, existing := range n.stores {
-		if existing == store {
+func (n recoveryAnchorNote) clause() string {
+	var clause strings.Builder
+	for _, pin := range n.pins {
+		clause.WriteString(anchoredElsewhere(pin.subject, pin.stores, pin.ref))
+	}
+	return clause.String()
+}
+
+// record names a store this attempt anchored subject at ref in. One (subject,
+// ref) pair is a single anchor however many stores hold it, and a re-entered
+// write on the same store is still one pin. Every extension allocates instead
+// of appending in place, because the note is passed BY VALUE into the
+// functions that extend it and must never write through the caller's copy.
+func (n *recoveryAnchorNote) record(subject, ref, store string) {
+	for i, pin := range n.pins {
+		if pin.subject != subject || pin.ref != ref {
+			continue
+		}
+		if slices.Contains(pin.stores, store) {
 			return
 		}
+		pins := slices.Clone(n.pins)
+		pins[i].stores = append(slices.Clone(pin.stores), store)
+		n.pins = pins
+		return
 	}
-	n.stores = append(n.stores, store)
+	n.pins = append(slices.Clone(n.pins), recoveryAnchorPin{subject: subject, ref: ref, stores: []string{store}})
 }
 
 func (n recoveryAnchorNote) namesInvokingWorktree() bool {
-	for _, store := range n.stores {
-		if store == invokingWorktreeStore {
+	for _, pin := range n.pins {
+		if slices.Contains(pin.stores, invokingWorktreeStore) {
 			return true
 		}
 	}
 	return false
 }
 
-// anchoredElsewhere keeps a refusal honest about a recorded head its own
-// attempt has already anchored before failing.
-func anchoredElsewhere(pinned []string, ref string) string {
+// anchoredElsewhere keeps a refusal honest about a head its own attempt has
+// already anchored before failing.
+func anchoredElsewhere(subject string, pinned []string, ref string) string {
 	if len(pinned) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("; the recorded head is now anchored at %s in %s", ref, strings.Join(pinned, " and "))
+	return fmt.Sprintf("; %s is now anchored at %s in %s", subject, ref, strings.Join(pinned, " and "))
 }
 
 // keepLocalNoChangeClause closes a refusal with a no-change claim that stays
@@ -1014,14 +1059,14 @@ func recoverBlocked(state State, safety, message string) State {
 // after possibly anchoring a surviving recorded head of their own - Recover
 // pins the preserved head at the run recovery ref, and
 // recoverSettleInconsistent pins every surviving copy at the stranded ref.
-// anchoredNote carries that fact in - the ref AND the stores holding it - so
-// the blanket claim is made only by a delegation that wrote nothing and every
-// other refusal names where the anchor now is instead of reporting that
-// nothing was written. The refusals after the swap keep their own narrower
-// local-scoped claim and append the note, because by then this function may
-// have written the gate anchor itself; that narrowing is withdrawn when the
-// note names the invoking worktree, since the claim would otherwise deny a
-// local ref the same sentence discloses.
+// anchoredNote carries those facts in - each head, the ref holding it, and the
+// stores it sits in - so the blanket claim is made only by a delegation that
+// wrote nothing and every other refusal names where the anchors now are
+// instead of reporting that nothing was written. The refusals after the swap
+// keep their own narrower local-scoped claim and append the note, because by
+// then this function may have written the gate anchor itself; that narrowing
+// is withdrawn when the note names the invoking worktree, since the claim
+// would otherwise deny a local ref the same sentence discloses.
 //
 // The anchor CONFLICT check is deliberately still read-only and still runs
 // first: it is the cheapest refusal and it must not be reached only after a
@@ -1291,6 +1336,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		if err := custody.PreserveRecoveryAnchor(ctx, wd, localAnchor, head); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause()))
 		}
+		anchoredNote.record(preRecoveryHeadSubject, localAnchor, invokingWorktreeStore)
 	}
 	if anchored, err := git.Run(ctx, wd, "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; "+keepLocalNoChangeClause("no files or worktree refs were changed", anchoredNote.clause()))
@@ -1378,7 +1424,7 @@ func (s *Service) anchorReachablePreserved(ctx context.Context, state State, run
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())), false
 	}
 	if !anchorExisted || probeErr != nil {
-		anchoredNote.record(invokingWorktreeStore)
+		anchoredNote.record(recordedHeadSubject, anchorRef, invokingWorktreeStore)
 	}
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; "+keepLocalNoChangeClause("no files or refs were changed", anchoredNote.clause())), false
