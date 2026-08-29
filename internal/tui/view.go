@@ -117,7 +117,7 @@ func (m Model) View() string {
 		extraSections = append(extraSections, renderRecoverConfirmation(*m.branchSync, rightWidth))
 	}
 	if m.settleConfirm && m.branchSync != nil {
-		extraSections = append(extraSections, renderSettleConfirmation(*m.branchSync, rightWidth))
+		extraSections = append(extraSections, RenderSettleConfirmation(*m.branchSync, rightWidth))
 	}
 	if m.completeConfirm && m.branchSync != nil {
 		extraSections = append(extraSections, renderCompleteConfirmation(*m.branchSync, rightWidth))

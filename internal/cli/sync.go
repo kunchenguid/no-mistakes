@@ -275,7 +275,11 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 		fmt.Fprintf(w, "  target:   %s %s (%s)\n", state.Target.Remote, state.Target.Ref, state.Target.Kind)
 	}
 	if state.Error != "" {
-		fmt.Fprintf(w, "  blocked:  %s\n", state.Error)
+		label := "blocked:"
+		if state.Recovered {
+			label = "note:"
+		}
+		fmt.Fprintf(w, "  %-9s %s\n", label, state.Error)
 	}
 }
 

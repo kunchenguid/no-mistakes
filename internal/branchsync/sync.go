@@ -1008,6 +1008,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		s.beforeGateReset()
 	}
 	gateHeadAnchored := false
+	stagingLeft := ""
 	if gateHead != state.Local.Head {
 		gateAnchor := ""
 		writeGateAnchor := false
@@ -1073,7 +1074,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			}
 		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
-		stagingLeft := s.releaseStagingRef(ctx, stagingRef)
+		stagingLeft = s.releaseStagingRef(ctx, stagingRef)
 		if casErr != nil {
 			// A failed update-ref is not evidence that the gate moved: a lock
 			// held by another process, a permission problem, or an I/O error
@@ -1110,7 +1111,27 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			return recoverBlocked(state, "blocked_recover_gate_race", "the gate branch changed while custody was being returned, so the compare-and-swap refused instead of clobbering it; no displaced-gate-head anchor was written, so re-run the recovery to return custody against the new gate head; "+keepLocalPostSwapNoChangeClause(anchoredNote)+stagingLeft)
 		}
 	}
-	return s.finishRecover(ctx, run, false, true)
+	// A cleanup failure is not a reason to refuse a custody return that
+	// succeeded, but it is a ref this attempt left in the gate. Every refusal
+	// around it discloses that; dropping it on the one path that reaches the
+	// end would leave the leftover reported nowhere at all.
+	return withCleanupNote(s.finishRecover(ctx, run, false, true), stagingLeft)
+}
+
+// withCleanupNote attaches a leftover-ref disclosure to a state that is not
+// refusing, without clobbering a message the state already carries - the
+// custody stamp can have failed on the very same call.
+func withCleanupNote(state State, note string) State {
+	note = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(note), ";"))
+	if note == "" {
+		return state
+	}
+	if state.Error == "" {
+		state.Error = note
+		return state
+	}
+	state.Error += "; " + note
+	return state
 }
 
 // releaseStagingRef removes the temporary ref the gate-side fetch stages the
@@ -1852,7 +1873,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 			// evidence intact falls back to manual reconciliation, because
 			// there the refusal is protecting something real.
 			if s.selfInconsistentCustodyRecord(ctx, state, run) {
-				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head cannot be verified in the invoking worktree or local gate; return custody at the current local head, which also points the gate branch at it"
+				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head cannot be verified in the invoking worktree or local gate; return custody at the current local head, which also points the gate branch at it where that branch still names a different head"
 				state.NextAction = &NextAction{Code: "return_custody_keep_local", Command: "no-mistakes axi sync --recover --keep-local"}
 				return
 			}

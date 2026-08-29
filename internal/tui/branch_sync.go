@@ -171,19 +171,25 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 
-// renderSettleConfirmation is deliberately NOT renderRecoverConfirmation with
+// RenderSettleConfirmation is deliberately NOT renderRecoverConfirmation with
 // different words. Recovery takes the preserved pipeline head; settlement
 // keeps the local head and moves the gate to it, abandoning a recorded head
 // that can no longer be verified. The CLI makes that an explicit --keep-local
 // choice, so the TUI has to state the same consequence before asking for it.
-func renderSettleConfirmation(state branchsync.State, width int) string {
+//
+// It is the one exported render here because the cross-surface invariant test
+// that guards that consequence lives in internal/cli - the only package able to
+// see the cobra help and the agent guidance too - and must execute this box
+// rather than restate its wording.
+func RenderSettleConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "The run ended %s and its recorded pipeline head can no longer be verified,\n", state.Pipeline.Status)
 	fmt.Fprintf(&b, "so there is nothing to recover. Settling returns custody at the head you\n")
-	fmt.Fprintf(&b, "already have and points the gate branch at it.\n\n")
+	fmt.Fprintf(&b, "already have, and points the gate branch at it where that branch still\n")
+	fmt.Fprintf(&b, "names a different head.\n\n")
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Kept HEAD:      %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Recorded HEAD:  %s (unverifiable)\n\n", state.Pipeline.CurrentHead)
@@ -191,7 +197,7 @@ func renderSettleConfirmation(state branchsync.State, width int) string {
 	return renderBoxWithFooter("Confirm custody settlement at local head", b.String(), width, "u/enter settle  ·  esc cancel")
 }
 
-// renderCompleteConfirmation is deliberately NOT renderSettleConfirmation with
+// renderCompleteConfirmation is deliberately NOT RenderSettleConfirmation with
 // different words. The settlement box tells the operator their recorded head
 // can no longer be verified and asks them to abandon it; this state makes no
 // such claim - the recovery already ran and succeeded on the Git side, and

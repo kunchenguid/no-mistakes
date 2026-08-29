@@ -3628,3 +3628,48 @@ func TestUnreadableGateSwapFailureDoesNotDisclaimARaceItCannotRuleOut(t *testing
 		t.Fatalf("swap failure named no exit = %#v", state)
 	}
 }
+
+// TestSuccessfulKeepLocalSurfacesAStagingRefItCouldNotRemove closes the one
+// path where releaseStagingRef's guarantee was dropped. Every refusal around
+// the compare-and-swap discloses a staging ref it could not remove, but the
+// SUCCESS path computed that clause and threw it away, so a failed cleanup left
+// refs/no-mistakes/custody-return/<run> in the gate reported nowhere at all -
+// one dangling ref per affected run, invisibly.
+func TestSuccessfulKeepLocalSurfacesAStagingRefItCouldNotRemove(t *testing.T) {
+	t.Parallel()
+
+	f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
+	stagingRef := "refs/no-mistakes/custody-return/" + f.run.ID
+	// Hold the staging ref's own lock - and only that one - so its deletion
+	// fails while the compare-and-swap onto the kept head still succeeds.
+	lock := filepath.Join(f.gate, filepath.FromSlash(stagingRef)+".lock")
+	f.service.afterGateStage = func() {
+		if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.WriteFile(lock, []byte(""), 0o644); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { _ = os.Remove(lock) })
+
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered {
+		t.Fatalf("a failed staging-ref cleanup must not refuse a custody return that succeeded = %#v", state)
+	}
+	// The fixture must have produced the state under test: the swap really
+	// happened and the staging ref really survived.
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover^{commit}"); got != f.submitted {
+		t.Fatalf("gate branch = %s, want the kept local head %s", got, f.submitted)
+	}
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, stagingRef); err != nil || !exists {
+		t.Fatalf("fixture invariant broken: the staging ref must have survived: exists=%v err=%v", exists, err)
+	}
+	if !strings.Contains(state.Error, stagingRef) || !strings.Contains(state.Error, "remains there") {
+		t.Fatalf("successful custody return did not report the staging ref it left behind: %q", state.Error)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("custody was not stamped")
+	}
+}
