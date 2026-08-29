@@ -271,6 +271,30 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		return ciMonitoringTimeoutOutcome(), nil
 	}
+	waitForPoll := func() error {
+		interval := s.pollIntervalOverride
+		if interval == 0 {
+			interval = pollInterval(now().Sub(started))
+		}
+		if !unlimited {
+			remaining := timeout - now().Sub(timeoutAnchor)
+			if remaining < interval {
+				interval = remaining
+			}
+		}
+		waitForNextPoll := s.waitForNextPoll
+		if waitForNextPoll == nil {
+			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
+				select {
+				case <-time.After(interval):
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		return waitForNextPoll(ctx, interval)
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -305,6 +329,28 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
+		}
+
+		pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
+		if pending {
+			if pendingErr != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
+				if err := waitForPoll(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if pendingRepair.Revalidate {
+				return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			}
+			if err := waitForPoll(); err != nil {
+				return nil, err
+			}
+			continue
+		} else if pendingErr != nil {
+			return nil, pendingErr
 		}
 
 		// Check PR state (merged/closed -> exit)
@@ -523,20 +569,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						issueDesc = "merge conflict"
 					}
 				}
-				pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
-				if pending {
-					if pendingErr != nil {
-						sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
-					} else {
-						s.lastFixedChecks = fixKey
-						s.lastFixedCompletedAt = fixCompletedAt
-						if pendingRepair.Revalidate {
-							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
-						}
-					}
-				} else if pendingErr != nil {
-					return nil, pendingErr
-				} else if sctx.Fixing && !manualFixAttempted {
+				if sctx.Fixing && !manualFixAttempted {
 					manualFixAttempted = true
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
@@ -546,6 +579,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
+						if s.pendingPublishHead != "" {
+							s.lastFixedChecks = fixKey
+							s.lastFixedCompletedAt = fixCompletedAt
+						}
 					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
@@ -585,6 +622,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					}
 					if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
+						if s.pendingPublishHead != "" {
+							s.lastFixedChecks = fixKey
+							s.lastFixedCompletedAt = fixCompletedAt
+						}
 					} else if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
 						s.lastFixedCompletedAt = fixCompletedAt
@@ -638,29 +679,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
-		// Sleep for poll interval
-		interval := s.pollIntervalOverride
-		if interval == 0 {
-			interval = pollInterval(now().Sub(started))
-		}
-		if !unlimited {
-			remaining := timeout - now().Sub(timeoutAnchor)
-			if remaining < interval {
-				interval = remaining
-			}
-		}
-		waitForNextPoll := s.waitForNextPoll
-		if waitForNextPoll == nil {
-			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
-				select {
-				case <-time.After(interval):
-					return nil
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-		}
-		if err := waitForNextPoll(ctx, interval); err != nil {
+		if err := waitForPoll(); err != nil {
 			return nil, err
 		}
 	}

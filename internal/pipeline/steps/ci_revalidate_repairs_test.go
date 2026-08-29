@@ -403,6 +403,68 @@ func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
 	}
 }
 
+func TestCIStep_RetriesUnsettledPublicationBeforeNewHeadCheckState(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		checkState string
+		wantLog    string
+	}{
+		{name: "checks pending", checkState: `[{"name":"test","state":"PENDING","bucket":"pending"}]`, wantLog: ciChecksRunningMsg},
+		{name: "checks passing", checkState: `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, wantLog: ciChecksPassedMsg},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			agentCalls := 0
+			f := newCIRepairFixture(t, false, func(workDir string) {
+				agentCalls++
+				writeCIFix(workDir)
+			})
+			f.sctx.Env = fakeCIGHSequence(t, "OPEN", []string{
+				`[{"name":"test","state":"FAILURE","bucket":"fail"}]`,
+				tc.checkState,
+			})
+			brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
+			if err := os.MkdirAll(brokenGate, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.sctx.GateDir = brokenGate
+
+			f.sctx.Ctx = context.Background()
+			polls := 0
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+				polls++
+				if polls == 1 {
+					f.sctx.GateDir = f.gateDir
+				}
+				if polls < 3 {
+					return nil
+				}
+				return context.Canceled
+			}}
+			outcome, err := step.Execute(f.sctx)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("monitor did not continue after settling publication: outcome=%#v err=%v\nlog:\n%s", outcome, err, f.log())
+			}
+			if agentCalls != 1 {
+				t.Fatalf("fix agent calls = %d, want 1", agentCalls)
+			}
+			repairCommit := f.localHead(t)
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
+				t.Fatalf("settled publication not recorded before %s checks: head=%s pushed=%v", tc.name, run.HeadSHA, run.LastPushedSHA)
+			}
+			if !strings.Contains(f.log(), tc.wantLog) {
+				t.Fatalf("new head check state was not monitored after settlement; want %q in log:\n%s", tc.wantLog, f.log())
+			}
+		})
+	}
+}
+
 // A merge-conflict repair rewrites history, so its head is never a descendant
 // of the reviewed head and its continuity can never be proven. The uniform rule
 // therefore sends every conflict repair down the revalidating path - it is not
