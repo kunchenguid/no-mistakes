@@ -375,8 +375,9 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // this rule was authored by the CI repair agent itself. Who wrote the repair
 // says nothing about what it did to the reviewed commits.
 //
-// Either way the run's recorded head advances; the two differ only in whether
-// the repair is published now or held until Review has approved it.
+// Once recording or publication succeeds, the run's recorded head advances;
+// the two paths differ in whether the repair is published now or held until
+// Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if ciRevalidatesRepairs(sctx) {
 		if err := s.setPendingPublication(sctx, "", 0); err != nil {
@@ -456,9 +457,11 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // and publishRunHead enforces the same descendant-only rule. The monitor stays
 // on this run to watch the checks re-run against the published head.
 //
-// publishRunHead advances the recorded head only after the push is verified, so
-// a failed publication leaves sctx.Run.HeadSHA on the pre-repair commit and the
-// next poll retries rather than believing the repair shipped.
+// publishRunHead advances the recorded head only after the remote and gate
+// mirror settle and the database update succeeds. If the remote is verified at
+// the repair but local settlement fails, publishRepair durably marks that exact
+// head for bounded retry. Failures before remote verification are returned
+// without creating pending-publication evidence.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	progress, publishErr := publishRunHead(sctx, headSHA, headSHA)
 	if publishErr != nil {

@@ -689,7 +689,8 @@ func TestCIStep_ConflictRepairAlwaysRevalidates(t *testing.T) {
 			if !strings.Contains(f.log(), "cannot prove the repaired head continues the reviewed head") {
 				t.Errorf("the log does not say why the repair revalidated:\n%s", f.log())
 			}
-			_ = tc.keepsReviewedWork
+			t.Logf("observable conflict delivery: reviewed_head=%s repaired_head=%s remote_head=%s reviewed_work_retained=%t restart_from=review approval_revoked=true\nCI log:\n%s",
+				f.headSHA, repairedHead, f.remoteHead(t), tc.keepsReviewedWork, f.log())
 		})
 	}
 }
@@ -867,6 +868,8 @@ func TestCIStep_UnsettledPublicationRetryIsBounded(t *testing.T) {
 	if step.pendingPublishAttempts > maxPendingPublishRetries {
 		t.Errorf("retry attempts = %d, want at most %d", step.pendingPublishAttempts, maxPendingPublishRetries)
 	}
+	t.Logf("observable unsettled publication: published_head=%s remote_head=%s fix_agent_calls=%d settlement_attempts=%d parked=%t\nfinding: %s",
+		publishedHead, f.remoteHead(t), agentCalls, step.pendingPublishAttempts, outcome.NeedsApproval, outcome.Findings)
 }
 
 // Durable state is written before the live head advances, so a failed write
