@@ -35,9 +35,8 @@ func newSyncCmd() *cobra.Command {
 			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
 			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
 			"instead and never touches the worktree; where the gate branch still names a\n" +
-			"different head it is compare-and-swapped onto the kept head, and where it does\n" +
-			"not, custody returns without moving any branch ref. That is also the settlement\n" +
-			"for a record whose preserved head can no longer be verified.",
+			"different head it is compare-and-swapped onto the kept head. That is also the\n" +
+			"settlement for a record whose preserved head can no longer be verified.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -78,7 +77,10 @@ func newAxiSyncCmd() *cobra.Command {
 			"next_action.code: recover_custody; --keep-local keeps the current local head\n" +
 			"and, where the gate branch still names a different head, moves the gate branch\n" +
 			"to it, which is also the settlement offered by\n" +
-			"next_action.code: return_custody_keep_local.",
+			"next_action.code: return_custody_keep_local.\n" +
+			"next_action.code: complete_custody_return means an earlier recovery already\n" +
+			"applied its Git changes and only the custody record is missing: re-run the\n" +
+			"exact command it names to complete the record.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

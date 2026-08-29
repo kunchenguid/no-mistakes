@@ -1083,9 +1083,9 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			// rather than as a concurrent push that may not have happened.
 			live, liveErr := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
 			if liveErr != nil || live == gateHead {
-				detail := "the gate branch could not be re-read afterwards"
+				detail := "the gate branch could not be re-read afterwards, so whether anything moved it is unknown"
 				if liveErr == nil {
-					detail = "the gate branch is still at " + gateHead + ", so nothing had moved it"
+					detail = "the gate branch is still at " + gateHead + ", so nothing had moved it and this is not a concurrent gate push"
 				}
 				// This site sits AFTER the anchor write, so it carries the
 				// same obligation as the lost-swap refusals below: when this
@@ -1095,7 +1095,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				if gateHeadAnchored {
 					wrote = fmt.Sprintf("; the run recovery anchor %s names the gate head this attempt observed and is not retired here", custody.RecoveryGateRef(run.ID))
 				}
-				return recoverBlocked(state, "blocked_recover_swap_failed", fmt.Sprintf("the compare-and-swap onto the kept local head failed and %s, so this is not a concurrent gate push; inspect the local gate %s before returning custody%s; %s%s", detail, s.GateDir, wrote, keepLocalPostSwapNoChangeClause(anchoredNote), stagingLeft))
+				return recoverBlocked(state, "blocked_recover_swap_failed", fmt.Sprintf("the compare-and-swap onto the kept local head failed and %s; inspect the local gate %s before returning custody%s; %s%s", detail, s.GateDir, wrote, keepLocalPostSwapNoChangeClause(anchoredNote), stagingLeft))
 			}
 			// The displaced-gate-head anchor is written only above, when the
 			// gate had already moved off the recorded head. Without it a retry

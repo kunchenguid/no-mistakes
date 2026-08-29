@@ -11,6 +11,13 @@ var unconditionalGateMoveClaims = []string{
 	"anchored and the gate branch compare-and-swaps onto the kept head",
 	"and points the gate branch at the kept head",
 	"the preserved commits stay anchored and the gate follows the kept head",
+	// The converse overstatement, and the one that survived a per-surface
+	// deletion: where the gate branch does NOT already name a different head,
+	// custody does not simply return. A record whose local gate branch is
+	// deleted or unreadable refuses with blocked_recover_gate_unavailable on
+	// the ordinary keep-local path, so no surface may promise a custody return
+	// there.
+	"custody returns without moving any branch ref",
 }
 
 // TestKeepLocalHelpSurfacesStayConditional pins the four operator-facing

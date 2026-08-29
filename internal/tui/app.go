@@ -85,16 +85,17 @@ type Model struct {
 
 	// Guarded local-branch synchronization. Cached state is rendered passively;
 	// only the explicit u flow calls Refresh or Apply.
-	branchSync     *branchsync.State
-	syncService    *branchsync.Service
-	syncRefresh    func() branchsync.State
-	syncApply      func() branchsync.State
-	syncRecover    func() branchsync.State
-	syncSettle     func() branchsync.State
-	syncConfirm    bool
-	recoverConfirm bool
-	settleConfirm  bool
-	syncRefreshing bool
+	branchSync      *branchsync.State
+	syncService     *branchsync.Service
+	syncRefresh     func() branchsync.State
+	syncApply       func() branchsync.State
+	syncRecover     func() branchsync.State
+	syncSettle      func() branchsync.State
+	syncConfirm     bool
+	recoverConfirm  bool
+	settleConfirm   bool
+	completeConfirm bool
+	syncRefreshing  bool
 }
 
 // NewModel creates a TUI model for the given run.
@@ -385,6 +386,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncConfirm = false
 		m.recoverConfirm = false
 		m.settleConfirm = false
+		m.completeConfirm = false
 		m.branchSync = &msg.state
 		if msg.state.Error != "" {
 			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)

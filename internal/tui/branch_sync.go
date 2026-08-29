@@ -26,6 +26,9 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			} else if settleableBranchSync(state) {
 				message = "Run ended terminally and its recorded pipeline head can no longer be verified, so there is nothing to recover. Settle custody at your current head to take the branch back."
 				footer = "u settle custody at local head"
+			} else if _, ok := custodyReturnCompletion(state); ok {
+				message = "An earlier custody return applied its Git changes but could not record the custody return. Re-run the same recovery to complete the record."
+				footer = "u complete custody return"
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
@@ -126,6 +129,33 @@ func settleableBranchSync(state *branchsync.State) bool {
 		state.NextAction != nil && state.NextAction.Code == "return_custody_keep_local"
 }
 
+// custodyReturnCompletion reports the recovery a complete_custody_return state
+// must RE-RUN, and whether this state is one at all. That code is emitted when
+// a recovery's Git side already applied and only the custody record is
+// missing, so the TUI must offer the same command the service advertised -
+// keeping the local head or taking the preserved one - and never the other.
+//
+// It is read off the advertised command rather than from a safety code for the
+// same reason settleableBranchSync keys on the next action: the state machine
+// alone knows which recovery ran. An unrecognized command yields no
+// affordance, so a future command shape fails closed to no key instead of
+// silently running the wrong recovery.
+func custodyReturnCompletion(state *branchsync.State) (keepLocal bool, ok bool) {
+	if state == nil || state.State != branchsync.StatePipelineOwned || state.NextAction == nil {
+		return false, false
+	}
+	if state.NextAction.Code != "complete_custody_return" {
+		return false, false
+	}
+	switch strings.TrimSpace(state.NextAction.Command) {
+	case "no-mistakes axi sync --recover --keep-local":
+		return true, true
+	case "no-mistakes axi sync --recover":
+		return false, true
+	}
+	return false, false
+}
+
 func renderRecoverConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
@@ -159,6 +189,30 @@ func renderSettleConfirmation(state branchsync.State, width int) string {
 	fmt.Fprintf(&b, "Recorded HEAD:  %s (unverifiable)\n\n", state.Pipeline.CurrentHead)
 	b.WriteString("Your worktree is never touched. Any still-reachable copy of the recorded head is anchored first, and the settlement refuses rather than proceeding if one exists and cannot be anchored. The gate moves only by compare-and-swap, so a concurrent gate push wins. This is `no-mistakes sync --recover --keep-local`.")
 	return renderBoxWithFooter("Confirm custody settlement at local head", b.String(), width, "u/enter settle  ·  esc cancel")
+}
+
+// renderCompleteConfirmation is deliberately NOT renderSettleConfirmation with
+// different words. The settlement box tells the operator their recorded head
+// can no longer be verified and asks them to abandon it; this state makes no
+// such claim - the recovery already ran and succeeded on the Git side, and
+// only its bookkeeping is missing. Saying otherwise here would be the exact
+// false claim complete_custody_return was given its own code to avoid.
+func renderCompleteConfirmation(state branchsync.State, width int) string {
+	if width < 40 {
+		width = 80
+	}
+	command := ""
+	if state.NextAction != nil {
+		command = strings.TrimSpace(state.NextAction.Command)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "An earlier custody return applied its Git changes but could not record the\n")
+	fmt.Fprintf(&b, "custody return, so the branch still reads as pipeline-owned. Re-running the\n")
+	fmt.Fprintf(&b, "same recovery completes the record.\n\n")
+	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
+	fmt.Fprintf(&b, "Local HEAD:     %s\n\n", state.Local.Head)
+	b.WriteString("Every Git step it repeats is idempotent once applied, so this finishes the record rather than moving anything again. This is `" + command + "`.")
+	return renderBoxWithFooter("Confirm custody-return completion", b.String(), width, "u/enter complete  \u00b7  esc cancel")
 }
 
 func renderSyncConfirmation(state branchsync.State, width int) string {

@@ -56,6 +56,13 @@ var canonicalBranchSyncPhrases = []string{
 	// recovery that always refuses.
 	"return_custody_keep_local",
 	"no-mistakes axi sync --recover --keep-local",
+	// The retry that completes a custody return whose Git side already applied
+	// and whose record is missing. It needs the same pin as its siblings: the
+	// guidance enumerates permissions with exclusive "only when" clauses, so a
+	// surface that names the code without authorizing its command forbids the
+	// very command the same response prescribes.
+	"complete_custody_return",
+	"only the custody record is missing",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"

@@ -3582,3 +3582,49 @@ func TestInspectDoesNotAdvertiseSettlementForResolvingSymbolicWorktreeAnchor(t *
 		t.Fatalf("symbolic evidence was rewritten = %s", got)
 	}
 }
+
+// TestUnreadableGateSwapFailureDoesNotDisclaimARaceItCannotRuleOut is the
+// review regression for a refusal asserting a negative it has not proven. When
+// `update-ref` fails and the gate branch cannot be re-read afterwards, the code
+// knows the swap failed and nothing else - an unreadable head is not evidence
+// that nothing moved, and a concurrent DELETE of the gate branch is itself a
+// concurrent gate change. Telling the operator "this is not a concurrent gate
+// push" there sends them hunting for held locks and I/O errors while a
+// concurrent gate mutation is exactly what happened.
+func TestUnreadableGateSwapFailureDoesNotDisclaimARaceItCannotRuleOut(t *testing.T) {
+	t.Parallel()
+
+	f, _, _ := wedgedCustodyFixture(t, types.RunFailed)
+	// Delete the gate branch after the kept head is staged, so the
+	// compare-and-swap fails on its old value and the branch cannot be re-read.
+	f.service.afterGateStage = func() {
+		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered {
+		t.Fatalf("swap against a deleted gate branch reported success = %#v", state)
+	}
+	if state.Safety != "blocked_recover_swap_failed" {
+		t.Fatalf("unreadable-gate swap safety = %q, want blocked_recover_swap_failed: %#v", state.Safety, state)
+	}
+	// The fixture must have produced the state under test.
+	if _, exists, err := gitpkg.ExactRefTarget(f.ctx, f.gate, "refs/heads/feature/recover"); err != nil || exists {
+		t.Fatalf("fixture invariant broken: the gate branch must be gone: exists=%v err=%v", exists, err)
+	}
+	if strings.Contains(state.Error, "not a concurrent gate push") {
+		t.Fatalf("refusal ruled out a concurrent gate change it could not rule out: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, "could not be re-read") || !strings.Contains(state.Error, "unknown") {
+		t.Fatalf("refusal did not report what it actually knows: %q", state.Error)
+	}
+	if !strings.Contains(state.Error, f.gate) {
+		t.Fatalf("refusal did not name the gate to inspect: %q", state.Error)
+	}
+	if f.custodyReturned() {
+		t.Fatal("failed swap stamped custody")
+	}
+	if state.NextAction == nil {
+		t.Fatalf("swap failure named no exit = %#v", state)
+	}
+}
