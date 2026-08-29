@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.3](https://github.com/kunchenguid/no-mistakes/compare/v1.60.2...v1.60.3) (2026-08-29)
+
+
+### Performance Improvements
+
+* **pipeline:** cut CI test latency ([#901](https://github.com/kunchenguid/no-mistakes/issues/901)) ([1a3f74d](https://github.com/kunchenguid/no-mistakes/commit/1a3f74d86d2646967d6f1e7dce8853023c41768c))
+
 ## [1.60.2](https://github.com/kunchenguid/no-mistakes/compare/v1.60.1...v1.60.2) (2026-08-29)
 
 
