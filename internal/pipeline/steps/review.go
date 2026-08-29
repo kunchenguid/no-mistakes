@@ -81,6 +81,16 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// test and lint fix prompts already carry. The instruction is a contract,
 	// not an enforced sandbox - the agent has free shell access - so the pinned
 	// regression tests guard the wording, not the runtime.
+	//
+	// The narrow-instance rule is the same audit's second finding: fix rounds
+	// that were told to reach "the deepest practical cause" answered symptoms
+	// with new machinery, which the next rereview then found defects in, which
+	// bred more machinery. Depth is still wanted - the preceding rule keeps the
+	// local-defect-vs-deeper-flaw diagnosis - but the sanctioned way to reach it
+	// is simplifying an architectural reason, never bolting on handling for the
+	// symptoms. Remedies that must EXTEND the change instead of correcting it
+	// belong to the human at the review gate, which is what the reviewer's
+	// remedy-scope classification rule below routes them to.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
 		startReviewTimeout()
@@ -102,7 +112,7 @@ Context:
 Rules:
 - Always start with double checking whether the findings are legitimate.
 - Before changing code, identify whether each finding is a local defect or a symptom of a deeper design, abstraction, validation, ownership, or test-coverage flaw. Prefer the smallest correct root-cause fix within the changed area over patching only the reported line.
-- If a narrow fix would leave the same class of bug likely elsewhere, fix the deepest practical cause instead.
+- Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
@@ -205,6 +215,15 @@ Previous review findings to address:
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
+	// The action vocabulary below classifies by remedy as well as by topic: a
+	// finding whose smallest honest remedy would extend the change (durable
+	// state, a schema change, background/retry/persistence machinery, a new
+	// subsystem) parks at the existing ask-user gate even when the defect reads
+	// as mechanical, because the authorization needed is for the remedy, not the
+	// defect. This deliberately adds no field, detector, or second reviewer - a
+	// scope verifier would be exactly the machinery being prevented - and it
+	// runs with the grain of ActionOrDefault, which already fails an
+	// unclassified finding closed to ask-user.
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -242,6 +261,7 @@ Rules:
   - "ask-user": the finding is about functional requirements or product behavior, or otherwise challenges the author's deliberate intent. Even if it seems obviously wrong, we should ask the user for review. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt, default to "ask-user".
   - "auto-fix": the finding is a non-functional, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent.
   - "no-op": the finding is informational and does not require any action (e.g. noting a pattern, acknowledging a tradeoff).
+- Classify by the remedy, not only by the topic. If the smallest honest remedy for a finding would add new durable state, a schema change, new background, retry, or persistence machinery, a new subsystem, or otherwise EXTEND the change beyond its stated intent rather than CORRECT what it already does, the action must be "ask-user" even when the defect itself looks mechanical. Say in the description that the remedy, not the defect, is what needs authorization.
 - For each finding, set review_scope to exactly one of:
   - "source": every source-verifiable finding, including any finding that mixes a source defect with a delivery claim.
   - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
@@ -328,6 +348,16 @@ Risk assessment (after listing all findings):
 // run whose re-review did not complete, even when Fixing is false, so a
 // replacement initial review is not cold on those commits. Empty when
 // neither case applies, leaving an ordinary initial review unchanged.
+//
+// Both framings also carry the ratchet's one exit ramp. Reviewing prior-round
+// code adversarially otherwise has only one move available - file more
+// findings - so a fix round that over-built becomes the substrate for the next
+// round's repairs, and the audited incident reached ten rounds that way. The
+// ramp gives the rereview the move it was missing: recommend reverting that
+// round to the minimal fix, as a single ask-user finding, and let the human
+// decide. It is conditioned on defects located in prior-round code that
+// exceeds what the original finding required, so an ordinary multi-round fix
+// sequence never triggers it.
 func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
 	if sctx != nil && sctx.Fixing {
 		return `
@@ -337,6 +367,7 @@ Fix-round provenance:
 - Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+- When the defects you are reporting are located in code a prior fix round introduced, and that code exceeds what the original finding required, report a single "ask-user" finding recommending that the prior round be reverted to the minimal fix, instead of filing further repairs on that machinery.
 `
 	}
 	if sctx == nil || strings.TrimSpace(sctx.UncertifiedToSHA) == "" {
@@ -351,6 +382,7 @@ Fix-round provenance:
 - Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+- When the defects you are reporting are located in code a prior fix round introduced, and that code exceeds what the original finding required, report a single "ask-user" finding recommending that the prior round be reverted to the minimal fix, instead of filing further repairs on that machinery.
 `, fromSHA, toSHA)
 }
 

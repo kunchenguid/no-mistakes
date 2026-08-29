@@ -34,6 +34,15 @@ metadata:
   This is a prompt contract, not an enforced sandbox.
   Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
 
+**Remedy-Scope Discipline in the Review Prompts (`internal/pipeline/steps/review.go`)**
+
+- Three prompt rules keep review findings and fix rounds from growing machinery nobody scoped, using only the existing action vocabulary and gate. No detector, no schema field, no second scope reviewer: a growth detector or scope verifier is itself the machinery being prevented, and a second judgment owner on the gate contradicts VISION's "never stacked".
+- Reviewer classifies by REMEDY, not only topic: a finding whose smallest honest remedy would add durable state, a schema change, background/retry/persistence machinery, a new subsystem, or otherwise EXTEND rather than CORRECT the change must be `ask-user`, with the description naming the remedy as what needs authorization. This rides `ActionOrDefault`'s established fail-toward-the-human direction.
+- Fixer fixes the reported instance narrowly and reaches depth by simplifying an architectural reason rather than bolting on machinery for the symptoms. The preceding local-defect-vs-deeper-flaw diagnosis rule stays; depth is not forbidden, symptom machinery is. The superseded "fix the deepest practical cause instead" wording must not return.
+- Rereview gets one exit ramp from the fix-round ratchet: defects in code a PRIOR fix round introduced that exceeds what the original finding required become a single `ask-user` finding recommending that round be reverted to the minimal fix, instead of further repairs layered on it. Emitted in both `fixRoundProvenanceClause` branches (this run's fix rounds and a previous run's uncertified fixer commits); conditioning on prior-round code keeps it off ordinary multi-round fixes.
+- The neighbouring fixer rule "report the finding as unresolved" is currently unbackable: the fixer's return contract is a single sub-10-word `summary` for a commit subject, with no structured channel for an unresolved finding. Known and deliberately not fixed here.
+- Docs owners: `docs/src/content/docs/concepts/auto-fix.md` (finding actions) and `docs/src/content/docs/reference/pipeline-steps.md` (Review). Regressions: `TestReviewStep_PromptClassifiesFindingsByRemedyScope`, `TestReviewStep_FixPromptPrefersSimplificationOverMachinery`, `TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery`.
+
 **Agent-Invocation Timeouts Report Measured Silence, Never the Budget**
 
 - A timeout diagnostic may only state what was observed, never restate the configured budget as measured silence. `agentActivity` in `agent_run.go` is the single owner of the measurement and resets per-attempt evidence whenever a retry or fallback starts a replacement attempt, including provider, session-resume, and OpenCode prompt-format fallbacks. A substantive adapter error (a native agent's exit status plus captured stderr) is URL-redacted, length-bounded, and appended as `agent reported: ...`.
