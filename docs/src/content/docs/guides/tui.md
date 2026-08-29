@@ -195,7 +195,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `?` | Toggle help overlay |
 | `y` | Toggle yolo mode, which auto-resolves paused steps |
 | `r` | Retry a failed fix-review state or diff load; otherwise start a rerun after a failed or cancelled run |
-| `u` | Refresh and confirm local branch synchronization, or confirm custody recovery or custody settlement at the local head, when offered |
+| `u` | Refresh and confirm local branch synchronization, or confirm custody recovery, custody settlement at the local head, or completion of an unrecorded custody return, when offered |
 | `q` | Detach from TUI (or quit if run is done) |
 
 In diff view, `n`/`p` jumps the viewport to the file and line of the next/previous finding.
