@@ -2429,6 +2429,90 @@ func TestRecoverKeepLocalRefusalNamesTheAnchorItAlreadyWrote(t *testing.T) {
 	}
 }
 
+// TestKeepLocalRefusalAfterDelegationNamesTheAnchorTheAttemptWrote carries the
+// same honesty claim across the DELEGATION seam, where it used to be dropped.
+// recoverKeepLocal writes nothing of its own before the compare-and-swap, but
+// both of its callers can already have anchored a surviving recorded head -
+// the settlement pins every copy at the stranded ref, and the ordinary
+// keep-local path anchors the preserved head at the run recovery ref - so a
+// blanket "no files or refs were changed" there reports on an attempt that
+// did write a ref, and hides the very anchor the operator needs to find their
+// preserved commits.
+func TestKeepLocalRefusalAfterDelegationNamesTheAnchorTheAttemptWrote(t *testing.T) {
+	t.Parallel()
+
+	t.Run("settlement pin in the local gate", func(t *testing.T) {
+		t.Parallel()
+
+		f := newRecoverFixture(t, types.RunCancelled)
+		// Conflicting gate evidence routes keep-local through the settlement,
+		// whose pin loop finds the recorded head in the gate alone.
+		mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
+		f.service.absPathFn = func(string) (string, error) {
+			return "", errors.New("working directory has been removed")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("delegated refusal = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", custody.RecoveryStrandedRef(f.run.ID)); got != f.preserved {
+			t.Fatalf("gate stranded anchor = %s, want %s", got, f.preserved)
+		}
+		if strings.Contains(state.Error, "no files or refs were changed") {
+			t.Fatalf("refusal claimed nothing changed after the settlement pinned the recorded head: %q", state.Error)
+		}
+		if !strings.Contains(state.Error, custody.RecoveryStrandedRef(f.run.ID)) || !strings.Contains(state.Error, "the local gate") {
+			t.Fatalf("refusal did not name where the recorded head is now anchored: %q", state.Error)
+		}
+		if f.custodyReturned() {
+			t.Fatal("delegated refusal stamped custody")
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("delegated refusal moved the gate branch = %s, want %s", got, f.preserved)
+		}
+		f.service.absPathFn = nil
+		retry := f.service.Recover(f.ctx, true)
+		if !retry.Recovered {
+			t.Fatalf("the settlement stayed wedged after an honest refusal = %#v", retry)
+		}
+	})
+
+	t.Run("recovery anchor in the invoking worktree", func(t *testing.T) {
+		t.Parallel()
+
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+		f.service.absPathFn = func(string) (string, error) {
+			return "", errors.New("working directory has been removed")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("delegated refusal = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("worktree recovery anchor = %s, want %s", got, f.preserved)
+		}
+		if strings.Contains(state.Error, "no files or refs were changed") {
+			t.Fatalf("refusal claimed nothing changed after anchoring the preserved head: %q", state.Error)
+		}
+		if !strings.Contains(state.Error, f.anchorRef()) || !strings.Contains(state.Error, "the invoking worktree") {
+			t.Fatalf("refusal did not name the anchor this attempt wrote: %q", state.Error)
+		}
+		if f.custodyReturned() {
+			t.Fatal("delegated refusal stamped custody")
+		}
+		f.service.absPathFn = nil
+		retry := f.service.Recover(f.ctx, true)
+		if !retry.Recovered {
+			t.Fatalf("keep-local stayed wedged after an honest refusal = %#v", retry)
+		}
+	})
+}
+
 // TestInspectDoesNotAdvertiseSettlementForSymbolicGateAnchor is the review
 // regression for the residual advertise-then-refuse corner. A DANGLING
 // symbolic gate recovery ref is invisible to `for-each-ref` while

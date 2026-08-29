@@ -36,8 +36,8 @@ func newSyncCmd() *cobra.Command {
 			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
 			"instead and never touches the worktree; where the gate branch still names a\n" +
 			"different head it is compare-and-swapped onto the kept head, and where it does\n" +
-			"not, custody returns without changing any ref. That is also the settlement for\n" +
-			"a record whose preserved head can no longer be verified.",
+			"not, custody returns without moving any branch ref. That is also the settlement\n" +
+			"for a record whose preserved head can no longer be verified.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
