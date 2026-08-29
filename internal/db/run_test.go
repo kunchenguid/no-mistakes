@@ -589,6 +589,47 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	}
 }
 
+func TestUpdateRunPublicationIsAtomic(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-publication", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`CREATE TRIGGER reject_publication_head
+		BEFORE UPDATE OF head_sha ON runs
+		WHEN NEW.head_sha = 'repair'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected publication failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	binding := PushBinding{HeadSHA: "repair", TargetKind: "upstream", TargetFingerprint: "digest", Ref: "refs/heads/feature"}
+	if err := d.UpdateRunPublication(run.ID, binding); err == nil {
+		t.Fatal("publication unexpectedly succeeded")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HeadSHA != "submitted" || got.LastPushedSHA != nil || got.PushGeneration != nil {
+		t.Fatalf("failed publication partially changed run: %#v", got)
+	}
+	if _, err := d.sql.Exec(`DROP TRIGGER reject_publication_head`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPublication(run.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HeadSHA != "repair" || got.LastPushedSHA == nil || *got.LastPushedSHA != "repair" || got.PushGeneration == nil || *got.PushGeneration != 1 {
+		t.Fatalf("publication was not recorded together: %#v", got)
+	}
+}
+
 func TestUpdateRunPRURL(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

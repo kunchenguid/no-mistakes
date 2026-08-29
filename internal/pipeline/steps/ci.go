@@ -515,7 +515,20 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						issueDesc = "merge conflict"
 					}
 				}
-				if sctx.Fixing && !manualFixAttempted {
+				pending, pendingRepair, pendingErr := s.retryPendingRepair(sctx)
+				if pending {
+					if pendingErr != nil {
+						sctx.Log(fmt.Sprintf("warning: unsettled CI repair publication still failed: %v", pendingErr))
+					} else {
+						s.lastFixedChecks = fixKey
+						s.lastFixedCompletedAt = fixCompletedAt
+						if pendingRepair.Revalidate {
+							return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+						}
+					}
+				} else if pendingErr != nil {
+					return nil, pendingErr
+				} else if sctx.Fixing && !manualFixAttempted {
 					manualFixAttempted = true
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA

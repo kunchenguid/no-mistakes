@@ -355,6 +355,54 @@ func TestCIStep_PartialPublicationIsRetryableRatherThanRecorded(t *testing.T) {
 	}
 }
 
+func TestCIStep_RetriesUnsettledPublicationAfterFixBudgetIsSpent(t *testing.T) {
+	t.Parallel()
+	agentCalls := 0
+	f := newCIRepairFixture(t, false, func(workDir string) {
+		agentCalls++
+		writeCIFix(workDir)
+	})
+	brokenGate := filepath.Join(t.TempDir(), "invalid-gate")
+	if err := os.MkdirAll(brokenGate, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.GateDir = brokenGate
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sctx.Ctx = ctx
+	polls := 0
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		polls++
+		if polls == 1 {
+			f.sctx.GateDir = f.gateDir
+			return nil
+		}
+		return context.Canceled
+	}}
+	outcome, err := step.Execute(f.sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("monitor did not continue after settling publication: outcome=%#v err=%v\nlog:\n%s", outcome, err, f.log())
+	}
+	if agentCalls != 1 {
+		t.Fatalf("fix agent calls = %d, want 1; retry must not spend another fix attempt", agentCalls)
+	}
+	repairCommit := f.localHead(t)
+	if f.remoteHead(t) != repairCommit {
+		t.Fatalf("remote head = %s, want settled repair %s", f.remoteHead(t), repairCommit)
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != repairCommit || run.LastPushedSHA == nil || *run.LastPushedSHA != repairCommit {
+		t.Fatalf("settled publication not recorded: head=%s pushed=%v", run.HeadSHA, run.LastPushedSHA)
+	}
+	if !strings.Contains(f.log(), "retrying unsettled CI repair publication") {
+		t.Fatalf("monitor did not retry the existing repair before its exhausted budget; log:\n%s", f.log())
+	}
+}
+
 // A merge-conflict repair rewrites history, so its head is never a descendant
 // of the reviewed head and its continuity can never be proven. The uniform rule
 // therefore sends every conflict repair down the revalidating path - it is not

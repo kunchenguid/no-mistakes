@@ -408,6 +408,20 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	return nil
 }
 
+// UpdateRunPublication atomically records the exact published head and its
+// successful-push provenance.
+func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
+	ts := now()
+	_, err := d.sql.Exec(
+		`UPDATE runs SET head_sha = ?, last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
+		binding.HeadSHA, binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update run publication: %w", err)
+	}
+	return nil
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original

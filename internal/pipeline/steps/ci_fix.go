@@ -226,6 +226,26 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 	return s.commitRepair(sctx, "")
 }
 
+func (s *CIStep) retryPendingRepair(sctx *pipeline.StepContext) (bool, ciRepairResult, error) {
+	status, err := stepGitRun(sctx, "status", "--porcelain")
+	if err != nil {
+		return false, ciRepairResult{}, fmt.Errorf("check for pending CI repair: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return false, ciRepairResult{}, nil
+	}
+	headSHA, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return false, ciRepairResult{}, fmt.Errorf("resolve pending CI repair: %w", err)
+	}
+	if strings.EqualFold(headSHA, sctx.Run.HeadSHA) {
+		return false, ciRepairResult{}, nil
+	}
+	sctx.Log("retrying unsettled CI repair publication...")
+	repair, err := s.recordRepair(sctx, headSHA)
+	return true, repair, err
+}
+
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
@@ -364,11 +384,9 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // publishRepair publishes a continuity-proven repair immediately when
 // ci.revalidate_repairs is false. It uses publishRunHead - the same guarded path
 // the Push step uses, so force-push lease safety, remote verification, and the
-// push binding all still apply. Gate-mirror synchronization is attempted too,
-// but a failure after the remote repair is verified and durably bound is only
-// a warning: it must not make the monitor spend another attempt on an
-// already-published repair. The run's review approval is deliberately not
-// revoked: recordRepair has already proven that this head equals or descends
+// push binding all still apply. Gate-mirror synchronization settles before the
+// head and push binding are recorded. The run's review approval is deliberately
+// not revoked: recordRepair has already proven that this head equals or descends
 // from the approved head,
 // and publishRunHead enforces the same descendant-only rule. The monitor stays
 // on this run to watch the checks re-run against the published head.

@@ -88,9 +88,8 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // because the CI step runs with a step-local PATH and credential environment
 // that a plain runner would not see. Gate-mirror calls stay on git.Run: they
 // operate on the bare gate directory, not the run worktree.
-// Publication is all-or-nothing: the remote push, the gate mirror, the push
-// binding, and the recorded head either all land or none of them are recorded,
-// so a partial failure is always safe to retry.
+// Publication becomes durable only after the remote and gate mirror settle;
+// the push binding and recorded head then land in one database update.
 //
 // It deliberately does not relax the review-approved-head check for anyone.
 // Whether a CI repair may be published at all is decided before publication, by
@@ -167,7 +166,13 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 
-	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+	if localRefUpdate != "" {
+		if _, err := stepGitRun(sctx, "update-ref", ref, localRefUpdate); err != nil {
+			return fmt.Errorf("update local branch ref: %w", err)
+		}
+	}
+
+	if err := sctx.DB.UpdateRunPublication(sctx.Run.ID, db.PushBinding{
 		HeadSHA:           headBeingPushed,
 		TargetKind:        pushTarget,
 		TargetFingerprint: branchsync.TargetFingerprint(pushURL),
@@ -175,21 +180,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	}); err != nil {
 		return err
 	}
-
-	if localRefUpdate != "" {
-		if _, err := stepGitRun(sctx, "update-ref", ref, localRefUpdate); err != nil {
-			return fmt.Errorf("update local branch ref: %w", err)
-		}
-	}
-
-	// Persist the immutable source that was verified and delivered, never a
-	// fresh read of mutable worktree HEAD after the push.
-	if headBeingPushed != sctx.Run.HeadSHA {
-		sctx.Run.HeadSHA = headBeingPushed
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headBeingPushed); err != nil {
-			return err
-		}
-	}
+	sctx.Run.HeadSHA = headBeingPushed
 	return nil
 }
 
