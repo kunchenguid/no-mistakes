@@ -17,6 +17,11 @@ import (
 	"strings"
 )
 
+var (
+	fakeCLIStdinBody     []byte
+	fakeCLIStdinBodyRead bool
+)
+
 func main() {
 	mode := os.Getenv("FAKE_CLI_MODE")
 	if mode == "" {
@@ -82,6 +87,8 @@ func logFakeCLIStdinBody(args []string, logFile string) {
 	if err != nil {
 		return
 	}
+	fakeCLIStdinBody = body
+	fakeCLIStdinBodyRead = true
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
@@ -116,6 +123,7 @@ func fakeGHHandler(args []string) {
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
 	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
+	fakeGHHandlePRContentCommands(args, strings.Join(args, " "))
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
@@ -429,10 +437,14 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			os.Exit(1)
 		}
 		if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
-			body, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+			body := fakeCLIStdinBody
+			if !fakeCLIStdinBodyRead {
+				var err error
+				body, err = io.ReadAll(os.Stdin)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
 			}
 			if err := os.WriteFile(path, body, 0o644); err != nil {
 				fmt.Fprintln(os.Stderr, err)
