@@ -228,14 +228,14 @@ Each invocation returns:
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
 
-When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict. A clean process whose payload cannot be parsed reports the bounded output snippet and does not retry based on transient-looking text inside that payload.
+When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict. For Pi, a clean process whose payload cannot be parsed reports the bounded output snippet and never retries based on transient-looking text inside that payload; every other adapter still treats such a stochastic prose turn ending as retryable.
 
 One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 
-Transient API and network failures and transient tool-call or permission validation errors are retried up to three times with exponential backoff. Malformed structured output, provider quota, and free-usage-limit errors are terminal. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
+Transient API and network failures, stochastic prose turn endings, and transient tool-call or permission validation errors are retried up to three times with exponential backoff. Pi is the exception for prose turn endings: its malformed structured output is terminal, because the payload's own text must not be mistaken for a transport failure. Provider quota and free-usage-limit errors are terminal, even when a backend marks them retryable. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
 
 ## Intent extraction
 
@@ -294,7 +294,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
-Before the pipeline starts, no-mistakes checks an explicit Pi model or Pi's own `settings.json` default against `pi --list-models`. An unknown id fails setup with the setting source and catalogue examples instead of running with guessed capabilities.
+Before the pipeline starts, no-mistakes asks Pi itself to resolve an explicit model, or the `settings.json` default when no model is configured, inside the run's worktree: the probe runs a throwaway Pi session there, so project `.pi/settings.json` (which overrides the global agent settings) and project packages/extensions are part of the resolution and Pi's own pattern semantics (ids, case-insensitive substrings, display names, aliases, ambiguity handling) apply unchanged. When Pi's resolver rejects the selection, setup fails with the setting source and Pi's error instead of running with guessed capabilities.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 

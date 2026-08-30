@@ -26,18 +26,20 @@ type Agent interface {
 
 // configurationValidator is an optional adapter preflight for configuration
 // that only the installed harness can resolve, such as a model id against its
-// live local catalogue. Pipeline setup invokes it before any step runs.
+// own resolution in the run's worktree. Pipeline setup invokes it with the
+// worktree the steps will execute in, before any step runs.
 type configurationValidator interface {
-	ValidateConfiguration(context.Context) error
+	ValidateConfiguration(ctx context.Context, workDir string) error
 }
 
-// ValidateConfiguration runs an adapter's optional startup preflight.
-func ValidateConfiguration(ctx context.Context, a Agent) error {
+// ValidateConfiguration runs an adapter's optional startup preflight against
+// the given run worktree.
+func ValidateConfiguration(ctx context.Context, a Agent, workDir string) error {
 	validator, ok := a.(configurationValidator)
 	if !ok {
 		return nil
 	}
-	return validator.ValidateConfiguration(ctx)
+	return validator.ValidateConfiguration(ctx, workDir)
 }
 
 // RunOpts configures a single agent invocation.
@@ -308,8 +310,9 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 // malformedAgentOutputError marks a successful agent process whose final
 // payload could not satisfy the requested structured-output boundary. Keeping
-// this typed prevents status-like text inside the payload (for example "503")
-// from being mistaken for a transport failure by the shared retry classifier.
+// this typed lets the Pi adapter treat such a payload as terminal even when
+// its text mentions a transient-looking status (for example "503"), while
+// every other adapter keeps the shared prose-retry behavior.
 type malformedAgentOutputError struct {
 	agent   string
 	cause   error

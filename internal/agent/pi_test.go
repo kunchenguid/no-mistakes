@@ -103,6 +103,154 @@ func TestPiAgent_BuildArgs_OptOutPreservesNoContextFilesOptionValue(t *testing.T
 	}
 }
 
+// writePiProbeStub records its working directory and argv so tests can assert
+// the probe environment and flags from the fake Pi's own observations.
+func writePiProbeStub(t *testing.T) string {
+	t.Helper()
+	return writeFakePi(t, t.TempDir(), `#!/bin/sh
+{
+	printf '%s\n' "$(pwd)"
+	printf '%s\n' "$*"
+} > pi-probe.txt
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo %cd% > pi-probe.txt",
+		"echo %* >> pi-probe.txt",
+		"exit /b 0",
+	}, "\r\n"))
+}
+
+func readPiProbe(t *testing.T, workDir string) (string, string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workDir, "pi-probe.txt"))
+	if err != nil {
+		t.Fatalf("read pi probe record: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("pi probe record = %q, want cwd and argv lines", data)
+	}
+	return strings.TrimSpace(lines[0]), strings.TrimSpace(strings.Join(lines[1:], "\n"))
+}
+
+func TestPiAgent_ValidateConfigurationProbesInWorktree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pwd assertion relies on a POSIX stub")
+	}
+	workDir := t.TempDir()
+	pa := &piAgent{bin: writePiProbeStub(t), extraArgs: []string{"--model", "sonnet"}, modelSource: "agent_config.pi.model"}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("ValidateConfiguration: %v", err)
+	}
+	cwd, argv := readPiProbe(t, workDir)
+	gotDir, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve probed cwd: %v", err)
+	}
+	wantDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("resolve workDir: %v", err)
+	}
+	if gotDir != wantDir {
+		t.Fatalf("probe cwd = %q, want the run worktree %q", gotDir, wantDir)
+	}
+	for _, want := range []string{"--model sonnet", "--offline", "--mode rpc", "--no-session"} {
+		if !strings.Contains(argv, want) {
+			t.Fatalf("probe argv = %q, want %q", argv, want)
+		}
+	}
+}
+
+func TestPiAgent_ValidateConfigurationResolvesProjectSettingsDefault(t *testing.T) {
+	workDir := t.TempDir()
+	projectDir := filepath.Join(workDir, ".pi")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultProvider":"google","defaultModel":"project-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{bin: writePiProbeStub(t)}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("ValidateConfiguration: %v", err)
+	}
+	_, argv := readPiProbe(t, workDir)
+	if !strings.Contains(argv, "--model project-model") {
+		t.Fatalf("probe argv = %q, want the project default model resolved by Pi", argv)
+	}
+	if strings.Contains(argv, "--provider") {
+		t.Fatalf("probe argv = %q, want the bare settings id so Pi can still fail on an unknown model instead of fabricating a fallback", argv)
+	}
+}
+
+func TestPiAgent_ValidateConfigurationProjectSettingsOverrideGlobal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("HOME-based fixture relies on a POSIX environment")
+	}
+	workDir := t.TempDir()
+	globalDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(globalDir, ".pi", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, ".pi", "agent", "settings.json"), []byte(`{"defaultModel":"global-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(workDir, ".pi")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultModel":"project-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{bin: writePiProbeStub(t), subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}})}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("ValidateConfiguration: %v", err)
+	}
+	_, argv := readPiProbe(t, workDir)
+	if !strings.Contains(argv, "--model project-model") {
+		t.Fatalf("probe argv = %q, want the project default to override the global default", argv)
+	}
+}
+
+func TestPiAgent_ValidateConfigurationSurfacesPiResolutionFailure(t *testing.T) {
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+cat > /dev/null
+echo 'Error: Model "ghost-model" not found. Use --list-models to see available models.' >&2
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo Error: Model not found. Use --list-models to see available models. 1>&2",
+		"exit /b 1",
+	}, "\r\n"))
+	pa := &piAgent{bin: bin, extraArgs: []string{"--model", "ghost-model"}, modelSource: "agent_config.pi.model"}
+	err := pa.ValidateConfiguration(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("expected Pi's own resolution failure to fail setup")
+	}
+	for _, want := range []string{"ghost-model", "agent_config.pi.model", `Model "ghost-model" not found`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("validation error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestPiAgent_ValidateConfigurationSkipsProbeWithoutModelSelection(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("HOME-based fixture relies on a POSIX environment")
+	}
+	workDir := t.TempDir()
+	// Isolate from any real ~/.pi/agent/settings.json default model.
+	pa := &piAgent{bin: writePiProbeStub(t), subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}})}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("ValidateConfiguration: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "pi-probe.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe ran without any configured model: %v", err)
+	}
+}
+
 func TestPiAgent_NeutralizesGateInstructions(t *testing.T) {
 	if NeutralizesGateInstructions(&piAgent{bin: "pi"}) {
 		t.Error("pi must not report neutralized without the opt-out")

@@ -172,7 +172,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
+	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), workDir, exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	return cfg, nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot, workDir string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
@@ -280,7 +280,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 			}
 			return nil, fmt.Errorf("create agent %s: %w", name, err)
 		}
-		if err := agent.ValidateConfiguration(ctx, next); err != nil {
+		if err := agent.ValidateConfiguration(ctx, next, workDir); err != nil {
 			_ = next.Close()
 			for _, existing := range created {
 				_ = existing.Close()
@@ -1081,7 +1081,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				trackStartFailure("create_agent")
 				return "", fmt.Errorf("create agent %s: %w", name, agErr)
 			}
-			if agErr := agent.ValidateConfiguration(ctx, next); agErr != nil {
+			if agErr := agent.ValidateConfiguration(ctx, next, wtDir); agErr != nil {
 				_ = next.Close()
 				for _, existing := range created {
 					_ = existing.Close()

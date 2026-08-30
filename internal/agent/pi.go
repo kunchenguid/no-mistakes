@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -42,51 +42,59 @@ func (a *piAgent) SupportsSessionResume() bool { return true }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
 
-// ValidateConfiguration resolves the configured Pi model against the exact
-// local catalogue before pipeline steps start. Pi otherwise accepts some
-// unknown custom ids and assigns fallback capabilities to them, which can make
-// an output-cap truncation look like a model-quality failure much later.
-func (a *piAgent) ValidateConfiguration(ctx context.Context) error {
+// ValidateConfiguration asks Pi itself to resolve the configured model inside
+// the run's worktree before pipeline steps start. Pi owns the pattern
+// semantics (exact ids, case-insensitive substrings, display-name matches,
+// aliases, and deterministic latest-version ambiguity), and its resolution
+// depends on project .pi/settings.json plus project packages and extensions
+// that exist only in the worktree, so the probe replays the same invocation
+// environment instead of replicating the matcher. Pi otherwise silently
+// accepts some unknown custom ids and assigns fallback capabilities to them,
+// which can make an output-cap truncation look like a model-quality failure
+// much later. The probe runs a throwaway RPC session with no prompt: Pi fails
+// fast on a model it cannot resolve and otherwise exits once stdin closes.
+func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) error {
 	model := piFlagValue(a.extraArgs, "--model")
 	provider := piFlagValue(a.extraArgs, "--provider")
 	source := a.modelSource
+	args := append([]string(nil), a.extraArgs...)
 	if model != "" && source == "" {
 		source = "Pi --model option"
 	}
 	if model == "" {
-		selection, err := a.piSettingsModel()
+		selection, err := piSettingsModel(workDir, a.overlay())
 		if err != nil {
 			return err
+		}
+		if selection.model == "" {
+			return nil
 		}
 		model = selection.model
 		provider = selection.provider
 		source = selection.source
-	}
-	if strings.TrimSpace(model) == "" {
-		return nil
+		// Route the settings default through Pi's own CLI resolution so the
+		// validation uses the same matcher a --model selection gets. The bare
+		// id is passed deliberately: a qualified --provider prefix makes Pi
+		// silently fabricate a fallback model instead of failing, which would
+		// turn the probe into a no-op.
+		args = append(args, "--model", model)
 	}
 
 	validationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	catalogueArgs := append([]string(nil), a.extraArgs...)
-	catalogueArgs = append(catalogueArgs, "--offline", "--list-models")
-	cmd := exec.CommandContext(validationCtx, a.bin, catalogueArgs...)
+	args = append(args, "--offline", "--mode", "rpc", "--no-session")
+	cmd := exec.CommandContext(validationCtx, a.bin, args...)
+	cmd.Dir = workDir
 	cmd.Env = a.overlay().Apply(nil)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("validate pi model %q from %s: list Pi catalogue: %s: %w", model, source, strings.TrimSpace(string(out)), err)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
+		}
+		return fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
 	}
-	catalogue, err := parsePiModelCatalogue(out)
-	if err != nil {
-		return fmt.Errorf("validate pi model %q from %s: %w", model, source, err)
-	}
-	resolved := resolvePiConfiguredModel(provider, model, catalogue)
-	if resolved != "" {
-		return nil
-	}
-	requested := piQualifiedModel(provider, model)
-	return fmt.Errorf("pi model %q from %s is not present in Pi's catalogue; catalogue offers %d models, including %s",
-		requested, source, len(catalogue), strings.Join(piCatalogueExamples(requested, catalogue), ", "))
+	return nil
 }
 
 type piModelSelection struct {
@@ -95,45 +103,73 @@ type piModelSelection struct {
 	source   string
 }
 
-func (a *piAgent) piSettingsModel() (piModelSelection, error) {
-	agentDir := strings.TrimSpace(piEnvironmentValue(a.overlay(), "PI_CODING_AGENT_DIR"))
+// piSettingsModel reads Pi's configured default model the way Pi merges its
+// settings: the project's .pi/settings.json overrides the global agent
+// settings.json per key. Pi honors the project copy only for a trusted project,
+// but the default it names is still validated so a run cannot silently fall
+// back to an unrelated model when Pi does honor it.
+func piSettingsModel(workDir string, overlay runenv.Overlay) (piModelSelection, error) {
+	var settings struct {
+		DefaultProvider string `json:"defaultProvider"`
+		DefaultModel    string `json:"defaultModel"`
+	}
+	read := func(path string) (string, string, error) {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", nil
+		}
+		if err != nil {
+			return "", "", fmt.Errorf("read Pi model setting from %s: %w", path, err)
+		}
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return "", "", fmt.Errorf("parse Pi model setting from %s: %w", path, err)
+		}
+		return strings.TrimSpace(settings.DefaultProvider), strings.TrimSpace(settings.DefaultModel), nil
+	}
+
+	globalProvider, globalModel, err := read(piGlobalSettingsPath(overlay))
+	if err != nil {
+		return piModelSelection{}, err
+	}
+	projectPath := filepath.Join(workDir, ".pi", "settings.json")
+	projectProvider, projectModel, err := read(projectPath)
+	if err != nil {
+		return piModelSelection{}, err
+	}
+
+	model, provider := globalModel, globalProvider
+	source := piGlobalSettingsPath(overlay) + " (defaultProvider/defaultModel)"
+	if projectModel != "" || projectProvider != "" {
+		source = projectPath + " (defaultProvider/defaultModel)"
+	}
+	if projectModel != "" {
+		model = projectModel
+	}
+	if projectProvider != "" {
+		provider = projectProvider
+	}
+	if model == "" {
+		return piModelSelection{}, nil
+	}
+	return piModelSelection{provider: provider, model: model, source: source}, nil
+}
+
+func piGlobalSettingsPath(overlay runenv.Overlay) string {
+	agentDir := strings.TrimSpace(piEnvironmentValue(overlay, "PI_CODING_AGENT_DIR"))
 	if agentDir == "" {
-		home := strings.TrimSpace(piEnvironmentValue(a.overlay(), "HOME"))
+		home := strings.TrimSpace(piEnvironmentValue(overlay, "HOME"))
 		if home == "" {
-			var err error
-			home, err = os.UserHomeDir()
-			if err != nil {
-				return piModelSelection{}, fmt.Errorf("locate Pi settings: %w", err)
-			}
+			home, _ = os.UserHomeDir()
 		}
 		agentDir = filepath.Join(home, ".pi", "agent")
 	} else if strings.HasPrefix(agentDir, "~"+string(filepath.Separator)) {
-		home := strings.TrimSpace(piEnvironmentValue(a.overlay(), "HOME"))
+		home := strings.TrimSpace(piEnvironmentValue(overlay, "HOME"))
 		if home == "" {
 			home, _ = os.UserHomeDir()
 		}
 		agentDir = filepath.Join(home, strings.TrimPrefix(agentDir, "~"+string(filepath.Separator)))
 	}
-	settingsPath := filepath.Join(agentDir, "settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return piModelSelection{}, nil
-	}
-	if err != nil {
-		return piModelSelection{}, fmt.Errorf("read Pi model setting from %s: %w", settingsPath, err)
-	}
-	var settings struct {
-		DefaultProvider string `json:"defaultProvider"`
-		DefaultModel    string `json:"defaultModel"`
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return piModelSelection{}, fmt.Errorf("parse Pi model setting from %s: %w", settingsPath, err)
-	}
-	return piModelSelection{
-		provider: strings.TrimSpace(settings.DefaultProvider),
-		model:    strings.TrimSpace(settings.DefaultModel),
-		source:   settingsPath + " (defaultProvider/defaultModel)",
-	}, nil
+	return filepath.Join(agentDir, "settings.json")
 }
 
 func piEnvironmentValue(overlay runenv.Overlay, key string) string {
@@ -166,62 +202,6 @@ func piFlagValue(args []string, flag string) string {
 	return value
 }
 
-func parsePiModelCatalogue(out []byte) ([]string, error) {
-	seen := map[string]struct{}{}
-	var models []string
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || strings.EqualFold(fields[0], "provider") {
-			continue
-		}
-		model := fields[0] + "/" + fields[1]
-		if _, exists := seen[model]; exists {
-			continue
-		}
-		seen[model] = struct{}{}
-		models = append(models, model)
-	}
-	if len(models) == 0 {
-		return nil, fmt.Errorf("Pi catalogue returned no models (output: %q)", outputSnippet(string(out)))
-	}
-	sort.Strings(models)
-	return models, nil
-}
-
-func resolvePiConfiguredModel(provider, model string, catalogue []string) string {
-	requested := piQualifiedModel(provider, model)
-	candidates := []string{requested}
-	if strings.Contains(requested, ":") {
-		// Prefer an exact catalogue id such as model:batch. Only drop the final
-		// suffix when it is Pi's thinking shorthand.
-		if idx := strings.LastIndex(requested, ":"); idx >= 0 && piThinkingLevel(requested[idx+1:]) {
-			candidates = append(candidates, requested[:idx])
-		}
-	}
-	for _, candidate := range candidates {
-		for _, available := range catalogue {
-			if candidate == available {
-				return available
-			}
-		}
-	}
-	if provider == "" && !strings.Contains(model, "/") {
-		var match string
-		for _, available := range catalogue {
-			_, id, _ := strings.Cut(available, "/")
-			if id != model {
-				continue
-			}
-			if match != "" {
-				return ""
-			}
-			match = available
-		}
-		return match
-	}
-	return ""
-}
-
 func piQualifiedModel(provider, model string) string {
 	model = strings.TrimSpace(model)
 	provider = strings.TrimSpace(provider)
@@ -231,31 +211,17 @@ func piQualifiedModel(provider, model string) string {
 	return provider + "/" + model
 }
 
-func piThinkingLevel(value string) bool {
-	switch value {
-	case "off", "minimal", "low", "medium", "high", "xhigh", "max":
-		return true
-	default:
-		return false
+// piClassifyTransient keeps a clean Pi payload that failed the
+// structured-output boundary terminal: that payload is the evidence to
+// diagnose, and its own text (for example a quoted "503") must not be mistaken
+// for a transport failure and replayed. Pi is the only adapter with this
+// suppression; every other adapter keeps the shared prose-retry behavior.
+func piClassifyTransient(err error) (string, bool) {
+	var malformed *malformedAgentOutputError
+	if errors.As(err, &malformed) {
+		return "", false
 	}
-}
-
-func piCatalogueExamples(requested string, catalogue []string) []string {
-	provider, _, qualified := strings.Cut(requested, "/")
-	examples := make([]string, 0, 5)
-	for _, available := range catalogue {
-		if qualified && !strings.HasPrefix(available, provider+"/") {
-			continue
-		}
-		examples = append(examples, available)
-		if len(examples) == 5 {
-			break
-		}
-	}
-	if len(examples) == 0 {
-		examples = append(examples, catalogue[:min(5, len(catalogue))]...)
-	}
-	return examples
+	return classifyTransient(err)
 }
 
 // NeutralizesGateInstructions reports whether pi is currently launched with the
@@ -271,7 +237,7 @@ func (a *piAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
+	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, piClassifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
 }

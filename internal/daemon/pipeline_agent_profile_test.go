@@ -19,7 +19,7 @@ func writePiCatalogStub(t *testing.T) string {
 	dir := t.TempDir()
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "pi.cmd")
-		script := "@echo off\r\necho provider model context max-out thinking images\r\necho openrouter z-ai/glm-5.3 1M 128K yes no\r\n"
+		script := "@echo off\r\necho %* | findstr /c:\"--model openrouter/z-ai/glm-5.3\" >nul\r\nif not errorlevel 1 exit /b 0\r\necho Error: Model \"stub\" not found. Use --list-models to see available models. 1>&2\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -27,8 +27,23 @@ func writePiCatalogStub(t *testing.T) string {
 	}
 	path := filepath.Join(dir, "pi")
 	script := `#!/bin/sh
-printf '%s\n' 'provider model context max-out thinking images'
-printf '%s\n' 'openrouter z-ai/glm-5.3 1M 128K yes no'
+# Emulates Pi's resolver contract: it exits 0 when the --model pattern
+# resolves and 1 with its not-found error on stderr when it does not.
+model=
+prev=
+for a in "$@"; do
+	[ "$prev" = "--model" ] && model="$a"
+	prev="$a"
+done
+case "$model" in
+	""|openrouter/z-ai/glm-5.3)
+		exit 0
+		;;
+	*)
+		printf 'Error: Model "%s" not found. Use --list-models to see available models.\n' "$model" >&2
+		exit 1
+		;;
+esac
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -45,7 +60,7 @@ func TestNewPipelineAgent_ThreadsTheAgentProfile(t *testing.T) {
 		Agent:       types.AgentAntigravity,
 		AgentConfig: map[string]agentcfg.Profile{"antigravity": {Model: "some-model"}},
 	}
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err == nil {
 		t.Fatal("a model on a harness that cannot express one must fail setup")
 	}
@@ -59,7 +74,7 @@ func TestNewPipelineAgent_ProfileIsPerAgent(t *testing.T) {
 		Agents:      []types.AgentName{types.AgentClaude, types.AgentAntigravity},
 		AgentConfig: map[string]agentcfg.Profile{"claude": {Model: "sonnet", Effort: agentcfg.EffortHigh}},
 	}
-	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("a profile set only for claude must not reach antigravity: %v", err)
 	}
@@ -74,7 +89,7 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 		Agent:             types.AgentCodex,
 		AgentArgsOverride: map[string][]string{"codex": {"-m", "gpt-5.4"}},
 	}
-	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("newPipelineAgent = %v", err)
 	}
@@ -89,11 +104,11 @@ func TestNewPipelineAgent_RejectsUnknownPiAgentConfigModelBeforeExecution(t *tes
 		AgentConfig:       map[string]agentcfg.Profile{"pi": {Model: "openrouter/stealth/ox-alpha"}},
 	}
 
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err == nil {
 		t.Fatal("unknown Pi model must fail pipeline setup")
 	}
-	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_config.pi.model", "openrouter/z-ai/glm-5.3"} {
+	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_config.pi.model"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("setup error = %q, want %q", err, want)
 		}
@@ -108,11 +123,11 @@ func TestNewPipelineAgent_RejectsUnknownPiArgsOverrideModelWithItsSource(t *test
 		AgentArgsOverride: map[string][]string{"pi": {"--model", "openrouter/stealth/ox-alpha"}},
 	}
 
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err == nil {
 		t.Fatal("unknown Pi override model must fail pipeline setup")
 	}
-	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_args_override.pi", "openrouter/z-ai/glm-5.3"} {
+	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_args_override.pi"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("setup error = %q, want %q", err, want)
 		}
@@ -127,7 +142,7 @@ func TestNewPipelineAgent_AcceptsPiAgentConfigModelPresentInCatalogue(t *testing
 		AgentConfig:       map[string]agentcfg.Profile{"pi": {Model: "openrouter/z-ai/glm-5.3"}},
 	}
 
-	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("catalogued Pi model rejected: %v", err)
 	}
@@ -146,13 +161,43 @@ func TestNewPipelineAgent_RejectsUnknownPiSettingsDefaultBeforeExecution(t *test
 		AgentPathOverride: map[string]string{"pi": bin},
 	}
 
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{
 		Set: map[string]string{"PI_CODING_AGENT_DIR": agentDir},
 	})
 	if err == nil {
 		t.Fatal("unknown Pi settings default must fail pipeline setup")
 	}
-	for _, want := range []string{"openrouter/stealth/ox-alpha", settingsPath, "openrouter/z-ai/glm-5.3"} {
+	for _, want := range []string{"stealth/ox-alpha", settingsPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error = %q, want %q", err, want)
+		}
+	}
+}
+
+// The probe must consult the run worktree, not just the global agent dir: a
+// repo can pin its pipeline model in .pi/settings.json.
+func TestNewPipelineAgent_RejectsUnknownPiProjectSettingsDefaultBeforeExecution(t *testing.T) {
+	bin := writePiCatalogStub(t)
+	workDir := t.TempDir()
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"openrouter","defaultModel":"stealth/ox-alpha"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Agent:             types.AgentPi,
+		AgentPathOverride: map[string]string{"pi": bin},
+	}
+
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), workDir, fakeLookPath, runenv.Overlay{
+		Set: map[string]string{"PI_CODING_AGENT_DIR": t.TempDir()},
+	})
+	if err == nil {
+		t.Fatal("unknown Pi project settings default must fail pipeline setup")
+	}
+	for _, want := range []string{"stealth/ox-alpha", projectSettings} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("setup error = %q, want %q", err, want)
 		}

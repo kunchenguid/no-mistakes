@@ -178,10 +178,6 @@ func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
-	var malformed *malformedAgentOutputError
-	if errors.As(err, &malformed) {
-		return "", false
-	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
 	}
