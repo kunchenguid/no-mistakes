@@ -30,7 +30,8 @@ type fixExecutionOptions struct {
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
 	SessionRole pipeline.SessionRole
-	// Purpose labels the invocation for local performance telemetry.
+	// Purpose labels the invocation for model routing and local performance
+	// telemetry.
 	Purpose string
 	// Workload records the bounded size of the change under fix for local
 	// telemetry. Optional; nil leaves the invocation's workload unknown.

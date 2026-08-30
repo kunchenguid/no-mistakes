@@ -261,8 +261,9 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 	// The candidate's tuning goes through the same harness-neutral Profile the
 	// pipeline uses, so eval and a real run reach each harness's model and
 	// effort mechanism by exactly one code path. Raw args stay empty: capture
-	// strips agent_args_override and agent_config from the pinned config so a
-	// replay cannot inherit the capturing machine's own pins.
+	// strips agent_args_override, agent_config, and invocations from the
+	// pinned config so a replay cannot inherit the capturing machine's own
+	// pins.
 	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), nil, agent.Options{
 		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 		DisableProjectSettings: cfg.DisableProjectSettings,

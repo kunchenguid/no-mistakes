@@ -333,12 +333,12 @@ func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
 // inheriting the capturing machine's own model or effort: the candidate is the
 // only thing that may decide what the harness runs as.
 func TestCaptureStripsEveryHarnessPinFromThePinnedConfig(t *testing.T) {
-	pinned := []byte("agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\nagent_config:\n  codex:\n    model: gpt-5.4\n    effort: high\nlog_level: warn\n")
+	pinned := []byte("agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\nagent_config:\n  codex:\n    model: gpt-5.4\n    effort: high\ninvocations:\n  review:\n    agent: pi\n    model: openrouter/reviewer\nlog_level: warn\n")
 	neutral, err := agentNeutralGlobalConfig(pinned)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"agent:", "agent_args_override", "agent_config"} {
+	for _, key := range []string{"agent:", "agent_args_override", "agent_config", "invocations"} {
 		if strings.Contains(string(neutral), key) {
 			t.Errorf("pinned config still carries %q: %s", key, neutral)
 		}

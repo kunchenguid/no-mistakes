@@ -133,7 +133,7 @@ The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent whose model no-mistakes can actually pin. ACP targets such as `cursor` and `acp:<target>` are pinned through `acpx --model`, but they cannot take `effort`; `rovodev` and `antigravity` expose no mechanism at all and are rejected outright. `opencode` needs the `provider/model` form. The per-harness mapping table lives in [`agent_config`](/no-mistakes/reference/global-config/#agent_config).
 
-The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, and `agent_config` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
+The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, `agent_config`, and `invocations` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
 
 The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 

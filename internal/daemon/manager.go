@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -262,27 +263,10 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
-	agents := cfg.Agents
-	if len(agents) == 0 {
-		agents = []types.AgentName{cfg.Agent}
+	ag, err := newResolvedPipelineAgent(cfg, evidenceRoot, environment)
+	if err != nil {
+		return nil, err
 	}
-	created := make([]agent.Agent, 0, len(agents))
-	for _, name := range agents {
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-			DisableProjectSettings: cfg.DisableProjectSettings,
-			Profile:                cfg.AgentProfileFor(name),
-			Environment:            environment,
-		})
-		if err != nil {
-			for _, existing := range created {
-				_ = existing.Close()
-			}
-			return nil, fmt.Errorf("create agent %s: %w", name, err)
-		}
-		created = append(created, agent.WithSteering(next, evidenceRoot))
-	}
-	ag := agent.NewFallback(created)
 	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
 	// unverified harness when the repo disabled project settings; otherwise run
 	// every adapter as before.
@@ -293,6 +277,71 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 	}
 	return ag, nil
+}
+
+// newResolvedPipelineAgent builds the default roster and any configured
+// invocation routes after ResolveAgent has selected and verified the binaries.
+// Both fresh and recovered run paths use it so their routing cannot drift.
+func newResolvedPipelineAgent(cfg *config.Config, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+	agents := cfg.Agents
+	if len(agents) == 0 {
+		agents = []types.AgentName{cfg.Agent}
+	}
+	defaultAgent, err := newPipelineAgentSet(cfg, agents, evidenceRoot, environment)
+	if err != nil {
+		return nil, err
+	}
+	routes := make(map[string]agent.Agent)
+	for _, purpose := range cfg.AgentInvocationPurposes() {
+		route, _ := cfg.AgentInvocationFor(purpose)
+		routed, routeErr := newPipelineAgentForProfile(cfg, route.Agent, route.Profile, evidenceRoot, environment)
+		if routeErr != nil {
+			_ = defaultAgent.Close()
+			for _, existing := range routes {
+				_ = existing.Close()
+			}
+			return nil, routeErr
+		}
+		if cfg.DisableProjectSettings && !agent.NeutralizesGateInstructions(routed) {
+			_ = routed.Close()
+			_ = defaultAgent.Close()
+			for _, existing := range routes {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("invocations.%s agent %q does not neutralize the target repository's project "+
+				"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch that route in the target checkout", purpose, route.Agent)
+		}
+		routes[purpose] = routed
+	}
+	return agent.NewInvocationRouter(defaultAgent, routes), nil
+}
+
+func newPipelineAgentSet(cfg *config.Config, agents []types.AgentName, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+	created := make([]agent.Agent, 0, len(agents))
+	for _, name := range agents {
+		next, err := newPipelineAgentForProfile(cfg, name, cfg.AgentProfileFor(name), evidenceRoot, environment)
+		if err != nil {
+			for _, existing := range created {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("create agent %s: %w", name, err)
+		}
+		created = append(created, next)
+	}
+	return agent.NewFallback(created), nil
+}
+
+func newPipelineAgentForProfile(cfg *config.Config, name types.AgentName, profile agentcfg.Profile, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+	next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+		DisableProjectSettings: cfg.DisableProjectSettings,
+		Profile:                profile,
+		Environment:            environment,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create agent %s: %w", name, err)
+	}
+	return agent.WithSteering(next, evidenceRoot), nil
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
@@ -1047,7 +1096,8 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
 
-	// Create agent. In demo mode, skip resolution and use a no-op agent.
+	// Create the same purpose-routed agent used by recovered runs. Resolution
+	// and gate-neutralization retain their distinct startup diagnostics.
 	var ag agent.Agent
 	if steps.IsDemoMode() {
 		ag = agent.NewNoop()
@@ -1057,36 +1107,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			trackStartFailure("resolve_agent")
 			return "", err
 		}
-		agents := cfg.Agents
-		if len(agents) == 0 {
-			agents = []types.AgentName{cfg.Agent}
+		ag, err = newResolvedPipelineAgent(cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), forgeEnvironment(forgeCtx))
+		if err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("create_agent")
+			return "", err
 		}
-		created := make([]agent.Agent, 0, len(agents))
-		for _, name := range agents {
-			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-				DisableProjectSettings: cfg.DisableProjectSettings,
-				Profile:                cfg.AgentProfileFor(name),
-				Environment:            forgeEnvironment(forgeCtx),
-			})
-			if agErr != nil {
-				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
-				trackStartFailure("create_agent")
-				return "", fmt.Errorf("create agent %s: %w", name, agErr)
-			}
-			// Steer every pipeline agent to keep writes inside the worktree and
-			// avoid mutating system state (e.g. brew/Homebrew touching
-			// /Applications), which triggers macOS App Management prompts.
-			created = append(created, agent.WithSteering(next, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot)))
-		}
-		ag = agent.NewFallback(created)
-		// Fail closed ONLY under the trusted opt-out: when the repo asked to
-		// disable project settings, refuse any resolved harness that lacks a
-		// verified suppression knob rather than launch it with the target repo's
-		// project instructions loaded. When the repo did not opt out, every
-		// adapter runs exactly as before (backward-compat).
 		if cfg.DisableProjectSettings {
 			if err := agent.EnsureGateNeutralized(ag); err != nil {
+				_ = ag.Close()
 				m.db.UpdateRunError(run.ID, err.Error())
 				trackStartFailure("gate_not_neutralized")
 				return "", err

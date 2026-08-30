@@ -93,3 +93,29 @@ func TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember(t *testing.T
 		_ = ag.Close()
 	}
 }
+
+// TestNewPipelineAgent_OptOut_RefusesInvalidInvocationRouteWithRouteIdentity
+// proves a routed harness that cannot neutralize project instructions is
+// refused with the route's purpose and harness, rather than blaming the valid
+// default harness selected by invocationRouter.Name.
+func TestNewPipelineAgent_OptOut_RefusesInvalidInvocationRouteWithRouteIdentity(t *testing.T) {
+	cfg := &config.Config{
+		Agent:                  types.AgentPi,
+		DisableProjectSettings: true,
+		Invocations: map[string]config.AgentInvocation{
+			"review": {Agent: types.AgentOpenCode},
+		},
+	}
+
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err == nil {
+		t.Fatal("an unverified invocation route must be refused under opt-out")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "invocations.review") || !strings.Contains(message, string(types.AgentOpenCode)) {
+		t.Fatalf("refusal should name the route and routed harness, got: %v", err)
+	}
+	if strings.Contains(message, string(types.AgentPi)) {
+		t.Fatalf("refusal should not name the valid default harness, got: %v", err)
+	}
+}

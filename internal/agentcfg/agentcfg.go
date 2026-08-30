@@ -93,6 +93,19 @@ type Profile struct {
 // IsZero reports whether the profile asks for nothing.
 func (p Profile) IsZero() bool { return p.Model == "" && p.Effort == "" }
 
+// Overlay returns a profile whose non-zero fields come from override and whose
+// omitted fields inherit from base. Invocation-specific configuration uses
+// this so an operator can change only the model or only the effort.
+func Overlay(base, override Profile) Profile {
+	if override.Model != "" {
+		base.Model = override.Model
+	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
+	}
+	return base
+}
+
 // String renders the profile in the canonical comma-separated key=value form
 // shared by eval candidates. It is empty for the zero profile.
 func (p Profile) String() string {
