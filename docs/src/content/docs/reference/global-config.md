@@ -31,6 +31,16 @@ agent_config:
     model: gpt-5.4
     effort: low
 
+invocations:
+  review:
+    agent: pi
+    model: openrouter/z-ai/glm-5.3-flash
+    effort: high
+  review-fix:
+    agent: codex
+    model: gpt-5.6-sol
+    effort: medium
+
 agent_args_override:
   codex:
     - -c
@@ -199,7 +209,7 @@ Model and reasoning effort per agent, in one common spelling. no-mistakes maps e
 
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
-| Type    | `map[string]{model, effort, invocations}`                                           |
+| Type    | `map[string]{model, effort}`                                                        |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | Empty (every harness keeps its own defaults)                                        |
 
@@ -208,12 +218,6 @@ agent_config:
   codex:
     model: gpt-5.4
     effort: low
-    invocations:
-      review:
-        model: gpt-5.4
-        effort: high
-      review-fix:
-        model: gpt-5.3-codex
   claude:
     model: sonnet
     effort: high
@@ -222,18 +226,6 @@ agent_config:
   cursor:
     model: gpt-5
 ```
-
-`invocations.review` and `invocations.review-fix` can override the model and
-effort for the independent review and repair calls inside the Review step. The
-split is by invocation rather than only by pipeline step because the reviewer
-and the agent applying its findings have different jobs even though both run in
-Review. Each omitted field inherits independently from the agent-wide profile:
-in the example above, `review-fix` inherits `effort: low`. Other pipeline
-invocation names are currently rejected instead of being silently ignored.
-
-When `invocations` is absent, every invocation uses the agent-wide profile
-exactly as before. The map is global-only along with the rest of
-`agent_config`.
 
 `effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
 
@@ -257,7 +249,7 @@ How each field maps:
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
 
-**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then neither the agent-wide nor invocation-specific `agent_config` value emits that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from the effective profile, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
+**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from the effective profile, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
 agent_config:
@@ -269,6 +261,47 @@ agent_args_override:
     - -m
     - o3
 ```
+
+### invocations
+
+Select the harness, model, and effort for the independent review and repair
+calls inside the Review step.
+
+|         |                                                |
+| ------- | ---------------------------------------------- |
+| Type    | `map[string]{agent, model, effort}`            |
+| Keys    | `review`, `review-fix`                         |
+| Default | Empty (uses the existing `agent` path exactly) |
+
+```yaml
+invocations:
+  review:
+    agent: pi
+    model: openrouter/z-ai/glm-5.3-flash
+    effort: high
+  review-fix:
+    agent: codex
+    model: gpt-5.6-sol
+    effort: medium
+```
+
+Every route requires `agent`. Omitted `model` or `effort` fields inherit from
+`agent_config.<selected-agent>`. The block is top-level because a route may
+select a different harness. It is global-only because it chooses processes and
+models that use the operator's credentials. A repository's
+`.no-mistakes.yaml` cannot set it.
+
+Unknown purposes, agents, fields, effort levels, and knobs the selected harness
+cannot express fail at global config load. Missing binaries and unavailable ACP
+commands fail during pipeline setup before any step starts. Authentication
+cannot be preflighted consistently without a provider request, so an
+authentication failure is surfaced by the selected adapter when that
+invocation starts.
+
+An explicit route does not use the default agent fallback list. Unconfigured
+purposes continue to use that list unchanged. Raw flags from
+`agent_args_override.<selected-agent>` retain precedence over route model and
+effort fields; route fields supply only knobs not already pinned by raw args.
 
 ### agent_args_override
 

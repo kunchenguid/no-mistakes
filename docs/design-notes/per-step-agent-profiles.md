@@ -1,65 +1,84 @@
-# Review and fix agent profiles
+# Review and fix invocation routes
 
 Status: implemented.
 
 ## Configuration
 
-The existing agent-wide model and effort remain the fallback. Two opt-in
-invocation profiles can override them:
+Review and repair can select different harnesses as well as different models:
 
 ```yaml
+agent: codex
+
 agent_config:
+  codex:
+    effort: low
   pi:
-    model: openrouter/example/general
     effort: medium
-    invocations:
-      review:
-        model: openrouter/example/strong-reviewer
-        effort: high
-      review-fix:
-        model: openrouter/example/reliable-fixer
+
+invocations:
+  review:
+    agent: pi
+    model: openrouter/z-ai/glm-5.3-flash
+    effort: high
+  review-fix:
+    agent: codex
+    model: gpt-5.6-sol
+    effort: medium
 ```
 
-`review` is the read-only review call. `review-fix` is the separate call that
-applies the review findings. They are invocation keys rather than pipeline step
-keys because both calls occur inside the Review step, but their model needs are
-different. The narrower name also avoids accidentally routing test, lint, or CI
-repair calls to the review fixer.
+`review` is the read-only assessment call. `review-fix` is the separate call
+that applies accepted findings. These are invocation keys because both calls
+occur inside the Review step, but they have different responsibilities.
 
-An invocation profile inherits omitted fields independently. In the example,
-`review-fix` inherits `effort: medium`. An unconfigured invocation uses the
-agent-wide profile. A configuration with no `invocations` block takes the
-existing construction path and changes no arguments or runtime behavior.
+The `invocations` block is top-level and global-only. Nesting it under
+`agent_config.<agent>` would make the parent harness authoritative and could
+only change model or effort within that harness. It could not express the
+required Pi reviewer and Codex fixer. Repository config cannot select these
+operator-credentialed processes or models.
 
-Only `review` and `review-fix` are accepted initially. Unknown invocation names,
-unknown fields, invalid effort values, and knobs the selected harness cannot
-express fail during global config loading. The block is global-only because it
-selects a model that runs with the operator's credentials.
+Each route requires `agent`. Omitted `model` and `effort` fields inherit
+independently from `agent_config.<selected-agent>`. An unconfigured invocation
+uses the existing `agent` selection unchanged, including its ordered fallback
+list. With no `invocations` block, construction and runtime behavior stay on
+the original path.
 
-Raw native pins retain the existing precedence rule. If
-`agent_args_override.<agent>` already pins a model or effort knob, that raw flag
-wins over both the agent-wide and invocation-specific value for the same knob.
+An explicit route is deterministic. It does not enter or fall back to the
+default agent list. Missing binaries and unsupported ACP commands fail during
+pipeline setup before a step starts. Unknown agents, invalid fields, invalid
+effort values, and model or effort values the selected harness cannot express
+fail while loading global config.
+
+Authentication is the one setup property no-mistakes cannot prove generically
+without making a provider request. The supported harnesses do not expose one
+common, side-effect-free authentication probe, and a successful local token
+check would not prove the selected provider and model are authorized. If an
+explicit route is not authenticated, its adapter error is returned from that
+invocation and the default fallback list is not used. This prevents a
+configured review or repair duty from silently running under another identity.
+
+Raw native pins keep their existing precedence. The route uses
+`agent_args_override.<selected-agent>`, and a raw model or effort argument wins
+over both `agent_config` and the route for the same knob. Unpinned knobs still
+come from the route's effective profile.
 
 ## Runtime attachment
 
-Configuration parsing stores invocation overlays separately from the existing
-agent-wide profile. `Config.AgentProfileForInvocation` overlays the requested
-purpose and preserves the old `AgentProfileFor` behavior.
+Global config resolves each route to an agent plus an effective
+`internal/agentcfg.Profile`. The daemon verifies every named harness during
+agent resolution, then constructs it through `agent.NewWithOptions`. This keeps
+`internal/agentcfg` as the only harness-specific model and effort mapping and
+preserves raw-argument precedence.
 
-The daemon builds the default agent roster through `agent.NewWithOptions`. It
-builds an additional roster only when a configured invocation produces a
-different effective profile, again through `agent.NewWithOptions`, so
-`internal/agentcfg` remains the only harness-specific model and effort mapping.
-An invocation router selects that roster from `agent.RunOpts.Purpose`. Empty and
-unconfigured purposes use the original default roster.
-
-Fresh and recovered pipelines use the same construction function. Review-fix
-session reuse remains role-scoped and every review-fix turn selects the same
-effective profile. Closing the router closes the default and routed adapters.
+An invocation router selects the explicit adapter from
+`agent.RunOpts.Purpose`. Empty and unconfigured purposes use the original
+default adapter or fallback roster. Routed results carry the selected provider
+identity so role-scoped session reuse resumes only with the harness that minted
+the session. Fresh and recovered pipelines use the same construction path, and
+closing the router closes both the default roster and every explicit route.
 
 ## Extension path
 
 Additional duties can use the same shape after their `RunOpts.Purpose` values
-are made complete and stable. Add the new purpose to the config whitelist and
-document whether it is an assessment or mutation call. No pipeline step should
-translate models into harness flags itself.
+are complete and stable. Add each new purpose to the config whitelist and
+document whether it is an assessment or mutation call. Pipeline steps must not
+translate models into harness flags themselves.

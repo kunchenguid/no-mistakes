@@ -132,11 +132,11 @@ type GlobalConfig struct {
 	// which model runs with the operator's credentials, so no pushed branch may
 	// set it.
 	AgentConfig map[string]agentcfg.Profile `yaml:"agent_config"`
-	// AgentInvocationConfig holds the opt-in invocation-specific overlays
-	// nested under agent_config.<agent>.invocations. It stays separate from
-	// AgentConfig so the long-standing harness-wide accessor and zero-value
-	// behavior remain unchanged.
-	AgentInvocationConfig map[string]map[string]agentcfg.Profile `yaml:"-"`
+	// Invocations selects an explicit harness plus optional model/effort profile
+	// for a pipeline duty. It is global-only like AgentConfig: both the process
+	// and model run with the operator's credentials. Keeping it top-level avoids
+	// pretending a route that selects codex belongs to agent_config.pi.
+	Invocations map[string]AgentInvocation `yaml:"-"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -178,31 +178,32 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                   agentList                  `yaml:"agent"`
-	ACPXPath                string                     `yaml:"acpx_path"`
-	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
-	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
-	AgentPathOverride       map[string]string          `yaml:"agent_path_override"`
-	AgentArgsOverride       map[string][]string        `yaml:"agent_args_override"`
-	AgentConfig             map[string]agentProfileRaw `yaml:"agent_config"`
-	WorktreeRoots           map[string]string          `yaml:"worktree_roots"`
-	CITimeout               string                     `yaml:"ci_timeout"`
-	DaemonConnectTimeout    string                     `yaml:"daemon_connect_timeout"`
-	BranchSyncRemoteTimeout string                     `yaml:"branch_sync_remote_timeout"`
-	BabysitTimeout          string                     `yaml:"babysit_timeout"`
-	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
-	AgentTimeout            string                     `yaml:"agent_timeout"`
-	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
-	TestAgentTimeout        string                     `yaml:"test_agent_timeout"`
-	LogLevel                string                     `yaml:"log_level"`
-	SessionReuse            *bool                      `yaml:"session_reuse"`
-	AutoFix                 AutoFixRaw                 `yaml:"auto_fix"`
-	CI                      CIRaw                      `yaml:"ci"`
-	Commit                  CommitRaw                  `yaml:"commit"`
-	Intent                  IntentRaw                  `yaml:"intent"`
-	Test                    TestRaw                    `yaml:"test"`
-	Eval                    EvalRaw                    `yaml:"eval"`
-	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
+	Agent                   agentList                     `yaml:"agent"`
+	ACPXPath                string                        `yaml:"acpx_path"`
+	ForgejoAXIPath          string                        `yaml:"forgejo_axi_path"`
+	ACPRegistryOverrides    map[string]string             `yaml:"acp_registry_overrides"`
+	AgentPathOverride       map[string]string             `yaml:"agent_path_override"`
+	AgentArgsOverride       map[string][]string           `yaml:"agent_args_override"`
+	AgentConfig             map[string]agentProfileRaw    `yaml:"agent_config"`
+	Invocations             map[string]agentInvocationRaw `yaml:"invocations"`
+	WorktreeRoots           map[string]string             `yaml:"worktree_roots"`
+	CITimeout               string                        `yaml:"ci_timeout"`
+	DaemonConnectTimeout    string                        `yaml:"daemon_connect_timeout"`
+	BranchSyncRemoteTimeout string                        `yaml:"branch_sync_remote_timeout"`
+	BabysitTimeout          string                        `yaml:"babysit_timeout"`
+	StepQuietWarning        string                        `yaml:"step_quiet_warning"`
+	AgentTimeout            string                        `yaml:"agent_timeout"`
+	ReviewAgentTimeout      string                        `yaml:"review_agent_timeout"`
+	TestAgentTimeout        string                        `yaml:"test_agent_timeout"`
+	LogLevel                string                        `yaml:"log_level"`
+	SessionReuse            *bool                         `yaml:"session_reuse"`
+	AutoFix                 AutoFixRaw                    `yaml:"auto_fix"`
+	CI                      CIRaw                         `yaml:"ci"`
+	Commit                  CommitRaw                     `yaml:"commit"`
+	Intent                  IntentRaw                     `yaml:"intent"`
+	Test                    TestRaw                       `yaml:"test"`
+	Eval                    EvalRaw                       `yaml:"eval"`
+	ForgeProfiles           ForgeProfiles                 `yaml:"forge_profiles"`
 }
 
 // ForgeProfile selects one isolated provider CLI configuration directory.
@@ -541,7 +542,7 @@ type Config struct {
 	AgentPathOverride     map[string]string
 	AgentArgsOverride     map[string][]string
 	AgentConfig           map[string]agentcfg.Profile
-	AgentInvocationConfig map[string]map[string]agentcfg.Profile
+	Invocations           map[string]AgentInvocation
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	AgentTimeout          time.Duration
@@ -860,17 +861,24 @@ log_level: info
 #   codex:
 #     model: gpt-5.4
 #     effort: low
-#     invocations:
-#       review:
-#         model: gpt-5.4
-#         effort: high
-#       review-fix:
-#         model: gpt-5.3-codex
 #   claude:
 #     model: sonnet
 #     effort: high
 #   opencode:
 #     model: openai/gpt-5
+#
+# Select a different harness and profile for review or review-fix (optional,
+# global only). Omitted model/effort fields inherit agent_config for the named
+# harness. An explicit route does not silently fall back to another harness.
+# invocations:
+#   review:
+#     agent: pi
+#     model: openrouter/z-ai/glm-5.3-flash
+#     effort: high
+#   review-fix:
+#     agent: codex
+#     model: gpt-5.6-sol
+#     effort: medium
 #
 # Extra native agent CLI flags (optional, global only)
 # Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
@@ -1068,7 +1076,7 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 			}
 			c.Agent = name
 			c.Agents = []types.AgentName{name}
-			return nil
+			return c.resolveInvocationAgents(ctx, lookPath)
 		}
 		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
 		if err != nil {
@@ -1079,7 +1087,7 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 		}
 		c.Agent = name
 		c.Agents = []types.AgentName{name}
-		return nil
+		return c.resolveInvocationAgents(ctx, lookPath)
 	}
 
 	resolved, err := c.resolveAgentList(ctx, candidates, lookPath)
@@ -1088,6 +1096,26 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 	}
 	c.Agent = resolved[0]
 	c.Agents = resolved
+	return c.resolveInvocationAgents(ctx, lookPath)
+}
+
+// resolveInvocationAgents verifies every explicitly routed harness during
+// pipeline setup, before any step starts. Authentication cannot be proven here
+// without making a provider request, but missing binaries and unsupported ACP
+// commands fail early with the exact invocation key.
+func (c *Config) resolveInvocationAgents(ctx context.Context, lookPath func(string) (string, error)) error {
+	for _, purpose := range c.AgentInvocationPurposes() {
+		route := c.Invocations[purpose]
+		name, ok, probe, err := c.resolveConfiguredAgent(ctx, route.Agent, lookPath)
+		if err != nil {
+			return fmt.Errorf("resolve invocations.%s agent %q: %w", purpose, route.Agent, err)
+		}
+		if !ok {
+			return fmt.Errorf("invocations.%s agent %q is not runnable (looked for: %s); install it or choose a runnable agent before starting the pipeline", purpose, route.Agent, probe)
+		}
+		route.Agent = name
+		c.Invocations[purpose] = route
+	}
 	return nil
 }
 
@@ -1365,29 +1393,26 @@ func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
 	return c.AgentConfig[string(name)]
 }
 
-// AgentProfileForInvocation overlays an invocation-specific model/effort
-// selection on the harness-wide profile. Omitted fields inherit independently.
-// Unknown and empty purposes deliberately resolve to the harness-wide profile;
-// configuration loading only admits the supported purpose keys.
-func (c *Config) AgentProfileForInvocation(name types.AgentName, purpose string) agentcfg.Profile {
-	base := c.AgentProfileFor(name)
-	if c.AgentInvocationConfig == nil {
-		return base
-	}
-	return agentcfg.Overlay(base, c.AgentInvocationConfig[string(name)][purpose])
+// AgentInvocation is the resolved global route for one pipeline duty. Profile
+// is already overlaid on agent_config.<agent>, so callers construct the named
+// harness through agent.NewWithOptions without reimplementing precedence.
+type AgentInvocation struct {
+	Agent   types.AgentName
+	Profile agentcfg.Profile
+}
+
+// AgentInvocationFor returns the explicit route for purpose. An absent route
+// means the existing configured agent or fallback list remains authoritative.
+func (c *Config) AgentInvocationFor(purpose string) (AgentInvocation, bool) {
+	route, ok := c.Invocations[purpose]
+	return route, ok
 }
 
 // AgentInvocationPurposes returns the configured invocation routes in stable
 // order across every selected harness.
 func (c *Config) AgentInvocationPurposes() []string {
-	seen := make(map[string]struct{})
-	for _, byPurpose := range c.AgentInvocationConfig {
-		for purpose := range byPurpose {
-			seen[purpose] = struct{}{}
-		}
-	}
-	purposes := make([]string, 0, len(seen))
-	for purpose := range seen {
+	purposes := make([]string, 0, len(c.Invocations))
+	for purpose := range c.Invocations {
 		purposes = append(purposes, purpose)
 	}
 	sort.Strings(purposes)
@@ -1398,14 +1423,14 @@ func (c *Config) AgentInvocationPurposes() []string {
 // is a string here so an invalid level is reported as a config error naming the
 // valid vocabulary rather than decoding into a value no harness accepts.
 type agentProfileRaw struct {
-	Model       string                          `yaml:"model"`
-	Effort      string                          `yaml:"effort"`
-	Invocations map[string]agentProfileKnobsRaw `yaml:"invocations"`
-}
-
-type agentProfileKnobsRaw struct {
 	Model  string `yaml:"model"`
 	Effort string `yaml:"effort"`
+}
+
+type agentInvocationRaw struct {
+	Agent  types.AgentName `yaml:"agent"`
+	Model  string          `yaml:"model"`
+	Effort string          `yaml:"effort"`
 }
 
 var supportedAgentInvocationPurposes = map[string]struct{}{
@@ -1426,53 +1451,58 @@ func supportedAgentInvocationPurposeNames() []string {
 // harness-neutral profiles. Every knob is checked against what the named
 // harness can actually express, so an unmappable request fails at load rather
 // than being silently dropped at run time.
-func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]map[string]agentcfg.Profile, error) {
+func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, error) {
 	profiles := make(map[string]agentcfg.Profile, len(raw))
-	invocationProfiles := make(map[string]map[string]agentcfg.Profile)
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
 		effort, err := agentcfg.ParseEffort(entry.Effort)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
 		}
 		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
 		if err := agentcfg.Validate(agentName, profile); err != nil {
-			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
 		}
 		if !profile.IsZero() {
 			profiles[name] = profile
 		}
-		for purpose, invocation := range entry.Invocations {
-			if _, ok := supportedAgentInvocationPurposes[purpose]; !ok {
-				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations purpose %q (valid: %s)", name, purpose, strings.Join(supportedAgentInvocationPurposeNames(), ", "))
-			}
-			invocationEffort, err := agentcfg.ParseEffort(invocation.Effort)
-			if err != nil {
-				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations.%s: %w", name, purpose, err)
-			}
-			override := agentcfg.Profile{Model: strings.TrimSpace(invocation.Model), Effort: invocationEffort}
-			if override.IsZero() {
-				continue
-			}
-			if err := agentcfg.Validate(agentName, agentcfg.Overlay(profile, override)); err != nil {
-				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations.%s: %w", name, purpose, err)
-			}
-			if invocationProfiles[name] == nil {
-				invocationProfiles[name] = make(map[string]agentcfg.Profile)
-			}
-			invocationProfiles[name][purpose] = override
-		}
 	}
 	if len(profiles) == 0 {
-		profiles = nil
+		return nil, nil
 	}
-	if len(invocationProfiles) == 0 {
-		invocationProfiles = nil
+	return profiles, nil
+}
+
+func parseAgentInvocations(raw map[string]agentInvocationRaw, profiles map[string]agentcfg.Profile) (map[string]AgentInvocation, error) {
+	invocations := make(map[string]AgentInvocation, len(raw))
+	for purpose, entry := range raw {
+		if _, ok := supportedAgentInvocationPurposes[purpose]; !ok {
+			return nil, fmt.Errorf("invalid invocations purpose %q (valid: %s)", purpose, strings.Join(supportedAgentInvocationPurposeNames(), ", "))
+		}
+		if entry.Agent == "" {
+			return nil, fmt.Errorf("invalid invocations.%s: agent is required", purpose)
+		}
+		if !agentcfg.Known(entry.Agent) {
+			return nil, fmt.Errorf("invalid invocations.%s.agent %q (valid: %s, cursor, acp:<target>)", purpose, entry.Agent, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+		}
+		effort, err := agentcfg.ParseEffort(entry.Effort)
+		if err != nil {
+			return nil, fmt.Errorf("invalid invocations.%s: %w", purpose, err)
+		}
+		override := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
+		effective := agentcfg.Overlay(profiles[string(entry.Agent)], override)
+		if err := agentcfg.Validate(entry.Agent, effective); err != nil {
+			return nil, fmt.Errorf("invalid invocations.%s: %w", purpose, err)
+		}
+		invocations[purpose] = AgentInvocation{Agent: entry.Agent, Profile: effective}
 	}
-	return profiles, invocationProfiles, nil
+	if len(invocations) == 0 {
+		return nil, nil
+	}
+	return invocations, nil
 }
 
 func agentNamesText(names []types.AgentName) []string {
@@ -1903,12 +1933,18 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
 	}
 	if raw.AgentConfig != nil {
-		profiles, invocationProfiles, err := parseAgentConfig(raw.AgentConfig)
+		profiles, err := parseAgentConfig(raw.AgentConfig)
 		if err != nil {
 			return nil, err
 		}
 		cfg.AgentConfig = profiles
-		cfg.AgentInvocationConfig = invocationProfiles
+	}
+	if raw.Invocations != nil {
+		invocations, err := parseAgentInvocations(raw.Invocations, cfg.AgentConfig)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Invocations = invocations
 	}
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
@@ -2639,22 +2675,22 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	cfg := &Config{
-		Agent:                 global.Agent,
-		Agents:                copyAgents(global.Agents),
-		ACPXPath:              global.ACPXPath,
-		ForgejoAXIPath:        global.ForgejoAXIPath,
-		ACPRegistryOverrides:  global.ACPRegistryOverrides,
-		AgentPathOverride:     global.AgentPathOverride,
-		AgentArgsOverride:     global.AgentArgsOverride,
-		AgentConfig:           global.AgentConfig,
-		AgentInvocationConfig: global.AgentInvocationConfig,
-		CITimeout:             global.CITimeout,
-		StepQuietWarning:      global.StepQuietWarning,
-		AgentTimeout:          global.AgentTimeout,
-		ReviewAgentTimeout:    global.ReviewAgentTimeout,
-		TestAgentTimeout:      global.TestAgentTimeout,
-		LogLevel:              global.LogLevel,
-		SessionReuse:          global.SessionReuse,
+		Agent:                global.Agent,
+		Agents:               copyAgents(global.Agents),
+		ACPXPath:             global.ACPXPath,
+		ForgejoAXIPath:       global.ForgejoAXIPath,
+		ACPRegistryOverrides: global.ACPRegistryOverrides,
+		AgentPathOverride:    global.AgentPathOverride,
+		AgentArgsOverride:    global.AgentArgsOverride,
+		AgentConfig:          global.AgentConfig,
+		Invocations:          global.Invocations,
+		CITimeout:            global.CITimeout,
+		StepQuietWarning:     global.StepQuietWarning,
+		AgentTimeout:         global.AgentTimeout,
+		ReviewAgentTimeout:   global.ReviewAgentTimeout,
+		TestAgentTimeout:     global.TestAgentTimeout,
+		LogLevel:             global.LogLevel,
+		SessionReuse:         global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,

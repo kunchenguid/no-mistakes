@@ -61,33 +61,39 @@ agent_config:
 	}
 }
 
-func TestLoadGlobal_AgentConfigInvocationProfiles(t *testing.T) {
+func TestLoadGlobal_InvocationRoutesSelectAgentAndProfile(t *testing.T) {
 	cfg := writeGlobalConfig(t, `
-agent: pi
+agent: codex
 agent_config:
   pi:
     model: openrouter/base
     effort: medium
-    invocations:
-      review:
-        model: openrouter/reviewer
-        effort: high
-      review-fix:
-        model: openrouter/fixer
+  codex:
+    effort: low
+invocations:
+  review:
+    agent: pi
+    model: openrouter/reviewer
+    effort: high
+  review-fix:
+    agent: codex
+    model: gpt-5.6-sol
 `)
 	merged := Merge(cfg, &RepoConfig{})
 
 	if got := merged.AgentProfileFor(types.AgentPi); got != (agentcfg.Profile{Model: "openrouter/base", Effort: agentcfg.EffortMedium}) {
 		t.Fatalf("AgentProfileFor(pi) = %#v", got)
 	}
-	if got := merged.AgentProfileForInvocation(types.AgentPi, "review"); got != (agentcfg.Profile{Model: "openrouter/reviewer", Effort: agentcfg.EffortHigh}) {
-		t.Fatalf("review profile = %#v", got)
+	review, ok := merged.AgentInvocationFor("review")
+	if !ok || review.Agent != types.AgentPi || review.Profile != (agentcfg.Profile{Model: "openrouter/reviewer", Effort: agentcfg.EffortHigh}) {
+		t.Fatalf("review route = %#v, %v", review, ok)
 	}
-	if got := merged.AgentProfileForInvocation(types.AgentPi, "review-fix"); got != (agentcfg.Profile{Model: "openrouter/fixer", Effort: agentcfg.EffortMedium}) {
-		t.Fatalf("review-fix profile = %#v, want inherited medium effort", got)
+	fix, ok := merged.AgentInvocationFor("review-fix")
+	if !ok || fix.Agent != types.AgentCodex || fix.Profile != (agentcfg.Profile{Model: "gpt-5.6-sol", Effort: agentcfg.EffortLow}) {
+		t.Fatalf("review-fix route = %#v, %v; want inherited codex low effort", fix, ok)
 	}
-	if got := merged.AgentProfileForInvocation(types.AgentPi, "lint"); got != merged.AgentProfileFor(types.AgentPi) {
-		t.Fatalf("unconfigured invocation profile = %#v, want harness-wide fallback", got)
+	if _, ok := merged.AgentInvocationFor("lint"); ok {
+		t.Fatal("unconfigured invocation unexpectedly has a route")
 	}
 	if got := merged.AgentInvocationPurposes(); len(got) != 2 || got[0] != "review" || got[1] != "review-fix" {
 		t.Fatalf("AgentInvocationPurposes() = %v", got)
@@ -103,9 +109,12 @@ func TestLoadGlobal_AgentConfigRejectsBadInput(t *testing.T) {
 		{"unknown agent", "agent_config:\n  gemini:\n    model: x\n", "invalid agent name in agent_config"},
 		{"unknown effort", "agent_config:\n  codex:\n    effort: turbo\n", "invalid effort"},
 		{"unknown knob", "agent_config:\n  codex:\n    temperature: 0.2\n", "temperature"},
-		{"unknown invocation", "agent_config:\n  codex:\n    invocations:\n      document:\n        model: x\n", "purpose \"document\""},
-		{"unknown invocation knob", "agent_config:\n  codex:\n    invocations:\n      review:\n        temperature: 0.2\n", "temperature"},
-		{"unknown invocation effort", "agent_config:\n  codex:\n    invocations:\n      review-fix:\n        effort: turbo\n", "invalid effort"},
+		{"unknown invocation", "invocations:\n  document:\n    agent: codex\n", "purpose \"document\""},
+		{"missing invocation agent", "invocations:\n  review:\n    model: x\n", "agent is required"},
+		{"unknown invocation agent", "invocations:\n  review:\n    agent: gemini\n", "invalid invocations.review.agent"},
+		{"unknown invocation knob", "invocations:\n  review:\n    agent: codex\n    temperature: 0.2\n", "temperature"},
+		{"unknown invocation effort", "invocations:\n  review-fix:\n    agent: codex\n    effort: turbo\n", "invalid effort"},
+		{"unmappable invocation effort", "invocations:\n  review:\n    agent: cursor\n    effort: high\n", "cannot express effort"},
 		{"unmappable model", "agent_config:\n  rovodev:\n    model: x\n", "cannot express model"},
 		{"unmappable effort", "agent_config:\n  antigravity:\n    effort: high\n", "cannot express effort"},
 		{"acp effort", "agent_config:\n  cursor:\n    effort: high\n", "cannot express effort"},
@@ -136,8 +145,8 @@ func TestLoadGlobal_AgentConfigAbsentIsZero(t *testing.T) {
 	if cfg.AgentConfig != nil {
 		t.Fatalf("AgentConfig = %#v, want nil for a config that does not set it", cfg.AgentConfig)
 	}
-	if cfg.AgentInvocationConfig != nil {
-		t.Fatalf("AgentInvocationConfig = %#v, want nil for a config that does not set it", cfg.AgentInvocationConfig)
+	if cfg.Invocations != nil {
+		t.Fatalf("Invocations = %#v, want nil for a config that does not set it", cfg.Invocations)
 	}
 	merged := Merge(cfg, &RepoConfig{})
 	if got := merged.AgentProfileFor(types.AgentCodex); !got.IsZero() {
@@ -176,6 +185,31 @@ agent_args_override:
 		if got[i] != want[i] {
 			t.Fatalf("mapped args = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestInvocationRouteUsesSelectedAgentRawArgsWithRawWinning(t *testing.T) {
+	cfg := writeGlobalConfig(t, `
+agent: pi
+invocations:
+  review-fix:
+    agent: codex
+    model: gpt-5.6-sol
+    effort: medium
+agent_args_override:
+  codex:
+    - -m
+    - operator-pin
+`)
+	merged := Merge(cfg, &RepoConfig{})
+	route, ok := merged.AgentInvocationFor("review-fix")
+	if !ok {
+		t.Fatal("review-fix route is absent")
+	}
+	got := agentcfg.NativeArgs(route.Agent, route.Profile, merged.AgentArgsFor(route.Agent))
+	want := []string{"-c", `model_reasoning_effort="medium"`}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("mapped route args = %v, want %v; raw model pin must win", got, want)
 	}
 }
 
@@ -218,6 +252,17 @@ func TestRepoConfigCannotSetAgentConfig(t *testing.T) {
 	}
 }
 
+func TestRepoConfigCannotSetInvocations(t *testing.T) {
+	repo, err := LoadRepoFromBytes([]byte("invocations:\n  review:\n    agent: codex\n    model: attacker-model\n"))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes: %v", err)
+	}
+	cfg := Merge(DefaultGlobalConfig(), repo)
+	if cfg.Invocations != nil {
+		t.Fatalf("a repo config set invocation routes: %#v", cfg.Invocations)
+	}
+}
+
 // TestDefaultConfigYAML_DocumentsAgentConfig keeps the shipped config commentary
 // honest about the field that replaces knowing each harness's own flag.
 func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
@@ -231,8 +276,8 @@ func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
 	if !strings.Contains(defaultConfigYAML, "# agent_config:") {
 		t.Fatal("default config.yaml does not document agent_config")
 	}
-	if !strings.Contains(defaultConfigYAML, "#     invocations:") {
-		t.Fatal("default config.yaml does not document review and review-fix profiles")
+	if !strings.Contains(defaultConfigYAML, "# invocations:") {
+		t.Fatal("default config.yaml does not document review and review-fix routes")
 	}
 	for _, effort := range agentcfg.EffortNames() {
 		if !strings.Contains(defaultConfigYAML, effort) {

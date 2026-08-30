@@ -192,11 +192,12 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-Six global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
+Seven global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
-- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table and the precedence rule against raw flags.
-- [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as service tier or permission mode, including the reserved-flag rules and smart defaults. Keep both global-only; they reflect your local agent setup rather than repo policy.
+- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table.
+- [`invocations`](/no-mistakes/reference/global-config/#invocations) - an explicit harness, model, and effort for review or review-fix when those duties should use different agents.
+- [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as service tier or permission mode, including the reserved-flag rules and smart defaults. Keep all three global-only; they reflect your local agent setup rather than repo policy.
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
 - [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.

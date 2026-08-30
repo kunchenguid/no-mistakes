@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// invocationRouter selects a separately configured instance of the same agent
-// roster for an invocation purpose. The default remains authoritative for an
-// empty or unconfigured purpose, which keeps all pre-existing configurations
-// and call sites unchanged.
+// invocationRouter selects an explicitly configured agent for an invocation
+// purpose. The default remains authoritative for an empty or unconfigured
+// purpose, which keeps all pre-existing configurations and call sites
+// unchanged.
 type invocationRouter struct {
 	defaultAgent Agent
 	routes       map[string]Agent
@@ -41,7 +41,11 @@ func (a *invocationRouter) Run(ctx context.Context, opts RunOpts) (*Result, erro
 	if routed := a.routes[opts.Purpose]; routed != nil {
 		selected = routed
 	}
-	return selected.Run(ctx, opts)
+	result, err := selected.Run(ctx, opts)
+	if err == nil && result != nil && result.Provider == "" {
+		result.Provider = selected.Name()
+	}
+	return result, err
 }
 
 func (a *invocationRouter) SupportsSessionResume() bool {

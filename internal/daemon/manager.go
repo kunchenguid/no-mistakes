@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -286,16 +287,14 @@ func newResolvedPipelineAgent(cfg *config.Config, evidenceRoot string, environme
 	if len(agents) == 0 {
 		agents = []types.AgentName{cfg.Agent}
 	}
-	defaultAgent, err := newPipelineAgentSet(cfg, agents, evidenceRoot, environment, "")
+	defaultAgent, err := newPipelineAgentSet(cfg, agents, evidenceRoot, environment)
 	if err != nil {
 		return nil, err
 	}
 	routes := make(map[string]agent.Agent)
 	for _, purpose := range cfg.AgentInvocationPurposes() {
-		if !invocationProfileDiffers(cfg, agents, purpose) {
-			continue
-		}
-		routed, routeErr := newPipelineAgentSet(cfg, agents, evidenceRoot, environment, purpose)
+		route, _ := cfg.AgentInvocationFor(purpose)
+		routed, routeErr := newPipelineAgentForProfile(cfg, route.Agent, route.Profile, evidenceRoot, environment)
 		if routeErr != nil {
 			_ = defaultAgent.Close()
 			for _, existing := range routes {
@@ -308,37 +307,32 @@ func newResolvedPipelineAgent(cfg *config.Config, evidenceRoot string, environme
 	return agent.NewInvocationRouter(defaultAgent, routes), nil
 }
 
-func newPipelineAgentSet(cfg *config.Config, agents []types.AgentName, evidenceRoot string, environment runenv.Overlay, purpose string) (agent.Agent, error) {
+func newPipelineAgentSet(cfg *config.Config, agents []types.AgentName, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
 	created := make([]agent.Agent, 0, len(agents))
 	for _, name := range agents {
-		profile := cfg.AgentProfileFor(name)
-		if purpose != "" {
-			profile = cfg.AgentProfileForInvocation(name, purpose)
-		}
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-			DisableProjectSettings: cfg.DisableProjectSettings,
-			Profile:                profile,
-			Environment:            environment,
-		})
+		next, err := newPipelineAgentForProfile(cfg, name, cfg.AgentProfileFor(name), evidenceRoot, environment)
 		if err != nil {
 			for _, existing := range created {
 				_ = existing.Close()
 			}
 			return nil, fmt.Errorf("create agent %s: %w", name, err)
 		}
-		created = append(created, agent.WithSteering(next, evidenceRoot))
+		created = append(created, next)
 	}
 	return agent.NewFallback(created), nil
 }
 
-func invocationProfileDiffers(cfg *config.Config, agents []types.AgentName, purpose string) bool {
-	for _, name := range agents {
-		if cfg.AgentProfileForInvocation(name, purpose) != cfg.AgentProfileFor(name) {
-			return true
-		}
+func newPipelineAgentForProfile(cfg *config.Config, name types.AgentName, profile agentcfg.Profile, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+	next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+		DisableProjectSettings: cfg.DisableProjectSettings,
+		Profile:                profile,
+		Environment:            environment,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create agent %s: %w", name, err)
 	}
-	return false
+	return agent.WithSteering(next, evidenceRoot), nil
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
