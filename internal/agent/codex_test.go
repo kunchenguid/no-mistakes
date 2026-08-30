@@ -590,6 +590,70 @@ func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 	}
 }
 
+func TestPublicationCodexAgentUsesPinnedBoundaryAndNeverOffersSessionResume(t *testing.T) {
+	fixture := newPublicationBoundaryFixture(t)
+	protected, err := NewPublicationCodexAgent(fixture.boundary, nil)
+	if err != nil {
+		t.Fatalf("new protected Codex agent: %v", err)
+	}
+	defer protected.Close()
+
+	if protected.Name() != "codex" {
+		t.Fatalf("protected agent name=%q, want codex", protected.Name())
+	}
+	if SupportsSessionResume(protected) {
+		t.Fatal("publication Codex agent exposed session/resume capability")
+	}
+	concrete, ok := protected.(*codexAgent)
+	if !ok || concrete.publicationBoundary != fixture.boundary || concrete.bin != fixture.boundary.paths[PublicationExecutableNativeCodex] {
+		t.Fatalf("protected agent is not bound to the exact native boundary: %#v", protected)
+	}
+	if !IsPublicationConfinementAgent(protected) || IsPublicationConfinementAgent(&codexAgent{bin: concrete.bin}) {
+		t.Fatal("publication confinement identity was inferred from the shared Codex adapter instead of the bound runtime")
+	}
+}
+
+func TestPublicationCodexAgentRejectsSessionFallbackAndRawExecutionConflictsBeforeLaunch(t *testing.T) {
+	fixture := newPublicationBoundaryFixture(t)
+	for _, args := range [][]string{
+		{"--dangerously-bypass-approvals-and-sandbox"},
+		{"--sandbox", "danger-full-access"},
+		{"--full-auto"},
+		{"resume", "thread-id"},
+		{"--search"},
+	} {
+		if _, err := NewPublicationCodexAgent(fixture.boundary, args); !errors.Is(err, ErrPublicationConfinementUnavailable) {
+			t.Fatalf("conflicting protected args %v error=%v, want confinement_unavailable", args, err)
+		}
+	}
+
+	protected, err := NewPublicationCodexAgent(fixture.boundary, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer protected.Close()
+	for name, opts := range map[string]RunOpts{
+		"session":  {Prompt: "inspect", CWD: t.TempDir(), Session: &SessionRef{ID: "thread-id", Agent: "codex"}},
+		"fallback": {Prompt: "inspect", CWD: t.TempDir(), SessionFallback: true, SessionFallbackReason: "exit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := protected.Run(context.Background(), opts); !errors.Is(err, ErrPublicationConfinementUnavailable) {
+				t.Fatalf("protected %s invocation error=%v, want confinement_unavailable", name, err)
+			}
+		})
+	}
+}
+
+func TestPublicationCodexAgentHasZeroRetryBudget(t *testing.T) {
+	fixture := newPublicationBoundaryFixture(t)
+	if got := (&codexAgent{publicationBoundary: fixture.boundary}).retryBudget(); got != 0 {
+		t.Fatalf("protected Codex retry budget=%d, want zero", got)
+	}
+	if got := (&codexAgent{}).retryBudget(); got != claudeMaxRetries {
+		t.Fatalf("ordinary Codex retry budget=%d, want %d", got, claudeMaxRetries)
+	}
+}
+
 // TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut is the backward-compat
 // guarantee: without the opt-out, codex adds no suppression and loads AGENTS.md
 // exactly as before.

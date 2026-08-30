@@ -49,6 +49,9 @@ func TestWorktreePaths(t *testing.T) {
 	if got := p.WorktreeDir("repo1", "run1"); got != filepath.Join(root, "worktrees", "repo1", "run1") {
 		t.Errorf("WorktreeDir() = %q", got)
 	}
+	if got := p.PublicationCandidatesDir(); got != filepath.Join(root, "publication-candidates") {
+		t.Errorf("PublicationCandidatesDir() = %q", got)
+	}
 }
 
 func TestLogPaths(t *testing.T) {
@@ -127,5 +130,8 @@ func TestEnsureDirs(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("expected %q to be a directory", d)
 		}
+	}
+	if _, err := os.Stat(p.PublicationCandidatesDir()); !os.IsNotExist(err) {
+		t.Fatalf("EnsureDirs created lazy publication candidate root: %v", err)
 	}
 }

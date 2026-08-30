@@ -93,6 +93,30 @@ func TestDocumentStep_CombinedPassCoversBothDutiesAndSplitsFindings(t *testing.T
 	}
 }
 
+func TestSplitHousekeepingFindingsPreservesEmptyArrays(t *testing.T) {
+	t.Parallel()
+
+	doc, lint := splitHousekeepingFindings(Findings{
+		Items:   []Finding{},
+		Summary: "housekeeping clean",
+	})
+
+	for name, findings := range map[string]Findings{
+		"document": doc,
+		"lint":     lint,
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := json.Marshal(findings)
+			if err != nil {
+				t.Fatalf("marshal %s findings: %v", name, err)
+			}
+			if !strings.Contains(string(raw), `"findings":[]`) {
+				t.Fatalf("%s findings wire shape = %s, want a non-null empty findings array", name, raw)
+			}
+		})
+	}
+}
+
 // TestDocumentStep_ConfiguredLintCommandKeepsDocOnlyPrompt proves the
 // combined duty is only merged when lint would otherwise need its own agent
 // pass: with commands.lint configured the document prompt stays doc-only and

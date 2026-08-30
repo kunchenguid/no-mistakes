@@ -24,6 +24,9 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if err := rejectPublicationDefenseFixState(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
@@ -119,7 +122,7 @@ Previous test findings to address:
 			findingsJSON, _ := json.Marshal(findings)
 			return &pipeline.StepOutcome{
 				NeedsApproval: true,
-				AutoFixable:   true,
+				AutoFixable:   !sctx.PublicationDefense,
 				Findings:      string(findingsJSON),
 				ExitCode:      exitCode,
 				FixSummary:    fixSummary,
@@ -151,9 +154,8 @@ Previous test findings to address:
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
 		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
-		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
-			Prompt: fmt.Sprintf(
-				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
+		prompt := fmt.Sprintf(
+			`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 
 Context:
 - branch: %s
@@ -197,13 +199,18 @@ Rules:
 - Do NOT report passing tests (whether existing or new), test counts, coverage summaries, or other non-actionable information.
 - If all tests pass and there are no issues, return an empty findings array.
 - Set action to "ask-user" for missing-evidence warning findings and only otherwise when a test failure seems desired and you question the author's intent of having the test in the first place. Set action to "auto-fix" for objective test failures that can be safely fixed. Set action to "no-op" for informational notes.%s`,
-				sctx.Run.Branch,
-				baseSHA,
-				sctx.Run.HeadSHA,
-				configuredTestCommand,
-				evidenceGuidance,
-				reassessHistory,
-			),
+			sctx.Run.Branch,
+			baseSHA,
+			sctx.Run.HeadSHA,
+			configuredTestCommand,
+			evidenceGuidance,
+			reassessHistory,
+		)
+		if sctx.PublicationDefense {
+			prompt = publicationDefenseTestPrompt(sctx, baseSHA, configuredTestCommand, evidenceGuidance, reassessHistory)
+		}
+		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
+			Prompt:     prompt,
 			CWD:        sctx.WorkDir,
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
@@ -226,7 +233,7 @@ Rules:
 		}
 
 		needsApproval := hasBlockingFindings(findings.Items)
-		autoFixable := needsApproval
+		autoFixable := needsApproval && !sctx.PublicationDefense
 
 		// Record any new test files the agent wrote as informational (no-op)
 		// findings. Their presence alone is not an actionable problem, so they
@@ -277,6 +284,35 @@ Rules:
 	sctx.Log("all tests passed")
 	findingsJSON, _ := json.Marshal(Findings{Tested: tested})
 	return &pipeline.StepOutcome{Findings: string(findingsJSON), FixSummary: fixSummary}, nil
+}
+
+func publicationDefenseTestPrompt(sctx *pipeline.StepContext, baseSHA, configuredTestCommand, evidenceGuidance, history string) string {
+	return fmt.Sprintf(
+		`%s
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+%s
+
+Task:
+- Inspect the exact candidate and run only the smallest existing tests or read-only manual checks needed to assess the requested intent.
+- Never write or improve a test, source file, configuration, fixture, snapshot, generated file, or repository artifact.
+- If no existing read-only check can establish the intent, report a warning finding instead of creating one.
+- Evidence artifacts may be written only to the external evidence directory named below; never write them into the candidate.
+%s
+- Return structured findings, a non-empty tested array, a concise testing_summary, and an artifacts array.
+- Use action ask-user for every actionable finding and no-op only for informational notes; never request auto-fix.
+%s`,
+		publicationDefensePromptContract,
+		sctx.Run.Branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		configuredTestCommand,
+		evidenceGuidance,
+		history,
+	)
 }
 
 func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {

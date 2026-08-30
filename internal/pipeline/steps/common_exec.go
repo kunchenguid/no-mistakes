@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -274,6 +275,23 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 }
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
+	if sctx != nil && sctx.PublicationDefense {
+		if sctx.PublicationCommandRunner == nil {
+			return "", -1, fmt.Errorf("%w: publication configured command boundary is unavailable", agent.ErrPublicationConfinementUnavailable)
+		}
+		scratch := ""
+		if value, ok := envValue(sctx.Env, "TMPDIR"); ok {
+			scratch = value
+		}
+		result, err := sctx.PublicationCommandRunner.RunPublicationCommand(sctx.Ctx, pipeline.PublicationCommandRequest{
+			WorkDir: sctx.WorkDir, SourceDir: sctx.PublicationSourceDir, ScratchDir: scratch,
+			Command: cmdStr, Env: append([]string(nil), stepEnvironment(sctx)...),
+		})
+		if err != nil {
+			return "", -1, err
+		}
+		return result.Output, result.ExitCode, nil
+	}
 	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
 }
 

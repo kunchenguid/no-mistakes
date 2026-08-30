@@ -21,6 +21,33 @@ Unlike `no-mistakes attach`, bare `no-mistakes` only auto-attaches to an active 
 `--skip` only applies when bare `no-mistakes` starts a new pipeline run through the wizard; it does not skip a step on an already-active run.
 Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, and `ci`.
 
+## no-mistakes publication
+
+Machine interface for publishing a completed Agent Factory candidate without
+starting another build loop.
+
+```sh
+no-mistakes publication start
+no-mistakes publication authorize
+no-mistakes publication status
+```
+
+These commands exchange strict `factory-publication-v1` JSON. `start` admits
+the bound candidate, `authorize` supplies the separately bound Owner decision
+for the next Push or PR effect, and `status` projects the durable publication
+state. See [Factory Publication](/no-mistakes/reference/factory-publication/)
+for the complete protocol, happy path, and fail-closed outcomes.
+
+The interface is currently a blocked preview: production `start` and
+`authorize` fail closed with `confinement_unavailable` before admission or an
+external effect. A real inherited defense boundary for filesystem,
+credentials, and egress is still required; the offline test boundary is not a
+supported production mode.
+
+Waiting `READY_FOR_PUSH` and `READY_FOR_PR` results include the exact challenge
+needed to construct either a `GO` or `DENY` authorization; callers must forward
+those bindings unchanged rather than infer them from repository state.
+
 ## no-mistakes init
 
 Initialize or refresh the gate for the current repository.

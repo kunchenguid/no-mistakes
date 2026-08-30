@@ -118,6 +118,14 @@ func (p *Paths) WorktreeDir(repoID, runID string) string {
 	return filepath.Join(p.root, "worktrees", repoID, runID)
 }
 
+// PublicationCandidatesDir is the private root for disposable protected
+// publication candidates. Its owning port creates it lazily with mode 0700;
+// EnsureDirs deliberately does not create it for installations that never use
+// the publication profile.
+func (p *Paths) PublicationCandidatesDir() string {
+	return filepath.Join(p.root, "publication-candidates")
+}
+
 func (p *Paths) LogsDir() string { return filepath.Join(p.root, "logs") }
 func (p *Paths) RunLogDir(runID string) string {
 	return filepath.Join(p.root, "logs", runID)

@@ -89,6 +89,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if err := rejectPublicationDefenseFixState(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
@@ -117,7 +120,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	if combinedLint {
+	if sctx.PublicationDefense {
+		sctx.Log("auditing documentation in publication defense mode...")
+	} else if combinedLint {
 		sctx.Log("housekeeping: updating documentation and linting in one pass...")
 	} else {
 		sctx.Log("updating documentation...")
@@ -142,15 +147,18 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		return nil, fmt.Errorf("agent document: %w", err)
 	}
 
-	// Commit whatever the agent edited, regardless of how trustworthy its
-	// structured output turns out to be.
+	// Ordinary AXI commits whatever the agent edited, regardless of how
+	// trustworthy its structured output turns out to be. Publication defense
+	// never enters that mutation path.
 	commitSummary := extractDocumentSummary(result.Output, "")
 	fallbackSummary := "update documentation"
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	if err := commitAgentFixes(sctx, s.Name(), commitSummary, fallbackSummary); err != nil {
-		return nil, err
+	if !sctx.PublicationDefense {
+		if err := commitAgentFixes(sctx, s.Name(), commitSummary, fallbackSummary); err != nil {
+			return nil, err
+		}
 	}
 
 	// Without trustworthy structured output we cannot confirm the agent
@@ -182,6 +190,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	}
 
 	needsApproval := len(docFindings.Items) > 0
+	if sctx.PublicationDefense {
+		needsApproval = hasBlockingFindings(docFindings.Items) || types.HasActionableFindings(docFindings)
+	}
 	findingsJSON, _ := json.Marshal(docFindings)
 
 	sctx.Log(fmt.Sprintf("document findings: %d unresolved items", len(docFindings.Items)))
@@ -199,6 +210,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 // the task, and - in combined mode - the lint duty.
 func (s *DocumentStep) buildPrompt(sctx *pipeline.StepContext, baseSHA, ignorePatterns string, combinedLint bool) string {
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	if sctx.PublicationDefense {
+		return publicationDefenseDocumentPrompt(sctx, baseSHA, ignorePatterns, combinedLint, historySection)
+	}
 
 	intro := "Keep the project documentation accurate for this change."
 	if combinedLint {
@@ -269,6 +283,54 @@ Previous findings to address:
 	return prompt
 }
 
+func publicationDefenseDocumentPrompt(sctx *pipeline.StepContext, baseSHA, ignorePatterns string, combinedLint bool, history string) string {
+	duty := `- Inspect the change and identify documentation facts it made stale, missing, duplicated, or contradictory.
+- Use the documentation placement policy below to identify the one authoritative owner, but report every gap without editing it.`
+	categoryRule := ""
+	if combinedLint {
+		duty += `
+- Also discover and run only read-only lint, format-check, or static-analysis commands relevant to the changed files.
+- Report unresolved lint findings without applying a formatter or fix.`
+		categoryRule = `
+- Set category to "documentation" or "lint" on every finding.`
+	}
+	documentScope := ""
+	if combinedLint {
+		documentScope = " and lint"
+	}
+	return fmt.Sprintf(
+		`%s
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+- default branch: %s
+- ignore patterns: %s
+
+Task:
+%s%s
+
+%s
+
+Rules:
+- Return an empty findings array only when the current candidate's documentation%s is already clean.
+- The summary describes the audit result; it is not a commit message or permission to edit.%s%s`,
+		publicationDefensePromptContract,
+		sctx.Run.Branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		sctx.Repo.DefaultBranch,
+		ignorePatterns,
+		duty,
+		categoryRule,
+		documentPlacementPolicy,
+		documentScope,
+		trustedDocumentPolicySection(sctx),
+		history,
+	)
+}
+
 // trustedDocumentPolicySection renders the repository-specific documentation
 // ownership policy. The value comes from the trusted default-branch copy of
 // .no-mistakes.yaml (config.EffectiveRepoConfig), so a contributor's pushed
@@ -297,8 +359,8 @@ func lintDutySection(combinedLint bool) string {
 // gate (any documentation finding parks; lint parks only on error/warning) -
 // so miscategorization fails safe.
 func splitHousekeepingFindings(findings Findings) (doc Findings, lint Findings) {
-	doc = Findings{Summary: findings.Summary}
-	lint = Findings{Summary: findings.Summary}
+	doc = Findings{Items: make([]Finding, 0), Summary: findings.Summary}
+	lint = Findings{Items: make([]Finding, 0), Summary: findings.Summary}
 	for _, item := range findings.Items {
 		if item.Category == types.FindingCategoryLint {
 			lint.Items = append(lint.Items, item)

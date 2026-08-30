@@ -653,3 +653,51 @@ func TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork(t *testing.T
 		t.Fatal("expected the expired caller deadline to fail the run")
 	}
 }
+
+func TestRunAgent_PublicationDefenseRejectsSessionAndFallbackMetadataBeforeAgentCall(t *testing.T) {
+	for name, invoke := range map[string]func(*StepContext) error{
+		"native session": func(sctx *StepContext) error {
+			_, err := sctx.RunAgent(agent.RunOpts{Prompt: "inspect", Session: &agent.SessionRef{ID: "thread", Agent: "codex"}})
+			return err
+		},
+		"fresh-session fallback": func(sctx *StepContext) error {
+			_, err := sctx.RunAgent(agent.RunOpts{Prompt: "inspect", SessionFallback: true, SessionFallbackReason: "exit"})
+			return err
+		},
+		"session role": func(sctx *StepContext) error {
+			_, err := sctx.RunAgentSessionContext(context.Background(), SessionRoleFixer, agent.RunOpts{Prompt: "inspect"})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ag := &hangingAgent{name: "codex"}
+			sctx := &StepContext{
+				Ctx: context.Background(), Agent: ag, Config: &config.Config{AgentTimeout: time.Second},
+				PublicationDefense: true,
+			}
+			if err := invoke(sctx); !errors.Is(err, agent.ErrPublicationConfinementUnavailable) {
+				t.Fatalf("publication %s error=%v, want confinement_unavailable", name, err)
+			}
+			if ag.calls != 0 {
+				t.Fatalf("publication %s reached agent %d times", name, ag.calls)
+			}
+		})
+	}
+}
+
+func TestRunAgent_PublicationDefenseRejectsFallbackAdapterBeforeAnyAttempt(t *testing.T) {
+	first := &hangingAgent{name: "codex"}
+	second := &hangingAgent{name: "claude"}
+	sctx := &StepContext{
+		Ctx:                context.Background(),
+		Agent:              agent.NewFallback([]agent.Agent{first, second}),
+		Config:             &config.Config{AgentTimeout: time.Second},
+		PublicationDefense: true,
+	}
+	if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "inspect"}); !errors.Is(err, agent.ErrPublicationConfinementUnavailable) {
+		t.Fatalf("publication fallback error=%v, want confinement_unavailable", err)
+	}
+	if first.calls != 0 || second.calls != 0 {
+		t.Fatalf("publication fallback attempted agents: first=%d second=%d", first.calls, second.calls)
+	}
+}

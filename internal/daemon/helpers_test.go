@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
@@ -21,6 +22,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Production binaries receive this full revision through release ldflags.
+	// The go test binary has no VCS settings, so bind one exact synthetic build
+	// identity before any in-process or helper-process daemon is started.
+	buildinfo.Commit = strings.Repeat("d", 40)
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {

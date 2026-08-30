@@ -37,6 +37,7 @@ func mutatesPipelineControl(cmd *cobra.Command) bool {
 	switch path {
 	case "no-mistakes", "no-mistakes init", "no-mistakes eject", "no-mistakes rerun",
 		"no-mistakes axi run", "no-mistakes axi respond", "no-mistakes axi abort",
+		"no-mistakes publication start", "no-mistakes publication authorize",
 		"no-mistakes daemon start", "no-mistakes daemon stop", "no-mistakes daemon restart",
 		"no-mistakes update":
 		return true

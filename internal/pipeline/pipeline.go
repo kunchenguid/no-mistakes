@@ -15,22 +15,30 @@ var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx                   context.Context
-	Run                   *db.Run
-	Repo                  *db.Repo
-	WorkDir               string
-	GateDir               string
-	Agent                 agent.Agent
-	Config                *config.Config
-	ForgeContext          *forgecontext.Context
-	DB                    *db.DB
-	Log                   func(string) // discrete log line (newline-terminated, user-visible + file)
-	LogChunk              func(string) // raw streaming chunk (user-visible + file)
-	LogFile               func(string) // file-only log callback (not shown to user)
-	Fixing                bool         // true when re-executing after a "fix" action
-	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
-	ReviewStartingHeadSHA string
-	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)
+	Ctx              context.Context
+	Run              *db.Run
+	Repo             *db.Repo
+	WorkDir          string
+	GateDir          string
+	Agent            agent.Agent
+	Config           *config.Config
+	ForgeContext     *forgecontext.Context
+	DB               *db.DB
+	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk         func(string) // raw streaming chunk (user-visible + file)
+	LogFile          func(string) // file-only log callback (not shown to user)
+	Fixing           bool         // true when re-executing after a "fix" action
+	SkipFixExecution bool         // replay an already-completed fix round's review turn only
+	// PublicationDefense marks the protected publication profile's disposable,
+	// technically read-only candidate context. Defense steps may inspect and
+	// report against it, but never enter a fix/mutation path. The adapter sets
+	// this only on its cloned context; ordinary AXI contexts keep the zero value.
+	PublicationDefense       bool
+	PublicationCommandRunner PublicationCommandRunner
+	PublicationScratchDir    string
+	PublicationSourceDir     string
+	ReviewStartingHeadSHA    string
+	PreviousFindings         string // JSON findings from the previous execution (set during fix loop)
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
@@ -85,6 +93,23 @@ type StepContext struct {
 	OnPRMerged func(ctx context.Context, runID string)
 }
 
+type PublicationCommandRequest struct {
+	WorkDir    string
+	SourceDir  string
+	ScratchDir string
+	Command    string
+	Env        []string
+}
+
+type PublicationCommandResult struct {
+	Output   string
+	ExitCode int
+}
+
+type PublicationCommandRunner interface {
+	RunPublicationCommand(context.Context, PublicationCommandRequest) (PublicationCommandResult, error)
+}
+
 // RunAgentSession executes one turn of a durable review-loop role session,
 // running cold when sessions are unavailable. The invocation is bounded by
 // RunAgent's deadline. Only the review step's fixer turns use this; every
@@ -132,6 +157,15 @@ type Step interface {
 	// A step that returns NeedsApproval=true will pause the pipeline
 	// until the user responds with an approval action.
 	Execute(sctx *StepContext) (*StepOutcome, error)
+}
+
+// PublicationStepAdapter selects the protected publication semantics for one
+// step while the existing Executor remains the sole owner of ordering and
+// lifecycle. Implementations may guard a read-only defense step or wait for a
+// separately persisted publication authorization, but must not add their own
+// scheduler, retry loop, resume loop, counters, or generic approval surface.
+type PublicationStepAdapter interface {
+	ExecutePublicationStep(sctx *StepContext, step Step) (*StepOutcome, error)
 }
 
 // ApprovalGateReconciler is implemented by a step whose parked approval gate

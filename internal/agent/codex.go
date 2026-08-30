@@ -25,6 +25,7 @@ type codexAgent struct {
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses codex's project-level settings/instructions surface.
 	disableProjectSettings bool
+	publicationBoundary    *PublicationCodexBoundaryV1
 }
 
 func (a *codexAgent) Name() string { return "codex" }
@@ -32,7 +33,7 @@ func (a *codexAgent) Name() string { return "codex" }
 // SupportsSessionResume reports codex's native durable-session capability:
 // `codex exec --json` emits thread.started with a thread_id, and
 // `codex exec resume <id> -` continues that thread with the prompt on stdin.
-func (a *codexAgent) SupportsSessionResume() bool { return true }
+func (a *codexAgent) SupportsSessionResume() bool { return a.publicationBoundary == nil }
 
 func (a *codexAgent) ReportsAgentAttempts() bool { return true }
 
@@ -53,16 +54,38 @@ func (a *codexAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if a.publicationBoundary != nil && (opts.Session != nil || opts.SessionFallback || opts.SessionFallbackReason != "") {
+		return nil, fmt.Errorf("%w: protected Codex invocations are cold and session-free", ErrPublicationConfinementUnavailable)
+	}
+	if a.retryBudget() == 0 {
+		// Publication defenses are exact, single-attempt observations. A native
+		// retry would create a second model/tool effect under the same step.
+		return a.runOnce(ctx, opts)
+	}
 	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
+}
+
+func (a *codexAgent) retryBudget() int {
+	if a.publicationBoundary != nil {
+		return 0
+	}
+	return claudeMaxRetries
 }
 
 func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
-		f, err := os.CreateTemp("", "no-mistakes-codex-schema-*.json")
+		tempRoot := ""
+		if a.publicationBoundary != nil {
+			tempRoot = opts.PublicationScratchDir
+			if strings.TrimSpace(tempRoot) == "" {
+				return nil, fmt.Errorf("%w: protected output schema requires bound scratch", ErrPublicationConfinementUnavailable)
+			}
+		}
+		f, err := os.CreateTemp(tempRoot, "no-mistakes-codex-schema-*.json")
 		if err != nil {
 			return nil, fmt.Errorf("codex schema temp file: %w", err)
 		}
@@ -91,20 +114,59 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		resumeID = opts.Session.ID
 	}
 	args := a.buildArgs(schemaPath, resumeID)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
-	cmd.Dir = opts.CWD
+	var cmd *exec.Cmd
+	var publicationCommand *publicationPreparedCommand
+	if a.publicationBoundary != nil {
+		view, err := a.publicationBoundary.BindView(opts.CWD, opts.PublicationSourceDir, opts.PublicationScratchDir)
+		if err != nil {
+			return nil, err
+		}
+		publicationCommand, err = view.AgentCommand(ctx, schemaPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := publicationCommand.armLifecycleBarrier(); err != nil {
+			return nil, err
+		}
+		cmd = publicationCommand.Cmd
+	} else {
+		cmd = exec.CommandContext(ctx, a.bin, args...)
+		cmd.Dir = opts.CWD
+	}
 	cmd.Stdin = strings.NewReader(opts.Prompt)
-	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
+	if a.publicationBoundary == nil {
+		cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
+	}
 	shellenv.ConfigureShellCommand(cmd)
 
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
 	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "codex"))
 	if err != nil {
+		if publicationCommand != nil {
+			publicationCommand.abortLifecycleBarrier()
+		}
 		return nil, fmt.Errorf("codex start: %w", err)
 	}
 	defer started.closePipes()
 	pid := started.pid()
+	var publicationWitness *publicationLaunchWitness
+	if a.publicationBoundary != nil {
+		publicationWitness, err = a.publicationBoundary.observeStartedLaunch(publicationCommand, pid)
+		if err != nil {
+			started.terminate()
+			started.closePipes()
+			_ = started.wait()
+			publicationCommand.abortLifecycleBarrier()
+			return nil, err
+		}
+	}
+	verifyPublicationTeardown := func() error {
+		if a.publicationBoundary == nil {
+			return nil
+		}
+		return a.publicationBoundary.verifyLaunchTeardown(publicationWitness)
+	}
 	emitAgentStarted(opts, "codex", pid)
 
 	stderrWG.Add(1)
@@ -121,6 +183,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
+		if teardownErr := verifyPublicationTeardown(); teardownErr != nil {
+			emitAgentExited(opts, "codex", pid, teardownErr)
+			return nil, teardownErr
+		}
 		retErr := fmt.Errorf("codex parse events: %w", err)
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
@@ -128,6 +194,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 
 	waitErr := started.wait()
 	stderrWG.Wait()
+	if teardownErr := verifyPublicationTeardown(); teardownErr != nil {
+		emitAgentExited(opts, "codex", pid, teardownErr)
+		return nil, teardownErr
+	}
 	if waitErr != nil {
 		detail := strings.TrimSpace(codexErr)
 		stderr := strings.TrimSpace(string(stderrBuf))
@@ -158,6 +228,34 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 }
 
 func (a *codexAgent) Close() error { return nil }
+
+// NewPublicationCodexAgent constructs the sole protected agent shape. Raw
+// execution/sandbox/search/resume flags are refused rather than normalized.
+func NewPublicationCodexAgent(boundary *PublicationCodexBoundaryV1, extraArgs []string) (Agent, error) {
+	if boundary == nil {
+		return nil, fmt.Errorf("%w: publication Codex boundary is nil", ErrPublicationConfinementUnavailable)
+	}
+	for _, arg := range extraArgs {
+		lower := strings.ToLower(strings.TrimSpace(arg))
+		if lower == "resume" || lower == "--full-auto" || lower == "--search" ||
+			strings.Contains(lower, "dangerously-bypass") || strings.HasPrefix(lower, "--sandbox") ||
+			strings.HasPrefix(lower, "--ask-for-approval") {
+			return nil, fmt.Errorf("%w: conflicting protected Codex argument %q", ErrPublicationConfinementUnavailable, arg)
+		}
+	}
+	manifest := boundary.Manifest()
+	var native string
+	for _, binding := range manifest.ExecutableClosure {
+		if binding.Role == PublicationExecutableNativeCodex {
+			native = binding.RealPath
+			break
+		}
+	}
+	if native == "" {
+		return nil, fmt.Errorf("%w: native Codex is absent from the executable closure", ErrPublicationConfinementUnavailable)
+	}
+	return &codexAgent{bin: native, publicationBoundary: boundary, disableProjectSettings: true}, nil
+}
 
 // buildArgs constructs the codex CLI arguments. User-supplied extraArgs are
 // inserted between "exec" and the stdin prompt marker so user flags (e.g. -m, --sandbox)

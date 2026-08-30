@@ -1,0 +1,67 @@
+{
+  "schema_version": "independent-current-byte-review-v1",
+  "review_id": "n0-confinement-n0-current-byte-review",
+  "reviewer": {
+    "agent_name": "Codex",
+    "agent_task": "/root/n0_current_byte_review",
+    "independent": true
+  },
+  "timestamp_utc": "2026-08-30T11:01:29Z",
+  "repository": "codex-no-mistakes-n0",
+  "base_head": "ab2544298b745e9dc1a01fcf9a3151a247926083",
+  "reviewed_state": "uncommitted-current-worktree-bytes",
+  "reviewed_files_sha256": {
+    "internal/agent/publication_boundary.go": "0bb98168bb5ee83aeb84898f3133e041f232f397e29e67e4ccd7c00c91256ee9",
+    "internal/agent/publication_boundary_linux.go": "3099bc8460bb216b75e93fe48cbc0873888bcd5d09f86ab0d1bec135620a7d2b",
+    "internal/agent/publication_boundary_linux_test.go": "e9bde46537872e02975137f11cbca3688cc4ac1713501132ecca53ddb79a248e",
+    "internal/daemon/publication_composition.go": "de4d00abb8e8e1f1b2987bf2ecb4215a746e4f35f0c9550e04e997b882f05a32",
+    "internal/agent/codex.go": "660dc8722d25f601e27a4ffd5fc9a836df665d99112bb37c560a7ea9e38fdd3a"
+  },
+  "verdict": "APPROVE",
+  "findings": {
+    "P0": [],
+    "P1": [],
+    "P2": []
+  },
+  "review_scope": [
+    "complete ordered executable closure and per-launch revalidation",
+    "production discovery and pre-admission confinement probe",
+    "bound Candidate/Source/Scratch policy and credential isolation",
+    "bwrap pre-exec block/info barrier and exact namespace-init binding",
+    "bounded all-task descendant traversal with PID/start/PPID/NSpid and namespace-inode checks",
+    "detached setsid/non-dumpable child live binding immediately before cancellation",
+    "exact namespace-init and detached-child absence after cancellation",
+    "closure-bound sentinel and non-Z/non-T validation",
+    "all non-stdio descriptor closure including the high-FD 300 falsifier",
+    "atomic detached-ready publication",
+    "literal production argv and independently frozen SHA-256 oracles",
+    "protected Codex zero-retry and production composition boundaries"
+  ],
+  "checks": [
+    {
+      "command": "git rev-parse HEAD",
+      "result": "PASS",
+      "observed": "ab2544298b745e9dc1a01fcf9a3151a247926083"
+    },
+    {
+      "command": "shasum -a 256 internal/agent/publication_boundary.go internal/agent/publication_boundary_linux.go internal/agent/publication_boundary_linux_test.go internal/daemon/publication_composition.go internal/agent/codex.go",
+      "result": "PASS",
+      "observed": "all reviewed-file digests recorded in reviewed_files_sha256"
+    },
+    {
+      "command": "go test ./internal/agent ./cmd/no-mistakes",
+      "result": "PASS",
+      "observed": "both packages passed on the local portable test platform"
+    },
+    {
+      "command": "read-only line-by-line inspection of internal/agent/publication_boundary.go, internal/agent/publication_boundary_linux.go, internal/agent/publication_boundary_linux_test.go, internal/daemon/publication_composition.go, and internal/agent/codex.go",
+      "result": "PASS",
+      "observed": "no P0, P1, or P2 code findings on the bound bytes"
+    }
+  ],
+  "platform_evidence": {
+    "included_in_verdict": false,
+    "status": "EXCLUDED",
+    "reason": "This artifact is an independent current-byte code review only. It does not attest, reproduce, or grant Linux runtime, Codex, bubblewrap, architecture, deployment, or production-readiness credit."
+  }
+}

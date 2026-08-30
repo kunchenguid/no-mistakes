@@ -7,6 +7,57 @@ import (
 	"strings"
 )
 
+// RunKind identifies the closed execution profile of a run. Standard is the
+// ordinary AXI pipeline; FactoryPublicationV1 reuses that pipeline as the
+// downstream, fail-closed publication profile for an already-finalized
+// Factory candidate.
+type RunKind string
+
+const (
+	RunKindStandard             RunKind = "standard"
+	RunKindFactoryPublicationV1 RunKind = "factory-publication-v1"
+)
+
+// Valid reports whether k is one of the persisted run kinds understood by
+// this binary. The database carries the same closed constraint.
+func (k RunKind) Valid() bool {
+	switch k {
+	case RunKindStandard, RunKindFactoryPublicationV1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Scan implements sql.Scanner without accepting an unknown run kind. This
+// makes a corrupt or future row fail closed instead of silently receiving
+// standard semantics.
+func (k *RunKind) Scan(src any) error {
+	var raw string
+	switch value := src.(type) {
+	case string:
+		raw = value
+	case []byte:
+		raw = string(value)
+	default:
+		return fmt.Errorf("scan RunKind from %T", src)
+	}
+	parsed := RunKind(raw)
+	if !parsed.Valid() {
+		return fmt.Errorf("unknown run kind %q", raw)
+	}
+	*k = parsed
+	return nil
+}
+
+// Value implements driver.Valuer and refuses to persist an unknown run kind.
+func (k RunKind) Value() (driver.Value, error) {
+	if !k.Valid() {
+		return nil, fmt.Errorf("unknown run kind %q", k)
+	}
+	return string(k), nil
+}
+
 // RunStatus represents the lifecycle state of a pipeline run.
 type RunStatus string
 

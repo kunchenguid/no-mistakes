@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS repos (
 
 CREATE TABLE IF NOT EXISTS runs (
     id                   TEXT PRIMARY KEY,
+    run_kind             TEXT NOT NULL DEFAULT 'standard'
+                         CHECK (run_kind IN ('standard', 'factory-publication-v1')),
     repo_id              TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
@@ -41,6 +43,53 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
+
+-- A publication is an immutable, content-addressed binding between one
+-- Factory request and one run. It is deliberately one-to-one: publication
+-- retries reconcile this row instead of attaching to an ordinary AXI run.
+CREATE TABLE IF NOT EXISTS publications (
+    publication_id   TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,
+    canonical_request BLOB NOT NULL,
+    repo_id          TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    candidate_ref    TEXT NOT NULL,
+    base_ref         TEXT NOT NULL,
+    head_sha         TEXT NOT NULL,
+    base_sha         TEXT NOT NULL,
+    tree_sha         TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
+-- This table is a crash journal for external publication effects, not a
+-- second workflow. Closed constraints make unknown effects/states fail at the
+-- persistence boundary. Optional PR-only bindings use empty strings so the
+-- exact binding remains directly comparable and non-null.
+CREATE TABLE IF NOT EXISTS publication_effects (
+    id                   TEXT PRIMARY KEY,
+    publication_id       TEXT NOT NULL REFERENCES publications(publication_id) ON DELETE CASCADE,
+    effect_kind           TEXT NOT NULL CHECK (effect_kind IN ('push', 'pr', 'ci')),
+    effect_state          TEXT NOT NULL CHECK (effect_state IN ('planned', 'authorized', 'observed', 'unknown', 'failed')),
+    candidate_sha         TEXT NOT NULL,
+    remote_identity       TEXT NOT NULL,
+    destination_ref      TEXT NOT NULL,
+    base_ref              TEXT NOT NULL DEFAULT '',
+    head_ref              TEXT NOT NULL DEFAULT '',
+    effect_digest         TEXT NOT NULL,
+    draft_digest          TEXT NOT NULL DEFAULT '',
+    prepared_payload      BLOB,
+    decision_digest       TEXT,
+    decision_consumed_at  INTEGER,
+    effect_started_at     INTEGER,
+    observation           BLOB,
+    observed_at           INTEGER,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL,
+    UNIQUE (publication_id, effect_kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_publications_repo_candidate
+    ON publications (repo_id, candidate_ref);
 
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
@@ -161,6 +210,8 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 // were created before the referenced columns existed. Each statement must be
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
+	`ALTER TABLE runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'standard' CHECK (run_kind IN ('standard', 'factory-publication-v1'))`,
+	`ALTER TABLE publication_effects ADD COLUMN prepared_payload BLOB`,
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "review_id": "n0-confinement-n0-wiring-design",
+  "reviewer_role": "independent_current_byte_code_reviewer",
+  "reviewer_agent_name": "n0_wiring_design",
+  "reviewer_canonical_name": "/root/n0_wiring_design",
+  "timestamp_utc": "2026-08-30T11:01:41Z",
+  "repository": "/Users/hardyheyde/Library/CloudStorage/Dropbox/Senox-Share/github_clones/codex-no-mistakes-n0",
+  "base_head": "ab2544298b745e9dc1a01fcf9a3151a247926083",
+  "review_mode": "read_only_static_current_byte",
+  "verdict": "APPROVE",
+  "findings": {
+    "p0": [],
+    "p1": [],
+    "p2": []
+  },
+  "bound_files": {
+    "internal/agent/publication_boundary.go": "sha256:0bb98168bb5ee83aeb84898f3133e041f232f397e29e67e4ccd7c00c91256ee9",
+    "internal/agent/publication_boundary_linux.go": "sha256:3099bc8460bb216b75e93fe48cbc0873888bcd5d09f86ab0d1bec135620a7d2b",
+    "internal/agent/publication_boundary_linux_test.go": "sha256:e9bde46537872e02975137f11cbca3688cc4ac1713501132ecca53ddb79a248e",
+    "internal/daemon/publication_composition.go": "sha256:de4d00abb8e8e1f1b2987bf2ecb4215a746e4f35f0c9550e04e997b882f05a32",
+    "internal/agent/codex.go": "sha256:660dc8722d25f601e27a4ffd5fc9a836df665d99112bb37c560a7ea9e38fdd3a"
+  },
+  "checks": [
+    {
+      "name": "pre_exec_namespace_init_binding",
+      "result": "pass",
+      "evidence": "The blocked bubblewrap child is bound by host PID, start identity, parent PID, PID-namespace inode, and an NSpid chain whose first value is the host PID and whose tail is 1 before payload release."
+    },
+    {
+      "name": "bounded_all_task_descendant_binding",
+      "result": "pass",
+      "evidence": "Every bounded task/<tid>/children list is enumerated, deduplicated and sorted; traversal revalidates ancestor start identity and child PID/start/PPID/NSpid, including the non-leader-thread spawn case."
+    },
+    {
+      "name": "detached_child_exact_live_cancel_binding",
+      "result": "pass",
+      "evidence": "The detached setsid, non-dumpable, high-FD-closing child is matched to the ready marker and witness namespace inode and is rechecked live with the same host PID/start identity immediately before cancellation."
+    },
+    {
+      "name": "atomic_ready_publication",
+      "result": "pass",
+      "evidence": "Ready JSON is written to a same-directory temporary file and exposed only by rename, preventing the controller from observing partial bytes."
+    },
+    {
+      "name": "production_fixed_argv_oracles",
+      "result": "pass",
+      "evidence": "Production discovery consumes the same fixed-argument constructors frozen by independent literal vectors and hard-coded argv digests."
+    },
+    {
+      "name": "canary_executable_full_binding",
+      "result": "pass",
+      "evidence": "The running mapped executable is compared with the persisted logical path, real path, raw-byte SHA-256, mode, file identity, link identity, owner identity and SameFile inode, then revalidated before detached-child launch."
+    },
+    {
+      "name": "production_composition_fail_closed",
+      "result": "pass",
+      "evidence": "Production composition discovers and probes the exact boundary before provider-port construction; exact-config admission remains zero-start on invalid configuration and uses one boundary for agent, configured commands and admission without fallback."
+    },
+    {
+      "name": "diff_whitespace_check",
+      "result": "pass",
+      "evidence": "git diff --check returned no output."
+    }
+  ],
+  "commands": [
+    "git status --short",
+    "git rev-parse HEAD",
+    "shasum -a 256 internal/agent/publication_boundary.go internal/agent/publication_boundary_linux.go internal/agent/publication_boundary_linux_test.go internal/daemon/publication_composition.go internal/agent/codex.go",
+    "rg -n 'task|tasks|children|descendant|NamespaceIdentity|namespaceIdentity|NSpid|nonleader|non-leader|cancel|ChildObservedAlive|detachedStart|detachedPID|4096|64<<10|bound' internal/agent/publication_boundary_linux.go internal/agent/publication_boundary_linux_test.go BUILD-LOOP-STATE.md",
+    "nl -ba internal/agent/publication_boundary_linux.go | sed -n '295,380p'",
+    "nl -ba internal/agent/publication_boundary_linux.go | sed -n '520,640p'",
+    "nl -ba internal/agent/publication_boundary_linux_test.go | sed -n '170,430p'",
+    "git diff --check",
+    "git status --porcelain=v1 | wc -l",
+    "jq empty build-loop-state/reviews/n0-confinement-n0-wiring-design.json",
+    "git diff --check -- build-loop-state/reviews/n0-confinement-n0-wiring-design.json"
+  ],
+  "platform_evidence": {
+    "included": false,
+    "credited": false,
+    "reason": "This artifact is a read-only static current-byte code review. It does not independently execute, inspect, or attest macOS, OrbStack, VPS, linux/arm64, linux/amd64, Codex, bubblewrap, runtime-canary, race, lint, E2E, docs, build, CI, deployment, or release evidence."
+  },
+  "reviewer_executed_tests": [],
+  "external_actions": [],
+  "notes": [
+    "APPROVE applies only to the exact bound file bytes and base HEAD recorded above.",
+    "Any change to a bound file invalidates this review.",
+    "Platform and release gates remain separate and require their own mechanically bound evidence."
+  ]
+}

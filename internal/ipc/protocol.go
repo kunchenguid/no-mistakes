@@ -23,6 +23,11 @@ const (
 	MethodAdmitPush      = "admit_push"
 	MethodHealth         = "health"
 	MethodShutdown       = "shutdown"
+
+	MethodPublicationHandshake = "publication_handshake"
+	MethodPublicationStart     = "publication_start"
+	MethodPublicationAuthorize = "publication_authorize"
+	MethodPublicationStatus    = "publication_status"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -177,6 +182,31 @@ type HealthParams struct{}
 // ShutdownParams has no fields but exists for consistency.
 type ShutdownParams struct{}
 
+// PublicationIdentity binds the exact executable and protocol on both sides
+// of the publication-only IPC boundary.
+type PublicationIdentity struct {
+	ExecutablePath   string `json:"executable_path"`
+	ExecutableSHA256 string `json:"executable_sha256"`
+	BuildSHA         string `json:"build_sha"`
+	Protocol         string `json:"protocol"`
+}
+
+type PublicationHandshakeParams struct {
+	Identity PublicationIdentity `json:"identity"`
+}
+
+type PublicationStartParams struct {
+	Request json.RawMessage `json:"request"`
+}
+
+type PublicationAuthorizeParams struct {
+	Authorization json.RawMessage `json:"authorization"`
+}
+
+type PublicationStatusParams struct {
+	Query json.RawMessage `json:"query"`
+}
+
 // --- Method results ---
 
 // PushReceivedResult confirms the push was accepted.
@@ -238,6 +268,10 @@ type HealthResult struct {
 // ShutdownResult confirms shutdown was initiated.
 type ShutdownResult struct {
 	OK bool `json:"ok"`
+}
+
+type PublicationHandshakeResult struct {
+	Identity PublicationIdentity `json:"identity"`
 }
 
 // --- Wire types ---

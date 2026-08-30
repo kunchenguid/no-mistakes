@@ -61,6 +61,13 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	if sctx != nil {
 		ag = sctx.Agent
 		timeout = AgentTimeout(sctx.Config)
+		if sctx.PublicationDefense {
+			if opts.Session != nil || opts.SessionFallback || opts.SessionFallbackReason != "" || sessionRole != "" || agent.IsFallbackAgent(ag) {
+				return nil, fmt.Errorf("%w: publication defense forbids sessions and fallback agents", agent.ErrPublicationConfinementUnavailable)
+			}
+			opts.PublicationScratchDir = sctx.PublicationScratchDir
+			opts.PublicationSourceDir = sctx.PublicationSourceDir
+		}
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, activity, func(ctx context.Context) (*agent.Result, error) {

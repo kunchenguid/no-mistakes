@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
+	"github.com/kunchenguid/no-mistakes/internal/publication"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -34,6 +36,14 @@ import (
 
 // StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
 type StepFactory func() []pipeline.Step
+
+// publicationRecoveryService is intentionally narrower than publication's
+// normal effect surface. Startup can repeat read-only work or reconcile an
+// effect that may already have happened; it cannot execute or replay Push/PR.
+type publicationRecoveryService interface {
+	ResumePublication(context.Context, string) (publication.Result, error)
+	RecoverEffect(context.Context, string, publication.EffectKind) (publication.Result, error)
+}
 
 var recoveredConfigFetchTimeout = 10 * time.Second
 
@@ -50,6 +60,9 @@ type RunManager struct {
 	db           *db.DB
 	paths        *paths.Paths
 	steps        StepFactory
+	// publicationRecovery is injected by the publication runtime before
+	// recoverOnStartup. A nil service fails closed when publication Runs exist.
+	publicationRecovery publicationRecoveryService
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
@@ -112,12 +125,18 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		slog.Error("failed to list active runs for recovery", "error", err)
 		return nil
 	}
-	plans := make([]recoveredRunPlan, 0, len(runs))
-	branchCounts := make(map[string]int, len(runs))
+	standardRuns := make([]*db.Run, 0, len(runs))
 	for _, run := range runs {
+		if run.Kind == db.RunKindStandard {
+			standardRuns = append(standardRuns, run)
+		}
+	}
+	plans := make([]recoveredRunPlan, 0, len(standardRuns))
+	branchCounts := make(map[string]int, len(standardRuns))
+	for _, run := range standardRuns {
 		branchCounts[run.RepoID+"\x00"+run.Branch]++
 	}
-	for _, run := range runs {
+	for _, run := range standardRuns {
 		if branchCounts[run.RepoID+"\x00"+run.Branch] != 1 {
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", "conflicting active run for branch")
 			continue
@@ -130,6 +149,165 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		plans = append(plans, *plan)
 	}
 	return plans
+}
+
+// recoverPublicationRuns discovers active Publication Runs from the database
+// and routes each through the narrow recovery-only service. Every discovered
+// Run is returned in preserved immediately, including on a recovery error, so
+// later generic recovery and cleanup can never consume it as ordinary AXI
+// state.
+func (m *RunManager) recoverPublicationRuns(ctx context.Context, service publicationRecoveryService) (map[string]struct{}, error) {
+	runs, err := m.db.ListRecoverablePublicationRuns()
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable publication runs: %w", err)
+	}
+	preserved := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		preserved[run.ID] = struct{}{}
+	}
+	if len(runs) == 0 {
+		return preserved, nil
+	}
+	if service == nil {
+		return preserved, fmt.Errorf("publication recovery service is unavailable")
+	}
+
+	var recoveryErrors []error
+	for _, run := range runs {
+		publicationRow, lookupErr := m.db.GetPublicationByRunID(run.ID)
+		if lookupErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("publication run %s: %w", run.ID, lookupErr))
+			continue
+		}
+		if publicationRow == nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("publication run %s has no publication binding", run.ID))
+			continue
+		}
+
+		handled, recoverErr := m.reconcileStartedPublicationEffect(ctx, service, publicationRow.PublicationID)
+		if recoverErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover publication %s: %w", publicationRow.PublicationID, recoverErr))
+			continue
+		}
+		if handled {
+			continue
+		}
+		if resetErr := m.resetInterruptedPublicationDefense(run.ID); resetErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("recover publication %s: %w", publicationRow.PublicationID, resetErr))
+			continue
+		}
+		if _, resumeErr := service.ResumePublication(ctx, publicationRow.PublicationID); resumeErr != nil {
+			recoveryErrors = append(recoveryErrors, fmt.Errorf("resume publication %s: %w", publicationRow.PublicationID, resumeErr))
+		}
+	}
+	return preserved, errors.Join(recoveryErrors...)
+}
+
+// reconcileStartedPublicationEffect gives precedence to PR over Push because
+// it is later in the fixed pipeline. A started effect is reconciled exactly
+// once through a service that has no execute capability. Terminal unknown or
+// failed journals are already fail-closed and are never resumed.
+func (m *RunManager) reconcileStartedPublicationEffect(ctx context.Context, service publicationRecoveryService, publicationID string) (bool, error) {
+	for _, candidate := range []struct {
+		dbKind db.PublicationEffectKind
+		kind   publication.EffectKind
+	}{
+		{dbKind: db.PublicationEffectPR, kind: publication.EffectPR},
+		{dbKind: db.PublicationEffectPush, kind: publication.EffectPush},
+	} {
+		effect, err := m.db.GetPublicationEffect(publicationID, candidate.dbKind)
+		if err != nil {
+			return true, err
+		}
+		if effect == nil {
+			continue
+		}
+		switch effect.State {
+		case db.PublicationEffectUnknown, db.PublicationEffectFailed:
+			return true, nil
+		case db.PublicationEffectObserved:
+			continue
+		}
+		if effect.EffectStartedAt == nil {
+			continue
+		}
+		_, err = service.RecoverEffect(ctx, publicationID, candidate.kind)
+		return true, err
+	}
+	return false, nil
+}
+
+func (m *RunManager) resetInterruptedPublicationDefense(runID string) error {
+	stepsForRun, err := m.db.GetStepsByRun(runID)
+	if err != nil {
+		return err
+	}
+	for _, step := range stepsForRun {
+		switch step.Status {
+		case types.StepStatusRunning:
+			switch step.StepName {
+			case types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint:
+				// Defense is read-only in the protected profile. A crash loses
+				// its in-process observation, so repeat it from a fresh pending
+				// boundary.
+				return m.db.ResetStepsFrom(runID, step.StepOrder)
+			case types.StepCI:
+				// A terminal CI journal is a durable observation already made by
+				// Manager. Preserve the running step so the one Executor can
+				// consume OBSERVED or fail closed on FAILED/UNKNOWN without a
+				// second provider observation. Only an inconclusive in-process
+				// read is safe to restart from pending.
+				publicationRow, lookupErr := m.db.GetPublicationByRunID(runID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				if publicationRow == nil {
+					return fmt.Errorf("publication run %s has no publication binding", runID)
+				}
+				effect, effectErr := m.db.GetPublicationEffect(publicationRow.PublicationID, db.PublicationEffectCI)
+				if effectErr != nil {
+					return effectErr
+				}
+				if effect != nil && (effect.State == db.PublicationEffectObserved || effect.State == db.PublicationEffectFailed || effect.State == db.PublicationEffectUnknown) {
+					return nil
+				}
+				return m.db.ResetStepsFrom(runID, step.StepOrder)
+			case types.StepPush, types.StepPR:
+				// Push/PR must be reconciled before this function is reached when
+				// the effect started. Before EffectStartedAt, however, no provider
+				// call has occurred: reset only the Executor step row while keeping
+				// the durable planned/authorized decision for the adapter to wait
+				// on or consume exactly once after resume.
+				publicationRow, lookupErr := m.db.GetPublicationByRunID(runID)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				if publicationRow == nil {
+					return fmt.Errorf("publication run %s has no publication binding", runID)
+				}
+				kind := db.PublicationEffectPush
+				if step.StepName == types.StepPR {
+					kind = db.PublicationEffectPR
+				}
+				effect, effectErr := m.db.GetPublicationEffect(publicationRow.PublicationID, kind)
+				if effectErr != nil {
+					return effectErr
+				}
+				if effect == nil || effect.EffectStartedAt == nil {
+					return m.db.ResetStepsFrom(runID, step.StepOrder)
+				}
+				// A started effect is intentionally left running. The caller's
+				// reconcile-first path either resumes an observed exact effect or
+				// stops fail-closed on UNKNOWN/FAILED.
+				return nil
+			default:
+				return fmt.Errorf("publication step %s is running outside the fixed plan", step.StepName)
+			}
+		case types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview, types.StepStatusSkipped:
+			return fmt.Errorf("publication defense step %s has non-repeatable status %s", step.StepName, step.Status)
+		}
+	}
+	return nil
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {

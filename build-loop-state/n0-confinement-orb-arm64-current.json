@@ -1,0 +1,51 @@
+{
+  "schema": "build-loop-platform-evidence/v1",
+  "recorded_at": "2026-08-30T13:00:38+02:00",
+  "base_head": "ab2544298b745e9dc1a01fcf9a3151a247926083",
+  "host": {
+    "transport": "orb -m openclaw-dev",
+    "kernel": "Linux 6.17.8-orbstack-00308-g8f9c941121b1",
+    "arch": "aarch64",
+    "uid": 501,
+    "codex_present": false,
+    "bubblewrap_present": false
+  },
+  "source_sha256": {
+    "internal/agent/publication_boundary.go": "0bb98168bb5ee83aeb84898f3133e041f232f397e29e67e4ccd7c00c91256ee9",
+    "internal/agent/publication_boundary_linux.go": "3099bc8460bb216b75e93fe48cbc0873888bcd5d09f86ab0d1bec135620a7d2b",
+    "internal/agent/publication_boundary_linux_test.go": "e9bde46537872e02975137f11cbca3688cc4ac1713501132ecca53ddb79a248e"
+  },
+  "binary": {
+    "path_on_builder": "/tmp/nm-agent-linux-arm64.test",
+    "path_on_host": "/tmp/nm-agent-linux-arm64-current.test",
+    "sha256": "5d24153b1c882f3bf842e772e687ca5b225f41095b46a4261e753c199f9297c8",
+    "build_command": "GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -tags=publication_confinement -o /tmp/nm-agent-linux-arm64.test ./internal/agent",
+    "transfer_command": "orb -m openclaw-dev sh -c 'umask 077; dd of=/tmp/nm-agent-linux-arm64-current.test status=none; chmod 700 /tmp/nm-agent-linux-arm64-current.test' < /tmp/nm-agent-linux-arm64.test",
+    "destination_hash_command": "orb -m openclaw-dev sha256sum /tmp/nm-agent-linux-arm64-current.test",
+    "destination_sha256_immediately_before_runs": "5d24153b1c882f3bf842e772e687ca5b225f41095b46a4261e753c199f9297c8",
+    "builder_go": "go version go1.27.0 darwin/arm64"
+  },
+  "component_run": {
+    "command": "/tmp/nm-agent-linux-arm64-current.test -test.run '^(TestPublicationNamespacePIDChainParserFailsClosed|TestPublicationDetachedChildSetsidClosesHighFDAndSignalsExactReady|TestPublicationChildEnumerationIncludesNonLeaderThreadChildren)$' -test.v",
+    "executed_binary_sha256": "5d24153b1c882f3bf842e772e687ca5b225f41095b46a4261e753c199f9297c8",
+    "exit_code": 0,
+    "passed": [
+      "TestPublicationNamespacePIDChainParserFailsClosed",
+      "TestPublicationDetachedChildSetsidClosesHighFDAndSignalsExactReady",
+      "TestPublicationChildEnumerationIncludesNonLeaderThreadChildren"
+    ],
+    "credit": "Linux arm64 component credit only: NSpid validation, detached setsid/non-dumpable/high-FD behavior, and all-task child enumeration"
+  },
+  "full_runtime_run": {
+    "command": "/tmp/nm-agent-linux-arm64-current.test -test.run '^TestPublicationCodexBoundaryLinuxNamespaceOwnsDetachedDescendantLifetime$' -test.v",
+    "executed_binary_sha256": "5d24153b1c882f3bf842e772e687ca5b225f41095b46a4261e753c199f9297c8",
+    "exit_code": 1,
+    "result": "confinement_unavailable before canary launch: codex executable not found in PATH",
+    "credit": "none"
+  },
+  "explicit_non_claims": [
+    "No full Codex+bubblewrap capability or confinement runtime credit",
+    "No linux/amd64 runtime credit",
+    "No provider authentication, network, push, PR, CI, merge, deploy, install, sudo, or host-policy action"
+  ]
+}

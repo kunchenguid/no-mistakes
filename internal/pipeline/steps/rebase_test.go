@@ -332,6 +332,7 @@ func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
 	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "config", "rebase.autoStash", "false")
 	gitCmd(t, dir, "checkout", "-b", "main")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644)
@@ -405,6 +406,9 @@ func TestRebaseStep_NonConflictFailureWithRebaseMetadataReturnsError(t *testing.
 
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("dirty\n"), 0o644)
 	rebaseMergeDir := gitCmd(t, dir, "rev-parse", "--git-path", "rebase-merge")
+	if !filepath.IsAbs(rebaseMergeDir) {
+		rebaseMergeDir = filepath.Join(dir, rebaseMergeDir)
+	}
 	if err := os.MkdirAll(rebaseMergeDir, 0o755); err != nil {
 		t.Fatalf("mkdir rebase metadata: %v", err)
 	}

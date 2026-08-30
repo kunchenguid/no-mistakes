@@ -1,0 +1,55 @@
+{
+  "schema": "build-loop-independent-code-review/v1",
+  "reviewer": {
+    "name": "Codex",
+    "agent_name": "n0-base-binding",
+    "canonical_task": "/root/n0_base_binding",
+    "mode": "independent current-byte read-only review",
+    "authorship": "reviewer did not edit the reviewed product, test, state, or evidence bytes"
+  },
+  "reviewed_at": "2026-08-30T11:01:26Z",
+  "base_head": "ab2544298b745e9dc1a01fcf9a3151a247926083",
+  "reviewed_sha256": {
+    "internal/agent/publication_boundary.go": "0bb98168bb5ee83aeb84898f3133e041f232f397e29e67e4ccd7c00c91256ee9",
+    "internal/agent/publication_boundary_linux.go": "3099bc8460bb216b75e93fe48cbc0873888bcd5d09f86ab0d1bec135620a7d2b",
+    "internal/agent/publication_boundary_linux_test.go": "e9bde46537872e02975137f11cbca3688cc4ac1713501132ecca53ddb79a248e",
+    "internal/daemon/publication_composition.go": "de4d00abb8e8e1f1b2987bf2ecb4215a746e4f35f0c9550e04e997b882f05a32",
+    "internal/agent/codex.go": "660dc8722d25f601e27a4ffd5fc9a836df665d99112bb37c560a7ea9e38fdd3a",
+    "BUILD-LOOP-STATE.md": "9f3990f1149993534f91121e5ab938011dafee521f82ffe27e64fb3a79adafa6",
+    "build-loop-state/n0-confinement-orb-arm64-current.json": "683724f08ae840ff45552d076bcd9175578fd63b8985459bcb1f7d0daea22cc9"
+  },
+  "verdict": {
+    "code": "APPROVE",
+    "p0": [],
+    "p1": [],
+    "p2": [],
+    "summary": "No P0-P2 code findings remain on the exact reviewed bytes. The lifecycle boundary uses bounded all-task descendant traversal, exact PID/start/PPID and NSpid binding, exact PID-namespace inode equality, live cancellation-boundary revalidation, exact init and detached-child teardown checks, a mapped-executable/full-binding recheck, atomic ready publication, and the high-FD closure falsifier. Production argv literals and hashes are shared and independently frozen."
+  },
+  "evidence_limitations": [
+    "This review is static and read-only. It did not run tests, builds, binaries, containers, network requests, authentication, or external actions and does not independently reproduce runtime results.",
+    "The reviewed Orb arm64 artifact binds builder and host paths through an explicit transfer command and matching destination and executed-binary SHA-256. It supports only the three named component tests; its full runtime command exited 1 before canary launch because Codex and bubblewrap were absent and earns no confinement or release credit.",
+    "The reviewed state claims three independent current-byte approvals without durable references for all three. This artifact proves only this reviewer verdict for the exact hashes above.",
+    "No full Codex plus bubblewrap confinement canary received credit on Linux arm64; Linux amd64 full-runtime evidence is also absent. Senox exact-byte review remains external and unproven here."
+  ],
+  "remaining_external_gates": [
+    "Run the full tagged production canary without skip on a provisioned Linux arm64 host with the exact Codex and bubblewrap closure.",
+    "Run the corresponding full tagged production canary on Linux amd64 if the frozen verification ladder requires both architectures.",
+    "Obtain and persist Senox's independent current-byte verdict after hashes settle.",
+    "Obtain the fresh Owner push authorization immediately before push, then require pushed exact-head PR review; merge and deployment remain separate gates."
+  ],
+  "checks": {
+    "execution_policy": "read-only inspection; no product, test, build, binary, container, network, auth, or external command run",
+    "commands": [
+      "git rev-parse HEAD",
+      "shasum -a 256 internal/agent/publication_boundary.go internal/agent/publication_boundary_linux.go internal/agent/publication_boundary_linux_test.go internal/daemon/publication_composition.go internal/agent/codex.go BUILD-LOOP-STATE.md build-loop-state/n0-confinement-orb-arm64-current.json",
+      "git status --short | wc -l",
+      "git diff --check",
+      "read-only nl/sed/rg inspection of the reviewed lifecycle, parser, state, and evidence bytes"
+    ],
+    "status_entries_before_artifact": 61,
+    "diff_check_before_artifact": "clean",
+    "tests_run": [],
+    "builds_run": [],
+    "external_actions": []
+  }
+}

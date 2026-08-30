@@ -29,11 +29,18 @@ type RunOpts struct {
 	Prompt string
 	// Env appends invocation-scoped environment entries to the agent process.
 	// Entries later in the slice override inherited values.
-	Env         []string
-	CWD         string
-	JSONSchema  json.RawMessage      // structured output schema (optional)
-	OnChunk     func(text string)    // streaming text callback (optional)
-	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+	Env []string
+	CWD string
+	// PublicationScratchDir is the sole writable root for a protected
+	// factory-publication defense invocation. Ordinary AXI leaves it empty.
+	PublicationScratchDir string
+	// PublicationSourceDir is the registered source checkout which a protected
+	// defense invocation must not be able to inspect. It is carried separately
+	// from CWD because CWD is the disposable exact-H candidate.
+	PublicationSourceDir string
+	JSONSchema           json.RawMessage      // structured output schema (optional)
+	OnChunk              func(text string)    // streaming text callback (optional)
+	OnLifecycle          func(LifecycleEvent) // native agent lifecycle callback (optional)
 	// Session, when non-nil, asks a session-capable adapter (see
 	// SessionResumer) to start or resume a durable native session. Adapters
 	// without session support ignore it and run cold; the caller detects the
@@ -272,6 +279,21 @@ type Options struct {
 	// harness on its own defaults, which is what every configuration that
 	// predates the common layer resolves to.
 	Profile agentcfg.Profile
+}
+
+// IsPublicationConfinementAgent reports the closed protected-agent
+// capability from its bound runtime, never from a name or shared concrete
+// adapter type.
+func IsPublicationConfinementAgent(a Agent) bool {
+	concrete, ok := a.(*codexAgent)
+	return ok && concrete.publicationBoundary != nil
+}
+
+// IsFallbackAgent reports whether the adapter can move to another provider.
+// Publication defense rejects this before the first attempt.
+func IsFallbackAgent(a Agent) bool {
+	_, ok := a.(*fallbackAgent)
+	return ok
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {

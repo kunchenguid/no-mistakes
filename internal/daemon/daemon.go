@@ -225,6 +225,25 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	defer agent.SetServerPIDsDir("")
 
 	mgr := NewRunManager(d, p, stepFactory)
+	var publicationComposition *publicationComposition
+	var publicationUnavailableReason error
+	daemonPublicationIdentity, publicationIdentityErr := currentDaemonPublicationIdentity()
+	if publicationIdentityErr != nil {
+		// Publisher identity is an availability boundary for the optional
+		// protected Publication profile, not for the ordinary daemon. Keep the
+		// generic service available while registering Publication fail-closed
+		// below with no identity, service, mutation guard, or effect path.
+		publicationUnavailableReason = fmt.Errorf("publisher_identity_unavailable: %w", publicationIdentityErr)
+		slog.Warn("protected publication profile unavailable", "error", publicationIdentityErr)
+	} else {
+		publicationComposition, err = newProductionPublicationComposition(p, d, mgr, globalCfg, daemonPublicationIdentity)
+		if errors.Is(err, errPublicationConfinementUnavailable) {
+			publicationUnavailableReason = err
+			slog.Warn("protected publication profile unavailable", "error", err)
+		} else if err != nil {
+			return fmt.Errorf("compose protected publication profile: %w", err)
+		}
+	}
 
 	// Publish process identity as soon as the singleton lock is held. Startup
 	// callers can now distinguish a launched child from IPC readiness and detect
@@ -265,6 +284,17 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConf
 	}
 
 	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
+	if publicationComposition == nil {
+		identity := ipc.PublicationIdentity{}
+		if publicationIdentityErr == nil {
+			identity = publicationIPCIdentity(daemonPublicationIdentity)
+		}
+		registerPublicationHandlers(srv, nil, identity, nil, publicationUnavailableReason)
+	} else {
+		publicationComposition.registerHandlers(srv, func(ctx context.Context) error {
+			return refuseNestedGateCaller(ctx, d, mgr.paths, false)
+		})
+	}
 
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
@@ -410,9 +440,26 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 		logStartupPhase("terminal_pr_runs", terminalPRStarted, "reconciled", terminalPRCount)
 	}
 
+	// Publication recovery is deliberately earlier than both parked AXI
+	// recovery and generic stale failure. Its injected service can only resume
+	// repeatable read-only work or reconcile an already-started effect; it has
+	// no Push/PR execute capability. Every discovered publication is preserved
+	// even if its recovery fails closed.
+	publicationStarted := time.Now()
+	publicationPreserved, publicationErr := mgr.recoverPublicationRuns(context.Background(), mgr.publicationRecovery)
+	if publicationErr != nil {
+		slog.Error("failed to recover publication runs", "error", publicationErr)
+		logStartupPhase("publication_runs", publicationStarted, "preserved", len(publicationPreserved), "failed", true)
+	} else {
+		logStartupPhase("publication_runs", publicationStarted, "preserved", len(publicationPreserved))
+	}
+
 	parkedStarted := time.Now()
 	plans := mgr.recoverableParkedRuns(context.Background())
-	preserved := make(map[string]struct{}, len(plans))
+	preserved := make(map[string]struct{}, len(publicationPreserved)+len(plans))
+	for runID := range publicationPreserved {
+		preserved[runID] = struct{}{}
+	}
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
@@ -1279,6 +1326,24 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			}
 		}, nil
 	})
+}
+
+// refuseNestedGateCaller applies the same authenticated peer-ancestry policy
+// as the generic gate-control surface. Marker and CWD are diagnostics only;
+// direct IPC cannot opt out of active agent ancestry containment.
+func refuseNestedGateCaller(ctx context.Context, d *db.DB, p *paths.Paths, skipManagedGit bool) error {
+	result, err := (gatecontext.Inspector{DB: d, Paths: p}).Inspect(ctx, gatecontext.Request{
+		PeerPID:        ipc.PeerPID(ctx),
+		DaemonPID:      os.Getpid(),
+		SkipManagedGit: skipManagedGit,
+	})
+	if err != nil {
+		return err
+	}
+	if result.Nested {
+		return fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+	}
+	return nil
 }
 
 // runSnapshot reads an authoritative run snapshot and stamps it with the state

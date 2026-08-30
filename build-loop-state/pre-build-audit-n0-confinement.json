@@ -1,0 +1,18 @@
+{
+  "verdict": "EXTEND",
+  "seam_class": "auth_boundary",
+  "seam_id": "factory-publication-defense-boundary",
+  "contract_id": null,
+  "entity_recommendation": "Extend the existing Codex adapter, publication candidate port, configured-command runner, and process reaper; do not create another executor or state machine.",
+  "blocker_reason": null,
+  "evidence_refs": [
+    ".agent/exec-plans/execplan-factory-publication-v1.md:Current implementation gate",
+    "internal/daemon/publication_composition.go:newProductionPublicationComposition",
+    "internal/agent/codex.go:codexAgent.runOnce",
+    "internal/pipeline/steps/common_exec.go:runShellCommandWithProcessEnv",
+    "internal/publication/candidate_port.go:DisposeStep",
+    "internal/procreap/procreap.go:Sweep"
+  ],
+  "audit_hash": "sha256:a0f6abd9cbaefe791fdb895e2dbd831c397326f522e0bb44b28acbcb74c8867d",
+  "runner": "full_rotated"
+}

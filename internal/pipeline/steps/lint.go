@@ -19,6 +19,9 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	if err := rejectPublicationDefenseFixState(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	lintCmd := sctx.Config.Commands.Lint
@@ -34,7 +37,11 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 				return lintOutcomeFromHousekeeping(sctx, stash)
 			}
 		}
-		sctx.Log("no lint command configured, asking agent to lint and fix...")
+		if sctx.PublicationDefense {
+			sctx.Log("no lint command configured, asking agent for a read-only lint audit...")
+		} else {
+			sctx.Log("no lint command configured, asking agent to lint and fix...")
+		}
 		reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		prompt := fmt.Sprintf(
 			`Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.
@@ -63,7 +70,9 @@ Rules:
 			sctx.Run.HeadSHA,
 			reassessHistory,
 		)
-		if sctx.PreviousFindings != "" {
+		if sctx.PublicationDefense {
+			prompt = publicationDefenseLintPrompt(sctx, baseSHA, reassessHistory)
+		} else if sctx.PreviousFindings != "" {
 			prompt += `
 
 Previous lint findings to address:
@@ -94,8 +103,10 @@ Previous lint findings to address:
 			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
-		if err := commitAgentFixes(sctx, s.Name(), summary, "fix lint issues"); err != nil {
-			return nil, err
+		if !sctx.PublicationDefense {
+			if err := commitAgentFixes(sctx, s.Name(), summary, "fix lint issues"); err != nil {
+				return nil, err
+			}
 		}
 
 		needsApproval := hasBlockingFindings(findings.Items)
@@ -171,7 +182,7 @@ Previous lint findings to address:
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
-			AutoFixable:   true,
+			AutoFixable:   !sctx.PublicationDefense,
 			Findings:      string(findingsJSON),
 			ExitCode:      exitCode,
 			FixSummary:    fixSummary,
@@ -180,6 +191,30 @@ Previous lint findings to address:
 
 	sctx.Log("lint passed")
 	return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
+}
+
+func publicationDefenseLintPrompt(sctx *pipeline.StepContext, baseSHA, history string) string {
+	return fmt.Sprintf(
+		`%s
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+
+Task:
+- Inspect the exact candidate and discover the linting, formatting, and static-analysis tools relevant to its changed files.
+- Run only read-only check modes; never invoke a formatter or any command that applies a fix.
+- Report every unresolved lint, format, or static-analysis issue as a structured finding.
+- Return an empty findings array only when the candidate is already clean.
+- The summary describes the audit result; it is not a commit message or permission to edit.
+%s`,
+		publicationDefensePromptContract,
+		sctx.Run.Branch,
+		baseSHA,
+		sctx.Run.HeadSHA,
+		history,
+	)
 }
 
 // lintOutcomeFromHousekeeping reports the lint findings the combined

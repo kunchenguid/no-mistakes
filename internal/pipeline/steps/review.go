@@ -22,6 +22,9 @@ type ReviewStep struct{}
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := rejectPublicationDefenseFixState(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	var cancel context.CancelFunc
 	var timeout time.Duration
@@ -203,7 +206,7 @@ Previous review findings to address:
 	// unchanged.
 	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
 	logPathInstructions(sctx.Log, pathInstructionMatches)
-	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
+	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches) + publicationDefensePromptSection(sctx)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -311,7 +314,7 @@ Risk assessment (after listing all findings):
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
-		AutoFixable:   len(findings.Items) > 0,
+		AutoFixable:   len(findings.Items) > 0 && !sctx.PublicationDefense,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	})

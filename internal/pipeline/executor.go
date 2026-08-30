@@ -51,6 +51,10 @@ type Executor struct {
 	agent  agent.Agent
 	steps  []Step
 	skips  map[types.StepName]bool
+	// publicationStepAdapter replaces step execution only for the closed
+	// factory-publication-v1 run kind. The Executor still owns the single
+	// ordered traversal and every step-result lifecycle transition.
+	publicationStepAdapter PublicationStepAdapter
 
 	onEvent EventFunc
 
@@ -95,6 +99,12 @@ func (e *Executor) SetSkippedSteps(steps []types.StepName) {
 	for _, step := range steps {
 		e.skips[step] = true
 	}
+}
+
+// SetPublicationStepAdapter installs the closed publication policy selected
+// only by RunKindFactoryPublicationV1. Ordinary AXI runs never call it.
+func (e *Executor) SetPublicationStepAdapter(adapter PublicationStepAdapter) {
+	e.publicationStepAdapter = adapter
 }
 
 // NewExecutor creates a pipeline executor.
@@ -183,6 +193,12 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	e.workDir = workDir
 	ctx = e.runContext(ctx)
+	publicationRun := run != nil && run.Kind == types.RunKindFactoryPublicationV1
+	if publicationRun {
+		if err := e.validatePublicationExecutionPlan(); err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
+	}
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -200,14 +216,25 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	e.initializeRunScopes(run.ID)
 
-	// Create step result records in DB
+	// Ordinary AXI runs create their step records here. Publication admission
+	// creates the same exact nine rows atomically with its Run and request
+	// binding, so the Executor must reuse those identities rather than creating
+	// a second plan beside them.
 	stepRecords := make(map[types.StepName]*db.StepResult)
-	for _, step := range e.steps {
-		sr, err := e.db.InsertStepResult(run.ID, step.Name())
+	if publicationRun {
+		seeded, err := e.publicationStepRecords(run.ID)
 		if err != nil {
-			return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
+			return e.failRun(run, repo, err, ctx)
 		}
-		stepRecords[step.Name()] = sr
+		stepRecords = seeded
+	} else {
+		for _, step := range e.steps {
+			sr, err := e.db.InsertStepResult(run.ID, step.Name())
+			if err != nil {
+				return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
+			}
+			stepRecords[step.Name()] = sr
+		}
 	}
 
 	// Execute steps sequentially. A late repair may send the same run back
@@ -260,6 +287,55 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	return nil
+}
+
+func (e *Executor) validatePublicationExecutionPlan() error {
+	if e.publicationStepAdapter == nil {
+		return fmt.Errorf("factory publication run requires a publication step adapter")
+	}
+	if len(e.skips) != 0 {
+		return fmt.Errorf("factory publication run forbids configured step skips")
+	}
+	want := types.AllSteps()
+	if len(e.steps) != len(want) {
+		return fmt.Errorf("factory publication step plan has %d steps, want %d", len(e.steps), len(want))
+	}
+	for index, expected := range want {
+		if e.steps[index] == nil {
+			return fmt.Errorf("factory publication step plan has nil step at position %d", index+1)
+		}
+		if got := e.steps[index].Name(); got != expected {
+			return fmt.Errorf("factory publication step plan changed at position %d: got %s, want %s", index+1, got, expected)
+		}
+	}
+	return nil
+}
+
+func (e *Executor) publicationStepRecords(runID string) (map[types.StepName]*db.StepResult, error) {
+	seeded, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("load factory publication step results: %w", err)
+	}
+	want := types.AllSteps()
+	if len(seeded) != len(want) {
+		return nil, fmt.Errorf("factory publication has %d seeded step rows, want %d", len(seeded), len(want))
+	}
+	records := make(map[types.StepName]*db.StepResult, len(want))
+	for index, expected := range want {
+		record := seeded[index]
+		if record == nil || record.StepName != expected || record.StepOrder != expected.Order() {
+			var got types.StepName
+			if record != nil {
+				got = record.StepName
+			}
+			return nil, fmt.Errorf("factory publication seeded step plan changed at position %d: got %s, want %s", index+1, got, expected)
+		}
+		if record.Status != types.StepStatusPending {
+			return nil, fmt.Errorf("factory publication seeded step %s is %s, want pending", expected, record.Status)
+		}
+		records[expected] = record
+	}
+	return records, nil
 }
 
 func (e *Executor) stepIndex(name types.StepName) (int, error) {
@@ -526,6 +602,142 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	}
 }
 
+// ResumePublication continues a factory-publication-v1 Run at its first
+// durable incomplete step. It deliberately reuses executeRecoveredRemainder,
+// the Executor's existing ordered traversal, rather than introducing a second
+// resume loop beside it.
+//
+// Startup recovery resets an interrupted read-only step to pending before
+// calling this method. A Push or PR step is the sole exception: when its effect
+// may already have happened, recovery first reconciles the journal. Only an
+// observed exact effect may be completed here without calling the adapter
+// again; every inconclusive state fails closed instead of replaying the effect.
+func (e *Executor) ResumePublication(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	if run == nil || run.Kind != types.RunKindFactoryPublicationV1 {
+		return fmt.Errorf("run is not a factory-publication-v1 run")
+	}
+	if repo == nil || repo.ID != run.RepoID {
+		return fmt.Errorf("publication run has no matching repository")
+	}
+	if run.Status != types.RunPending && run.Status != types.RunRunning {
+		return fmt.Errorf("publication run is not active")
+	}
+	e.workDir = workDir
+	ctx = e.runContext(ctx)
+	if err := e.validatePublicationExecutionPlan(); err != nil {
+		return err
+	}
+	if run.Status == types.RunPending {
+		if err := e.db.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+			return fmt.Errorf("resume publication run: %w", err)
+		}
+		run.Status = types.RunRunning
+	}
+
+	start, complete, err := e.publicationResumeBoundary(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if complete {
+		if err := e.completeRun(run, repo); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("complete recovered publication run: %w", err), ctx)
+		}
+		return nil
+	}
+	logDir := e.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err), ctx)
+	}
+	e.initializeRunScopes(run.ID)
+	return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, start, false)
+}
+
+// publicationResumeBoundary validates the exact seeded plan and returns the
+// first pending index. It may close one running Push/PR/CI row only when the
+// orthogonal effect journal already proves the exact effect observed.
+func (e *Executor) publicationResumeBoundary(runID string) (start int, complete bool, err error) {
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return 0, false, fmt.Errorf("get publication steps: %w", err)
+	}
+	want := types.AllSteps()
+	if len(results) != len(want) {
+		return 0, false, fmt.Errorf("factory publication has %d step rows, want %d", len(results), len(want))
+	}
+	publicationRow, err := e.db.GetPublicationByRunID(runID)
+	if err != nil {
+		return 0, false, fmt.Errorf("get publication binding: %w", err)
+	}
+	if publicationRow == nil {
+		return 0, false, fmt.Errorf("factory publication run has no publication binding")
+	}
+
+	boundary := -1
+	for index, expected := range want {
+		result := results[index]
+		if result == nil || result.StepName != expected || result.StepOrder != expected.Order() {
+			return 0, false, fmt.Errorf("factory publication step plan changed at position %d", index+1)
+		}
+		switch result.Status {
+		case types.StepStatusCompleted:
+			if boundary >= 0 {
+				return 0, false, fmt.Errorf("publication step %s completed after an incomplete boundary", expected)
+			}
+		case types.StepStatusPending:
+			if boundary < 0 {
+				boundary = index
+			}
+		case types.StepStatusRunning:
+			if boundary >= 0 {
+				return 0, false, fmt.Errorf("publication step %s is running after an incomplete boundary", expected)
+			}
+			kind, ok := publicationEffectForStep(expected)
+			if !ok {
+				return 0, false, fmt.Errorf("publication step %s is still running without a reconciled effect", expected)
+			}
+			effect, effectErr := e.db.GetPublicationEffect(publicationRow.PublicationID, kind)
+			if effectErr != nil {
+				return 0, false, fmt.Errorf("get reconciled %s effect: %w", expected, effectErr)
+			}
+			if effect == nil {
+				return 0, false, fmt.Errorf("publication step %s effect is not conclusively observed", expected)
+			}
+			if effect.State == db.PublicationEffectFailed || effect.State == db.PublicationEffectUnknown {
+				failure := fmt.Errorf("publication step %s effect is terminal %s", expected, effect.State)
+				if failErr := e.db.FailStep(result.ID, failure.Error(), 0); failErr != nil {
+					return 0, false, fmt.Errorf("fail terminal publication step %s: %w", expected, failErr)
+				}
+				return 0, false, failure
+			}
+			if effect.State != db.PublicationEffectObserved {
+				return 0, false, fmt.Errorf("publication step %s effect is not conclusively observed", expected)
+			}
+			if completeErr := e.db.CompleteStepWithStatus(result.ID, types.StepStatusCompleted, 0, 0, ""); completeErr != nil {
+				return 0, false, fmt.Errorf("complete reconciled publication step %s: %w", expected, completeErr)
+			}
+		default:
+			return 0, false, fmt.Errorf("publication step %s has non-resumable status %s", expected, result.Status)
+		}
+	}
+	if boundary < 0 {
+		return len(want), true, nil
+	}
+	return boundary, false, nil
+}
+
+func publicationEffectForStep(step types.StepName) (db.PublicationEffectKind, bool) {
+	switch step {
+	case types.StepPush:
+		return db.PublicationEffectPush, true
+	case types.StepPR:
+		return db.PublicationEffectPR, true
+	case types.StepCI:
+		return db.PublicationEffectCI, true
+	default:
+		return "", false
+	}
+}
+
 func (e *Executor) runContext(ctx context.Context) context.Context {
 	if e.forge == nil {
 		return ctx
@@ -685,7 +897,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 	autoFixLimit := 0
-	if e.config != nil {
+	if run.Kind != types.RunKindFactoryPublicationV1 && e.config != nil {
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
 
@@ -848,12 +1060,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		CIReadinessChanged: ciReadinessChanged,
 		OnPRMerged:         e.onPRMerged,
 	}
-	if stepName == types.StepReview {
-		BindUncertifiedPipelineRange(sctx)
+	if run.Kind != types.RunKindFactoryPublicationV1 {
+		if stepName == types.StepReview {
+			BindUncertifiedPipelineRange(sctx)
+		}
+		// Every step, not just review: the steps that used to re-apply a declined
+		// change were precisely the ones a decision never reached.
+		BindBranchDecisions(sctx)
 	}
-	// Every step, not just review: the steps that used to re-apply a declined
-	// change were precisely the ones a decision never reached.
-	BindBranchDecisions(sctx)
 
 	nextTrigger := "initial"
 	if sctx.Fixing {
@@ -869,7 +1083,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	for {
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
-		outcome, err := step.Execute(sctx)
+		outcome, err := e.executeStepForRun(sctx, step)
+		if err == nil && run.Kind == types.RunKindFactoryPublicationV1 {
+			err = validatePublicationStepOutcome(run, stepName, outcome)
+		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
@@ -1133,12 +1350,62 @@ done:
 		}
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
-		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+		if run.Kind != types.RunKindFactoryPublicationV1 {
+			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+		}
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, restartFrom, nil
+}
+
+func (e *Executor) executeStepForRun(sctx *StepContext, step Step) (*StepOutcome, error) {
+	if sctx != nil && sctx.Run != nil && sctx.Run.Kind == types.RunKindFactoryPublicationV1 {
+		if e.publicationStepAdapter == nil {
+			return nil, fmt.Errorf("factory publication run requires a publication step adapter")
+		}
+		return e.publicationStepAdapter.ExecutePublicationStep(sctx, step)
+	}
+	return step.Execute(sctx)
+}
+
+func validatePublicationStepOutcome(run *db.Run, step types.StepName, outcome *StepOutcome) error {
+	if outcome == nil {
+		return fmt.Errorf("factory publication step %s returned no outcome", step)
+	}
+	if outcome.ExitCode != 0 {
+		return fmt.Errorf("factory publication step %s returned nonzero exit code %d", step, outcome.ExitCode)
+	}
+	if strings.TrimSpace(outcome.Findings) != "" {
+		return fmt.Errorf("factory publication step %s returned findings instead of a closed pass/fail result", step)
+	}
+	if outcome.NeedsApproval {
+		return fmt.Errorf("factory publication step %s requested generic approval", step)
+	}
+	if outcome.AutoFixable {
+		return fmt.Errorf("factory publication step %s requested auto-fix", step)
+	}
+	if outcome.Skipped || outcome.SkipRemaining {
+		return fmt.Errorf("factory publication step %s requested skip semantics", step)
+	}
+	if outcome.RestartFrom != "" {
+		return fmt.Errorf("factory publication step %s requested restart from %s", step, outcome.RestartFrom)
+	}
+	if strings.TrimSpace(outcome.FixSummary) != "" || outcome.DurationOverrideMS != 0 {
+		return fmt.Errorf("factory publication step %s returned standard fix/demo metadata", step)
+	}
+	if outcome.ReviewApprovedHeadSHA != "" {
+		if step != types.StepReview || run == nil || outcome.ReviewApprovedHeadSHA != run.HeadSHA {
+			return fmt.Errorf("factory publication step %s returned a review binding other than exact H", step)
+		}
+	}
+	if step == types.StepReview && run != nil && outcome.ReviewApprovedHeadSHA == "" {
+		// A clean publication review certifies exactly the immutable candidate H;
+		// never infer authority from a mutable worktree or later descendant.
+		outcome.ReviewApprovedHeadSHA = run.HeadSHA
+	}
+	return nil
 }
 
 // recordDeclinedRound persists an approve, skip, or abort resolution as a real
@@ -1434,7 +1701,11 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
-	if run == nil || strings.TrimSpace(e.workDir) == "" {
+	// A Factory Publication Run is permanently bound to request H. Its
+	// executor context may name the registered checkout for non-step plumbing,
+	// but that mutable checkout is never evidence about the disposable exact-H
+	// candidate and must not advance the Run or create ordinary recovery refs.
+	if run == nil || run.Kind == types.RunKindFactoryPublicationV1 || strings.TrimSpace(e.workDir) == "" {
 		return "", false
 	}
 	recordedRun, err := e.db.GetRun(run.ID)
@@ -1554,6 +1825,9 @@ func (e *Executor) emitStepEventWithFindingsAndError(eventType ipc.EventType, ru
 		event.Findings = &findings
 	}
 	e.onEvent(event)
+	if run.Kind == db.RunKindFactoryPublicationV1 {
+		return
+	}
 	if !shouldTrackStepTelemetry(eventType, status) {
 		return
 	}

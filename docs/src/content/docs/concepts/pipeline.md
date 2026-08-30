@@ -21,6 +21,20 @@ flowchart LR
 
 This page is the overview. For each step's exact behavior, defaults, skip rules, and fix-commit format, see [Pipeline Steps](/no-mistakes/reference/pipeline-steps/).
 
+## Factory publication profile
+
+Agent Factory is intended to hand a completed Protected build-loop candidate
+to the same executor in the downstream `factory-publication-v1` profile. That
+profile does not run another build loop or change the candidate: its defense
+steps must run under technical confinement, Push and PR each require a
+separately bound Owner decision, and CI must be observed at the exact candidate
+head. Production admission is available only when the exact Linux Codex
+boundary passes its model-free filesystem, credential, network, and process
+lifecycle probe; every unsupported, missing, drifted, failed, or uncertain
+boundary remains `confinement_unavailable`. The [Factory Publication
+reference](/no-mistakes/reference/factory-publication/) owns the target machine
+contract, current implementation gate, and fail-closed outcomes.
+
 ## What a passed gate means
 
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
