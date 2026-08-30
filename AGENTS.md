@@ -53,6 +53,11 @@ Safest local verification sequence after non-trivial changes:
 - `runs.awaiting_agent_since` is non-nil **iff** a step is actually parked at an `awaiting_approval`/`fix_review` gate: the executor sets it on gate entry, clears it when `waitForApproval` returns, and `RecoverStaleRuns` clears it on crash recovery. It is observability only (rendered as `awaiting_agent: parked <duration>` in `axi status`) and never changes gate resolution, auto-resume, or the `--yes` default.
 - Tests: `internal/db/run_test.go`, `internal/pipeline/executor_approval_test.go`, `internal/cli/axi_test.go`, e2e `TestAxiParkedAwaitingAgentSignal`.
 
+**Stale Actions Event Replay Can Resurrect a Superseded Check (`require-no-mistakes`)**
+
+- `.github/actions/require-no-mistakes/verify.py` reads the PR body/head SHA it verifies from a **live** `gh pr view` call first (via `live_pr_facts`, using the forwarded `github-token` input), not from `GITHUB_EVENT_PATH`, whenever a caller forwards no explicit `pr-body`/`pr-head-sha` (the documented zero-input integration every caller actually uses). A GitHub Actions job **rerun** replays the event payload archived at the run's *original* trigger rather than delivering a fresh one; re-running an old, already-superseded failed run therefore used to reproduce its stale verdict with a brand-new check-run timestamp, which both GitHub's own required-check view and `collapseLatestByName` (`internal/scm/github/github.go`) treat as current - pinning a stale FAILURE next to an already-green commit with no clean recovery short of a new SHA. The event payload remains the fallback (with a visible `::warning::`) when live lookup is unavailable (no `pull-requests: read`, no token, or the API call fails); explicit `pr-body`/`pr-head-sha` inputs always skip the live lookup and win, unchanged.
+- Tests: `require_no_mistakes_action_test.go` (`TestRequireActionLiveLookupOverridesStaleArchivedEvent` and siblings).
+
 **AXI Run Resolution Is Branch-Scoped (`resolveRun`)**
 
 - `axi status` and `axi logs` resolve an implicit run from the caller's current branch only: its active run, else its most recent one, else nothing.
