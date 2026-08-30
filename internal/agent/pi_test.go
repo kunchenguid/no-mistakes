@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -194,8 +195,9 @@ func TestPiAgent_ValidateConfigurationProbesInWorktree(t *testing.T) {
 }
 
 // A complete project settings default is checked against Pi's own catalogue
-// (exact provider and model id, the lookup Pi's startup path performs), and a
-// resolvable default passes silently.
+// (exact provider and model id, the lookup Pi's startup path performs). With
+// no recorded trust decision pi may ignore the project copy entirely, so the
+// possible inertness is warned even though the model itself resolves.
 func TestPiAgent_ValidateConfigurationResolvesProjectSettingsDefault(t *testing.T) {
 	logs := captureWarnings(t)
 	workDir := t.TempDir()
@@ -213,13 +215,19 @@ func TestPiAgent_ValidateConfigurationResolvesProjectSettingsDefault(t *testing.
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
-	if logs.Len() != 0 {
-		t.Fatalf("warnings = %q, want a resolvable project default to pass silently", logs.String())
+	for _, want := range []string{projectSettings, "may be inert"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+	if strings.Contains(logs.String(), "not in pi's model catalogue") {
+		t.Fatalf("warnings = %q, want the resolvable default to pass the catalogue check", logs.String())
 	}
 }
 
 // The project default overrides the global one per key, so the catalogue check
-// must consult the value Pi would actually use.
+// must consult the value Pi would actually use. The recorded trust decision
+// keeps the inertness diagnostic out of a trusted run.
 func TestPiAgent_ValidateConfigurationProjectSettingsOverrideGlobal(t *testing.T) {
 	logs := captureWarnings(t)
 	workDir := t.TempDir()
@@ -240,6 +248,7 @@ func TestPiAgent_ValidateConfigurationProjectSettingsOverrideGlobal(t *testing.T
 	}
 	pa := &piAgent{
 		bin:               writePiCatalogueStub(t, "google project-model"),
+		extraArgs:         []string{"--approve"},
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
 	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
@@ -251,6 +260,10 @@ func TestPiAgent_ValidateConfigurationProjectSettingsOverrideGlobal(t *testing.T
 }
 
 func TestPiAgent_ValidateConfigurationSurfacesPiResolutionFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("catalogue endpoint fixtures rely on POSIX tooling")
+	}
+	setPiCatalogEndpoint(t, true)
 	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
 cat > /dev/null
 echo 'Error: Model "ghost-model" not found. Use --list-models to see available models.' >&2
@@ -269,6 +282,125 @@ exit 1
 	for _, want := range []string{"ghost-model", "agent_config.pi.model", `Model "ghost-model" not found`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("validation error = %q, want %q", err, want)
+		}
+	}
+}
+
+// setPiCatalogEndpoint points the catalogue reachability check at a local
+// listener (reachable) or a closed port (unreachable) so tests never dial the
+// real catalog host.
+func setPiCatalogEndpoint(t *testing.T, reachable bool) {
+	t.Helper()
+	previous := piCatalogEndpoint
+	t.Cleanup(func() { piCatalogEndpoint = previous })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reachable {
+		t.Cleanup(func() { listener.Close() })
+		piCatalogEndpoint = listener.Addr().String()
+		return
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	piCatalogEndpoint = addr
+}
+
+// countModelProbes writes a pi stub that records every invocation's argv, one
+// line per call.
+func countModelProbes(t *testing.T, offlineExit, onlineExit int) string {
+	t.Helper()
+	return writeFakePi(t, t.TempDir(), fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> pi-calls.txt
+case "$*" in
+	*--offline*) exit %d ;;
+	*) exit %d ;;
+esac
+`, offlineExit, onlineExit), "@echo off\r\nexit /b 0\r\n")
+}
+
+func readProbeCallCount(t *testing.T, workDir string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(workDir, "pi-calls.txt"))
+	if err != nil {
+		t.Fatalf("read pi invocation record: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// A cached catalogue answer finishes the check with a single offline probe and
+// no online attempt.
+func TestPiAgent_ValidateConfigurationOfflineHitProbesOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX stub")
+	}
+	workDir := t.TempDir()
+	pa := &piAgent{
+		bin:               countModelProbes(t, 0, 1),
+		extraArgs:         []string{"--model", "sonnet"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("ValidateConfiguration: %v", err)
+	}
+	calls := readProbeCallCount(t, workDir)
+	if len(calls) != 1 {
+		t.Fatalf("pi invocations = %d (%v), want one offline probe", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "--offline") {
+		t.Fatalf("probe argv = %q, want the offline catalogue consulted first", calls[0])
+	}
+}
+
+// An offline miss can be a stale cache, so pi's online resolution gets the
+// final word: resolving the model there lets setup continue.
+func TestPiAgent_ValidateConfigurationOfflineMissThenOnlineHit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX stub")
+	}
+	setPiCatalogEndpoint(t, true)
+	workDir := t.TempDir()
+	pa := &piAgent{
+		bin:               countModelProbes(t, 1, 0),
+		extraArgs:         []string{"--model", "sonnet"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("an offline miss that pi resolves online must not fail setup: %v", err)
+	}
+	calls := readProbeCallCount(t, workDir)
+	if len(calls) != 2 {
+		t.Fatalf("pi invocations = %d (%v), want an offline probe followed by an online probe", len(calls), calls)
+	}
+	if strings.Contains(calls[1], "--offline") {
+		t.Fatalf("second probe argv = %q, want pi's real online resolution path", calls[1])
+	}
+}
+
+// An unreachable model catalogue cannot verify a rejection, so an absent
+// verification result is not a bad model result: warn and continue.
+func TestPiAgent_ValidateConfigurationWarnsWhenCatalogueVerificationImpossible(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX stub")
+	}
+	logs := captureWarnings(t)
+	setPiCatalogEndpoint(t, false)
+	workDir := t.TempDir()
+	pa := &piAgent{
+		bin:               countModelProbes(t, 1, 1),
+		extraArgs:         []string{"--model", "ghost-model"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("an unverifiable catalogue must not fail setup: %v", err)
+	}
+	for _, want := range []string{"ghost-model", "not possible"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
 }

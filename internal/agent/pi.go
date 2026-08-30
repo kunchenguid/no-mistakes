@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,8 +49,11 @@ func (a *piAgent) ReportsAgentAttempts() bool { return true }
 // each source. An explicit --model pattern is resolved by Pi's own CLI
 // resolver (exact ids, case-insensitive substrings, display-name matches,
 // aliases, and deterministic latest-version ambiguity) through a throwaway RPC
-// session with no prompt: Pi fails fast on a model it cannot resolve and
-// otherwise exits once stdin closes, and that rejection fails setup. A
+// session with no prompt. Pi is probed against its offline catalogue first so
+// a cached answer costs no network access; an offline miss is re-probed
+// through Pi's online resolution, and setup fails only when pi's model
+// catalogue is reachable and pi still rejects the pattern there, because an
+// unreachable catalogue means the probe cannot verify the model at all. A
 // settings default instead follows Pi's provider-plus-model startup path,
 // which silently falls back on anything it cannot use, so a default that is
 // absent, inert, or missing from Pi's catalogue only produces a warning naming
@@ -68,33 +72,95 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 		if selection.model == "" {
 			return nil
 		}
+		if selection.project && trust == piTrustUndetermined {
+			slog.Warn("pi project settings default may be inert: Pi has not recorded a trust decision for this worktree and may ignore the project copy and fall back to another model",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
+		}
 		if piCatalogueHasModel(selection.provider, selection.model, a.piModelCatalogue(ctx, workDir)) {
 			return nil
 		}
-		attrs := []any{"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model)}
-		if selection.project && trust == piTrustUndetermined {
-			attrs = append(attrs, "note", "the setting may be inert: Pi has not recorded a trust decision for this worktree")
-		}
-		slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup", attrs...)
+		slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup",
+			"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
 		return nil
 	}
 
-	validationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// Pi's offline catalogue is only a cache: an online run refreshes it from
+	// the network and falls back silently when that is impossible. Probe
+	// offline first so a cached answer costs no network access, and treat an
+	// offline miss as stale rather than fatal until pi's online resolution
+	// confirms it.
+	offline := a.probeModelResolution(ctx, workDir, true)
+	if offline.resolved {
+		return nil
+	}
+	if !offline.rejected {
+		return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, offline.detail)
+	}
+	online := a.probeModelResolution(ctx, workDir, false)
+	if online.resolved {
+		return nil
+	}
+	if online.rejected && piCatalogReachable() {
+		return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, online.detail)
+	}
+	slog.Warn("pi model catalogue verification was not possible; continuing without rejecting the model",
+		"model", piQualifiedModel(provider, model), "source", source, "detail", online.detail)
+	return nil
+}
+
+// piProbeOutcome classifies one model-resolution probe. Only a clean non-zero
+// exit from pi itself is its verdict; a probe that could not run is not
+// evidence about the model.
+type piProbeOutcome struct {
+	resolved bool
+	rejected bool
+	detail   string
+}
+
+// probeModelResolution runs one throwaway pi session that resolves the
+// configured model and exits once stdin closes.
+func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offline bool) piProbeOutcome {
+	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	args := append([]string(nil), a.extraArgs...)
-	args = append(args, "--offline", "--mode", "rpc", "--no-session")
-	cmd := exec.CommandContext(validationCtx, a.bin, args...)
+	if offline {
+		args = append(args, "--offline")
+	}
+	args = append(args, "--mode", "rpc", "--no-session")
+	cmd := exec.CommandContext(probeCtx, a.bin, args...)
 	cmd.Dir = workDir
 	cmd.Env = a.overlay().Apply(nil)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
+		detail := strings.TrimSpace(stderr.String())
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if detail == "" {
+				detail = exitErr.String()
+			}
+			return piProbeOutcome{rejected: true, detail: detail}
 		}
-		return fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
+		if probeCtx.Err() != nil {
+			return piProbeOutcome{detail: fmt.Sprintf("pi model probe did not finish: %v", probeCtx.Err())}
+		}
+		return piProbeOutcome{detail: err.Error()}
 	}
-	return nil
+	return piProbeOutcome{resolved: true}
+}
+
+// piCatalogEndpoint is pi's default model-catalog host. pi refreshes its
+// catalogue from there at online startup and falls back to its cache without
+// saying so, so only a reachable catalog makes an online rejection trustworthy.
+var piCatalogEndpoint = "pi.dev:443"
+
+func piCatalogReachable() bool {
+	conn, err := net.DialTimeout("tcp", piCatalogEndpoint, 3*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 type piModelSelection struct {

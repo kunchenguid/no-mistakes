@@ -702,7 +702,7 @@ func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns fun
 		if check.PreRunFailure {
 			preRunCount++
 		}
-		if strings.EqualFold(strings.TrimSpace(check.State), "ACTION_REQUIRED") {
+		if classifyCheckFailure(check) == classManual {
 			actionRequiredCount++
 		}
 	}
@@ -758,7 +758,7 @@ func unresolvedTransientSummary(total, preRun, actionRequired int) string {
 }
 
 func unresolvedTransientDescription(check scm.Check, reruns int) string {
-	if strings.EqualFold(strings.TrimSpace(check.State), "ACTION_REQUIRED") {
+	if classifyCheckFailure(check) == classManual {
 		return fmt.Sprintf("CI workflow did not run: %s - the provider reported action_required, so it is waiting for a maintainer rather than a code fix", check.Name)
 	}
 	if check.PreRunFailure {
