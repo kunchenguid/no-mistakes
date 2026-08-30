@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,12 +16,23 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// captureDaemonWarnings swaps in a warning-level handler over the returned
+// buffer for the duration of the test.
+func captureDaemonWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logs
+}
+
 func writePiCatalogStub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "pi.cmd")
-		script := "@echo off\r\necho %* | findstr /c:\"--model openrouter/z-ai/glm-5.3\" >nul\r\nif not errorlevel 1 exit /b 0\r\necho Error: Model \"stub\" not found. Use --list-models to see available models. 1>&2\r\nexit /b 1\r\n"
+		script := "@echo off\r\necho provider model context max-out thinking images\r\necho openrouter z-ai/glm-5.3 1M 128K yes no\r\necho %* | findstr /c:\"--model openrouter/z-ai/glm-5.3\" >nul\r\nif not errorlevel 1 exit /b 0\r\necho Error: Model \"stub\" not found. Use --list-models to see available models. 1>&2\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -27,8 +40,11 @@ func writePiCatalogStub(t *testing.T) string {
 	}
 	path := filepath.Join(dir, "pi")
 	script := `#!/bin/sh
-# Emulates Pi's resolver contract: it exits 0 when the --model pattern
-# resolves and 1 with its not-found error on stderr when it does not.
+# Serves pi's catalogue for --list-models, then emulates the resolver contract
+# for an explicit --model: exit 0 when the pattern resolves, 1 with pi's
+# not-found error on stderr when it does not.
+printf '%s\n' 'provider model context max-out thinking images'
+printf '%s\n' 'openrouter z-ai/glm-5.3 1M 128K yes no'
 model=
 prev=
 for a in "$@"; do
@@ -149,7 +165,11 @@ func TestNewPipelineAgent_AcceptsPiAgentConfigModelPresentInCatalogue(t *testing
 	_ = ag.Close()
 }
 
-func TestNewPipelineAgent_RejectsUnknownPiSettingsDefaultBeforeExecution(t *testing.T) {
+// A settings default follows Pi's startup path, which silently falls back on
+// anything it cannot use, so an unknown default must warn and continue instead
+// of failing setup.
+func TestNewPipelineAgent_WarnsOnUnknownPiSettingsDefaultWithoutFailingSetup(t *testing.T) {
+	logs := captureDaemonWarnings(t)
 	bin := writePiCatalogStub(t)
 	agentDir := t.TempDir()
 	settingsPath := filepath.Join(agentDir, "settings.json")
@@ -161,23 +181,25 @@ func TestNewPipelineAgent_RejectsUnknownPiSettingsDefaultBeforeExecution(t *test
 		AgentPathOverride: map[string]string{"pi": bin},
 	}
 
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), t.TempDir(), fakeLookPath, runenv.Overlay{
 		Set: map[string]string{"PI_CODING_AGENT_DIR": agentDir},
 	})
-	if err == nil {
-		t.Fatal("unknown Pi settings default must fail pipeline setup")
+	if err != nil {
+		t.Fatalf("an unknown Pi settings default must not fail pipeline setup: %v", err)
 	}
+	_ = ag.Close()
 	for _, want := range []string{"stealth/ox-alpha", settingsPath} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("setup error = %q, want %q", err, want)
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
 }
 
 // The probe must consult the run worktree, not just the global agent dir: a
-// repo can pin its pipeline model in .pi/settings.json. The rejection needs a
-// trust decision Pi would honor, so the agent dir records defaultProjectTrust.
-func TestNewPipelineAgent_RejectsUnknownPiProjectSettingsDefaultBeforeExecution(t *testing.T) {
+// repo can pin its pipeline model in .pi/settings.json. Pi would honor it here
+// (defaultProjectTrust always), so the warning must name the project file.
+func TestNewPipelineAgent_WarnsOnUnknownPiProjectSettingsDefaultWithoutFailingSetup(t *testing.T) {
+	logs := captureDaemonWarnings(t)
 	bin := writePiCatalogStub(t)
 	workDir := t.TempDir()
 	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
@@ -196,15 +218,16 @@ func TestNewPipelineAgent_RejectsUnknownPiProjectSettingsDefaultBeforeExecution(
 		AgentPathOverride: map[string]string{"pi": bin},
 	}
 
-	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), workDir, fakeLookPath, runenv.Overlay{
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), workDir, fakeLookPath, runenv.Overlay{
 		Set: map[string]string{"PI_CODING_AGENT_DIR": agentDir},
 	})
-	if err == nil {
-		t.Fatal("unknown Pi project settings default must fail pipeline setup")
+	if err != nil {
+		t.Fatalf("an unknown Pi project settings default must not fail pipeline setup: %v", err)
 	}
+	_ = ag.Close()
 	for _, want := range []string{"stealth/ox-alpha", projectSettings} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("setup error = %q, want %q", err, want)
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
 }

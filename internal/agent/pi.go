@@ -43,53 +43,45 @@ func (a *piAgent) SupportsSessionResume() bool { return true }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
 
-// ValidateConfiguration asks Pi itself to resolve the configured model inside
-// the run's worktree before pipeline steps start. Pi owns the pattern
-// semantics (exact ids, case-insensitive substrings, display-name matches,
-// aliases, and deterministic latest-version ambiguity), and its resolution
-// depends on project .pi/settings.json plus project packages and extensions
-// that exist only in the worktree, so the probe replays the same invocation
-// environment instead of replicating the matcher. Pi otherwise silently
-// accepts some unknown custom ids and assigns fallback capabilities to them,
-// which can make an output-cap truncation look like a model-quality failure
-// much later. The probe runs a throwaway RPC session with no prompt: Pi fails
-// fast on a model it cannot resolve and otherwise exits once stdin closes. A
-// project settings default is only allowed to fail setup when Pi would honor
-// it (a recorded trust decision, an explicit --approve, or defaultProjectTrust
-// always); otherwise a failing project default is reported as a warning that
-// the setting may be inert.
+// ValidateConfiguration checks the configured Pi model inside the run worktree
+// before pipeline steps start, using the resolution semantics Pi applies to
+// each source. An explicit --model pattern is resolved by Pi's own CLI
+// resolver (exact ids, case-insensitive substrings, display-name matches,
+// aliases, and deterministic latest-version ambiguity) through a throwaway RPC
+// session with no prompt: Pi fails fast on a model it cannot resolve and
+// otherwise exits once stdin closes, and that rejection fails setup. A
+// settings default instead follows Pi's provider-plus-model startup path,
+// which silently falls back on anything it cannot use, so a default that is
+// absent, inert, or missing from Pi's catalogue only produces a warning naming
+// the settings file. Project packages and extensions that register models are
+// part of every check because both run in the worktree.
 func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) error {
 	model := piFlagValue(a.extraArgs, "--model")
 	provider := piFlagValue(a.extraArgs, "--provider")
 	source := a.modelSource
-	args := append([]string(nil), a.extraArgs...)
-	if model != "" && source == "" {
+	explicit := model != ""
+	if explicit && source == "" {
 		source = "Pi --model option"
 	}
-	var selection piModelSelection
-	trust := piTrustTrusted
-	if model == "" {
-		var err error
-		selection, trust, err = piSettingsModel(workDir, a.extraArgs, a.overlay())
-		if err != nil {
-			return err
-		}
+	if !explicit {
+		selection, trust := piSettingsModel(workDir, a.extraArgs, a.overlay())
 		if selection.model == "" {
 			return nil
 		}
-		model = selection.model
-		provider = selection.provider
-		source = selection.source
-		// Route the settings default through Pi's own CLI resolution so the
-		// validation uses the same matcher a --model selection gets. The bare
-		// id is passed deliberately: a qualified --provider prefix makes Pi
-		// silently fabricate a fallback model instead of failing, which would
-		// turn the probe into a no-op.
-		args = append(args, "--model", model)
+		if piCatalogueHasModel(selection.provider, selection.model, a.piModelCatalogue(ctx, workDir)) {
+			return nil
+		}
+		attrs := []any{"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model)}
+		if selection.project && trust == piTrustUndetermined {
+			attrs = append(attrs, "note", "the setting may be inert: Pi has not recorded a trust decision for this worktree")
+		}
+		slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup", attrs...)
+		return nil
 	}
 
 	validationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	args := append([]string(nil), a.extraArgs...)
 	args = append(args, "--offline", "--mode", "rpc", "--no-session")
 	cmd := exec.CommandContext(validationCtx, a.bin, args...)
 	cmd.Dir = workDir
@@ -97,21 +89,10 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		var validationErr error
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			validationErr = fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
-		} else {
-			validationErr = fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
+			return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
 		}
-		if trust == piTrustUndetermined && selection.project {
-			// Pi honors the project copy only for a project it trusts, and with
-			// no recorded decision the default may be inert, so setup must not
-			// fail on a value Pi itself would ignore.
-			slog.Warn("pi project settings default did not resolve and may be inert",
-				"file", source, "model", model, "error", validationErr.Error())
-			return nil
-		}
-		return validationErr
+		return fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
 	}
 	return nil
 }
@@ -138,12 +119,14 @@ const (
 
 // piSettingsModel reads Pi's configured default model the way Pi merges its
 // settings: the project's .pi/settings.json overrides the global agent
-// settings.json per key. Pi honors the project copy only for a project it
-// trusts, and a project file it cannot read or parse is ignored with a
-// diagnostic, so a project value Pi would not act on is dropped with a warning
-// naming the file instead of failing validation. The returned trust state lets
-// the caller warn rather than abort when the outcome is undetermined.
-func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay) (piModelSelection, piTrustState, error) {
+// settings.json per key. Pi's startup path resolves that default by exact
+// provider and model id and silently falls back whenever the file cannot be
+// loaded, the project copy is untrusted, or either key is missing, so every
+// such case is reported as a warning naming the file and yields no model to
+// validate instead of failing setup. The returned trust state says whether Pi
+// would honor the project copy, so the caller can explain a project default
+// that may be inert.
+func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay) (piModelSelection, piTrustState) {
 	read := func(path string) (string, string, string, error) {
 		var settings struct {
 			DefaultProvider     string `json:"defaultProvider"`
@@ -166,7 +149,8 @@ func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay)
 	globalPath := piGlobalSettingsPath(overlay)
 	globalProvider, globalModel, defaultProjectTrust, err := read(globalPath)
 	if err != nil {
-		return piModelSelection{}, piTrustUndetermined, err
+		slog.Warn("ignoring Pi global settings Pi cannot load; pi proceeds with its own model fallback", "file", globalPath, "error", err)
+		globalProvider, globalModel, defaultProjectTrust = "", "", ""
 	}
 	trust := piProjectTrust(workDir, extraArgs, overlay, defaultProjectTrust)
 
@@ -192,9 +176,53 @@ func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay)
 		provider = projectProvider
 	}
 	if model == "" {
-		return piModelSelection{}, trust, nil
+		return piModelSelection{}, trust
 	}
-	return piModelSelection{provider: provider, model: model, source: source, project: project}, trust, nil
+	if provider == "" {
+		// Pi's startup path uses defaultProvider and defaultModel together and
+		// falls back to its first available model when either is missing.
+		slog.Warn("ignoring Pi defaultModel without defaultProvider; pi will fall back to its first available model", "file", source, "model", model)
+		return piModelSelection{}, trust
+	}
+	return piModelSelection{provider: provider, model: model, source: source, project: project}, trust
+}
+
+// piModelCatalogue lists the provider and model id columns of pi --list-models
+// from inside the run worktree, where project packages and extensions can
+// register additional models. A catalogue that cannot be produced leaves the
+// settings-default check undetermined.
+func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) []string {
+	catalogueCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	args := append([]string(nil), a.extraArgs...)
+	args = append(args, "--offline", "--list-models")
+	cmd := exec.CommandContext(catalogueCtx, a.bin, args...)
+	cmd.Dir = workDir
+	cmd.Env = a.overlay().Apply(nil)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var models []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.EqualFold(fields[0], "provider") {
+			continue
+		}
+		models = append(models, fields[0]+"/"+fields[1])
+	}
+	return models
+}
+
+// piCatalogueHasModel reports whether Pi's catalogue contains the exact
+// provider and model id pair its startup default lookup requires.
+func piCatalogueHasModel(provider, model string, catalogue []string) bool {
+	for _, entry := range catalogue {
+		if entry == provider+"/"+model {
+			return true
+		}
+	}
+	return false
 }
 
 // piProjectTrust classifies whether Pi would honor the worktree's project

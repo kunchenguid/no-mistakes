@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -136,6 +137,34 @@ func readPiProbe(t *testing.T, workDir string) (string, string) {
 	return strings.TrimSpace(lines[0]), strings.TrimSpace(strings.Join(lines[1:], "\n"))
 }
 
+// captureWarnings swaps in a warning-level handler over the returned buffer for
+// the duration of the test.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logs
+}
+
+// writePiCatalogueStub records its working directory and argv like
+// writePiProbeStub and then prints a fixed provider/model catalogue for
+// --list-models.
+func writePiCatalogueStub(t *testing.T, pairs ...string) string {
+	t.Helper()
+	var posix, windows strings.Builder
+	posix.WriteString("#!/bin/sh\n{\n\tprintf '%s\\n' \"$(pwd)\"\n\tprintf '%s\\n' \"$*\"\n} > pi-probe.txt\nprintf '%s\\n' 'provider model context max-out thinking images'\n")
+	windows.WriteString(strings.Join([]string{"@echo off", "echo %cd% > pi-probe.txt", "echo %* >> pi-probe.txt", "echo provider model context max-out thinking images"}, "\r\n") + "\r\n")
+	for _, pair := range pairs {
+		fmt.Fprintf(&posix, "printf '%%s\\n' '%s 1M 128K yes no'\n", pair)
+		fmt.Fprintf(&windows, "echo %s 1M 128K yes no\r\n", pair)
+	}
+	posix.WriteString("exit 0\n")
+	windows.WriteString("exit /b 0\r\n")
+	return writeFakePi(t, t.TempDir(), posix.String(), windows.String())
+}
+
 func TestPiAgent_ValidateConfigurationProbesInWorktree(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pwd assertion relies on a POSIX stub")
@@ -164,54 +193,60 @@ func TestPiAgent_ValidateConfigurationProbesInWorktree(t *testing.T) {
 	}
 }
 
+// A complete project settings default is checked against Pi's own catalogue
+// (exact provider and model id, the lookup Pi's startup path performs), and a
+// resolvable default passes silently.
 func TestPiAgent_ValidateConfigurationResolvesProjectSettingsDefault(t *testing.T) {
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
-	projectDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultProvider":"google","defaultModel":"project-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"google","defaultModel":"project-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pa := &piAgent{bin: writePiProbeStub(t)}
+	pa := &piAgent{
+		bin:               writePiCatalogueStub(t, "google project-model"),
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
-	_, argv := readPiProbe(t, workDir)
-	if !strings.Contains(argv, "--model project-model") {
-		t.Fatalf("probe argv = %q, want the project default model resolved by Pi", argv)
-	}
-	if strings.Contains(argv, "--provider") {
-		t.Fatalf("probe argv = %q, want the bare settings id so Pi can still fail on an unknown model instead of fabricating a fallback", argv)
+	if logs.Len() != 0 {
+		t.Fatalf("warnings = %q, want a resolvable project default to pass silently", logs.String())
 	}
 }
 
+// The project default overrides the global one per key, so the catalogue check
+// must consult the value Pi would actually use.
 func TestPiAgent_ValidateConfigurationProjectSettingsOverrideGlobal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("HOME-based fixture relies on a POSIX environment")
-	}
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
 	globalDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(globalDir, ".pi", "agent"), 0o755); err != nil {
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalDir, ".pi", "agent", "settings.json"), []byte(`{"defaultModel":"global-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"global-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	projectDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultModel":"project-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"google","defaultModel":"project-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	pa := &piAgent{bin: writePiProbeStub(t), subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}})}
+	pa := &piAgent{
+		bin:               writePiCatalogueStub(t, "google project-model"),
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
+	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
-	_, argv := readPiProbe(t, workDir)
-	if !strings.Contains(argv, "--model project-model") {
-		t.Fatalf("probe argv = %q, want the project default to override the global default", argv)
+	if logs.Len() != 0 {
+		t.Fatalf("warnings = %q, want the overriding project default to be the checked value", logs.String())
 	}
 }
 
@@ -253,70 +288,57 @@ func TestPiAgent_ValidateConfigurationSkipsProbeWithoutModelSelection(t *testing
 	}
 }
 
-// A project default Pi would not honor must never fail setup: when Pi does not
-// trust the project it ignores the project copy entirely, so the global default
-// is what the probe validates.
+// A project default Pi would not honor must never be validated: when Pi does
+// not trust the project it ignores the project copy entirely, so only the
+// global default is checked against the catalogue.
 func TestPiAgent_ValidateConfigurationIgnoresProjectDefaultForUntrustedProject(t *testing.T) {
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
-	projectDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultModel":"ghost-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"openrouter","defaultModel":"ghost-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	globalDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(globalDir, ".pi", "agent"), 0o755); err != nil {
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalDir, ".pi", "agent", "settings.json"), []byte(`{"defaultModel":"global-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"global-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pa := &piAgent{
-		bin:               writePiProbeStub(t),
+		bin:               writePiCatalogueStub(t, "google global-model"),
 		extraArgs:         []string{"--no-approve"},
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
 	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
-	_, argv := readPiProbe(t, workDir)
-	if !strings.Contains(argv, "--model global-model") {
-		t.Fatalf("probe argv = %q, want the global default the untrusted project copy cannot override", argv)
+	if !strings.Contains(logs.String(), projectSettings) || !strings.Contains(logs.String(), "does not trust") {
+		t.Fatalf("warnings = %q, want the ignored project file named", logs.String())
 	}
-	if strings.Contains(argv, "ghost-model") {
-		t.Fatalf("probe argv = %q, want the inert project default ignored", argv)
+	if strings.Contains(logs.String(), "ghost-model") {
+		t.Fatalf("warnings = %q, want the inert project default left unvalidated", logs.String())
 	}
 }
 
-// With no recorded trust decision the project copy may be inert, so a failing
-// project default is a warning, never a setup failure.
+// With no recorded trust decision the project copy may be inert, so an
+// unresolvable project default is a warning, never a setup failure.
 func TestPiAgent_ValidateConfigurationWarnsInsteadOfAbortingWhenProjectTrustUndetermined(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(previous)
-
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
 	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(projectSettings, []byte(`{"defaultModel":"ghost-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"openrouter","defaultModel":"ghost-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
-cat > /dev/null
-echo 'Error: Model "ghost-model" not found. Use --list-models to see available models.' >&2
-exit 1
-`, strings.Join([]string{
-		"@echo off",
-		"more > nul",
-		"echo Error: Model not found. Use --list-models to see available models. 1>&2",
-		"exit /b 1",
-	}, "\r\n"))
 	pa := &piAgent{
-		bin:               bin,
+		bin:               writePiCatalogueStub(t, "google something-else"),
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
 	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
@@ -329,73 +351,72 @@ exit 1
 	}
 }
 
-// A trust decision Pi would honor keeps the project default a hard failure.
-func TestPiAgent_ValidateConfigurationRejectsProjectDefaultForTrustedProject(t *testing.T) {
+// Even a trust decision Pi would honor keeps an unresolvable project default a
+// warning: Pi's startup path falls back silently instead of failing.
+func TestPiAgent_ValidateConfigurationWarnsEvenForTrustedProjectDefault(t *testing.T) {
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
-	projectDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte(`{"defaultModel":"ghost-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"openrouter","defaultModel":"ghost-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
-cat > /dev/null
-echo 'Error: Model "ghost-model" not found. Use --list-models to see available models.' >&2
-exit 1
-`, strings.Join([]string{
-		"@echo off",
-		"more > nul",
-		"echo Error: Model not found. Use --list-models to see available models. 1>&2",
-		"exit /b 1",
-	}, "\r\n"))
 	pa := &piAgent{
-		bin:               bin,
+		bin:               writePiCatalogueStub(t, "google something-else"),
 		extraArgs:         []string{"--approve"},
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
 	}
-	err := pa.ValidateConfiguration(context.Background(), workDir)
-	if err == nil || !strings.Contains(err.Error(), "ghost-model") {
-		t.Fatalf("trusted project default failure = %v, want the model resolution error", err)
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a trusted project default must not abort setup: %v", err)
+	}
+	if !strings.Contains(logs.String(), "ghost-model") {
+		t.Fatalf("warnings = %q, want the unresolvable project default named", logs.String())
+	}
+	if strings.Contains(logs.String(), "may be inert") {
+		t.Fatalf("warnings = %q, want no inertness note once Pi's trust is recorded", logs.String())
 	}
 }
 
 // A project file Pi cannot load is inert regardless of trust, so its garbage
 // must never abort setup while the global default it shadows stays valid.
 func TestPiAgent_ValidateConfigurationIgnoresUnloadableProjectSettings(t *testing.T) {
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
-	projectDir := filepath.Join(workDir, ".pi")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "settings.json"), []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(projectSettings, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	globalDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(globalDir, ".pi", "agent"), 0o755); err != nil {
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(globalDir, ".pi", "agent", "settings.json"), []byte(`{"defaultModel":"global-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"global-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pa := &piAgent{
-		bin:               writePiProbeStub(t),
+		bin:               writePiCatalogueStub(t, "google global-model"),
 		extraArgs:         []string{"--approve"},
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
 	}
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
-	_, argv := readPiProbe(t, workDir)
-	if !strings.Contains(argv, "--model global-model") {
-		t.Fatalf("probe argv = %q, want the global default when the project file cannot load", argv)
+	if !strings.Contains(logs.String(), projectSettings) {
+		t.Fatalf("warnings = %q, want the unloadable project file named", logs.String())
 	}
 }
 
-// The failure source must name where the model value came from: a project file
+// The warning source must name where the model value came from: a project file
 // that only overrides the provider leaves the model owned by the global
 // settings.
 func TestPiAgent_ValidateConfigurationNamesGlobalSourceForGlobalModel(t *testing.T) {
+	logs := captureWarnings(t)
 	workDir := t.TempDir()
 	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
@@ -409,32 +430,77 @@ func TestPiAgent_ValidateConfigurationNamesGlobalSourceForGlobalModel(t *testing
 	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(globalSettings, []byte(`{"defaultModel":"ghost-model"}`), 0o600); err != nil {
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"ghost-model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
-cat > /dev/null
-echo 'Error: Model "ghost-model" not found. Use --list-models to see available models.' >&2
-exit 1
-`, strings.Join([]string{
-		"@echo off",
-		"more > nul",
-		"echo Error: Model not found. Use --list-models to see available models. 1>&2",
-		"exit /b 1",
-	}, "\r\n"))
 	pa := &piAgent{
-		bin:               bin,
+		bin:               writePiCatalogueStub(t, "google something-else"),
 		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
 	}
-	err := pa.ValidateConfiguration(context.Background(), workDir)
-	if err == nil {
-		t.Fatal("expected the global default's resolution failure to fail setup")
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a settings default must never abort setup: %v", err)
 	}
-	if !strings.Contains(err.Error(), globalSettings) {
-		t.Fatalf("validation error = %q, want the global settings path", err)
+	if !strings.Contains(logs.String(), globalSettings) {
+		t.Fatalf("warnings = %q, want the global settings path that supplied the model", logs.String())
 	}
-	if strings.Contains(err.Error(), projectSettings) {
-		t.Fatalf("validation error = %q, must not name the project file that supplied no model", err)
+	if strings.Contains(logs.String(), projectSettings) {
+		t.Fatalf("warnings = %q, must not name the project file that supplied no model", logs.String())
+	}
+}
+
+// Pi tolerates a malformed global settings file by proceeding with its own
+// model fallback, so the same file must only warn here, never abort setup.
+func TestPiAgent_ValidateConfigurationWarnsOnMalformedGlobalSettings(t *testing.T) {
+	logs := captureWarnings(t)
+	workDir := t.TempDir()
+	globalDir := t.TempDir()
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalSettings, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{
+		bin:               writePiCatalogueStub(t, "google global-model"),
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a malformed global settings file must not abort setup: %v", err)
+	}
+	if !strings.Contains(logs.String(), globalSettings) {
+		t.Fatalf("warnings = %q, want the malformed global settings file named", logs.String())
+	}
+}
+
+// Pi's startup path uses defaultProvider and defaultModel together and falls
+// back silently when either is missing, so a model-only default is a warning
+// and no catalogue run is needed.
+func TestPiAgent_ValidateConfigurationWarnsOnIncompleteSettingsDefault(t *testing.T) {
+	logs := captureWarnings(t)
+	workDir := t.TempDir()
+	globalDir := t.TempDir()
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultModel":"lonely-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{
+		bin:               writePiCatalogueStub(t, "google lonely-model"),
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("an incomplete settings default must not abort setup: %v", err)
+	}
+	for _, want := range []string{"lonely-model", globalSettings} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "pi-probe.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pi ran for an incomplete default Pi itself ignores: %v", err)
 	}
 }
 
