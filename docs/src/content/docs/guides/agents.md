@@ -216,7 +216,7 @@ All agents implement the same interface. Each invocation receives:
 - **Environment** - the daemon environment plus non-interactive Git overrides (`GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`, and `GIT_TERMINAL_PROMPT=0`) so agent-invoked Git commands do not hang on editors or credential prompts
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
-- **OnLifecycle** - callback for native subprocess start, exit, retry, fallback, and output-liveness activity; control events reach step logs and AXI active-step status, while throttled output liveness updates status without flooding the log
+- **OnLifecycle** - callback for native subprocess start, ready, tool, exit, retry, fallback, and output-liveness activity; control events reach step logs and AXI active-step status, while throttled output liveness updates status without flooding the log. Ready and tool events are bounded diagnostics: they carry only a phase label and (for tool events) the tool name and outcome, never arguments or output.
 - **Session** - optional no-mistakes-owned native session identity for review-fixer reuse
 - **Purpose** - local performance label for the pipeline duty served
 
@@ -295,6 +295,8 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
+Pi's local startup is bounded: if Pi has not emitted its first JSON event within 30 seconds of launch, no-mistakes stops the subprocess and fails the invocation with that timeout plus the captured stderr tail.
+Diagnostic stderr is retained only as a bounded 32 KiB tail, and a single JSON event larger than 16 MiB fails the invocation instead of growing daemon memory without bound.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 
 ## Copilot CLI
