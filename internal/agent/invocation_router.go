@@ -41,6 +41,14 @@ func (a *invocationRouter) Run(ctx context.Context, opts RunOpts) (*Result, erro
 	if routed := a.routes[opts.Purpose]; routed != nil {
 		selected = routed
 	}
+	// A durable session identity is only meaningful to the adapter that
+	// minted it. When the selected route cannot resume the recorded
+	// provider's sessions, refuse the turn the same way fallbackAgent does,
+	// so sessions.Run drops the stale identity and retries fresh instead of
+	// a foreign harness resuming an id it does not own.
+	if opts.Session != nil && opts.Session.ID != "" && !SupportsSessionProvider(selected, opts.Session.Agent) {
+		return nil, fmt.Errorf("session provider %q is not configured", opts.Session.Agent)
+	}
 	result, err := selected.Run(ctx, opts)
 	if err == nil && result != nil && result.Provider == "" {
 		result.Provider = selected.Name()

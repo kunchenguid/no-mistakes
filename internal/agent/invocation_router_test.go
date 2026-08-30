@@ -62,6 +62,36 @@ func TestInvocationRouterDoesNotFallbackExplicitRouteOnAuthenticationFailure(t *
 	}
 }
 
+func TestInvocationRouterRejectsSessionMintedByAnotherProvider(t *testing.T) {
+	base := &recordingAgent{name: "pi", resumable: true}
+	fixer := &recordingAgent{name: "codex", resumable: true}
+	routed := NewInvocationRouter(base, map[string]Agent{"review-fix": fixer})
+
+	session := &SessionRef{ID: "sess-pi", Agent: "pi"}
+	_, err := routed.Run(context.Background(), RunOpts{Purpose: "review-fix", Session: session})
+	if err == nil || err.Error() != `session provider "pi" is not configured` {
+		t.Fatalf("Run(review-fix with foreign session) error = %v, want the not-configured error", err)
+	}
+	if fixer.runCalls != 0 || base.runCalls != 0 {
+		t.Fatalf("calls = default %d routed %d, want 0/0", base.runCalls, fixer.runCalls)
+	}
+
+	// The same session must still reach the route that minted it, and a
+	// fresh session (no ID) is never blocked.
+	if _, err := routed.Run(context.Background(), RunOpts{Purpose: "review-fix", Session: &SessionRef{ID: "sess-codex", Agent: "codex"}}); err != nil {
+		t.Fatalf("Run(review-fix with own session): %v", err)
+	}
+	if fixer.runCalls != 1 || fixer.gotOpts.Session == nil || fixer.gotOpts.Session.ID != "sess-codex" {
+		t.Fatalf("own session was not forwarded to the routed agent: calls %d opts %+v", fixer.runCalls, fixer.gotOpts)
+	}
+	if _, err := routed.Run(context.Background(), RunOpts{Purpose: "review-fix", Session: &SessionRef{}}); err != nil {
+		t.Fatalf("Run(review-fix with fresh session): %v", err)
+	}
+	if fixer.runCalls != 2 {
+		t.Fatalf("fresh session was blocked: calls = %d, want 2", fixer.runCalls)
+	}
+}
+
 func TestInvocationRouterAbsentRoutesReturnsDefaultUnchanged(t *testing.T) {
 	base := &recordingAgent{name: "pi"}
 	if got := NewInvocationRouter(base, nil); got != base {
