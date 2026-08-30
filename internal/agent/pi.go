@@ -143,7 +143,7 @@ func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offl
 			return piProbeOutcome{detail: fmt.Sprintf("pi model probe did not finish: %v", probeCtx.Err())}
 		}
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(err, &exitErr) && exitErr.Exited() {
 			if detail == "" {
 				detail = exitErr.String()
 			}

@@ -448,6 +448,40 @@ exit 0
 	}
 }
 
+// A probe killed externally never rendered a model verdict, so both attempts
+// are inconclusive and setup must warn and continue instead of rejecting the
+// configured model.
+func TestPiAgent_ValidateConfigurationSignalKilledProbeIsInconclusive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signal fixture")
+	}
+	logs := captureWarnings(t)
+	setPiCatalogEndpoint(t, true)
+	workDir := t.TempDir()
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+printf '%s\n' "$*" >> pi-calls.txt
+kill -KILL $$
+`, "@echo off\r\nexit /b 0\r\n")
+	pa := &piAgent{
+		bin:               bin,
+		extraArgs:         []string{"--model", "sonnet"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a signal-killed probe must not fail setup: %v", err)
+	}
+	calls := readProbeCallCount(t, workDir)
+	if len(calls) != 2 {
+		t.Fatalf("pi invocations = %d (%v), want the inconclusive offline probe to fall through to the online probe", len(calls), calls)
+	}
+	for _, want := range []string{"sonnet", "not possible"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
 // A probe that cannot start at all is not a verdict either: both attempts are
 // inconclusive, so setup continues with a warning instead of aborting.
 func TestPiAgent_ValidateConfigurationUnstartableProbeWarnsAndContinues(t *testing.T) {
@@ -455,6 +489,7 @@ func TestPiAgent_ValidateConfigurationUnstartableProbeWarnsAndContinues(t *testi
 		t.Skip("POSIX permission fixture")
 	}
 	logs := captureWarnings(t)
+	setPiCatalogEndpoint(t, false)
 	workDir := t.TempDir()
 	bin := filepath.Join(workDir, "pi")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
