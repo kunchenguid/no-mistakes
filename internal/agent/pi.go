@@ -84,7 +84,7 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 		case piCatalogueHasModel(selection.provider, selection.model, catalogue):
 			return nil
 		default:
-			slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup",
+			slog.Warn("pi settings default model was not found in pi's cached offline catalogue; the online catalogue was not checked, and pi will try to refresh it at startup before choosing a fallback",
 				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
 		}
 		return nil

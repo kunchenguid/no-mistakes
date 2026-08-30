@@ -511,6 +511,37 @@ func TestPiAgent_ValidateConfigurationUnstartableProbeWarnsAndContinues(t *testi
 	}
 }
 
+// A missing settings default in Pi's cached offline catalogue is not a verdict
+// about the online catalogue. The warning must state that boundary and what Pi
+// will try next instead of claiming a definite fallback.
+func TestPiAgent_ValidateConfigurationCachedSettingsMissIsNotAFallbackVerdict(t *testing.T) {
+	logs := captureWarnings(t)
+	workDir := t.TempDir()
+	globalDir := t.TempDir()
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"new-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{
+		bin:               writePiCatalogueStub(t),
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a cached catalogue miss must not fail setup: %v", err)
+	}
+	for _, want := range []string{"new-model", "cached offline catalogue", "online catalogue was not checked", "try to refresh it at startup"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+	if strings.Contains(logs.String(), "will fall back") {
+		t.Fatalf("warnings = %q, must not claim a fallback from a cached miss", logs.String())
+	}
+}
+
 // A catalogue that cannot be produced leaves the settings-default check
 // undetermined: the warning must not claim pi will fall back to another model.
 func TestPiAgent_ValidateConfigurationWarnsWhenCatalogueUnproducible(t *testing.T) {
