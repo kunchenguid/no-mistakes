@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,7 +53,11 @@ func (a *piAgent) ReportsAgentAttempts() bool { return true }
 // accepts some unknown custom ids and assigns fallback capabilities to them,
 // which can make an output-cap truncation look like a model-quality failure
 // much later. The probe runs a throwaway RPC session with no prompt: Pi fails
-// fast on a model it cannot resolve and otherwise exits once stdin closes.
+// fast on a model it cannot resolve and otherwise exits once stdin closes. A
+// project settings default is only allowed to fail setup when Pi would honor
+// it (a recorded trust decision, an explicit --approve, or defaultProjectTrust
+// always); otherwise a failing project default is reported as a warning that
+// the setting may be inert.
 func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) error {
 	model := piFlagValue(a.extraArgs, "--model")
 	provider := piFlagValue(a.extraArgs, "--provider")
@@ -61,8 +66,11 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 	if model != "" && source == "" {
 		source = "Pi --model option"
 	}
+	var selection piModelSelection
+	trust := piTrustTrusted
 	if model == "" {
-		selection, err := piSettingsModel(workDir, a.overlay())
+		var err error
+		selection, trust, err = piSettingsModel(workDir, a.extraArgs, a.overlay())
 		if err != nil {
 			return err
 		}
@@ -89,10 +97,21 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		var validationErr error
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
+			validationErr = fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, detail)
+		} else {
+			validationErr = fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
 		}
-		return fmt.Errorf("validate pi model %q from %s: %w", piQualifiedModel(provider, model), source, err)
+		if trust == piTrustUndetermined && selection.project {
+			// Pi honors the project copy only for a project it trusts, and with
+			// no recorded decision the default may be inert, so setup must not
+			// fail on a value Pi itself would ignore.
+			slog.Warn("pi project settings default did not resolve and may be inert",
+				"file", source, "model", model, "error", validationErr.Error())
+			return nil
+		}
+		return validationErr
 	}
 	return nil
 }
@@ -101,60 +120,158 @@ type piModelSelection struct {
 	provider string
 	model    string
 	source   string
+	// project reports whether the model value itself came from the run
+	// worktree's project settings, whose copy Pi honors only for a project it
+	// trusts.
+	project bool
 }
+
+// piTrustState classifies whether Pi would honor the worktree's project
+// settings for a trusted project.
+type piTrustState int
+
+const (
+	piTrustUndetermined piTrustState = iota
+	piTrustTrusted
+	piTrustUntrusted
+)
 
 // piSettingsModel reads Pi's configured default model the way Pi merges its
 // settings: the project's .pi/settings.json overrides the global agent
-// settings.json per key. Pi honors the project copy only for a trusted project,
-// but the default it names is still validated so a run cannot silently fall
-// back to an unrelated model when Pi does honor it.
-func piSettingsModel(workDir string, overlay runenv.Overlay) (piModelSelection, error) {
-	var settings struct {
-		DefaultProvider string `json:"defaultProvider"`
-		DefaultModel    string `json:"defaultModel"`
-	}
-	read := func(path string) (string, string, error) {
+// settings.json per key. Pi honors the project copy only for a project it
+// trusts, and a project file it cannot read or parse is ignored with a
+// diagnostic, so a project value Pi would not act on is dropped with a warning
+// naming the file instead of failing validation. The returned trust state lets
+// the caller warn rather than abort when the outcome is undetermined.
+func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay) (piModelSelection, piTrustState, error) {
+	read := func(path string) (string, string, string, error) {
+		var settings struct {
+			DefaultProvider     string `json:"defaultProvider"`
+			DefaultModel        string `json:"defaultModel"`
+			DefaultProjectTrust string `json:"defaultProjectTrust"`
+		}
 		data, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
-			return "", "", nil
+			return "", "", "", nil
 		}
 		if err != nil {
-			return "", "", fmt.Errorf("read Pi model setting from %s: %w", path, err)
+			return "", "", "", fmt.Errorf("read Pi model setting from %s: %w", path, err)
 		}
 		if err := json.Unmarshal(data, &settings); err != nil {
-			return "", "", fmt.Errorf("parse Pi model setting from %s: %w", path, err)
+			return "", "", "", fmt.Errorf("parse Pi model setting from %s: %w", path, err)
 		}
-		return strings.TrimSpace(settings.DefaultProvider), strings.TrimSpace(settings.DefaultModel), nil
+		return strings.TrimSpace(settings.DefaultProvider), strings.TrimSpace(settings.DefaultModel), strings.TrimSpace(settings.DefaultProjectTrust), nil
 	}
 
-	globalProvider, globalModel, err := read(piGlobalSettingsPath(overlay))
+	globalPath := piGlobalSettingsPath(overlay)
+	globalProvider, globalModel, defaultProjectTrust, err := read(globalPath)
 	if err != nil {
-		return piModelSelection{}, err
+		return piModelSelection{}, piTrustUndetermined, err
 	}
+	trust := piProjectTrust(workDir, extraArgs, overlay, defaultProjectTrust)
+
 	projectPath := filepath.Join(workDir, ".pi", "settings.json")
-	projectProvider, projectModel, err := read(projectPath)
-	if err != nil {
-		return piModelSelection{}, err
+	projectProvider, projectModel, _, projectErr := read(projectPath)
+	if projectErr != nil {
+		slog.Warn("ignoring Pi project settings Pi cannot load; the file is inert", "file", projectPath, "error", projectErr)
+		projectProvider, projectModel = "", ""
+	} else if trust == piTrustUntrusted {
+		slog.Warn("ignoring Pi project settings: Pi does not trust this project, so the file is inert", "file", projectPath)
+		projectProvider, projectModel = "", ""
 	}
 
 	model, provider := globalModel, globalProvider
-	source := piGlobalSettingsPath(overlay) + " (defaultProvider/defaultModel)"
-	if projectModel != "" || projectProvider != "" {
-		source = projectPath + " (defaultProvider/defaultModel)"
-	}
+	source := globalPath + " (defaultProvider/defaultModel)"
+	project := false
 	if projectModel != "" {
 		model = projectModel
+		source = projectPath + " (defaultProvider/defaultModel)"
+		project = true
 	}
 	if projectProvider != "" {
 		provider = projectProvider
 	}
 	if model == "" {
-		return piModelSelection{}, nil
+		return piModelSelection{}, trust, nil
 	}
-	return piModelSelection{provider: provider, model: model, source: source}, nil
+	return piModelSelection{provider: provider, model: model, source: source, project: project}, trust, nil
+}
+
+// piProjectTrust classifies whether Pi would honor the worktree's project
+// settings for a trusted project, mirroring Pi's own resolution order for a
+// non-interactive run: the --approve/--no-approve override (last occurrence
+// wins), the recorded decision for the worktree or its nearest ancestor in the
+// agent trust store, and finally the global defaultProjectTrust setting. With
+// none of those recorded, Pi's outcome depends on its trust prompt or project
+// extensions, so trust is undetermined.
+func piProjectTrust(workDir string, extraArgs []string, overlay runenv.Overlay, defaultProjectTrust string) piTrustState {
+	override := piTrustUndetermined
+	for i := 0; i < len(extraArgs); i++ {
+		switch extraArgs[i] {
+		case "--approve", "-a":
+			override = piTrustTrusted
+		case "--no-approve", "-na":
+			override = piTrustUntrusted
+		}
+		if piArgTakesValue(extraArgs[i]) {
+			i++
+		}
+	}
+	if override != piTrustUndetermined {
+		return override
+	}
+	if decision, ok := piTrustStoreDecision(piAgentDir(overlay), workDir); ok {
+		if decision {
+			return piTrustTrusted
+		}
+		return piTrustUntrusted
+	}
+	switch defaultProjectTrust {
+	case "always":
+		return piTrustTrusted
+	case "never":
+		return piTrustUntrusted
+	}
+	return piTrustUndetermined
+}
+
+// piTrustStoreDecision reads Pi's agent trust store (trust.json mapping
+// canonical project paths to trust decisions) and reports the recorded
+// decision for the worktree or its nearest ancestor. A store that cannot be
+// read or parsed leaves the outcome undetermined.
+func piTrustStoreDecision(agentDir, workDir string) (bool, bool) {
+	data, err := os.ReadFile(filepath.Join(agentDir, "trust.json"))
+	if err != nil {
+		return false, false
+	}
+	var entries map[string]*bool
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return false, false
+	}
+	cwd, err := filepath.Abs(workDir)
+	if err != nil {
+		return false, false
+	}
+	if resolved, linkErr := filepath.EvalSymlinks(cwd); linkErr == nil {
+		cwd = resolved
+	}
+	for {
+		if decision, ok := entries[cwd]; ok && decision != nil {
+			return *decision, true
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			return false, false
+		}
+		cwd = parent
+	}
 }
 
 func piGlobalSettingsPath(overlay runenv.Overlay) string {
+	return filepath.Join(piAgentDir(overlay), "settings.json")
+}
+
+func piAgentDir(overlay runenv.Overlay) string {
 	agentDir := strings.TrimSpace(piEnvironmentValue(overlay, "PI_CODING_AGENT_DIR"))
 	if agentDir == "" {
 		home := strings.TrimSpace(piEnvironmentValue(overlay, "HOME"))
@@ -169,7 +286,7 @@ func piGlobalSettingsPath(overlay runenv.Overlay) string {
 		}
 		agentDir = filepath.Join(home, strings.TrimPrefix(agentDir, "~"+string(filepath.Separator)))
 	}
-	return filepath.Join(agentDir, "settings.json")
+	return agentDir
 }
 
 func piEnvironmentValue(overlay runenv.Overlay, key string) string {

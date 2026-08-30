@@ -175,7 +175,8 @@ func TestNewPipelineAgent_RejectsUnknownPiSettingsDefaultBeforeExecution(t *test
 }
 
 // The probe must consult the run worktree, not just the global agent dir: a
-// repo can pin its pipeline model in .pi/settings.json.
+// repo can pin its pipeline model in .pi/settings.json. The rejection needs a
+// trust decision Pi would honor, so the agent dir records defaultProjectTrust.
 func TestNewPipelineAgent_RejectsUnknownPiProjectSettingsDefaultBeforeExecution(t *testing.T) {
 	bin := writePiCatalogStub(t)
 	workDir := t.TempDir()
@@ -186,13 +187,17 @@ func TestNewPipelineAgent_RejectsUnknownPiProjectSettingsDefaultBeforeExecution(
 	if err := os.WriteFile(projectSettings, []byte(`{"defaultProvider":"openrouter","defaultModel":"stealth/ox-alpha"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	agentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDir, "settings.json"), []byte(`{"defaultProjectTrust":"always"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{
 		Agent:             types.AgentPi,
 		AgentPathOverride: map[string]string{"pi": bin},
 	}
 
 	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), workDir, fakeLookPath, runenv.Overlay{
-		Set: map[string]string{"PI_CODING_AGENT_DIR": t.TempDir()},
+		Set: map[string]string{"PI_CODING_AGENT_DIR": agentDir},
 	})
 	if err == nil {
 		t.Fatal("unknown Pi project settings default must fail pipeline setup")
