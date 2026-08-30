@@ -318,6 +318,13 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
+	// IssueLinkTemplate is a Go text/template for the issue link appended to
+	// the PR body footer. It receives {{.Issue}} (the issue number) and
+	// {{.Keyword}} (the linking keyword, e.g. "Closes", "Fixes", "Refs").
+	// When empty, no issue link is appended. Repos differ on the keyword they
+	// want (Closes auto-closes, Refs does not), so this choice is not the
+	// tool's. Default when only --closes is provided: "Closes #{{.Issue}}".
+	IssueLinkTemplate *string `yaml:"issue_link_template"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -666,7 +673,8 @@ type AzureDevOpsProvider struct {
 
 // PR is the resolved pull-request configuration.
 type PR struct {
-	BaseBranch string
+	BaseBranch        string
+	IssueLinkTemplate string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -871,6 +879,18 @@ func resolvePathInstructions(entries []PathInstruction) []PathInstruction {
 		return nil
 	}
 	return out
+}
+
+// DefaultIssueLinkTemplate is the built-in issue link footer when only
+// --closes is provided without a repo-specific template.
+const DefaultIssueLinkTemplate = "Closes #{{.Issue}}"
+
+// resolveIssueLinkTemplate returns the trimmed template or "" when unset.
+func resolveIssueLinkTemplate(t *string) string {
+	if t == nil {
+		return ""
+	}
+	return strings.TrimSpace(*t)
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
@@ -2758,7 +2778,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
+		PR: PR{
+		BaseBranch:        strings.TrimSpace(repo.PR.BaseBranch),
+		IssueLinkTemplate: resolveIssueLinkTemplate(repo.PR.IssueLinkTemplate),
+	},
 		ForgeProfiles:  global.ForgeProfiles,
 		Providers:      providers,
 		// repo is the EffectiveRepoConfig result, so this value is already

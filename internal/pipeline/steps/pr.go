@@ -1,11 +1,13 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
+	"text/template"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -81,6 +83,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
+
+	// Resolve the issue number from the DB once, avoiding a data race with
+	// concurrent IPC updates to the in-memory run struct.
+	if run, err := sctx.DB.GetRun(sctx.Run.ID); err == nil && run != nil && run.IssueNumber != nil {
+		sctx.IssueNumber = strings.TrimSpace(*run.IssueNumber)
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -449,46 +457,62 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 // narrative intact. prependIntentSectionWithinLimit is the final backstop
 // when even that core overruns.
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+	footerBudget := issueLinkFooterBytes(sctx)
+	coreLimit := bodyLimit
+	if footerBudget > 0 && bodyLimit > footerBudget {
+		coreLimit = bodyLimit - footerBudget
+	} else if footerBudget >= bodyLimit && bodyLimit > 0 {
+		coreLimit = 0
+	}
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD)
 	full := prependIntentSection(sections, sctx)
+	full = appendIssueLink(full, sctx)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
 	if testingMD != "" {
 		sections = appendGeneratedSections(whatChanged, riskLine, "", pipelineMD)
 		core := prependIntentSection(sections, sctx)
+		core = appendIssueLink(core, sctx)
 		if scm.PRBodyLen(core) <= bodyLimit {
 			return core
 		}
 	}
-	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, bodyLimit)
+	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, coreLimit)
 }
 
 func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int) string {
+	footerBudget := issueLinkFooterBytes(sctx)
+	coreLimit := bodyLimit
+	if footerBudget > 0 && bodyLimit > footerBudget {
+		coreLimit = bodyLimit - footerBudget
+	} else if footerBudget >= bodyLimit && bodyLimit > 0 {
+		coreLimit = 0
+	}
 	prefix := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", ""), sctx)
 	if pipelineMD == "" {
-		return scm.ClampPRBody(prefix, bodyLimit)
+		return appendIssueLink(scm.ClampPRBody(prefix, coreLimit), sctx)
 	}
 
 	header, _ := splitPipelineSectionHeader(pipelineMD)
 	headerLen := scm.PRBodyLen(header)
-	if header == "" || headerLen > bodyLimit {
-		return scm.ClampPRBody(prefix+"\n\n"+pipelineMD, bodyLimit)
+	if header == "" || headerLen > coreLimit {
+		return appendIssueLink(scm.ClampPRBody(prefix+"\n\n"+pipelineMD, coreLimit), sctx)
 	}
 
 	separator := "\n\n"
-	prefixBudget := bodyLimit - headerLen - scm.PRBodyLen(separator)
+	prefixBudget := coreLimit - headerLen - scm.PRBodyLen(separator)
 	if prefixBudget <= 0 {
-		return header
+		return appendIssueLink(header, sctx)
 	}
 	prefix = scm.ClampPRBody(prefix, prefixBudget)
 	if scm.PRBodyLen(prefix) > prefixBudget {
 		prefix = ""
 		separator = ""
 	}
-	pipelineBudget := bodyLimit - scm.PRBodyLen(prefix) - scm.PRBodyLen(separator)
+	pipelineBudget := coreLimit - scm.PRBodyLen(prefix) - scm.PRBodyLen(separator)
 	pipeline := clampPipelineSectionWithinLimit(pipelineMD, pipelineBudget)
-	return prefix + separator + pipeline
+	return appendIssueLink(prefix+separator+pipeline, sctx)
 }
 
 func clampPipelineSectionWithinLimit(pipelineMD string, bodyLimit int) string {
@@ -517,31 +541,39 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
+	footerBudget := issueLinkFooterBytes(sctx)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
 	// Neutralized for the same reason as in prependIntentSection: intent is
 	// agent-extracted text placed ahead of the pipeline section.
 	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	separator := "\n\n"
 	if cleaned == "" {
-		return sections
+		return appendIssueLink(sections, sctx)
 	}
 
 	intent := "## Intent\n\n" + cleaned
-	separator := "\n\n"
-	if len(intent)+len(separator)+len(sections) <= maxPullRequestBodyBytes {
-		return intent + separator + sections
+	maxBytes := maxPullRequestBodyBytes - footerBudget
+	if maxBytes <= 0 {
+		maxBytes = 0
 	}
-	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
+	if len(intent)+len(separator)+len(sections) <= maxBytes {
+		result := intent + separator + sections
+		return appendIssueLink(result, sctx)
+	}
+	sectionsBudget := maxBytes - len(separator) - len(intent)
 	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
-		return intent + separator + sections
+		result := intent + separator + sections
+		return appendIssueLink(result, sctx)
 	}
 
-	intentBudget := maxPullRequestBodyBytes - len(separator) - len(sections)
+	intentBudget := maxBytes - len(separator) - len(sections)
 	if intentBudget <= 0 {
-		return sections
+		return appendIssueLink(sections, sctx)
 	}
-	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	result := truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	return appendIssueLink(result, sctx)
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
@@ -1287,6 +1319,89 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 		return section
 	}
 	return section + "\n\n" + body
+}
+
+// issueLinkData is the template data for rendering an issue link footer.
+type issueLinkData struct {
+	Issue   string
+	Keyword string
+}
+
+// renderIssueLink renders the issue link template with the issue number and
+// keyword, returning the rendered line or "" when no template or issue number
+// is available. The keyword defaults to "Closes" when the template uses
+// {{.Keyword}} but no keyword is explicitly provided.
+func renderIssueLink(templateStr, issueNumber, keyword string) string {
+	templateStr = strings.TrimSpace(templateStr)
+	issueNumber = strings.TrimSpace(issueNumber)
+	if templateStr == "" || issueNumber == "" {
+		return ""
+	}
+	if keyword == "" {
+		keyword = "Closes"
+	}
+	tmpl, err := template.New("issue_link").Parse(templateStr)
+	if err != nil {
+		slog.Warn("failed to parse issue_link_template", "template", templateStr, "error", err)
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, issueLinkData{Issue: issueNumber, Keyword: keyword}); err != nil {
+		slog.Warn("failed to render issue_link_template", "template", templateStr, "error", err)
+		return ""
+	}
+	rendered := strings.TrimSpace(buf.String())
+	if rendered == "" {
+		return ""
+	}
+	return rendered
+}
+
+// issueLinkFooterBytes returns the byte cost of the rendered issue link footer
+// plus its preceding separator, or 0 when no footer will be appended. This
+// lets body-budget calculations reserve space before sections are assembled.
+func issueLinkFooterBytes(sctx *pipeline.StepContext) int {
+	if sctx == nil || sctx.IssueNumber == "" {
+		return 0
+	}
+	issueNumber := sctx.IssueNumber
+	templateStr := ""
+	if sctx.Config != nil {
+		templateStr = sctx.Config.PR.IssueLinkTemplate
+	}
+	if templateStr == "" {
+		templateStr = "Closes #{{.Issue}}"
+	}
+	link := renderIssueLink(templateStr, issueNumber, "Closes")
+	if link == "" {
+		return 0
+	}
+	return len("\n\n") + len(link)
+}
+
+// appendIssueLink appends a rendered issue link footer to the PR body. The
+// issue number comes from the run record, the template from the repo config,
+// and the keyword defaults to "Closes" when only --closes was provided.
+func appendIssueLink(body string, sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.IssueNumber == "" {
+		return body
+	}
+	issueNumber := sctx.IssueNumber
+	templateStr := ""
+	if sctx.Config != nil {
+		templateStr = sctx.Config.PR.IssueLinkTemplate
+	}
+	if templateStr == "" {
+		templateStr = "Closes #{{.Issue}}"
+	}
+	link := renderIssueLink(templateStr, issueNumber, "Closes")
+	if link == "" {
+		return body
+	}
+	if strings.TrimSpace(body) == "" {
+		return link
+	}
+	return body + "\n\n" + link
 }
 
 func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {

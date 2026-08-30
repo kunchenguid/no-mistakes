@@ -1060,6 +1060,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodUpdateRunIssueNumber, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.UpdateRunIssueNumberParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := d.UpdateRunIssueNumber(p.RunID, p.IssueNumber); err != nil {
+			return nil, fmt.Errorf("update issue number: %w", err)
+		}
+		return &ipc.UpdateRunIssueNumberResult{OK: true}, nil
+	})
+
 	srv.Handle(ipc.MethodGetRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.GetRunParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -1194,7 +1205,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.IssueNumber)
 		if err != nil {
 			return nil, err
 		}

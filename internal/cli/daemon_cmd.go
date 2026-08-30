@@ -110,6 +110,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			issueNumber := parseIssueNumberPushOptions(pushOptions)
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -135,6 +136,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				SkipSteps:    skipSteps,
 				Intent:       intent,
 				PRBaseBranch: prBaseBranch,
+				IssueNumber:  issueNumber,
 			}, &result)
 		},
 	}
@@ -254,6 +256,37 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 		branch = value
 	}
 	return branch, nil
+}
+
+// issueNumberPushOptionPrefix carries an issue number through a git push.
+const issueNumberPushOptionPrefix = "no-mistakes.issue_number="
+
+// formatIssueNumberPushOption encodes the issue number as a push option, or
+// returns "" when there is no issue number to carry.
+func formatIssueNumberPushOption(issueNumber string) string {
+	if strings.TrimSpace(issueNumber) == "" {
+		return ""
+	}
+	return issueNumberPushOptionPrefix + strings.TrimSpace(issueNumber)
+}
+
+// parseIssueNumberPushOptions extracts and validates the issue number push
+// option, if any. The last occurrence wins. Only positive decimal integers
+// are accepted; anything else is silently dropped.
+func parseIssueNumberPushOptions(options []string) string {
+	issueNumber := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, issueNumberPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		validated, err := normalizeIssueNumber(strings.TrimSpace(value))
+		if err != nil || validated == "" {
+			continue
+		}
+		issueNumber = validated
+	}
+	return issueNumber
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

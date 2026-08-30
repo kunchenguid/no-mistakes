@@ -9,20 +9,21 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived        = "push_received"
+	MethodGetRun              = "get_run"
+	MethodGetStepDiff         = "get_step_diff"
+	MethodGetRuns             = "get_runs"
+	MethodGetRunsForHead      = "get_runs_for_head"
+	MethodGetActiveRun        = "get_active_run"
+	MethodRerun               = "rerun"
+	MethodSubscribe           = "subscribe"
+	MethodRespond             = "respond"
+	MethodCancelRun           = "cancel_run"
+	MethodGateContext         = "gate_context"
+	MethodAdmitPush           = "admit_push"
+	MethodHealth              = "health"
+	MethodShutdown            = "shutdown"
+	MethodUpdateRunIssueNumber = "update_run_issue_number"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -65,6 +66,8 @@ func (e *RPCError) Error() string { return e.Message }
 // Intent, when set, is an agent-supplied description of the change. It is
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
+//
+// IssueNumber, when set, is an issue number to link in the PR body footer.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
 	Gate         string           `json:"gate"`
@@ -74,6 +77,7 @@ type PushReceivedParams struct {
 	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
 	Intent       string           `json:"intent,omitempty"`
 	PRBaseBranch string           `json:"pr_base_branch,omitempty"`
+	IssueNumber  string           `json:"issue_number,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -125,6 +129,7 @@ type GetActiveRunParams struct {
 // Intent, when set, overrides inherited intent and fresh inference. When empty,
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.
+// IssueNumber, when set, is an issue number to link in the PR body footer.
 type RerunParams struct {
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
@@ -132,6 +137,7 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	IssueNumber   string           `json:"issue_number,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -178,6 +184,17 @@ type HealthParams struct{}
 
 // ShutdownParams has no fields but exists for consistency.
 type ShutdownParams struct{}
+
+// UpdateRunIssueNumberParams updates the issue number on an existing run.
+type UpdateRunIssueNumberParams struct {
+	RunID       string `json:"run_id"`
+	IssueNumber string `json:"issue_number"`
+}
+
+// UpdateRunIssueNumberResult is the result of UpdateRunIssueNumber.
+type UpdateRunIssueNumberResult struct {
+	OK bool `json:"ok"`
+}
 
 // --- Method results ---
 

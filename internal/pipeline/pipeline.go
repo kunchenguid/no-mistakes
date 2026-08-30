@@ -83,6 +83,10 @@ type StepContext struct {
 	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
 	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
 	OnPRMerged func(ctx context.Context, runID string)
+	// IssueNumber is the linked tracker issue number (from --closes) resolved
+	// once from the DB at PR-step start. Steps read this instead of
+	// Run.IssueNumber to avoid a data race with concurrent IPC updates.
+	IssueNumber string
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
