@@ -1,6 +1,6 @@
 # BUILD-LOOP-STATE — Factory Publication v1 / Codex confinement
 
-**NOW:** WRAP-UP/FREEZE · slice 1/1 N0-Confinement-Codex · iter 5/5 · last: mandatory immediate pre-push `go test -race ./... -count=1` and `make e2e` both exited 0 on current product/test bytes · next: stage/audit exact diff, Codex-authored freeze commit, create HeyHardy fork, push branch, open visibly blocked Draft PR · 2026-08-30 14:00 +0200
+**NOW:** PR-GATE/PLATFORM-BLOCKED · slice 1/1 N0-Confinement-Codex · iter 5/5 · last: Codex-authored freeze commit pushed to the HeyHardy fork and upstream Draft PR #908 opened with visible `platform-gate-blocked` status and required-gate checklist · next: provisioned Linux arm64+amd64 canaries, then Senox formal review on the final frozen head; no merge recommendation · 2026-08-30 14:03 +0200
 
 **Started:** 2026-08-30 · **Branch:** codex/factory-publication-v1 · **Worktree:** /Users/hardyheyde/Library/CloudStorage/Dropbox/Senox-Share/github_clones/codex-no-mistakes-n0
 **Base commit:** ab2544298b745e9dc1a01fcf9a3151a247926083 · **Live checkout untouched:** yes
@@ -27,7 +27,7 @@
 | Owner scope go | ok | — | 2026-08-30: “Go mach das” selecting the last named `GO-N0-CONFINEMENT-CODEX` path |
 | Cross-slice coherence (per non-standard slice with shared seam_id) | n.a. | — | first slice for seam; no predecessor contract |
 | Push go (fresh, explicit) | ok | — | Owner: “Go für A”, 2026-08-30 after Senox recommended the blocked Draft-PR option |
-| Reviewer PR gate | open | — | exact pushed head required |
+| Reviewer PR gate | open | 2026-08-30T14:03:18+02:00 | Draft PR `https://github.com/kunchenguid/no-mistakes/pull/908`; Senox formal review waits for both platform gates and the final frozen head |
 | Understand-it gate (bundle + attestation) | n.a. | — | no separate understand-it artifact required by this repository slice |
 | Merge (role: Owner unless the environment grants otherwise) | open | — | not authorized by this slice |
 | Deploy go | open | — | not authorized by this slice |
@@ -35,7 +35,7 @@
 ## Slices
 | # | Slice | DoD ref | seam_class | seam_id | Mode | Status | Iteration | Note |
 |---|-------|---------|------------|---------|------|--------|-----------|------|
-| 1 | N0-Confinement-Codex | DoD-1..7 | auth_boundary | factory-publication-defense-boundary | seq | platform-blocked | 5/5 | Portable implementation green; Linux runtime credit blocked by absent pre-provisioned Codex/bwrap environment |
+| 1 | N0-Confinement-Codex | DoD-1..7 | auth_boundary | factory-publication-defense-boundary | seq | draft-pr/platform-blocked | 5/5 | Draft PR #908 is coordination-only; Linux runtime credit and formal Senox review remain blocking |
 
 ## Parallelization verdict (2c — written before the plan gate, never skipped)
 | Slice | Mode | Group | Why | Target measured before dispatch |
@@ -78,6 +78,7 @@
 - 2026-08-30T13:37:11+02:00 — Senox replied in the same DM: option A, create the Draft PR now as `platform-gate-blocked`, scored 9/10 and explicitly preferred over waiting. Conditions: Draft status, visible blocked label/status, missing arm64/amd64 canaries as checklist items, no merge/production claim, and Senox's formal review only on the final frozen head; any later code change stales it. This is procedural approval for a Draft review vehicle, not a code APPROVE, push/merge/deploy authorization, or platform credit. Senox asks for the Owner's GO for option A.
 - 2026-08-30T13:42:00+02:00 — Owner granted “Go für A”. Pre-push inspection found 61 expected modified/untracked status entries, no recognized credential/private-key pattern, clean diff whitespace, upstream default `main`, read-only upstream permission for both configured GitHub accounts, and no existing fork. Option A will use an explicitly Codex-authored commit pushed through the Owner account `HeyHardy` to a new fork; the Draft PR body will begin `Codex:` and preserve every platform/review blocker.
 - 2026-08-30T14:00:38+02:00 — Mandatory immediate pre-push tests completed on the frozen product/test bytes: `go test -race ./... -count=1` exited 0 (including `internal/pipeline/steps` 232.189s, `internal/publication` 43.544s, `internal/daemon` 113.193s); `make e2e` exited 0 (`internal/e2e` 372.655s, `internal/pipeline/steps` 68.600s). No product/test/doc byte changed during either run. Platform-only DoD-1/2/3/6 remains open and will be explicit in the Draft PR.
+- 2026-08-30T14:03:18+02:00 — Created the Owner fork `HeyHardy/no-mistakes`, pushed `codex/factory-publication-v1`, and opened upstream Draft PR `#908` (`https://github.com/kunchenguid/no-mistakes/pull/908`). The pushed freeze commit is `b7310dc8aef911b80e36a30d9a4aea094c79dc12`, parent `ab2544298b745e9dc1a01fcf9a3151a247926083`, tree `8cf3e6df5e95154da7b3ae8a0362e2cc07f63076`, author/committer `Codex <codex@local.invalid>`. GitHub confirms Draft=true and the exact head; the title/body visibly say `platform-gate-blocked`, enumerate both missing Linux canaries and the formal Senox frozen-head review, and make no merge/production claim.
 
 ## Open questions / escalations
 - The implementation remains fail-closed and cannot receive production credit until the exact tagged current-byte canary runs non-skipped on a Linux amd64/arm64 host with Codex and bwrap already provisioned.
