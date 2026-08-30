@@ -76,25 +76,28 @@ func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) err
 			slog.Warn("pi project settings default may be inert: Pi has not recorded a trust decision for this worktree and may ignore the project copy and fall back to another model",
 				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
 		}
-		if piCatalogueHasModel(selection.provider, selection.model, a.piModelCatalogue(ctx, workDir)) {
+		catalogue, catalogueErr := a.piModelCatalogue(ctx, workDir)
+		switch {
+		case catalogueErr != nil:
+			slog.Warn("pi model catalogue could not be produced; the settings default was not verified",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model), "error", catalogueErr.Error())
+		case piCatalogueHasModel(selection.provider, selection.model, catalogue):
 			return nil
+		default:
+			slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
 		}
-		slog.Warn("pi settings default model is not in pi's model catalogue; pi will fall back to another model at startup",
-			"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
 		return nil
 	}
 
 	// Pi's offline catalogue is only a cache: an online run refreshes it from
 	// the network and falls back silently when that is impossible. Probe
-	// offline first so a cached answer costs no network access, and treat an
-	// offline miss as stale rather than fatal until pi's online resolution
-	// confirms it.
+	// offline first so a cached answer costs no network access, then let pi's
+	// online resolution own the verdict: an offline miss can be a stale cache,
+	// and an inconclusive probe on either side is not evidence about the model.
 	offline := a.probeModelResolution(ctx, workDir, true)
 	if offline.resolved {
 		return nil
-	}
-	if !offline.rejected {
-		return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, offline.detail)
 	}
 	online := a.probeModelResolution(ctx, workDir, false)
 	if online.resolved {
@@ -120,7 +123,7 @@ type piProbeOutcome struct {
 // probeModelResolution runs one throwaway pi session that resolves the
 // configured model and exits once stdin closes.
 func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offline bool) piProbeOutcome {
-	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
 	defer cancel()
 	args := append([]string(nil), a.extraArgs...)
 	if offline {
@@ -134,6 +137,11 @@ func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offl
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		detail := strings.TrimSpace(stderr.String())
+		// A killed probe reports like a non-zero exit, so the deadline is
+		// checked first: a probe that never finished is inconclusive evidence.
+		if probeCtx.Err() != nil {
+			return piProbeOutcome{detail: fmt.Sprintf("pi model probe did not finish: %v", probeCtx.Err())}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if detail == "" {
@@ -141,13 +149,14 @@ func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offl
 			}
 			return piProbeOutcome{rejected: true, detail: detail}
 		}
-		if probeCtx.Err() != nil {
-			return piProbeOutcome{detail: fmt.Sprintf("pi model probe did not finish: %v", probeCtx.Err())}
-		}
 		return piProbeOutcome{detail: err.Error()}
 	}
 	return piProbeOutcome{resolved: true}
 }
+
+// piProbeTimeout bounds one model-resolution probe. The real run has no such
+// cap, so an expiry is an inconclusive probe, never a model verdict.
+var piProbeTimeout = 20 * time.Second
 
 // piCatalogEndpoint is pi's default model-catalog host. pi refreshes its
 // catalogue from there at online startup and falls back to its cache without
@@ -255,10 +264,11 @@ func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay)
 
 // piModelCatalogue lists the provider and model id columns of pi --list-models
 // from inside the run worktree, where project packages and extensions can
-// register additional models. A catalogue that cannot be produced leaves the
-// settings-default check undetermined.
-func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) []string {
-	catalogueCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+// register additional models. A listing that cannot be produced is reported as
+// an error so the caller can treat the check as undetermined instead of
+// claiming the model is absent.
+func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) ([]string, error) {
+	catalogueCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
 	defer cancel()
 	args := append([]string(nil), a.extraArgs...)
 	args = append(args, "--offline", "--list-models")
@@ -267,7 +277,10 @@ func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) []string
 	cmd.Env = a.overlay().Apply(nil)
 	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		if catalogueCtx.Err() != nil {
+			return nil, fmt.Errorf("pi model catalogue listing did not finish: %w", catalogueCtx.Err())
+		}
+		return nil, err
 	}
 	var models []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -277,7 +290,7 @@ func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) []string
 		}
 		models = append(models, fields[0]+"/"+fields[1])
 	}
-	return models
+	return models, nil
 }
 
 // piCatalogueHasModel reports whether Pi's catalogue contains the exact

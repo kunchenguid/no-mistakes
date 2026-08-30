@@ -307,6 +307,13 @@ func setPiCatalogEndpoint(t *testing.T, reachable bool) {
 	piCatalogEndpoint = addr
 }
 
+func setPiProbeTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	previous := piProbeTimeout
+	piProbeTimeout = d
+	t.Cleanup(func() { piProbeTimeout = previous })
+}
+
 // countModelProbes writes a pi stub that records every invocation's argv, one
 // line per call.
 func countModelProbes(t *testing.T, offlineExit, onlineExit int) string {
@@ -402,6 +409,110 @@ func TestPiAgent_ValidateConfigurationWarnsWhenCatalogueVerificationImpossible(t
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
+	}
+}
+
+// A probe killed by its deadline never finished, so it is inconclusive
+// evidence on both sides: setup continues with a warning instead of aborting,
+// and pi still gets both attempts.
+func TestPiAgent_ValidateConfigurationProbeTimeoutIsInconclusive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX stub")
+	}
+	logs := captureWarnings(t)
+	setPiCatalogEndpoint(t, true)
+	setPiProbeTimeout(t, 250*time.Millisecond)
+	workDir := t.TempDir()
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+printf '%s\n' "$*" >> pi-calls.txt
+sleep 2
+exit 0
+`, "@echo off\r\nexit /b 0\r\n")
+	pa := &piAgent{
+		bin:               bin,
+		extraArgs:         []string{"--model", "sonnet"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("a timed-out probe must not fail setup: %v", err)
+	}
+	calls := readProbeCallCount(t, workDir)
+	if len(calls) != 2 {
+		t.Fatalf("pi invocations = %d (%v), want the inconclusive offline probe to fall through to the online probe", len(calls), calls)
+	}
+	for _, want := range []string{"sonnet", "not possible"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
+// A probe that cannot start at all is not a verdict either: both attempts are
+// inconclusive, so setup continues with a warning instead of aborting.
+func TestPiAgent_ValidateConfigurationUnstartableProbeWarnsAndContinues(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission fixture")
+	}
+	logs := captureWarnings(t)
+	workDir := t.TempDir()
+	bin := filepath.Join(workDir, "pi")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pa := &piAgent{
+		bin:               bin,
+		extraArgs:         []string{"--model", "sonnet"},
+		modelSource:       "agent_config.pi.model",
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": t.TempDir()}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("an unstartable probe must not fail setup: %v", err)
+	}
+	for _, want := range []string{"sonnet", "not possible"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+}
+
+// A catalogue that cannot be produced leaves the settings-default check
+// undetermined: the warning must not claim pi will fall back to another model.
+func TestPiAgent_ValidateConfigurationWarnsWhenCatalogueUnproducible(t *testing.T) {
+	logs := captureWarnings(t)
+	workDir := t.TempDir()
+	globalDir := t.TempDir()
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"global-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+cat > /dev/null
+echo 'boom' >&2
+exit 3
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo boom 1>&2",
+		"exit /b 3",
+	}, "\r\n"))
+	pa := &piAgent{
+		bin:               bin,
+		subprocessContext: newSubprocessContext(runenv.Overlay{Set: map[string]string{"HOME": globalDir}}),
+	}
+	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("an unproducible catalogue must not fail setup: %v", err)
+	}
+	for _, want := range []string{"global-model", "could not be produced"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("warnings = %q, want %q", logs.String(), want)
+		}
+	}
+	if strings.Contains(logs.String(), "not in pi's model catalogue") {
+		t.Fatalf("warnings = %q, must not claim a definite fallback on absent evidence", logs.String())
 	}
 }
 
