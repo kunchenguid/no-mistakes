@@ -229,6 +229,14 @@ type ReviewCommentsHost interface {
 	GetReviewComments(ctx context.Context, pr *PR) ([]ReviewComment, error)
 }
 
+// PRContentReader is an optional interface for hosts that can read the current
+// title and body of an existing PR. The CI repair publisher uses it to rebind
+// a live pipeline attestation to a newly published head without rewriting the
+// rest of the body or inventing an attestation that was not already there.
+type PRContentReader interface {
+	GetPRContent(ctx context.Context, pr *PR) (PRContent, error)
+}
+
 // MergedProof is provider evidence that a specific PR head was merged.
 type MergedProof struct {
 	Merged         bool

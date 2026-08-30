@@ -15,7 +15,7 @@ func TestAntigravityAgent_BuildArgs(t *testing.T) {
 	a := &antigravityAgent{bin: "agy"}
 	args := a.buildArgs("test prompt", "", "")
 
-	expected := []string{"--dangerously-skip-permissions", "--print", "test prompt", "--output-format", "stream-json"}
+	expected := []string{"--dangerously-skip-permissions", "--print-timeout", "24h", "--print", "test prompt", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}
@@ -30,7 +30,7 @@ func TestAntigravityAgent_BuildArgs_WithSchema(t *testing.T) {
 	a := &antigravityAgent{bin: "agy"}
 	args := a.buildArgs("test prompt", "/tmp/schema.json", "")
 
-	expected := []string{"--dangerously-skip-permissions", "--print", "test prompt", "--json-schema", "/tmp/schema.json", "--output-format", "stream-json"}
+	expected := []string{"--dangerously-skip-permissions", "--print-timeout", "24h", "--print", "test prompt", "--json-schema", "/tmp/schema.json", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}
@@ -45,13 +45,29 @@ func TestAntigravityAgent_BuildArgs_WithExtraArgs(t *testing.T) {
 	a := &antigravityAgent{bin: "agy", extraArgs: []string{"--debug"}}
 	args := a.buildArgs("test prompt", "", "")
 
-	expected := []string{"--debug", "--dangerously-skip-permissions", "--print", "test prompt", "--output-format", "stream-json"}
+	expected := []string{"--debug", "--dangerously-skip-permissions", "--print-timeout", "24h", "--print", "test prompt", "--output-format", "stream-json"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}
 	for i, want := range expected {
 		if args[i] != want {
 			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestAntigravityAgent_BuildArgs_WithUserPrintTimeoutOverride(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--print-timeout", "30m"},
+		{"--print-timeout=1h"},
+		{"-t", "10m"},
+		{"-t=15m"},
+	} {
+		a := &antigravityAgent{bin: "agy", extraArgs: extra}
+		args := a.buildArgs("test prompt", "", "")
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "--print-timeout 24h") {
+			t.Errorf("args = %v, should not contain default --print-timeout 24h when extraArgs has %v", args, extra)
 		}
 	}
 }
@@ -599,6 +615,63 @@ func TestAntigravityAgent_RunResumesRecordedConversation(t *testing.T) {
 	if !result.Resumed {
 		t.Error("Resumed = false, want true when the requested conversation served the turn")
 	}
+}
+
+func TestAntigravityAgent_RunDefaultAndCustomPrintTimeout(t *testing.T) {
+	t.Run("default 24h", func(t *testing.T) {
+		dir := t.TempDir()
+		argsFile := filepath.Join(dir, "argv.jsonl")
+		t.Setenv("AGY_TEST_ARGS_FILE", argsFile)
+		bin := writeFakeAgyRecordingArgs(t, dir, []string{
+			`{"event": "result", "result": {"status": "SUCCESS", "response": "ok"}}`,
+		})
+
+		ca := &antigravityAgent{bin: bin}
+		_, err := ca.Run(context.Background(), RunOpts{
+			Prompt: "work",
+			CWD:    t.TempDir(),
+		})
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		argsData, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("read args log: %v", err)
+		}
+		argv := strings.TrimSpace(string(argsData))
+		if !strings.Contains(argv, "--print-timeout 24h") {
+			t.Errorf("argv = %q, want --print-timeout 24h by default", argv)
+		}
+	})
+
+	t.Run("custom override", func(t *testing.T) {
+		dir := t.TempDir()
+		argsFile := filepath.Join(dir, "argv.jsonl")
+		t.Setenv("AGY_TEST_ARGS_FILE", argsFile)
+		bin := writeFakeAgyRecordingArgs(t, dir, []string{
+			`{"event": "result", "result": {"status": "SUCCESS", "response": "ok"}}`,
+		})
+
+		ca := &antigravityAgent{bin: bin, extraArgs: []string{"-t=15m"}}
+		_, err := ca.Run(context.Background(), RunOpts{
+			Prompt: "work",
+			CWD:    t.TempDir(),
+		})
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		argsData, err := os.ReadFile(argsFile)
+		if err != nil {
+			t.Fatalf("read args log: %v", err)
+		}
+		argv := strings.TrimSpace(string(argsData))
+		if strings.Contains(argv, "--print-timeout 24h") {
+			t.Errorf("argv = %q, should not contain --print-timeout 24h when -t=15m is provided", argv)
+		}
+		if !strings.Contains(argv, "-t=15m") {
+			t.Errorf("argv = %q, want -t=15m preserved", argv)
+		}
+	})
 }
 
 func TestAntigravityAgent_RunStaleConversationStartsFreshWithoutClaimingResume(t *testing.T) {

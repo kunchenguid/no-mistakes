@@ -780,6 +780,35 @@ func TestGetChecksRejectsIncompleteWorkflowPagination(t *testing.T) {
 	}
 }
 
+func TestGetPRContentReadsTitleAndBody(t *testing.T) {
+	t.Parallel()
+
+	body := "## Pipeline\n\n" + "Updates from no-mistakes\n"
+	encoded, err := json.Marshal(map[string]string{"title": "fix: restamp", "body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json title,body": {stdout: string(encoded) + "\n"},
+	}), nil, "", "test/repo")
+
+	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetPRContent() error = %v", err)
+	}
+	if got.Title != "fix: restamp" || got.Body != body {
+		t.Fatalf("GetPRContent() = %+v, want title and body from gh", got)
+	}
+}
+
+func TestGetPRContentFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(nil), nil, "", "test/repo")
+	if _, err := host.GetPRContent(context.Background(), &scm.PR{}); err == nil {
+		t.Fatal("GetPRContent() with no PR identity: expected error, got nil")
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
@@ -841,6 +870,28 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 	if updated != pr {
 		t.Fatalf("UpdatePR() = %+v, want original PR", updated)
+	}
+}
+
+func TestUpdatePROmitsTitleWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{
+		Body: "marker only",
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := strings.Join(recorded[0], " ")
+	if strings.Contains(got, "--title") {
+		t.Fatalf("body-only UpdatePR must not pass --title, got %v", recorded[0])
+	}
+	if !strings.Contains(got, "--body-file") {
+		t.Fatalf("body-only UpdatePR must still pass --body-file, got %v", recorded[0])
 	}
 }
 

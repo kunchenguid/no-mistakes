@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,11 +9,26 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// ciFailingCheckFixRules is the CI-repair prompt contract for a failing check.
+// The narrow-fix sentence matches the review fixer so both apply one discipline.
+var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
+
+const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code (a broken test, build, lint, or similar defect in the change), you MUST produce file changes that fix it and set code_change_needed to true. A real failing test or build must still be fixed.
+		- If a failing check is not caused by the code under review (a stale or superseded check run, an infrastructure or attestation check such as "PR must be raised via no-mistakes" that fails only because a later pipeline push moved the head, or any failure external to the code), you MAY conclude that no code change is warranted. Set code_change_needed to false and report that conclusion in summary instead of editing files. Do not invent work to satisfy a check the code did not cause.
+		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
+		- If a test is flaky, make it deterministic.
+		- Make the smallest correct root-cause fix.
+		- Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
+		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
+		- Do not refactor beyond what is needed for that root-cause fix.
+		- Verify the fix by running the most relevant commands locally before finishing.`
 
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
 // records the repair under the run's uniform continuity rule: published
@@ -68,12 +84,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	switch {
 	case len(failingNames) > 0 && mergeConflict:
 		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
-		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
-		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
-		- If a test is flaky, make it deterministic.
-		- Make the smallest correct root-cause fix.
-		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		promptRules = ciFailingCheckFixRules
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
@@ -81,12 +92,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		- Verify the rebase completes cleanly before finishing.`
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
-		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
-		- If a test fails only on a specific OS (e.g. Windows CRLF, path separators), fix the test to be cross-platform.
-		- If a test is flaky, make it deterministic.
-		- Make the smallest correct root-cause fix.
-		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		promptRules = ciFailingCheckFixRules
 	}
 
 	prompt := fmt.Sprintf(
@@ -131,18 +137,59 @@ CI logs:
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
-		JSONSchema: commitSummarySchema,
+		JSONSchema: ciFixConclusionSchema,
 		OnChunk:    sctx.LogChunk,
 	})
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("agent CI fix: %w", err)
 	}
 
-	summary, summaryErr := extractCommitSummary(result)
-	if summaryErr != nil {
-		sctx.Log(fmt.Sprintf("warning: could not parse CI repair summary: %v", summaryErr))
+	conclusion, conclusionErr := extractCIFixConclusion(result)
+	if conclusionErr != nil {
+		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
-	return s.commitRepair(sctx, summary)
+	repair, err := s.commitRepair(sctx, conclusion.Summary)
+	if err != nil || repair.HeadAdvanced {
+		return repair, err
+	}
+	if !mergeConflict && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
+		repair.NoCodeChangeNeeded = true
+		repair.Summary = conclusion.Summary
+	}
+	return repair, nil
+}
+
+type ciFixConclusion struct {
+	Summary          string `json:"summary"`
+	CodeChangeNeeded *bool  `json:"code_change_needed"`
+}
+
+var ciFixConclusionSchema = json.RawMessage(fmt.Sprintf(`{
+	"type": "object",
+	"properties": {
+		"summary": {"type": "string", "maxLength": %d},
+		"code_change_needed": {"type": "boolean"}
+	},
+	"required": ["summary", "code_change_needed"]
+}`, config.MaxFixMessageSummaryBytes))
+
+func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
+	summary, err := extractCommitSummary(result)
+	if err != nil {
+		return ciFixConclusion{}, err
+	}
+	var conclusion ciFixConclusion
+	if err := json.Unmarshal(result.Output, &conclusion); err != nil {
+		return ciFixConclusion{}, fmt.Errorf("parse CI repair conclusion: %w", err)
+	}
+	if conclusion.CodeChangeNeeded == nil {
+		return ciFixConclusion{}, fmt.Errorf("CI repair conclusion omitted code_change_needed")
+	}
+	if !*conclusion.CodeChangeNeeded && summary == "" {
+		return ciFixConclusion{}, fmt.Errorf("no-change CI repair conclusion omitted its summary")
+	}
+	conclusion.Summary = summary
+	return conclusion, nil
 }
 
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
@@ -218,7 +265,9 @@ type ciRepairResult struct {
 	HeadAdvanced bool
 	// Revalidate is true when the repair was NOT published and the pipeline
 	// must re-run from Review before Push may publish it.
-	Revalidate bool
+	Revalidate         bool
+	NoCodeChangeNeeded bool
+	Summary            string
 }
 
 // commitAndPush remains as the narrow test seam for the default summary.
@@ -383,6 +432,85 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
 		return ciRepairResult{}, err
 	}
+	if err := restampPublishedAttestation(sctx, headSHA); err != nil {
+		return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
+	}
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
+}
+
+// restampPublishedAttestation rebinds an existing pipeline attestation in the
+// PR body to the head that was just published. Settlement applies only when
+// the host both emits that HTML attestation and can rewrite the PR body
+// (GitHub today). Every other provider is a no-op: there is no stale
+// attestation to leave. A PR that never carried an attestation is left
+// unchanged, so a contribution that did not come through no-mistakes still
+// fails the gate. Failure to read or update a body that does carry a live
+// attestation is returned to the caller; the push itself has already succeeded.
+func restampPublishedAttestation(sctx *pipeline.StepContext, headSHA string) error {
+	if sctx == nil || sctx.Run == nil || sctx.Run.PRURL == nil || strings.TrimSpace(*sctx.Run.PRURL) == "" {
+		return nil
+	}
+	provider := resolvedProvider(sctx)
+	host, reason := buildHost(sctx, provider)
+	if host == nil {
+		if sctx.Log != nil {
+			if strings.TrimSpace(reason) == "" {
+				reason = "SCM host is unavailable"
+			}
+			sctx.Log(fmt.Sprintf("skipping attestation rebind: %s", reason))
+		}
+		return nil
+	}
+	pr := &scm.PR{URL: strings.TrimSpace(*sctx.Run.PRURL)}
+	if n, err := scm.ExtractPRNumber(pr.URL); err == nil {
+		pr.Number = n
+	}
+	return restampPRAttestation(sctx.Ctx, host, pr, headSHA, sctx.Log)
+}
+
+// restampPRAttestation re-reads the current PR body, rewrites only the live
+// pipeline-attestation marker to newHeadSHA, and writes the body back without
+// sending a title. It does not insert an attestation that was not already
+// there. A host without PRContentReader is skipped with a warning rather than
+// failed: missing-reader is not a GitHub settlement miss, and making it fatal
+// parks every non-GitHub repair after a successful push.
+func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
+	reader, ok := host.(scm.PRContentReader)
+	if !ok || pr == nil {
+		if logfn != nil && !ok {
+			logfn("skipping attestation rebind: SCM host cannot read PR content")
+		}
+		return nil
+	}
+	const attempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		content, err := reader.GetPRContent(ctx, pr)
+		if err == nil {
+			updated, rebound := rebindPipelineAttestationHead(content.Body, newHeadSHA)
+			if !rebound || updated == content.Body {
+				return nil
+			}
+			// Body-only write of the just-read body with the marker rewritten.
+			// Do not send title: a full-content UpdatePR would clobber a
+			// concurrent title edit. rebindPipelineAttestationHead already
+			// leaves every other body byte untouched.
+			_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
+		}
+		if err == nil {
+			if logfn != nil {
+				logfn(fmt.Sprintf("rebound pipeline attestation to %s", shortObjectID(newHeadSHA)))
+			}
+			return nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if logfn != nil && attempt < attempts {
+			logfn(fmt.Sprintf("attestation rebind attempt %d/%d failed: %v; retrying", attempt, attempts, err))
+		}
+	}
+	return fmt.Errorf("attestation rebind failed after %d attempts: %w", attempts, lastErr)
 }

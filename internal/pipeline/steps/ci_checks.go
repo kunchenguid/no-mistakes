@@ -208,6 +208,10 @@ func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pip
 // spin to ci_timeout.
 const consecutiveCheckErrorLimit = 6
 
+// ConsecutiveCheckErrorLimit is the parked-after-N-failures bound. Tests in
+// other packages share this so they cannot drift from the monitor's gate.
+func ConsecutiveCheckErrorLimit() int { return consecutiveCheckErrorLimit }
+
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	findings := Findings{
 		Summary: "CI checks could not be read from the provider",

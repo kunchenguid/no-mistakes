@@ -1,4 +1,4 @@
-package steps
+package citest
 
 import (
 	"context"
@@ -12,17 +12,20 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
-	env := fakeCIGH(t, "OPEN", "[]")
+	env := stepstest.FakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -31,16 +34,13 @@ func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *tes
 	now := started
 	var intervals []time.Duration
 
-	step := &CIStep{
-		now: func() time.Time {
-			return now
-		},
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			intervals = append(intervals, interval)
-			now = now.Add(interval)
-			return nil
-		},
-	}
+	step := (&steps.CIStep{}).SetNow(func() time.Time {
+		return now
+	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		intervals = append(intervals, interval)
+		now = now.Add(interval)
+		return nil
+	})
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *tes
 	if !outcome.NeedsApproval {
 		t.Fatal("expected approval when CI monitoring times out before PR is merged or closed")
 	}
-	var findings Findings
+	var findings types.Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
 	}
@@ -65,14 +65,14 @@ func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *tes
 
 func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
+	env := stepstest.FakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -84,12 +84,10 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			cancel()
-			return ctx.Err()
-		},
-	}
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -105,14 +103,14 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 
 func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	env := fakeCIGHMergeableError(t, "OPEN", checksJSON, "gh mergeable failed")
+	env := stepstest.FakeCIGHMergeableError(t, "OPEN", checksJSON, "gh mergeable failed")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -124,12 +122,10 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 	defer cancel()
 	sctx.Ctx = ctx
 
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			cancel()
-			return ctx.Err()
-		},
-	}
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -152,14 +148,14 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 
 func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	env := fakeCIGHStateError(t, "gh state failed", checksJSON)
+	env := stepstest.FakeCIGHStateError(t, "gh state failed", checksJSON)
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -171,12 +167,10 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 	defer cancel()
 	sctx.Ctx = ctx
 
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			cancel()
-			return ctx.Err()
-		},
-	}
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		cancel()
+		return ctx.Err()
+	})
 
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
@@ -199,29 +193,26 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 
 func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
-	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
+	env := stepstest.FakeCIGHMergeable(t, "OPEN", checksJSON, "UNKNOWN")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
 
 	started := time.Unix(1700000000, 0)
 	now := started
-	step := &CIStep{
-		now: func() time.Time {
-			return now
-		},
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			now = now.Add(interval)
-			return nil
-		},
-	}
+	step := (&steps.CIStep{}).SetNow(func() time.Time {
+		return now
+	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		now = now.Add(interval)
+		return nil
+	})
 
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -231,7 +222,7 @@ func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 		t.Fatal("expected NeedsApproval when mergeability stays unknown until timeout")
 	}
 
-	var findings Findings
+	var findings types.Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
 	}
@@ -250,14 +241,14 @@ func TestCIStep_TimeoutWithUnknownMergeableState_NeedsApproval(t *testing.T) {
 
 func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
 	checksJSON := `[{"name":"build","state":"FAILURE","bucket":"fail"},{"name":"test","state":"PENDING","bucket":"pending"}]`
-	env := fakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
+	env := stepstest.FakeCIGHMergeable(t, "OPEN", checksJSON, "CONFLICTING")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
@@ -265,15 +256,12 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 
 	started := time.Unix(1700000000, 0)
 	now := started
-	step := &CIStep{
-		now: func() time.Time {
-			return now
-		},
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			now = now.Add(interval)
-			return nil
-		},
-	}
+	step := (&steps.CIStep{}).SetNow(func() time.Time {
+		return now
+	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		now = now.Add(interval)
+		return nil
+	})
 
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -283,7 +271,7 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 		t.Fatal("expected NeedsApproval when known CI issues remain at timeout")
 	}
 
-	var findings Findings
+	var findings types.Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
 	}
@@ -306,28 +294,25 @@ func TestCIStep_TimeoutWithKnownFailureAndPendingCheck_NeedsApproval(t *testing.
 
 func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
-	env := fakeCIGHChecksError(t, "OPEN", "CONFLICTING", "gh checks failed")
+	env := stepstest.FakeCIGHChecksError(t, "OPEN", "CONFLICTING", "gh checks failed")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
 
 	started := time.Unix(1700000000, 0)
 	now := started
-	step := &CIStep{
-		now: func() time.Time {
-			return now
-		},
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			now = now.Add(interval)
-			return nil
-		},
-	}
+	step := (&steps.CIStep{}).SetNow(func() time.Time {
+		return now
+	}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		now = now.Add(interval)
+		return nil
+	})
 
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -337,7 +322,7 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 		t.Fatal("expected NeedsApproval when merge conflict remains known but checks lookup fails")
 	}
 
-	var findings Findings
+	var findings types.Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
 	}
@@ -357,26 +342,26 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
-	gitCmd(t, upstream, "init", "--bare")
+	stepstest.GitCmd(t, upstream, "init", "--bare")
 
 	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
+	stepstest.GitCmd(t, dir, "init")
+	stepstest.GitCmd(t, dir, "config", "user.name", "test")
+	stepstest.GitCmd(t, dir, "config", "user.email", "test@test.com")
+	stepstest.GitCmd(t, dir, "checkout", "-b", "main")
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "initial")
-	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
+	stepstest.GitCmd(t, dir, "add", "-A")
+	stepstest.GitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := stepstest.GitCmd(t, dir, "rev-parse", "HEAD")
+	stepstest.GitCmd(t, dir, "remote", "add", "origin", upstream)
+	stepstest.GitCmd(t, dir, "push", "origin", "main")
 
-	gitCmd(t, dir, "checkout", "-b", "feature")
+	stepstest.GitCmd(t, dir, "checkout", "-b", "feature")
 	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "feature")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "feature")
+	stepstest.GitCmd(t, dir, "add", "-A")
+	stepstest.GitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := stepstest.GitCmd(t, dir, "rev-parse", "HEAD")
+	stepstest.GitCmd(t, dir, "push", "origin", "feature")
 
 	// Poll 1: build failing, test still pending -> should NOT fix yet
 	// Poll 2: build failing, test also failing -> should fix now
@@ -384,12 +369,12 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 		`[{"name":"build","bucket":"fail"},{"name":"test","bucket":"pending"}]`,
 		`[{"name":"build","bucket":"fail"},{"name":"test","bucket":"fail"}]`,
 	}
-	env := fakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "MERGEABLE")
+	env := stepstest.FakeCIGHSequenceMergeable(t, "OPEN", checksSequence, "MERGEABLE")
 
 	agentCalled := false
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	ag := &stepstest.MockAgent{
+		AgentName: "test",
+		RunFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			agentCalled = true
 			os.WriteFile(filepath.Join(opts.CWD, "fix.txt"), []byte("fixed"), 0o644)
 			return &agent.Result{}, nil
@@ -397,7 +382,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
@@ -413,16 +398,14 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	pollCount := 0
-	step := &CIStep{
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			pollCount++
-			if pollCount >= 3 {
-				cancel()
-				return ctx.Err()
-			}
-			return nil
-		},
-	}
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		pollCount++
+		if pollCount >= 3 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
 	_, err := step.Execute(sctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected error: %v", err)

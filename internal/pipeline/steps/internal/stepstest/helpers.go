@@ -1,4 +1,4 @@
-package steps
+package stepstest
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,31 +20,30 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 var testGitExecutable, _ = exec.LookPath("git")
 
-type mockAgent struct {
-	name  string
-	runFn func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
-	calls []agent.RunOpts
+type MockAgent struct {
+	AgentName string
+	RunFn     func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
+	Calls     []agent.RunOpts
 }
 
-func (m *mockAgent) Name() string { return m.name }
+func (m *MockAgent) Name() string { return m.AgentName }
 
-func (m *mockAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	m.calls = append(m.calls, opts)
-	if m.runFn != nil {
-		return m.runFn(ctx, opts)
+func (m *MockAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	m.Calls = append(m.Calls, opts)
+	if m.RunFn != nil {
+		return m.RunFn(ctx, opts)
 	}
 	return &agent.Result{}, nil
 }
 
-func (m *mockAgent) Close() error { return nil }
+func (m *MockAgent) Close() error { return nil }
 
-func gitCmd(t *testing.T, dir string, args ...string) string {
+func GitCmd(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -59,14 +60,14 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func gitStatusPorcelain(t *testing.T, dir string) string {
+func GitStatusPorcelain(t *testing.T, dir string) string {
 	t.Helper()
-	return gitCmd(t, dir, "status", "--porcelain")
+	return GitCmd(t, dir, "status", "--porcelain")
 }
 
-func lastCommitMessage(t *testing.T, dir string) string {
+func LastCommitMessage(t *testing.T, dir string) string {
 	t.Helper()
-	return gitCmd(t, dir, "log", "-1", "--pretty=%s")
+	return GitCmd(t, dir, "log", "-1", "--pretty=%s")
 }
 
 // gitRepoTemplate holds a cached template repo that setupGitRepo copies from
@@ -78,7 +79,7 @@ var gitRepoTemplate struct {
 	headSHA string
 }
 
-func ensureGitRepoTemplate(t *testing.T) {
+func EnsureGitRepoTemplate(t *testing.T) {
 	t.Helper()
 	gitRepoTemplate.once.Do(func() {
 		dir, err := os.MkdirTemp("", "git-template-*")
@@ -125,9 +126,9 @@ func ensureGitRepoTemplate(t *testing.T) {
 // setupGitRepo creates a git repo with a base commit on main and a head commit on feature.
 // Returns (repoDir, baseSHA, headSHA).
 // Uses a cached template repo and copies it via cp -a for speed.
-func setupGitRepo(t *testing.T) (string, string, string) {
+func SetupGitRepo(t *testing.T) (string, string, string) {
 	t.Helper()
-	ensureGitRepoTemplate(t)
+	EnsureGitRepoTemplate(t)
 
 	dir := t.TempDir()
 	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
@@ -138,7 +139,7 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 }
 
 // newTestContext creates a StepContext for testing with optional config overrides.
-func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
+func NewTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
 
 	// Most step tests do not exercise remote transport. Give repositories that
@@ -183,7 +184,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 
 // fakeCLIEnv builds environment variable entries for a fake CLI binary and PATH override.
 // Returns env entries that should be set on StepContext.Env for parallel-safe tests.
-func fakeCLIEnv(binDir string, vars map[string]string) []string {
+func FakeCLIEnv(binDir string, vars map[string]string) []string {
 	env := []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
@@ -196,7 +197,7 @@ func fakeCLIEnv(binDir string, vars map[string]string) []string {
 // fakeCLIBinDir creates a temporary directory for fake CLI binaries.
 // Unlike t.TempDir(), cleanup tolerates file locks from recently-executed
 // binaries on Windows (which prevent immediate deletion).
-func fakeCLIBinDir(t *testing.T) string {
+func FakeCLIBinDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "fakecli")
 	if err != nil {
@@ -213,20 +214,130 @@ func fakeCLIBinDir(t *testing.T) string {
 	return dir
 }
 
-// linkTestBinary places the tiny fake-CLI helper on PATH under name.
-func linkTestBinary(t *testing.T, binDir, name string) {
+// fakeCLIHelperPath is the tiny non-race helper compiled once in TestMain and
+// linked into each test's PATH as gh/glab/git. Re-execing the race-instrumented
+// test binary as those names was ~0.8s per spawn and dominated CI-monitor tests.
+var fakeCLIHelperPath string
+
+func Init() (func() error, error) {
+	root, err := findModuleRoot()
+	if err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp("", "fakecli-helper-*")
+	if err != nil {
+		return nil, err
+	}
+	name := "fakecli"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(dir, name)
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", path, "./internal/pipeline/fakecli")
+	cmd.Dir = root
+	cmd.Env = goBuildEnvWithoutRace()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			return nil, fmt.Errorf("go build fakecli: %w: %s; cleanup: %v", err, out, cleanupErr)
+		}
+		return nil, fmt.Errorf("go build fakecli: %w: %s", err, out)
+	}
+	fakeCLIHelperPath = path
+	return func() error {
+		fakeCLIHelperPath = ""
+		return os.RemoveAll(dir)
+	}, nil
+}
+
+func goBuildEnvWithoutRace() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		key, val, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if strings.EqualFold(key, "GOFLAGS") {
+			val = stripRaceFlag(val)
+			if val == "" {
+				continue
+			}
+			out = append(out, key+"="+val)
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "CGO_ENABLED=0")
+}
+
+func stripRaceFlag(flags string) string {
+	parts := strings.Fields(flags)
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		name, value, hasValue := strings.Cut(p, "=")
+		if name == "-race" || name == "--race" {
+			if !hasValue {
+				continue
+			}
+			if _, err := strconv.ParseBool(value); err == nil {
+				continue
+			}
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, " ")
+}
+
+func findModuleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found walking up from %s", dir)
+		}
+		dir = parent
+	}
+}
+
+// linkTestBinary creates a hard link (or copy) of the tiny fake-CLI helper
+// with the given name in binDir. On Windows, .exe is appended.
+func LinkFakeCLI(t *testing.T, binDir, name string) {
 	t.Helper()
-	stepstest.LinkFakeCLI(t, binDir, name)
+	if fakeCLIHelperPath == "" {
+		t.Fatal("fake CLI helper is not initialized")
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	if err := os.Link(fakeCLIHelperPath, dst); err != nil {
+		// Fallback to copy if hard link fails (cross-device, etc.)
+		data, readErr := os.ReadFile(fakeCLIHelperPath)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // fakeGH creates a mock gh binary in a temp dir and returns env entries for StepContext.Env.
 // The binary records all invocations to a log file and responds based on subcommand.
-func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
+func FakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
+	binDir := FakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "gh.log")
-	linkTestBinary(t, binDir, "gh")
-	env = fakeCLIEnv(binDir, map[string]string{
+	LinkFakeCLI(t, binDir, "gh")
+	env = FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":   "gh",
 		"FAKE_CLI_LOG":    logFile,
 		"FAKE_CLI_PR_URL": prViewURL,
@@ -237,12 +348,12 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 // fakeGHWithBase behaves like fakeGH but additionally records the existing
 // PR's actual base branch, so the fake `gh pr list --base X` only returns the
 // PR when X matches it - mirroring GitHub's server-side base filtering.
-func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFile string) {
+func FakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFile string) {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
+	binDir := FakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "gh.log")
-	linkTestBinary(t, binDir, "gh")
-	env = fakeCLIEnv(binDir, map[string]string{
+	LinkFakeCLI(t, binDir, "gh")
+	env = FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":    "gh",
 		"FAKE_CLI_LOG":     logFile,
 		"FAKE_CLI_PR_URL":  prViewURL,
@@ -264,7 +375,7 @@ type fakeBitbucketPRAPI struct {
 	createdPRURL   string
 }
 
-func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
+func NewFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
 	t.Helper()
 
 	api := &fakeBitbucketPRAPI{
@@ -321,7 +432,7 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 	return api
 }
 
-func fakeBitbucketEnv(apiBaseURL string) []string {
+func FakeBitbucketEnv(apiBaseURL string) []string {
 	return []string{
 		"NO_MISTAKES_BITBUCKET_EMAIL=test@example.com",
 		"NO_MISTAKES_BITBUCKET_API_TOKEN=test-token",
@@ -349,7 +460,7 @@ type fakeBitbucketCIAPI struct {
 	lastPipelineQ  string
 }
 
-func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
+func NewFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitbucketCIAPI {
 	t.Helper()
 
 	api := &fakeBitbucketCIAPI{
@@ -398,12 +509,12 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 	return api
 }
 
-func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
+func FakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
+	binDir := FakeCLIBinDir(t)
 	logFile = filepath.Join(t.TempDir(), "glab.log")
-	linkTestBinary(t, binDir, "glab")
-	env = fakeCLIEnv(binDir, map[string]string{
+	LinkFakeCLI(t, binDir, "glab")
+	env = FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":         "glab",
 		"FAKE_CLI_LOG":          logFile,
 		"FAKE_CLI_MR_VIEW_JSON": mrViewJSON,
@@ -413,7 +524,7 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 
 // newTestContextWithDBRecords is like newTestContext but also inserts
 // repo and run records into the database so GetRun works after updates.
-func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
+func RecordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
 	t.Helper()
 	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, headSHA); err != nil {
 		t.Fatal(err)
@@ -422,9 +533,9 @@ func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA stri
 	sctx.Run.ReviewApprovedHeadSHA = &approved
 }
 
-func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
+func NewTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
-	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
+	sctx := NewTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
 
 	// Insert repo + run records so DB queries work
 	repo, err := sctx.DB.InsertRepo(workDir, "https://github.com/test/repo", "main")
@@ -442,11 +553,11 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 
 // fakeCIGH creates a fake gh binary that responds to CI-related
 // commands (pr view --json state, pr checks --json, pr view --json comments).
-func fakeCIGH(t *testing.T, state, checksJSON string) []string {
+func FakeCIGH(t *testing.T, state, checksJSON string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh",
 		"FAKE_CLI_STATE":       state,
 		"FAKE_CLI_CHECKS":      checksJSON,
@@ -454,11 +565,11 @@ func fakeCIGH(t *testing.T, state, checksJSON string) []string {
 	})
 }
 
-func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []string {
+func FakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh",
 		"FAKE_CLI_STATE":       state,
 		"FAKE_CLI_CHECKS":      checksJSON,
@@ -467,11 +578,11 @@ func fakeCIGHMergeable(t *testing.T, state, checksJSON, mergeable string) []stri
 	})
 }
 
-func fakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string) []string {
+func FakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":          "ci-gh",
 		"FAKE_CLI_STATE":         state,
 		"FAKE_CLI_CHECKS":        checksJSON,
@@ -480,11 +591,11 @@ func fakeCIGHMergeableError(t *testing.T, state, checksJSON, mergeableErr string
 	})
 }
 
-func fakeCIGHStateError(t *testing.T, stateErr, checksJSON string) []string {
+func FakeCIGHStateError(t *testing.T, stateErr, checksJSON string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh",
 		"FAKE_CLI_STATE_ERR":   stateErr,
 		"FAKE_CLI_CHECKS":      checksJSON,
@@ -492,11 +603,11 @@ func fakeCIGHStateError(t *testing.T, stateErr, checksJSON string) []string {
 	})
 }
 
-func fakeCIGHChecksError(t *testing.T, state, mergeable, checksErr string) []string {
+func FakeCIGHChecksError(t *testing.T, state, mergeable, checksErr string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh",
 		"FAKE_CLI_STATE":       state,
 		"FAKE_CLI_MERGEABLE":   mergeable,
@@ -505,10 +616,10 @@ func fakeCIGHChecksError(t *testing.T, state, mergeable, checksErr string) []str
 	})
 }
 
-func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, mergeable string) []string {
+func FakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, mergeable string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
 
 	checksPath := filepath.Join(t.TempDir(), "checks.txt")
 	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
@@ -520,7 +631,7 @@ func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, merg
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	return fakeCLIEnv(binDir, map[string]string{
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":              "ci-gh-seq",
 		"FAKE_CLI_STATE":             state,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
@@ -530,10 +641,10 @@ func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, merg
 	})
 }
 
-func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
+func FakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
 
 	checksPath := filepath.Join(t.TempDir(), "checks.txt")
 	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
@@ -545,7 +656,7 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	return fakeCLIEnv(binDir, map[string]string{
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":              "ci-gh-seq",
 		"FAKE_CLI_STATE":             state,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
@@ -558,10 +669,10 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 // can assert which gh commands the CI monitor issued (for example whether it
 // asked for a check rerun). mergeable overrides the reported mergeable state
 // ("" reports MERGEABLE); rerunErr, when set, makes `gh run rerun` fail.
-func fakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeable, rerunErr string) (env []string, logFile string) {
+func FakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeable, rerunErr string) (env []string, logFile string) {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
 
 	tempDir := t.TempDir()
 	checksPath := filepath.Join(tempDir, "checks.txt")
@@ -575,7 +686,7 @@ func fakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeab
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	return fakeCLIEnv(binDir, map[string]string{
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":              "ci-gh-seq",
 		"FAKE_CLI_STATE":             state,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
@@ -587,11 +698,11 @@ func fakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeab
 	}), logFile
 }
 
-func fakeCIGHNoChecks(t *testing.T) []string {
+func FakeCIGHNoChecks(t *testing.T) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "gh")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "gh")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":        "ci-gh-nochecks",
 		"FAKE_CLI_PR_HEAD_SHA": "deadbeef",
 	})
@@ -600,26 +711,26 @@ func fakeCIGHNoChecks(t *testing.T) []string {
 // fakeCIGlab creates a fake glab binary that serves the CI monitoring endpoints.
 // state is the MR state ("opened", "merged", "closed"); checksJSON is a JSON
 // array of jobs for `glab ci status` / `glab ci get`.
-func fakeCIGlab(t *testing.T, state, checksJSON string) []string {
+func FakeCIGlab(t *testing.T, state, checksJSON string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "glab")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":   "ci-glab",
 		"FAKE_CLI_STATE":  state,
 		"FAKE_CLI_CHECKS": checksJSON,
 	})
 }
 
-func fakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) []string {
+func FakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "glab")
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
 	conflicts := "false"
 	if conflict {
 		conflicts = "true"
 	}
-	return fakeCLIEnv(binDir, map[string]string{
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":         "ci-glab",
 		"FAKE_CLI_STATE":        state,
 		"FAKE_CLI_CHECKS":       checksJSON,
@@ -627,11 +738,11 @@ func fakeCIGlabConflict(t *testing.T, state, checksJSON string, conflict bool) [
 	})
 }
 
-func fakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string {
+func FakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "glab")
-	return fakeCLIEnv(binDir, map[string]string{
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":   "ci-glab",
 		"FAKE_CLI_STATE":  state,
 		"FAKE_CLI_CHECKS": checksJSON,
@@ -639,10 +750,10 @@ func fakeCIGlabWithTrace(t *testing.T, state, checksJSON, trace string) []string
 	})
 }
 
-func fakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
+func FakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
 	t.Helper()
-	binDir := fakeCLIBinDir(t)
-	linkTestBinary(t, binDir, "glab")
+	binDir := FakeCLIBinDir(t)
+	LinkFakeCLI(t, binDir, "glab")
 
 	checksPath := filepath.Join(t.TempDir(), "checks.txt")
 	indexPath := filepath.Join(t.TempDir(), "checks-index.txt")
@@ -654,7 +765,7 @@ func fakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	return fakeCLIEnv(binDir, map[string]string{
+	return FakeCLIEnv(binDir, map[string]string{
 		"FAKE_CLI_MODE":              "ci-glab-seq",
 		"FAKE_CLI_STATE":             state,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
@@ -664,7 +775,7 @@ func fakeCIGlabSequence(t *testing.T, state string, checks []string) []string {
 
 // runGitDirect runs git without any of the repository's step helpers, so a test
 // can observe what a plain, hook-verified git invocation does in dir.
-func runGitDirect(dir string, args ...string) (string, error) {
+func RunGitDirect(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
