@@ -1338,7 +1338,11 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))
 		for _, s := range steps {
-			info.Steps = append(info.Steps, stepToInfo(d, s))
+			stepInfo := stepToInfo(d, s)
+			info.Steps = append(info.Steps, stepInfo)
+			if info.CIOverrideReason == "" && stepInfo.OverrideReason != "" {
+				info.CIOverrideReason = stepInfo.OverrideReason
+			}
 		}
 	}
 	return info
@@ -1360,6 +1364,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		LastActivityAt: s.LastActivityAt,
 		LastActivity:   s.LastActivity,
 		AgentPID:       s.AgentPID,
+	}
+	if s.OverrideReason != nil {
+		info.OverrideReason = *s.OverrideReason
 	}
 	if s.AutoFixLimit != nil {
 		info.AutoFixLimit = *s.AutoFixLimit

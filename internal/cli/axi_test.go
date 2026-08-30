@@ -416,6 +416,43 @@ func TestOutcomeFor(t *testing.T) {
 	}
 }
 
+// TestOutcomeForRun pins that a run's outcome word distinguishes a genuinely
+// green completion from one where a human approved past a live CI failure
+// (rv.CIOverrideReason, see pipeline.ApprovalOverrideVerifier). Without this,
+// "outcome=passed" in axi's agent-facing output is ambiguous between the two -
+// exactly the ambiguity that let no-mistakes self-report a passing terminal
+// outcome while the live PR still showed a failed check.
+func TestOutcomeForRun(t *testing.T) {
+	cases := []struct {
+		name string
+		rv   runView
+		want string
+	}{
+		{
+			name: "clean pass has no override qualifier",
+			rv:   runView{Status: string(types.RunCompleted)},
+			want: "passed",
+		},
+		{
+			name: "override qualifies an otherwise-clean pass",
+			rv:   runView{Status: string(types.RunCompleted), CIOverrideReason: "live checks still failing: required-check"},
+			want: "passed-with-override",
+		},
+		{
+			name: "a failed run is unaffected by a stray override reason",
+			rv:   runView{Status: string(types.RunFailed), CIOverrideReason: "live checks still failing: required-check"},
+			want: "failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := outcomeForRun(tc.rv); got != tc.want {
+				t.Errorf("outcomeForRun(%+v) = %q, want %q", tc.rv, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTriggerRunDoesNotRerunAfterFailedPush(t *testing.T) {
 	if shouldRerunAfterNoActiveRun(errors.New("push failed")) {
 		t.Fatal("failed pushes must not fall back to rerun")

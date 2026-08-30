@@ -466,6 +466,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
+		e.applyApprovalOverride(gate.step, reconcileCtx, gate.stepResult.ID)
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
@@ -1067,6 +1068,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
+			e.applyApprovalOverride(step, sctx, sr.ID)
 			phaseStart = time.Now()
 			goto done
 
@@ -1164,6 +1166,36 @@ done:
 //
 // Best effort by design. This is advisory prompt context for later steps, so a
 // failed write degrades to today's behavior and must never fail the run.
+// applyApprovalOverride is the single place both ActionApprove sites (the
+// live wait in executeStep and the daemon-restart recovery path in Resume)
+// route through before completing a step on approval. If step raised its gate
+// over a live, re-checkable condition (ApprovalOverrideVerifier), this
+// re-checks it once and, only when it is still unresolved, records the
+// upcoming completion as an explicit override (db.SetStepOverrideReason)
+// instead of a silent plain pass - see ApprovalOverrideVerifier's doc for the
+// incident this exists to make impossible. It never blocks or changes the
+// approval itself: a human's ActionApprove always proceeds, and a step that
+// does not implement the interface (every step but CI today) is completely
+// unaffected. A verification error fails closed - it is recorded as an
+// unresolved condition, not silently treated as clear - but still never stops
+// the approval, only what it gets recorded as.
+func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID string) {
+	verifier, ok := step.(ApprovalOverrideVerifier)
+	if !ok {
+		return
+	}
+	unresolved, err := verifier.VerifyApprovalOverride(sctx)
+	if err != nil {
+		unresolved = fmt.Sprintf("could not verify: %v", err)
+	}
+	if unresolved == "" {
+		return
+	}
+	if dbErr := e.db.SetStepOverrideReason(stepResultID, unresolved); dbErr != nil {
+		slog.Warn("failed to record approval override reason", "step", step.Name(), "run_id", sctx.Run.ID, "error", dbErr)
+	}
+}
+
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
 	if e == nil || e.db == nil || roundID == "" {
 		return

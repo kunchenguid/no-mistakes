@@ -26,6 +26,11 @@ type StepResult struct {
 	AgentPID       *int
 	AutoFixLimit   *int
 	CIFixAttempts  int
+	// OverrideReason is non-nil exactly when a human answered ActionApprove on
+	// this step's gate despite an unresolved external condition (currently:
+	// the CI step's live checks were still failing). See
+	// pipeline.ApprovalOverrideVerifier and Executor's two ActionApprove sites.
+	OverrideReason *string
 }
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
@@ -36,6 +41,11 @@ func (d *DB) readableStepResultColumns() string {
 		columns += ", ci_fix_attempts"
 	} else {
 		columns += ", 0 AS ci_fix_attempts"
+	}
+	if d.hasColumn("step_results", "override_reason") {
+		columns += ", override_reason"
+	} else {
+		columns += ", NULL AS override_reason"
 	}
 	return columns
 }
@@ -64,7 +74,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -86,7 +96,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -194,6 +204,23 @@ func (d *DB) SetStepAutoFixLimit(id string, autoFixLimit int) error {
 func (d *DB) SetCIFixAttempts(id string, attempts int) error {
 	if _, err := d.sql.Exec(`UPDATE step_results SET ci_fix_attempts = ? WHERE id = ?`, attempts, id); err != nil {
 		return fmt.Errorf("set CI fix attempts: %w", err)
+	}
+	return nil
+}
+
+// SetStepOverrideReason records that a human answered ActionApprove on this
+// step's gate despite an unresolved external condition (see
+// pipeline.ApprovalOverrideVerifier). Called alongside, not instead of, the
+// normal step-completion write: it never changes Status, only annotates why
+// the completion happened without the condition that raised the gate having
+// cleared. reason must be non-empty; the column stays NULL for every
+// ordinarily-resolved step, which is what marks a run "verified green".
+func (d *DB) SetStepOverrideReason(id string, reason string) error {
+	if reason == "" {
+		return fmt.Errorf("set step override reason: reason must not be empty")
+	}
+	if _, err := d.sql.Exec(`UPDATE step_results SET override_reason = ? WHERE id = ?`, reason, id); err != nil {
+		return fmt.Errorf("set step override reason: %w", err)
 	}
 	return nil
 }

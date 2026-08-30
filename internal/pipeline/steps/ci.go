@@ -155,6 +155,49 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 }
 
+// VerifyApprovalOverride implements pipeline.ApprovalOverrideVerifier. It
+// re-polls the live checks once, synchronously, at the moment a human answers
+// ActionApprove on a CI gate raised by ciFailureOutcome, so an approval over a
+// check that is still failing can never be silently reported as a plain
+// "outcome=passed" - see the interface doc for the incident this exists for.
+// Read-only: unlike Execute and ReconcileApprovalGate, it never fixes, reruns,
+// or pushes anything, and it never blocks the approval itself - it only
+// decides how the resulting completion is recorded.
+func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
+	ctx := sctx.Ctx
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	provider := resolvedProvider(sctx)
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		return fmt.Sprintf("could not verify live CI state: %s", skipReason), nil
+	}
+	if err := host.Available(ctx); err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+
+	prURL := ""
+	if sctx.Run.PRURL != nil {
+		prURL = strings.TrimSpace(*sctx.Run.PRURL)
+	}
+	if prURL == "" {
+		return "could not verify live CI state: run has no PR URL", nil
+	}
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL})
+	if err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+	if !hasFailingChecks(checks) {
+		return "", nil
+	}
+	return fmt.Sprintf("live checks for %s still failing: %s", prURL, strings.Join(failingCheckNames(checks), ", ")), nil
+}
+
 func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {
 	if !host.Capabilities().MergedProof {
 		return nil

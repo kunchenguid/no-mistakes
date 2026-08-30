@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
-    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0
+    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
+    override_reason             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -226,6 +227,13 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
+	// Non-nil exactly when a human answered ActionApprove on a step whose gate
+	// existed because of an unresolved external condition (currently: the CI
+	// step's live checks were still failing) - see
+	// pipeline.ApprovalOverrideVerifier. Durable so the distinction between a
+	// verified-green completion and a deliberate override survives daemon
+	// restart, resume, and axi status/logs on an already-terminal run.
+	`ALTER TABLE step_results ADD COLUMN override_reason TEXT`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,

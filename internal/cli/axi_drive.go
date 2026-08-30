@@ -54,6 +54,21 @@ func outcomeFor(status string) string {
 	}
 }
 
+// outcomeForRun wraps outcomeFor with the one qualification a plain status
+// can't express: a human approved past a live check that was still failing
+// (rv.CIOverrideReason, see pipeline.ApprovalOverrideVerifier). Without this,
+// "outcome=passed" reads identically whether every check genuinely went green
+// or an operator deliberately overrode a red one - the exact ambiguity this
+// fix exists to remove. Only RunCompleted is qualified: a failed, cancelled,
+// or interrupted run already reads as non-clean and needs no further marker.
+func outcomeForRun(rv runView) string {
+	word := outcomeFor(rv.Status)
+	if word == "passed" && rv.CIOverrideReason != "" {
+		return "passed-with-override"
+	}
+	return word
+}
+
 func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
@@ -623,7 +638,7 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		return nil
 	}
 
-	fields = append(fields, toon.Field{Key: "outcome", Value: outcomeFor(rv.Status)})
+	fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
 	if run.Error != nil && *run.Error != "" {
 		fields = append(fields, toon.Field{Key: "error", Value: *run.Error})
 	}
@@ -632,6 +647,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		var help []string
+		if rv.CIOverrideReason != "" {
+			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+		}
 		if rv.PRURL != "" {
 			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
 		}
