@@ -58,7 +58,8 @@ func (a *piAgent) ReportsAgentAttempts() bool { return true }
 // which silently falls back on anything it cannot use, so a default that is
 // absent, inert, or missing from Pi's catalogue only produces a warning naming
 // the settings file. Project packages and extensions that register models are
-// part of every check because both run in the worktree.
+// part of checks run in the worktree unless the trusted project-settings
+// opt-out suppresses them for both preflight and the later agent turn.
 func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) error {
 	model := piFlagValue(a.extraArgs, "--model")
 	provider := piFlagValue(a.extraArgs, "--provider")
@@ -125,7 +126,7 @@ type piProbeOutcome struct {
 func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offline bool) piProbeOutcome {
 	probeCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
 	defer cancel()
-	args := append([]string(nil), a.extraArgs...)
+	args := a.invocationArgs()
 	if offline {
 		args = append(args, "--offline")
 	}
@@ -135,7 +136,8 @@ func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offl
 	cmd.Env = a.overlay().Apply(nil)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	shellenv.ConfigureShellCommand(cmd)
+	if err := shellenv.RunShellCommand(cmd); err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		// A killed probe reports like a non-zero exit, so the deadline is
 		// checked first: a probe that never finished is inconclusive evidence.
@@ -270,12 +272,13 @@ func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay)
 func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) ([]string, error) {
 	catalogueCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
 	defer cancel()
-	args := append([]string(nil), a.extraArgs...)
+	args := a.invocationArgs()
 	args = append(args, "--offline", "--list-models")
 	cmd := exec.CommandContext(catalogueCtx, a.bin, args...)
 	cmd.Dir = workDir
 	cmd.Env = a.overlay().Apply(nil)
-	out, err := cmd.Output()
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
 		if catalogueCtx.Err() != nil {
 			return nil, fmt.Errorf("pi model catalogue listing did not finish: %w", catalogueCtx.Err())
@@ -582,7 +585,23 @@ func piStdinError(err error) error {
 // Under the project-settings opt-out, the context-file suppression flag comes
 // first. User extras otherwise precede managed JSON/session flags.
 func (a *piAgent) buildArgs(session *SessionRef) []string {
-	args := make([]string, 0, len(a.extraArgs)+5)
+	args := a.invocationArgs()
+	args = append(args, "--mode", "json")
+	switch {
+	case session == nil:
+		args = append(args, "--no-session")
+	case session.ID != "":
+		args = append(args, "--session", session.ID)
+	}
+	return args
+}
+
+// invocationArgs applies the trusted project-settings policy to every Pi
+// process, including setup preflight. Suppression must be first so a pushed
+// worktree cannot load project instructions, packages, or extensions before
+// the neutralized agent turn begins.
+func (a *piAgent) invocationArgs() []string {
+	args := make([]string, 0, len(a.extraArgs)+1)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
 	// (firstmate) cannot install a fleet-captain identity on the gate agent.
@@ -602,13 +621,6 @@ func (a *piAgent) buildArgs(session *SessionRef) []string {
 		if i != pinIndex {
 			args = append(args, arg)
 		}
-	}
-	args = append(args, "--mode", "json")
-	switch {
-	case session == nil:
-		args = append(args, "--no-session")
-	case session.ID != "":
-		args = append(args, "--session", session.ID)
 	}
 	return args
 }

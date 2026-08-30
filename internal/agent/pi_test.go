@@ -194,6 +194,95 @@ func TestPiAgent_ValidateConfigurationProbesInWorktree(t *testing.T) {
 	}
 }
 
+// The trusted project-settings opt-out must cover setup preflight as well as
+// the later agent turn. Exercise both preflight commands with a project
+// settings file present: the fake Pi records a load whenever the suppression
+// flag is missing, which would expose contributor-controlled project material
+// before the neutralized pipeline starts.
+func TestPiAgent_ValidateConfigurationOptOutSuppressesProjectSettingsForEveryPreflight(t *testing.T) {
+	setPiCatalogEndpoint(t, false)
+	workDir := t.TempDir()
+	projectSettings := filepath.Join(workDir, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectSettings, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	globalDir := t.TempDir()
+	globalSettings := filepath.Join(globalDir, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(globalSettings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalSettings, []byte(`{"defaultProvider":"google","defaultModel":"global-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+printf '%s\n' "$*" >> pi-preflight-args.txt
+if [ "$1" != "--no-context-files" ]; then
+	printf '%s\n' loaded > project-settings-loaded.txt
+	exit 9
+fi
+case "$*" in
+	*--list-models*)
+		printf '%s\n' 'provider model context max-out thinking images'
+		printf '%s\n' 'google global-model 1M 128K yes no'
+		;;
+esac
+exit 0
+`, strings.Join([]string{
+		"@echo off",
+		"echo %* >> pi-preflight-args.txt",
+		"if not \"%1\"==\"--no-context-files\" (",
+		"  echo loaded > project-settings-loaded.txt",
+		"  exit /b 9",
+		")",
+		"echo %* | findstr /C:\"--list-models\" > nul",
+		"if not errorlevel 1 (",
+		"  echo provider model context max-out thinking images",
+		"  echo google global-model 1M 128K yes no",
+		")",
+		"exit /b 0",
+	}, "\r\n"))
+	overlay := runenv.Overlay{Set: map[string]string{"HOME": globalDir}}
+	explicit := &piAgent{
+		bin:                    bin,
+		extraArgs:              []string{"--model", "sonnet"},
+		modelSource:            "agent_config.pi.model",
+		disableProjectSettings: true,
+		subprocessContext:      newSubprocessContext(overlay),
+	}
+	if err := explicit.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("explicit-model preflight: %v", err)
+	}
+	settingsDefault := &piAgent{
+		bin:                    bin,
+		disableProjectSettings: true,
+		subprocessContext:      newSubprocessContext(overlay),
+	}
+	if err := settingsDefault.ValidateConfiguration(context.Background(), workDir); err != nil {
+		t.Fatalf("settings-default preflight: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, "project-settings-loaded.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("project settings load marker stat error = %v, want not-exist", err)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "pi-preflight-args.txt"))
+	if err != nil {
+		t.Fatalf("read preflight argv: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("preflight invocations = %d (%q), want RPC probe and catalogue listing", len(lines), data)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "--no-context-files ") {
+			t.Fatalf("preflight argv = %q, want project-setting suppression first", line)
+		}
+	}
+}
+
 // A complete project settings default is checked against Pi's own catalogue
 // (exact provider and model id, the lookup Pi's startup path performs). With
 // no recorded trust decision pi may ignore the project copy entirely, so the
