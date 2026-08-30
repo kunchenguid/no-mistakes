@@ -27,7 +27,7 @@ by the very PR the gate is judging.
 name: Require no-mistakes
 on:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
 
 permissions:
@@ -54,6 +54,13 @@ rulesets keep matching the same check across the fleet.
 An ordinary `pull_request`-triggered caller forwards no PR facts: the action
 reads the body, head SHA, head branch, author, and number from the workflow
 event payload. Pass the `pr-*` inputs only when driving it from another event.
+
+For `synchronize`, include the event in the trigger as shown above. Existing-PR
+pipeline updates can push a new head before publishing the matching body
+attestation; on that event the action re-reads the current PR through the
+read-only `GITHUB_TOKEN` API for a short, bounded settlement window. It fails
+closed when the snapshot is inaccessible, the event has empty identity, or the
+body never settles, and honors `GITHUB_API_URL` for GitHub Enterprise.
 
 ## Inputs
 

@@ -38,6 +38,9 @@ import fnmatch
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 SIGNATURE_MARKER = (
     "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
@@ -53,13 +56,20 @@ REQUIRED_STEPS = ("review", "test", "document")
 VERSION_FLOOR = "1.46.0"
 VERSION_FLOOR_PR = "https://github.com/kunchenguid/no-mistakes/pull/670"
 
+# A synchronize event can be delivered after the push but before the later PR
+# body edit that publishes the matching attestation. Re-read the forge's
+# current snapshot for a finite window. This is intentionally bounded and fails
+# closed when publication never settles or the API cannot be read.
+SYNCHRONIZE_SETTLE_ATTEMPTS = 10
+SYNCHRONIZE_SETTLE_DELAY_SECONDS = 1.0
+
 
 def env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
-def event_payload() -> dict:
-    """Read the workflow event payload, so a caller need not forward PR facts."""
+def event_document() -> dict:
+    """Read the complete workflow event document, when supplied by the runner."""
     path = os.environ.get("GITHUB_EVENT_PATH") or ""
     if not path or not os.path.exists(path):
         return {}
@@ -68,10 +78,18 @@ def event_payload() -> dict:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return {}
-    if not isinstance(payload, dict):
-        return {}
-    pull_request = payload.get("pull_request")
+    return payload if isinstance(payload, dict) else {}
+
+
+def event_payload() -> dict:
+    """Read the pull-request portion of the workflow event document."""
+    pull_request = event_document().get("pull_request")
     return pull_request if isinstance(pull_request, dict) else {}
+
+
+def event_action() -> str:
+    action = event_document().get("action")
+    return action if isinstance(action, str) else ""
 
 
 def parse_list(raw: str) -> list[str]:
@@ -107,20 +125,88 @@ def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
 
 
 class Facts:
-    def __init__(self) -> None:
-        payload = event_payload()
+    def __init__(self, payload: dict | None = None, *, use_environment: bool = True) -> None:
+        payload = payload if payload is not None else event_payload()
         head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
         user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
 
-        self.body = os.environ.get("PR_BODY") or _payload_str(payload, "body")
-        self.head_sha = env("PR_HEAD_SHA") or _payload_str(head, "sha").strip()
-        self.head_ref = env("PR_HEAD_REF") or _payload_str(head, "ref").strip()
-        self.author = env("PR_AUTHOR") or _payload_str(user, "login").strip()
-        number = env("PR_NUMBER")
+        self.body = (os.environ.get("PR_BODY") or _payload_str(payload, "body")) if use_environment else _payload_str(payload, "body")
+        self.head_sha = (env("PR_HEAD_SHA") or _payload_str(head, "sha").strip()) if use_environment else _payload_str(head, "sha").strip()
+        self.head_ref = (env("PR_HEAD_REF") or _payload_str(head, "ref").strip()) if use_environment else _payload_str(head, "ref").strip()
+        self.author = (env("PR_AUTHOR") or _payload_str(user, "login").strip()) if use_environment else _payload_str(user, "login").strip()
+        number = env("PR_NUMBER") if use_environment else ""
         if not number:
             raw_number = payload.get("number")
-            number = str(raw_number) if isinstance(raw_number, int) else ""
+            number = str(raw_number) if isinstance(raw_number, (int, str)) else ""
         self.number = number
+
+
+def synchronize_event() -> bool:
+    return env("GITHUB_EVENT_NAME") == "pull_request" and event_action() == "synchronize"
+
+
+def current_attestation_head(body: str) -> str:
+    start = body.find(ATTESTATION_PREFIX)
+    if start < 0:
+        return ""
+    start += len(ATTESTATION_PREFIX)
+    end = body.find(ATTESTATION_CLOSING, start)
+    if end < 0:
+        return ""
+    try:
+        payload = json.loads(body[start:end])
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    head = payload.get("head_sha")
+    return head if isinstance(head, str) else ""
+
+
+def read_current_pr(number: str) -> Facts | None:
+    """Read the current PR snapshot through GitHub's read-only API."""
+    repository = env("GITHUB_REPOSITORY")
+    if not repository or not number:
+        return None
+    api = (env("GITHUB_API_URL") or "https://api.github.com").rstrip("/")
+    request = urllib.request.Request(
+        f"{api}/repos/{repository}/pulls/{number}",
+        headers={"Accept": "application/vnd.github+json"},
+    )
+    token = env("GITHUB_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    current = Facts(payload, use_environment=False)
+    if current.number != number:
+        return None
+    return current
+
+
+def settled_facts(facts: Facts) -> Facts:
+    """On synchronize, wait only for the bounded PR-body publication race."""
+    if not synchronize_event():
+        return facts
+    # Never infer identity from refs or accept a replay with empty PR fields.
+    # The event's number and head are the evidence that this run belongs to the
+    # push being judged; the API is used only to observe its later body edit.
+    if not facts.number or not facts.head_sha:
+        fail("::error::pull_request synchronize event has empty PR identity; refusing to judge empty event data.\n")
+
+    for attempt in range(SYNCHRONIZE_SETTLE_ATTEMPTS):
+        latest = read_current_pr(facts.number)
+        if latest is not None and latest.head_sha == facts.head_sha and current_attestation_head(latest.body) == latest.head_sha:
+            return latest
+        if attempt + 1 < SYNCHRONIZE_SETTLE_ATTEMPTS:
+            time.sleep(SYNCHRONIZE_SETTLE_DELAY_SECONDS)
+
+    fail("::error::could not read a settled current pull request snapshot for synchronize; refusing to judge stale or empty event data.\n")
 
 
 def _payload_str(payload: dict, key: str) -> str:
@@ -247,7 +333,7 @@ def check_required_steps(facts: Facts, steps: list) -> None:
 
 
 def main() -> int:
-    facts = Facts()
+    facts = settled_facts(Facts())
 
     reason = exemption_reason(facts)
     if reason:

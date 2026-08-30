@@ -83,6 +83,9 @@ runs:
         NM_EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         NM_EXEMPT_BOT_AUTHORS: ${{ inputs.exempt-bot-authors }}
         NM_EXEMPT_HEAD_BRANCHES: ${{ inputs.exempt-head-branches }}
+        # synchronize settlement re-reads the current PR through the
+        # read-only workflow token (including GitHub Enterprise).
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -eu
         if command -v python3 >/dev/null 2>&1; then

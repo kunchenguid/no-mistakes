@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +94,10 @@ type actionRun struct {
 	exemptBots  string
 	exemptRefs  string
 	eventPath   string
+	eventName   string
+	repository  string
+	apiURL      string
+	token       string
 }
 
 type actionResult struct {
@@ -119,6 +125,10 @@ func runRequireAction(t *testing.T, run actionRun) actionResult {
 		"NM_EXEMPT_BOT_AUTHORS="+run.exemptBots,
 		"NM_EXEMPT_HEAD_BRANCHES="+run.exemptRefs,
 		"GITHUB_EVENT_PATH="+run.eventPath,
+		"GITHUB_EVENT_NAME="+run.eventName,
+		"GITHUB_REPOSITORY="+run.repository,
+		"GITHUB_API_URL="+run.apiURL,
+		"GITHUB_TOKEN="+run.token,
 		"GITHUB_OUTPUT="+outputFile,
 	)
 	var buf bytes.Buffer
@@ -184,7 +194,7 @@ func TestRequireActionIsAComposite(t *testing.T) {
 	// Every PR fact the script reads must be forwarded by the composite step,
 	// otherwise the runner would silently judge an empty body.
 	env := action.Runs.Steps[0].Env
-	for _, key := range []string{"PR_BODY", "PR_HEAD_SHA", "PR_HEAD_REF", "PR_AUTHOR", "NM_EXEMPT_AUTHORS", "NM_EXEMPT_BOT_AUTHORS", "NM_EXEMPT_HEAD_BRANCHES"} {
+	for _, key := range []string{"PR_BODY", "PR_HEAD_SHA", "PR_HEAD_REF", "PR_AUTHOR", "NM_EXEMPT_AUTHORS", "NM_EXEMPT_BOT_AUTHORS", "NM_EXEMPT_HEAD_BRANCHES", "GITHUB_TOKEN"} {
 		if _, ok := env[key]; !ok {
 			t.Errorf("composite step must forward %q to the verification script", key)
 		}
@@ -395,6 +405,46 @@ func TestRequireActionExemptions(t *testing.T) {
 				t.Errorf("output does not explain the exemption %q:\n%s", tc.reason, got.output)
 			}
 		})
+	}
+}
+
+// TestRequireActionSynchronizeSettlesAfterBodyPublication reproduces the
+// existing-PR ordering race: synchronize observes the pushed head before the
+// PR edit, then the later API snapshot contains the matching attestation.
+func TestRequireActionSynchronizeSettlesAfterBodyPublication(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	event := `{"action":"synchronize","pull_request":{"number":42,"body":"old body","head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"feature"},"user":{"login":"contributor"}}}`
+	if err := os.WriteFile(eventPath, []byte(event), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		body := "old body"
+		if calls >= 2 {
+			body = compliant
+		}
+		_, _ = w.Write([]byte(`{"number":42,"body":` + mustJSONString(t, body) + `,"head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"feature"},"user":{"login":"contributor"}}`))
+	}))
+	defer server.Close()
+	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL})
+	if got.conclusion != "success" || calls < 2 {
+		t.Fatalf("synchronize should wait for matching body publication: conclusion=%s calls=%d output=%s", got.conclusion, calls, got.output)
+	}
+}
+
+// TestRequireActionSynchronizeRejectsEmptyEventContext prevents reruns with an
+// empty event document from falling back to an arbitrary PR or stale body.
+func TestRequireActionSynchronizeRejectsEmptyEventContext(t *testing.T) {
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(eventPath, []byte(`{"action":"synchronize","pull_request":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: "http://127.0.0.1:1"})
+	if got.conclusion != "failure" || !strings.Contains(got.output, "empty PR identity") {
+		t.Fatalf("empty synchronize context must fail closed: %s", got.output)
 	}
 }
 
