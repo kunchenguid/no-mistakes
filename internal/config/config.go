@@ -132,6 +132,11 @@ type GlobalConfig struct {
 	// which model runs with the operator's credentials, so no pushed branch may
 	// set it.
 	AgentConfig map[string]agentcfg.Profile `yaml:"agent_config"`
+	// AgentInvocationConfig holds the opt-in invocation-specific overlays
+	// nested under agent_config.<agent>.invocations. It stays separate from
+	// AgentConfig so the long-standing harness-wide accessor and zero-value
+	// behavior remain unchanged.
+	AgentInvocationConfig map[string]map[string]agentcfg.Profile `yaml:"-"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -536,6 +541,7 @@ type Config struct {
 	AgentPathOverride     map[string]string
 	AgentArgsOverride     map[string][]string
 	AgentConfig           map[string]agentcfg.Profile
+	AgentInvocationConfig map[string]map[string]agentcfg.Profile
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	AgentTimeout          time.Duration
@@ -854,6 +860,12 @@ log_level: info
 #   codex:
 #     model: gpt-5.4
 #     effort: low
+#     invocations:
+#       review:
+#         model: gpt-5.4
+#         effort: high
+#       review-fix:
+#         model: gpt-5.3-codex
 #   claude:
 #     model: sonnet
 #     effort: high
@@ -1353,42 +1365,114 @@ func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
 	return c.AgentConfig[string(name)]
 }
 
+// AgentProfileForInvocation overlays an invocation-specific model/effort
+// selection on the harness-wide profile. Omitted fields inherit independently.
+// Unknown and empty purposes deliberately resolve to the harness-wide profile;
+// configuration loading only admits the supported purpose keys.
+func (c *Config) AgentProfileForInvocation(name types.AgentName, purpose string) agentcfg.Profile {
+	base := c.AgentProfileFor(name)
+	if c.AgentInvocationConfig == nil {
+		return base
+	}
+	return agentcfg.Overlay(base, c.AgentInvocationConfig[string(name)][purpose])
+}
+
+// AgentInvocationPurposes returns the configured invocation routes in stable
+// order across every selected harness.
+func (c *Config) AgentInvocationPurposes() []string {
+	seen := make(map[string]struct{})
+	for _, byPurpose := range c.AgentInvocationConfig {
+		for purpose := range byPurpose {
+			seen[purpose] = struct{}{}
+		}
+	}
+	purposes := make([]string, 0, len(seen))
+	for purpose := range seen {
+		purposes = append(purposes, purpose)
+	}
+	sort.Strings(purposes)
+	return purposes
+}
+
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
 // is a string here so an invalid level is reported as a config error naming the
 // valid vocabulary rather than decoding into a value no harness accepts.
 type agentProfileRaw struct {
+	Model       string                          `yaml:"model"`
+	Effort      string                          `yaml:"effort"`
+	Invocations map[string]agentProfileKnobsRaw `yaml:"invocations"`
+}
+
+type agentProfileKnobsRaw struct {
 	Model  string `yaml:"model"`
 	Effort string `yaml:"effort"`
+}
+
+var supportedAgentInvocationPurposes = map[string]struct{}{
+	"review":     {},
+	"review-fix": {},
+}
+
+func supportedAgentInvocationPurposeNames() []string {
+	names := make([]string, 0, len(supportedAgentInvocationPurposes))
+	for name := range supportedAgentInvocationPurposes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // parseAgentConfig validates the agent_config map and resolves it to
 // harness-neutral profiles. Every knob is checked against what the named
 // harness can actually express, so an unmappable request fails at load rather
 // than being silently dropped at run time.
-func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, error) {
+func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]map[string]agentcfg.Profile, error) {
 	profiles := make(map[string]agentcfg.Profile, len(raw))
+	invocationProfiles := make(map[string]map[string]agentcfg.Profile)
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
 		effort, err := agentcfg.ParseEffort(entry.Effort)
 		if err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
 		}
 		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
 		if err := agentcfg.Validate(agentName, profile); err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
 		}
-		if profile.IsZero() {
-			continue
+		if !profile.IsZero() {
+			profiles[name] = profile
 		}
-		profiles[name] = profile
+		for purpose, invocation := range entry.Invocations {
+			if _, ok := supportedAgentInvocationPurposes[purpose]; !ok {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations purpose %q (valid: %s)", name, purpose, strings.Join(supportedAgentInvocationPurposeNames(), ", "))
+			}
+			invocationEffort, err := agentcfg.ParseEffort(invocation.Effort)
+			if err != nil {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations.%s: %w", name, purpose, err)
+			}
+			override := agentcfg.Profile{Model: strings.TrimSpace(invocation.Model), Effort: invocationEffort}
+			if override.IsZero() {
+				continue
+			}
+			if err := agentcfg.Validate(agentName, agentcfg.Overlay(profile, override)); err != nil {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.invocations.%s: %w", name, purpose, err)
+			}
+			if invocationProfiles[name] == nil {
+				invocationProfiles[name] = make(map[string]agentcfg.Profile)
+			}
+			invocationProfiles[name][purpose] = override
+		}
 	}
 	if len(profiles) == 0 {
-		return nil, nil
+		profiles = nil
 	}
-	return profiles, nil
+	if len(invocationProfiles) == 0 {
+		invocationProfiles = nil
+	}
+	return profiles, invocationProfiles, nil
 }
 
 func agentNamesText(names []types.AgentName) []string {
@@ -1819,11 +1903,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
 	}
 	if raw.AgentConfig != nil {
-		profiles, err := parseAgentConfig(raw.AgentConfig)
+		profiles, invocationProfiles, err := parseAgentConfig(raw.AgentConfig)
 		if err != nil {
 			return nil, err
 		}
 		cfg.AgentConfig = profiles
+		cfg.AgentInvocationConfig = invocationProfiles
 	}
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
@@ -2554,21 +2639,22 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	cfg := &Config{
-		Agent:                global.Agent,
-		Agents:               copyAgents(global.Agents),
-		ACPXPath:             global.ACPXPath,
-		ForgejoAXIPath:       global.ForgejoAXIPath,
-		ACPRegistryOverrides: global.ACPRegistryOverrides,
-		AgentPathOverride:    global.AgentPathOverride,
-		AgentArgsOverride:    global.AgentArgsOverride,
-		AgentConfig:          global.AgentConfig,
-		CITimeout:            global.CITimeout,
-		StepQuietWarning:     global.StepQuietWarning,
-		AgentTimeout:         global.AgentTimeout,
-		ReviewAgentTimeout:   global.ReviewAgentTimeout,
-		TestAgentTimeout:     global.TestAgentTimeout,
-		LogLevel:             global.LogLevel,
-		SessionReuse:         global.SessionReuse,
+		Agent:                 global.Agent,
+		Agents:                copyAgents(global.Agents),
+		ACPXPath:              global.ACPXPath,
+		ForgejoAXIPath:        global.ForgejoAXIPath,
+		ACPRegistryOverrides:  global.ACPRegistryOverrides,
+		AgentPathOverride:     global.AgentPathOverride,
+		AgentArgsOverride:     global.AgentArgsOverride,
+		AgentConfig:           global.AgentConfig,
+		AgentInvocationConfig: global.AgentInvocationConfig,
+		CITimeout:             global.CITimeout,
+		StepQuietWarning:      global.StepQuietWarning,
+		AgentTimeout:          global.AgentTimeout,
+		ReviewAgentTimeout:    global.ReviewAgentTimeout,
+		TestAgentTimeout:      global.TestAgentTimeout,
+		LogLevel:              global.LogLevel,
+		SessionReuse:          global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,
