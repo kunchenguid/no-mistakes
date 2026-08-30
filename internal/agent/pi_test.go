@@ -107,6 +107,13 @@ func TestPiAgent_BuildArgs_OptOutPreservesNoContextFilesOptionValue(t *testing.T
 	}
 }
 
+func TestPiFlagValueSkipsFlagShapedOptionValues(t *testing.T) {
+	args := []string{"--model", "real-model", "--system-prompt", "--model=not-a-model"}
+	if got, want := piFlagValue(args, "--model"), "real-model"; got != want {
+		t.Fatalf("piFlagValue() = %q, want the model Pi actually receives %q", got, want)
+	}
+}
+
 // writePiProbeStub records its working directory and argv so tests can assert
 // the probe environment and flags from the fake Pi's own observations.
 func writePiProbeStub(t *testing.T) string {

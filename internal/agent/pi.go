@@ -434,6 +434,10 @@ func piFlagValue(args []string, flag string) string {
 		}
 		if strings.HasPrefix(arg, flag+"=") {
 			value = strings.TrimSpace(strings.TrimPrefix(arg, flag+"="))
+			continue
+		}
+		if piArgTakesValue(arg) {
+			i++
 		}
 	}
 	return value
