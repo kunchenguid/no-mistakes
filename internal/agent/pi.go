@@ -386,7 +386,7 @@ func (p *piParser) parse(ctx context.Context, r io.Reader) error {
 	}
 
 	if err := scanner.Err(); err != nil {
-		if strings.Contains(err.Error(), "token too long") {
+		if errors.Is(err, bufio.ErrTooLong) {
 			return fmt.Errorf("pi JSON event exceeded %d MiB limit: %w", maxPiEventBytes/(1024*1024), err)
 		}
 		return err
