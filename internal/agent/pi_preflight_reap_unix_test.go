@@ -10,7 +10,37 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
+
+// Unix environment keys are case-sensitive. A differently-cased overlay key
+// must coexist with, not replace, the uppercase variable Pi actually reads;
+// preflight must resolve the same value as the environment passed to Pi.
+func TestPiAgent_EnvironmentLookupMatchesRunOverlayCase(t *testing.T) {
+	expectedDir := filepath.Join(t.TempDir(), "expected-agent")
+	wrongDir := filepath.Join(t.TempDir(), "wrong-agent")
+	t.Setenv("PI_CODING_AGENT_DIR", expectedDir)
+	overlay := runenv.Overlay{Set: map[string]string{"pi_coding_agent_dir": wrongDir}}
+
+	applied := overlay.Apply(nil)
+	values := make(map[string]string)
+	for _, entry := range applied {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && (key == "PI_CODING_AGENT_DIR" || key == "pi_coding_agent_dir") {
+			values[key] = value
+		}
+	}
+	if got := values["PI_CODING_AGENT_DIR"]; got != expectedDir {
+		t.Fatalf("run environment uppercase value = %q, want %q", got, expectedDir)
+	}
+	if got := values["pi_coding_agent_dir"]; got != wrongDir {
+		t.Fatalf("run environment lowercase value = %q, want %q", got, wrongDir)
+	}
+	if got := piAgentDir(overlay); got != expectedDir {
+		t.Fatalf("preflight agent dir = %q, want run environment value %q", got, expectedDir)
+	}
+}
 
 // A timed-out preflight must terminate Pi's descendants, not only its direct
 // process. The fake Pi records a background child's PID and waits; after the

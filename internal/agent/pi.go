@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -401,16 +402,25 @@ func piAgentDir(overlay runenv.Overlay) string {
 
 func piEnvironmentValue(overlay runenv.Overlay, key string) string {
 	for configuredKey, value := range overlay.Set {
-		if strings.EqualFold(configuredKey, key) {
+		if piEnvironmentKeysEqual(configuredKey, key) {
 			return value
 		}
 	}
 	for _, unset := range overlay.Unset {
-		if strings.EqualFold(unset, key) {
+		if piEnvironmentKeysEqual(unset, key) {
 			return ""
 		}
 	}
 	return os.Getenv(key)
+}
+
+// Match runenv.Overlay.Apply: Windows environment keys are case-insensitive,
+// while Unix keys with different casing are distinct variables.
+func piEnvironmentKeysEqual(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func piFlagValue(args []string, flag string) string {
