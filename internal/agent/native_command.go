@@ -24,6 +24,60 @@ type nativeAgentCommand struct {
 	pipesDone      chan struct{}
 }
 
+// nativeAgentStderrLimit keeps a noisy native CLI or one of its inherited
+// children from growing the daemon without bound. Stderr is diagnostic output,
+// so retaining the tail preserves the failure nearest process exit while the
+// reader continues draining the pipe and cannot deadlock the child.
+const nativeAgentStderrLimit = 32 * 1024
+
+type boundedTailBuffer struct {
+	buf       []byte
+	limit     int
+	discarded int64
+}
+
+func newBoundedTailBuffer(limit int) *boundedTailBuffer {
+	return &boundedTailBuffer{limit: limit}
+}
+
+func (b *boundedTailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.limit <= 0 {
+		b.discarded += int64(n)
+		return n, nil
+	}
+	if len(p) >= b.limit {
+		b.discarded += int64(len(b.buf) + len(p) - b.limit)
+		b.buf = append(b.buf[:0], p[len(p)-b.limit:]...)
+		return n, nil
+	}
+	overflow := len(b.buf) + len(p) - b.limit
+	if overflow > 0 {
+		copy(b.buf, b.buf[overflow:])
+		b.buf = b.buf[:len(b.buf)-overflow]
+		b.discarded += int64(overflow)
+	}
+	b.buf = append(b.buf, p...)
+	return n, nil
+}
+
+func (b *boundedTailBuffer) bytes() []byte {
+	if b.discarded == 0 {
+		return append([]byte(nil), b.buf...)
+	}
+	prefix := []byte(fmt.Sprintf("[discarded %d earlier stderr bytes]\n", b.discarded))
+	out := make([]byte, 0, len(prefix)+len(b.buf))
+	out = append(out, prefix...)
+	out = append(out, b.buf...)
+	return out
+}
+
+func captureNativeAgentStderr(r io.Reader) []byte {
+	tail := newBoundedTailBuffer(nativeAgentStderrLimit)
+	_, _ = io.Copy(tail, r)
+	return tail.bytes()
+}
+
 func writeNativeAgentStdin(stdin io.WriteCloser, prompt string) <-chan error {
 	errCh := make(chan error, 1)
 	go func() {

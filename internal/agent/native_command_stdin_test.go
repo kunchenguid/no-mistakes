@@ -25,3 +25,19 @@ func TestWriteNativeAgentStdinReportsWriteAndCloseFailures(t *testing.T) {
 		t.Fatalf("error = %q, want both failure diagnostics", got)
 	}
 }
+
+func TestCaptureNativeAgentStderrKeepsBoundedTail(t *testing.T) {
+	prefix := strings.Repeat("a", nativeAgentStderrLimit)
+	tail := "LAST-PI-DIAGNOSTIC"
+	got := string(captureNativeAgentStderr(strings.NewReader(prefix + tail)))
+
+	if !strings.Contains(got, "discarded") {
+		t.Fatalf("captured stderr did not report truncation: %q", got[:min(len(got), 120)])
+	}
+	if !strings.HasSuffix(got, tail) {
+		t.Fatalf("captured stderr lost diagnostic tail: suffix=%q", got[max(0, len(got)-64):])
+	}
+	if len(got) > nativeAgentStderrLimit+128 {
+		t.Fatalf("captured stderr length = %d, want bounded near %d", len(got), nativeAgentStderrLimit)
+	}
+}

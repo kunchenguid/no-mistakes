@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -20,11 +21,21 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// localStartupTimeout bounds the phase before Pi emits its first valid
+	// JSON event. Tests shorten it; production uses defaultPiLocalStartupTimeout.
+	localStartupTimeout time.Duration
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
 	subprocessContext
 }
+
+const (
+	defaultPiLocalStartupTimeout = 30 * time.Second
+	maxPiEventBytes              = 16 * 1024 * 1024
+)
+
+var errPiLocalStartupTimeout = errors.New("pi local startup timeout")
 
 func (a *piAgent) Name() string { return "pi" }
 
@@ -61,8 +72,22 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		// turn a recovery attempt into an arbitrary session-file selection.
 		return nil, fmt.Errorf("invalid pi session identity")
 	}
+	startupTimeout := a.localStartupTimeout
+	if startupTimeout <= 0 {
+		startupTimeout = defaultPiLocalStartupTimeout
+	}
+	commandCtx, cancelCommand := context.WithCancelCause(ctx)
+	defer cancelCommand(nil)
+	var startupResolved sync.Once
+	startupTimer := time.AfterFunc(startupTimeout, func() {
+		startupResolved.Do(func() {
+			cancelCommand(errPiLocalStartupTimeout)
+		})
+	})
+	defer startupTimer.Stop()
+
 	args := a.buildArgs(opts.Session)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
+	cmd := exec.CommandContext(commandCtx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
@@ -89,14 +114,43 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	stderrWG.Add(1)
 	go func() {
 		defer stderrWG.Done()
-		stderrBuf, _ = io.ReadAll(started.stderr)
+		stderrBuf = captureNativeAgentStderr(started.stderr)
 	}()
 
-	pp := &piParser{onChunk: opts.OnChunk}
-	if err := pp.parse(ctx, started.stdout); err != nil {
+	pp := &piParser{
+		onChunk: opts.OnChunk,
+		onFirstEvent: func() {
+			startupResolved.Do(func() {})
+			startupTimer.Stop()
+			emitLifecycle(opts, LifecycleEvent{
+				Agent:   "pi",
+				Phase:   LifecyclePhaseReady,
+				Message: "pi initialized JSON stream",
+			})
+		},
+		onToolEvent: func(phase, tool string, failed bool) {
+			message := fmt.Sprintf("pi tool %s: %s", phase, piToolLabel(tool))
+			lifecyclePhase := LifecyclePhaseToolStarted
+			if phase == "finished" && failed {
+				message += " status=error"
+			}
+			if phase == "finished" {
+				lifecyclePhase = LifecyclePhaseToolFinished
+			}
+			emitLifecycle(opts, LifecycleEvent{
+				Agent:   "pi",
+				Phase:   lifecyclePhase,
+				Message: message,
+			})
+		},
+	}
+	if err := pp.parse(commandCtx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		err = errors.Join(err, piStdinError(<-stdinErrCh))
+		if errors.Is(context.Cause(commandCtx), errPiLocalStartupTimeout) {
+			err = piLocalStartupError(startupTimeout, strings.TrimSpace(string(stderrBuf)))
+		}
 		retErr := fmt.Errorf("pi parse events: %w", err)
 		emitAgentExited(opts, "pi", pid, retErr)
 		return nil, retErr
@@ -106,6 +160,11 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	stderrWG.Wait()
 	stdinErr := piStdinError(<-stdinErrCh)
 	stderr := strings.TrimSpace(string(stderrBuf))
+	if errors.Is(context.Cause(commandCtx), errPiLocalStartupTimeout) {
+		retErr := piLocalStartupError(startupTimeout, stderr)
+		emitAgentExited(opts, "pi", pid, retErr)
+		return nil, retErr
+	}
 	if waitErr != nil {
 		if stderr != "" {
 			retErr := fmt.Errorf("pi exited: %w: %s", errors.Join(waitErr, stdinErr), stderr)
@@ -153,6 +212,14 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
+}
+
+func piLocalStartupError(timeout time.Duration, stderr string) error {
+	err := fmt.Errorf("pi did not initialize within %s before its first JSON event: %w", timeout, errPiLocalStartupTimeout)
+	if stderr != "" {
+		err = fmt.Errorf("%w: %s", err, stderr)
+	}
+	return err
 }
 
 func piStdinError(err error) error {
@@ -270,7 +337,10 @@ func buildPiPrompt(prompt string, schema json.RawMessage) string {
 // deltas, captures the final assistant text and usage, and surfaces any
 // reported assistant error.
 type piParser struct {
-	onChunk func(string)
+	onChunk      func(string)
+	onFirstEvent func()
+	onToolEvent  func(phase, tool string, failed bool)
+	firstEvent   sync.Once
 
 	streamText     map[int]string
 	completeText   map[int]string
@@ -285,7 +355,7 @@ type piParser struct {
 
 func (p *piParser) parse(ctx context.Context, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxPiEventBytes)
 
 	p.streamText = make(map[int]string)
 	p.completeText = make(map[int]string)
@@ -307,10 +377,21 @@ func (p *piParser) parse(ctx context.Context, r io.Reader) error {
 		if err := json.Unmarshal(line, &event); err != nil {
 			continue
 		}
+		p.firstEvent.Do(func() {
+			if p.onFirstEvent != nil {
+				p.onFirstEvent()
+			}
+		})
 		p.handleEvent(event)
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		if strings.Contains(err.Error(), "token too long") {
+			return fmt.Errorf("pi JSON event exceeded %d MiB limit: %w", maxPiEventBytes/(1024*1024), err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (p *piParser) handleEvent(event map[string]any) {
@@ -332,7 +413,33 @@ func (p *piParser) handleEvent(event map[string]any) {
 		p.recordAssistantUsage(event["message"])
 	case "agent_end":
 		p.rememberAgentEnd(event["messages"])
+	case "tool_execution_start":
+		p.reportToolEvent("started", event, false)
+	case "tool_execution_end":
+		failed, _ := event["isError"].(bool)
+		p.reportToolEvent("finished", event, failed)
 	}
+}
+
+func (p *piParser) reportToolEvent(phase string, event map[string]any, failed bool) {
+	if p.onToolEvent == nil {
+		return
+	}
+	tool := piFirstString(event, "toolName", "tool")
+	if tool == "" {
+		tool = "unknown"
+	}
+	p.onToolEvent(phase, tool, failed)
+}
+
+func piToolLabel(tool string) string {
+	tool = strings.Join(strings.Fields(tool), " ")
+	const maxRunes = 80
+	runes := []rune(tool)
+	if len(runes) > maxRunes {
+		tool = string(runes[:maxRunes]) + "..."
+	}
+	return tool
 }
 
 func (p *piParser) rememberAssistant(raw any) {
