@@ -302,6 +302,15 @@ func newResolvedPipelineAgent(cfg *config.Config, evidenceRoot string, environme
 			}
 			return nil, routeErr
 		}
+		if cfg.DisableProjectSettings && !agent.NeutralizesGateInstructions(routed) {
+			_ = routed.Close()
+			_ = defaultAgent.Close()
+			for _, existing := range routes {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("invocations.%s agent %q does not neutralize the target repository's project "+
+				"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch that route in the target checkout", purpose, route.Agent)
+		}
 		routes[purpose] = routed
 	}
 	return agent.NewInvocationRouter(defaultAgent, routes), nil
