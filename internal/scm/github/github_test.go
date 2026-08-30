@@ -173,6 +173,39 @@ func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
 	}
 }
 
+func TestGetChecksTreatsActionRequiredWorkflowAsNoVerdict(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
+			stdout: githubCommitChecksResponse(`[]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":1,"workflow_runs":[{"id":3332,"name":"PR must be raised via no-mistakes","status":"completed","conclusion":"action_required"}]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want one held workflow", checks)
+	}
+	if got := checks[0]; got.Bucket != scm.CheckBucketCancel || got.State != "ACTION_REQUIRED" {
+		t.Fatalf("held workflow = %+v, want no-verdict cancel bucket with ACTION_REQUIRED state", got)
+	}
+}
+
+func TestNormalizeCheckBucket_ActionRequiredOverridesGenericFailBucket(t *testing.T) {
+	t.Parallel()
+
+	if got := normalizeCheckBucket("fail", "ACTION_REQUIRED"); got != scm.CheckBucketCancel {
+		t.Fatalf("normalizeCheckBucket(fail, ACTION_REQUIRED) = %q, want cancel", got)
+	}
+}
+
 func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 	t.Parallel()
 

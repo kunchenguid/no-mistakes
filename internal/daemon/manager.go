@@ -280,6 +280,13 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 			}
 			return nil, fmt.Errorf("create agent %s: %w", name, err)
 		}
+		if err := agent.ValidateConfiguration(ctx, next); err != nil {
+			_ = next.Close()
+			for _, existing := range created {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("validate agent %s configuration: %w", name, err)
+		}
 		created = append(created, agent.WithSteering(next, evidenceRoot))
 	}
 	ag := agent.NewFallback(created)
@@ -1073,6 +1080,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
 				trackStartFailure("create_agent")
 				return "", fmt.Errorf("create agent %s: %w", name, agErr)
+			}
+			if agErr := agent.ValidateConfiguration(ctx, next); agErr != nil {
+				_ = next.Close()
+				for _, existing := range created {
+					_ = existing.Close()
+				}
+				m.db.UpdateRunError(run.ID, fmt.Sprintf("validate agent %s configuration: %s", name, agErr))
+				trackStartFailure("validate_agent_configuration")
+				return "", fmt.Errorf("validate agent %s configuration: %w", name, agErr)
 			}
 			// Steer every pipeline agent to keep writes inside the worktree and
 			// avoid mutating system state (e.g. brew/Homebrew touching

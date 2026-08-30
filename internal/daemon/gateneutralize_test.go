@@ -21,7 +21,11 @@ func fakeLookPath(bin string) (string, error) { return "/fake/bin/" + bin, nil }
 func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
-		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+		environment := runenv.Overlay{}
+		if name == types.AgentPi {
+			environment.Set = map[string]string{"PI_CODING_AGENT_DIR": t.TempDir()}
+		}
+		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, environment)
 		if err != nil {
 			t.Fatalf("%s must pass under opt-out, got: %v", name, err)
 		}
@@ -56,7 +60,11 @@ func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 	// unverified adapter is admitted when the repo did not opt out.
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentGrok, types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name} // DisableProjectSettings defaults false
-		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+		environment := runenv.Overlay{}
+		if name == types.AgentPi {
+			environment.Set = map[string]string{"PI_CODING_AGENT_DIR": t.TempDir()}
+		}
+		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, environment)
 		if err != nil {
 			t.Fatalf("%s must be admitted when the repo did not opt out, got: %v", name, err)
 		}

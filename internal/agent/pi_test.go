@@ -514,6 +514,46 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":
 	}
 }
 
+// A clean Pi process can still return text that does not satisfy the structured
+// output contract. The payload may itself mention a transient-looking status,
+// but that text is evidence to diagnose, not a transport failure to replay.
+func TestPiAgent_MalformedStructuredOutputIsDiagnosedWithoutRetry(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	dir := t.TempDir()
+	callsPath := filepath.Join(dir, "calls.txt")
+	bin := writeFakePi(t, dir, `#!/bin/sh
+printf 'call\n' >> calls.txt
+cat > /dev/null
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"upstream returned 503 before the JSON verdict"}]}}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo call>>calls.txt",
+		"more > nul",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"upstream returned 503 before the JSON verdict\"}]}}",
+	}, "\r\n"))
+
+	pa := &piAgent{bin: bin}
+	_, err := pa.Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        dir,
+		JSONSchema: json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}`),
+	})
+	if err == nil {
+		t.Fatal("expected malformed-output error")
+	}
+	if !strings.Contains(err.Error(), "pi output parse") || !strings.Contains(err.Error(), "output snippet") {
+		t.Fatalf("error = %q, want the malformed payload boundary", err)
+	}
+	calls, readErr := os.ReadFile(callsPath)
+	if readErr != nil {
+		t.Fatalf("read invocation count: %v", readErr)
+	}
+	if got := strings.Count(string(calls), "call"); got != 1 {
+		t.Fatalf("Pi invocations = %d, want 1; malformed output must not consume a retry", got)
+	}
+}
+
 func TestPiAgent_RunRejectsEmptyOutput(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh

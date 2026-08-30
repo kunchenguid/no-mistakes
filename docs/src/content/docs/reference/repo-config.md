@@ -391,7 +391,8 @@ With a positive budget, a rerun is requested when the provider attributes the ou
 
 The remaining outcomes are the job's own verdict on the commit and are never re-run:
 
-- `failure`, `error`, `action_required`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
+- `failure`, `error`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
+- GitHub `action_required` means the workflow never ran and is waiting for a maintainer. It is never re-run or sent to the fix agent; the CI step parks with that diagnosis.
 - `timed_out` means the job exceeded its own `timeout-minutes`, which is usually the branch's own code hanging. Re-running it burns another full timeout window reproducing the same failure, so it is treated as a genuine failure and is not opt-in.
 - `stale` is already treated as skipped rather than failed, so it never reaches this decision.
 - An outcome no-mistakes recognizes as none of the above never earns a rerun either.
@@ -407,7 +408,7 @@ A provider that accepts a rerun and never publishes it cannot stall the run past
 Once the provider publishes a conclusive replacement, no-mistakes durably stops treating that rerun as outstanding while preserving the spent budget; if the exact watched head is then green, the monitor reports `checks-passed` normally.
 
 A provider-attributed check that no rerun is going to replace pauses the step for user approval when it is the only remaining issue, so the pull request never looks green.
-That includes a check that came back cancelled after its rerun and a detected GitHub setup failure that persisted after its budget.
+That includes a check that came back cancelled after its rerun, a detected GitHub setup failure that persisted after its budget, and a GitHub workflow held in `action_required` for maintainer approval.
 At the default budget of `0`, once the budget is spent, or on a provider with no rerun API, cancellation itself reaches this gate because the provider has published its conclusion and will not publish another one on its own.
 The check does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: it is not a verdict on the code, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
 Answering that gate with `fix` is still honored, and the fix round you asked for is told about the check alongside any other issue.

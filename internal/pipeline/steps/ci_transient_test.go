@@ -143,7 +143,7 @@ func TestClassifyCheckFailure(t *testing.T) {
 		// masked as infrastructure.
 		{"failure that cleared setup stays genuine", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE", PreRunFailure: false}, classGenuine},
 		{"job error", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ERROR"}, classGenuine},
-		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ACTION_REQUIRED"}, classGenuine},
+		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "ACTION_REQUIRED"}, classManual},
 		// A workflow that cannot start is reproducible (bad workflow file), not
 		// something a rerun clears.
 		{"startup failure", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "STARTUP_FAILURE"}, classGenuine},
@@ -208,6 +208,32 @@ func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 	}
 	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatalf("action = %q, want ask-user parking", findings.Items[0].Action)
+	}
+}
+
+func TestCIUnresolvedActionRequiredWaitsForMaintainerWithoutRerun(t *testing.T) {
+	t.Parallel()
+
+	check := scm.Check{Name: "PR must be raised via no-mistakes", Bucket: scm.CheckBucketCancel, State: "ACTION_REQUIRED"}
+	if candidates := transientRerunCandidates([]scm.Check{check}, &checkRerunBudget{}, 3); len(candidates) != 0 {
+		t.Fatalf("action_required rerun candidates = %+v, want none", candidates)
+	}
+	outcome := ciUnresolvedCancelledOutcome([]string{check.Name}, []scm.Check{check}, func(string) int { return 0 })
+	if !outcome.NeedsApproval {
+		t.Fatal("action_required workflow must park for maintainer approval")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if findings.Summary != "CI workflows are waiting for maintainer approval" {
+		t.Fatalf("summary = %q", findings.Summary)
+	}
+	if len(findings.Items) != 1 || !strings.Contains(findings.Items[0].Description, "did not run") || !strings.Contains(findings.Items[0].Description, "waiting for a maintainer") {
+		t.Fatalf("findings = %+v, want explicit not-run maintainer diagnosis", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("action = %q, want ask-user", findings.Items[0].Action)
 	}
 }
 

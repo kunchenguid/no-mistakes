@@ -7,10 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
@@ -20,6 +25,9 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// modelSource names the no-mistakes setting that supplied --model. Empty
+	// means Pi's own settings.json default is authoritative when present.
+	modelSource string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
@@ -33,6 +41,222 @@ func (a *piAgent) Name() string { return "pi" }
 func (a *piAgent) SupportsSessionResume() bool { return true }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
+
+// ValidateConfiguration resolves the configured Pi model against the exact
+// local catalogue before pipeline steps start. Pi otherwise accepts some
+// unknown custom ids and assigns fallback capabilities to them, which can make
+// an output-cap truncation look like a model-quality failure much later.
+func (a *piAgent) ValidateConfiguration(ctx context.Context) error {
+	model := piFlagValue(a.extraArgs, "--model")
+	provider := piFlagValue(a.extraArgs, "--provider")
+	source := a.modelSource
+	if model != "" && source == "" {
+		source = "Pi --model option"
+	}
+	if model == "" {
+		selection, err := a.piSettingsModel()
+		if err != nil {
+			return err
+		}
+		model = selection.model
+		provider = selection.provider
+		source = selection.source
+	}
+	if strings.TrimSpace(model) == "" {
+		return nil
+	}
+
+	validationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	catalogueArgs := append([]string(nil), a.extraArgs...)
+	catalogueArgs = append(catalogueArgs, "--offline", "--list-models")
+	cmd := exec.CommandContext(validationCtx, a.bin, catalogueArgs...)
+	cmd.Env = a.overlay().Apply(nil)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("validate pi model %q from %s: list Pi catalogue: %s: %w", model, source, strings.TrimSpace(string(out)), err)
+	}
+	catalogue, err := parsePiModelCatalogue(out)
+	if err != nil {
+		return fmt.Errorf("validate pi model %q from %s: %w", model, source, err)
+	}
+	resolved := resolvePiConfiguredModel(provider, model, catalogue)
+	if resolved != "" {
+		return nil
+	}
+	requested := piQualifiedModel(provider, model)
+	return fmt.Errorf("pi model %q from %s is not present in Pi's catalogue; catalogue offers %d models, including %s",
+		requested, source, len(catalogue), strings.Join(piCatalogueExamples(requested, catalogue), ", "))
+}
+
+type piModelSelection struct {
+	provider string
+	model    string
+	source   string
+}
+
+func (a *piAgent) piSettingsModel() (piModelSelection, error) {
+	agentDir := strings.TrimSpace(piEnvironmentValue(a.overlay(), "PI_CODING_AGENT_DIR"))
+	if agentDir == "" {
+		home := strings.TrimSpace(piEnvironmentValue(a.overlay(), "HOME"))
+		if home == "" {
+			var err error
+			home, err = os.UserHomeDir()
+			if err != nil {
+				return piModelSelection{}, fmt.Errorf("locate Pi settings: %w", err)
+			}
+		}
+		agentDir = filepath.Join(home, ".pi", "agent")
+	} else if strings.HasPrefix(agentDir, "~"+string(filepath.Separator)) {
+		home := strings.TrimSpace(piEnvironmentValue(a.overlay(), "HOME"))
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		agentDir = filepath.Join(home, strings.TrimPrefix(agentDir, "~"+string(filepath.Separator)))
+	}
+	settingsPath := filepath.Join(agentDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return piModelSelection{}, nil
+	}
+	if err != nil {
+		return piModelSelection{}, fmt.Errorf("read Pi model setting from %s: %w", settingsPath, err)
+	}
+	var settings struct {
+		DefaultProvider string `json:"defaultProvider"`
+		DefaultModel    string `json:"defaultModel"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return piModelSelection{}, fmt.Errorf("parse Pi model setting from %s: %w", settingsPath, err)
+	}
+	return piModelSelection{
+		provider: strings.TrimSpace(settings.DefaultProvider),
+		model:    strings.TrimSpace(settings.DefaultModel),
+		source:   settingsPath + " (defaultProvider/defaultModel)",
+	}, nil
+}
+
+func piEnvironmentValue(overlay runenv.Overlay, key string) string {
+	for configuredKey, value := range overlay.Set {
+		if strings.EqualFold(configuredKey, key) {
+			return value
+		}
+	}
+	for _, unset := range overlay.Unset {
+		if strings.EqualFold(unset, key) {
+			return ""
+		}
+	}
+	return os.Getenv(key)
+}
+
+func piFlagValue(args []string, flag string) string {
+	value := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == flag && i+1 < len(args) {
+			value = strings.TrimSpace(args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, flag+"=") {
+			value = strings.TrimSpace(strings.TrimPrefix(arg, flag+"="))
+		}
+	}
+	return value
+}
+
+func parsePiModelCatalogue(out []byte) ([]string, error) {
+	seen := map[string]struct{}{}
+	var models []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.EqualFold(fields[0], "provider") {
+			continue
+		}
+		model := fields[0] + "/" + fields[1]
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("Pi catalogue returned no models (output: %q)", outputSnippet(string(out)))
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+func resolvePiConfiguredModel(provider, model string, catalogue []string) string {
+	requested := piQualifiedModel(provider, model)
+	candidates := []string{requested}
+	if strings.Contains(requested, ":") {
+		// Prefer an exact catalogue id such as model:batch. Only drop the final
+		// suffix when it is Pi's thinking shorthand.
+		if idx := strings.LastIndex(requested, ":"); idx >= 0 && piThinkingLevel(requested[idx+1:]) {
+			candidates = append(candidates, requested[:idx])
+		}
+	}
+	for _, candidate := range candidates {
+		for _, available := range catalogue {
+			if candidate == available {
+				return available
+			}
+		}
+	}
+	if provider == "" && !strings.Contains(model, "/") {
+		var match string
+		for _, available := range catalogue {
+			_, id, _ := strings.Cut(available, "/")
+			if id != model {
+				continue
+			}
+			if match != "" {
+				return ""
+			}
+			match = available
+		}
+		return match
+	}
+	return ""
+}
+
+func piQualifiedModel(provider, model string) string {
+	model = strings.TrimSpace(model)
+	provider = strings.TrimSpace(provider)
+	if provider == "" || strings.HasPrefix(model, provider+"/") {
+		return model
+	}
+	return provider + "/" + model
+}
+
+func piThinkingLevel(value string) bool {
+	switch value {
+	case "off", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+
+func piCatalogueExamples(requested string, catalogue []string) []string {
+	provider, _, qualified := strings.Cut(requested, "/")
+	examples := make([]string, 0, 5)
+	for _, available := range catalogue {
+		if qualified && !strings.HasPrefix(available, provider+"/") {
+			continue
+		}
+		examples = append(examples, available)
+		if len(examples) == 5 {
+			break
+		}
+	}
+	if len(examples) == 0 {
+		examples = append(examples, catalogue[:min(5, len(catalogue))]...)
+	}
+	return examples
+}
 
 // NeutralizesGateInstructions reports whether pi is currently launched with the
 // target repo's project agent-instruction files suppressed. It is meaningful

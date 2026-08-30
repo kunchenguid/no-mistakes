@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -10,6 +13,28 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func writePiCatalogStub(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "pi.cmd")
+		script := "@echo off\r\necho provider model context max-out thinking images\r\necho openrouter z-ai/glm-5.3 1M 128K yes no\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "pi")
+	script := `#!/bin/sh
+printf '%s\n' 'provider model context max-out thinking images'
+printf '%s\n' 'openrouter z-ai/glm-5.3 1M 128K yes no'
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 // TestNewPipelineAgent_ThreadsTheAgentProfile proves the pipeline half of the
 // unified tuning layer: agent_config reaches agent construction per agent, so a
@@ -54,4 +79,82 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 		t.Fatalf("newPipelineAgent = %v", err)
 	}
 	_ = ag.Close()
+}
+
+func TestNewPipelineAgent_RejectsUnknownPiAgentConfigModelBeforeExecution(t *testing.T) {
+	bin := writePiCatalogStub(t)
+	cfg := &config.Config{
+		Agent:             types.AgentPi,
+		AgentPathOverride: map[string]string{"pi": bin},
+		AgentConfig:       map[string]agentcfg.Profile{"pi": {Model: "openrouter/stealth/ox-alpha"}},
+	}
+
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err == nil {
+		t.Fatal("unknown Pi model must fail pipeline setup")
+	}
+	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_config.pi.model", "openrouter/z-ai/glm-5.3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestNewPipelineAgent_RejectsUnknownPiArgsOverrideModelWithItsSource(t *testing.T) {
+	bin := writePiCatalogStub(t)
+	cfg := &config.Config{
+		Agent:             types.AgentPi,
+		AgentPathOverride: map[string]string{"pi": bin},
+		AgentArgsOverride: map[string][]string{"pi": {"--model", "openrouter/stealth/ox-alpha"}},
+	}
+
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err == nil {
+		t.Fatal("unknown Pi override model must fail pipeline setup")
+	}
+	for _, want := range []string{"openrouter/stealth/ox-alpha", "agent_args_override.pi", "openrouter/z-ai/glm-5.3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestNewPipelineAgent_AcceptsPiAgentConfigModelPresentInCatalogue(t *testing.T) {
+	bin := writePiCatalogStub(t)
+	cfg := &config.Config{
+		Agent:             types.AgentPi,
+		AgentPathOverride: map[string]string{"pi": bin},
+		AgentConfig:       map[string]agentcfg.Profile{"pi": {Model: "openrouter/z-ai/glm-5.3"}},
+	}
+
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatalf("catalogued Pi model rejected: %v", err)
+	}
+	_ = ag.Close()
+}
+
+func TestNewPipelineAgent_RejectsUnknownPiSettingsDefaultBeforeExecution(t *testing.T) {
+	bin := writePiCatalogStub(t)
+	agentDir := t.TempDir()
+	settingsPath := filepath.Join(agentDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"defaultProvider":"openrouter","defaultModel":"stealth/ox-alpha"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		Agent:             types.AgentPi,
+		AgentPathOverride: map[string]string{"pi": bin},
+	}
+
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{
+		Set: map[string]string{"PI_CODING_AGENT_DIR": agentDir},
+	})
+	if err == nil {
+		t.Fatal("unknown Pi settings default must fail pipeline setup")
+	}
+	for _, want := range []string{"openrouter/stealth/ox-alpha", settingsPath, "openrouter/z-ai/glm-5.3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error = %q, want %q", err, want)
+		}
+	}
 }

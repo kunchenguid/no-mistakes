@@ -1209,14 +1209,21 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 }
 
 func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
+	state = strings.ToUpper(strings.TrimSpace(state))
+	// gh may still label an approval-held workflow with the generic fail bucket.
+	// The conclusion is more specific: no job ran, so this is a human gate and
+	// never evidence for a CI repair.
+	if state == "ACTION_REQUIRED" {
+		return scm.CheckBucketCancel
+	}
 	if normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized != "" {
 		return normalized
 	}
 
-	switch strings.ToUpper(strings.TrimSpace(state)) {
+	switch state {
 	case "SUCCESS":
 		return scm.CheckBucketPass
-	case "FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+	case "FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE":
 		return scm.CheckBucketFail
 	case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED":
 		return scm.CheckBucketPending
