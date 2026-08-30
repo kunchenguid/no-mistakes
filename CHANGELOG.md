@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.60.2](https://github.com/kunchenguid/no-mistakes/compare/v1.60.1...v1.60.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** pass --print-timeout 24h by default in Antigravity adapter ([#896](https://github.com/kunchenguid/no-mistakes/issues/896)) ([be9138f](https://github.com/kunchenguid/no-mistakes/commit/be9138fdabb528acecafc78005b277028e1612c9))
+* **pipeline:** harden CI repair scope and attestation ([#899](https://github.com/kunchenguid/no-mistakes/issues/899)) ([4a84a15](https://github.com/kunchenguid/no-mistakes/commit/4a84a153dbcba764c76d7113fd8a8d886e35e3d6))
+
 ## [1.60.1](https://github.com/kunchenguid/no-mistakes/compare/v1.60.0...v1.60.1) (2026-08-29)
 
 

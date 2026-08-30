@@ -284,6 +284,7 @@ Smart defaults:
 - For `claude`, supplying `--permission-mode` (or `--dangerously-skip-permissions`) suppresses the default `--dangerously-skip-permissions`.
 - For `codex`, supplying `--ask-for-approval`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox` suppresses the default `--dangerously-bypass-approvals-and-sandbox`.
 - For `grok`, supplying `--permission-mode` or `--always-approve` suppresses the default `--permission-mode bypassPermissions`. No model flag is added: Grok uses its current configured default unless you explicitly set `-m` or `--model`.
+- For `antigravity`, supplying `-t` or `--print-timeout` suppresses the default `--print-timeout 24h`.
 
 Permission and sandbox flags affect the underlying agent, but they do not disable no-mistakes' pipeline prompt steering.
 Pipeline agents are still told to keep intentional writes inside the worktree and avoid mutating system state outside it.

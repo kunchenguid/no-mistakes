@@ -168,6 +168,46 @@ func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
 	return pipelineAttestationCommentPrefix + string(payload) + pipelineAttestationCommentClosingToken
 }
 
+// rebindPipelineAttestationHead rewrites the first live v1 attestation
+// comment's head_sha to newHeadSHA using the same builder the PR step uses
+// (buildPipelineAttestation). Existing step statuses are kept; only the bound
+// head changes. It returns the original body and false when no live
+// attestation is present, so callers cannot mint one for a PR that was not
+// raised through no-mistakes.
+func rebindPipelineAttestationHead(body, newHeadSHA string) (string, bool) {
+	newHeadSHA = strings.TrimSpace(newHeadSHA)
+	if newHeadSHA == "" {
+		return body, false
+	}
+	start := strings.Index(body, pipelineAttestationCommentPrefix)
+	if start < 0 {
+		return body, false
+	}
+	payloadStart := start + len(pipelineAttestationCommentPrefix)
+	endRel := strings.Index(body[payloadStart:], pipelineAttestationCommentClosingToken)
+	if endRel < 0 {
+		return body, false
+	}
+	end := payloadStart + endRel
+	var attestation pipelineAttestation
+	if err := json.Unmarshal([]byte(body[payloadStart:end]), &attestation); err != nil {
+		return body, false
+	}
+	steps := make([]*db.StepResult, 0, len(attestation.Steps))
+	for _, s := range attestation.Steps {
+		steps = append(steps, &db.StepResult{StepName: s.Step, Status: s.Status})
+	}
+	rebuilt := buildPipelineAttestation(steps, newHeadSHA)
+	if rebuilt == "" {
+		return body, false
+	}
+	oldEnd := end + len(pipelineAttestationCommentClosingToken)
+	if body[start:oldEnd] == rebuilt {
+		return body, true
+	}
+	return body[:start] + rebuilt + body[oldEnd:], true
+}
+
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
