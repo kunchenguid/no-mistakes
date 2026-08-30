@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -418,9 +420,13 @@ func TestRequireActionSynchronizeSettlesAfterBodyPublication(t *testing.T) {
 	if err := os.WriteFile(eventPath, []byte(event), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	calls := 0
+	var calls atomic.Int32
+	var wrongRequest atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls := calls.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/test/repo/pulls/42" || r.Header.Get("Authorization") != "Bearer test-token" {
+			wrongRequest.Store(true)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		body := "old body"
 		if calls >= 2 {
@@ -429,22 +435,165 @@ func TestRequireActionSynchronizeSettlesAfterBodyPublication(t *testing.T) {
 		_, _ = w.Write([]byte(`{"number":42,"body":` + mustJSONString(t, body) + `,"head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"feature"},"user":{"login":"contributor"}}`))
 	}))
 	defer server.Close()
-	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL})
-	if got.conclusion != "success" || calls < 2 {
-		t.Fatalf("synchronize should wait for matching body publication: conclusion=%s calls=%d output=%s", got.conclusion, calls, got.output)
+	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL, token: "test-token"})
+	if got.conclusion != "success" || calls.Load() < 2 || wrongRequest.Load() {
+		t.Fatalf("synchronize should wait through authenticated read-only API requests: conclusion=%s calls=%d wrong_request=%t output=%s", got.conclusion, calls.Load(), wrongRequest.Load(), got.output)
 	}
 }
 
 // TestRequireActionSynchronizeRejectsEmptyEventContext prevents reruns with an
 // empty event document from falling back to an arbitrary PR or stale body.
 func TestRequireActionSynchronizeRejectsEmptyEventContext(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
 	eventPath := filepath.Join(t.TempDir(), "event.json")
 	if err := os.WriteFile(eventPath, []byte(`{"action":"synchronize","pull_request":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: "http://127.0.0.1:1"})
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"number":42,"body":` + mustJSONString(t, compliant) + `,"head":{"sha":"` + requiredWorkflowTestHeadSHA + `"}}`))
+	}))
+	defer server.Close()
+	got := runRequireAction(t, actionRun{
+		body: compliant, headSHA: requiredWorkflowTestHeadSHA, number: "42",
+		eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL,
+	})
 	if got.conclusion != "failure" || !strings.Contains(got.output, "empty PR identity") {
 		t.Fatalf("empty synchronize context must fail closed: %s", got.output)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("empty synchronize context made %d API calls", calls.Load())
+	}
+}
+
+func TestRequireActionSynchronizeExemptionsDoNotWaitForSettlement(t *testing.T) {
+	tests := []struct {
+		name       string
+		pull       string
+		exemptUser string
+		exemptBots string
+		exemptRefs string
+	}{
+		{name: "author", pull: `"head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"feature"},"user":{"login":"release-bot"}`, exemptUser: "release-bot"},
+		{name: "bot", pull: `"head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"feature"},"user":{"login":"release[bot]"}`, exemptBots: "true"},
+		{name: "branch", pull: `"head":{"sha":"` + requiredWorkflowTestHeadSHA + `","ref":"release-please--main"},"user":{"login":"release-bot"}`, exemptRefs: "release-please--*"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eventPath := writeRequireActionEvent(t, `{"action":"synchronize","pull_request":{"number":42,"body":"old body",`+tc.pull+`}}`)
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			}))
+			defer server.Close()
+			got := runRequireAction(t, actionRun{
+				eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL,
+				exemptUsers: tc.exemptUser, exemptBots: tc.exemptBots, exemptRefs: tc.exemptRefs,
+			})
+			if got.conclusion != "success" || got.outputs["exempt"] != "true" {
+				t.Fatalf("synchronize exemption failed: conclusion=%s output=%s", got.conclusion, got.output)
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("synchronize exemption made %d API calls", calls.Load())
+			}
+		})
+	}
+}
+
+func TestRequireActionSynchronizeFailsClosedOnUnsettledSnapshots(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		apiURL string
+	}{
+		{name: "unauthorized API", status: http.StatusForbidden, body: `{"message":"forbidden"}`},
+		{name: "malformed API response", status: http.StatusOK, body: `{"number":`},
+		{name: "missing attestation", status: http.StatusOK, body: `{"number":42,"body":"ordinary body","head":{"sha":"` + requiredWorkflowTestHeadSHA + `"}}`},
+		{name: "stale API head", status: http.StatusOK, body: `{"number":42,"body":"ordinary body","head":{"sha":"ffffffffffffffffffffffffffffffffffffffff"}}`},
+		{name: "inaccessible API", apiURL: "http://127.0.0.1:1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			apiURL := tc.apiURL
+			var server *httptest.Server
+			if apiURL == "" {
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer server.Close()
+				apiURL = server.URL
+			}
+			eventPath := writeRequireActionEvent(t, `{"action":"synchronize","pull_request":{"number":42,"body":"old body","head":{"sha":"`+requiredWorkflowTestHeadSHA+`","ref":"feature"},"user":{"login":"contributor"}}}`)
+			got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: apiURL})
+			if got.conclusion != "failure" || !strings.Contains(got.output, "could not read a settled current pull request snapshot") {
+				t.Fatalf("unsettled synchronize snapshot must fail closed: %s", got.output)
+			}
+		})
+	}
+}
+
+func TestRequireActionSynchronizeHasWholeOperationDeadline(t *testing.T) {
+	eventPath := writeRequireActionEvent(t, `{"action":"synchronize","pull_request":{"number":42,"body":"old body","head":{"sha":"`+requiredWorkflowTestHeadSHA+`","ref":"feature"},"user":{"login":"contributor"}}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not flush")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		for {
+			if _, err := w.Write([]byte(" ")); err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}))
+	defer server.Close()
+	started := time.Now()
+	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL})
+	elapsed := time.Since(started)
+	if got.conclusion != "failure" || !strings.Contains(got.output, "could not read a settled current pull request snapshot") {
+		t.Fatalf("trickling API response must fail closed: %s", got.output)
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("synchronize settlement exceeded its wall-clock bound: %s", elapsed)
+	}
+}
+
+func TestRequireActionOpenedEventDoesNotReadTheAPI(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeRequireActionEvent(t, `{"action":"opened","pull_request":{"number":42,"body":`+mustJSONString(t, compliant)+`,"head":{"sha":"`+requiredWorkflowTestHeadSHA+`","ref":"feature"},"user":{"login":"contributor"}}}`)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	got := runRequireAction(t, actionRun{eventPath: eventPath, eventName: "pull_request", repository: "test/repo", apiURL: server.URL})
+	if got.conclusion != "success" {
+		t.Fatalf("opened event should remain API-independent: %s", got.output)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("opened event made %d API calls", calls.Load())
+	}
+}
+
+func TestRequireActionDocumentsStructuralFabricationBoundary(t *testing.T) {
+	body := "## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n" +
+		`<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"abc","steps":[{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"}]} -->`
+	got := runRequireAction(t, actionRun{body: body, headSHA: "abc"})
+	if got.conclusion != "success" || !strings.Contains(got.output, "not cryptographic proof") {
+		t.Fatalf("structurally valid author-written declaration should expose the accepted provenance limitation: %s", got.output)
 	}
 }
 
@@ -491,4 +640,13 @@ func mustJSONString(t *testing.T, value string) string {
 		t.Fatalf("encode body: %v", err)
 	}
 	return string(encoded)
+}
+
+func writeRequireActionEvent(t *testing.T, payload string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write event payload: %v", err)
+	}
+	return path
 }

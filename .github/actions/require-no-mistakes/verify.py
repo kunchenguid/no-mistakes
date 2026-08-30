@@ -38,8 +38,8 @@ import fnmatch
 import json
 import os
 import sys
+import threading
 import time
-import urllib.error
 import urllib.request
 
 SIGNATURE_MARKER = (
@@ -62,6 +62,7 @@ VERSION_FLOOR_PR = "https://github.com/kunchenguid/no-mistakes/pull/670"
 # closed when publication never settles or the API cannot be read.
 SYNCHRONIZE_SETTLE_ATTEMPTS = 10
 SYNCHRONIZE_SETTLE_DELAY_SECONDS = 1.0
+SYNCHRONIZE_SETTLE_SECONDS = 10.0
 
 
 def env(name: str) -> str:
@@ -163,7 +164,7 @@ def current_attestation_head(body: str) -> str:
     return head if isinstance(head, str) else ""
 
 
-def read_current_pr(number: str) -> Facts | None:
+def read_current_pr(number: str, deadline: float) -> Facts | None:
     """Read the current PR snapshot through GitHub's read-only API."""
     repository = env("GITHUB_REPOSITORY")
     if not repository or not number:
@@ -176,14 +177,24 @@ def read_current_pr(number: str) -> Facts | None:
     token = env("GITHUB_TOKEN")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.load(response)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+
+    result: list[dict | None] = []
+
+    def fetch() -> None:
+        try:
+            timeout = max(0.001, min(5.0, deadline - time.monotonic()))
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
+            result.append(payload if isinstance(payload, dict) else None)
+        except Exception:
+            result.append(None)
+
+    worker = threading.Thread(target=fetch, daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if not result or result[0] is None:
         return None
-    if not isinstance(payload, dict):
-        return None
-    current = Facts(payload, use_environment=False)
+    current = Facts(result[0], use_environment=False)
     if current.number != number:
         return None
     return current
@@ -191,20 +202,16 @@ def read_current_pr(number: str) -> Facts | None:
 
 def settled_facts(facts: Facts) -> Facts:
     """On synchronize, wait only for the bounded PR-body publication race."""
-    if not synchronize_event():
-        return facts
-    # Never infer identity from refs or accept a replay with empty PR fields.
-    # The event's number and head are the evidence that this run belongs to the
-    # push being judged; the API is used only to observe its later body edit.
-    if not facts.number or not facts.head_sha:
-        fail("::error::pull_request synchronize event has empty PR identity; refusing to judge empty event data.\n")
+    deadline = time.monotonic() + SYNCHRONIZE_SETTLE_SECONDS
 
     for attempt in range(SYNCHRONIZE_SETTLE_ATTEMPTS):
-        latest = read_current_pr(facts.number)
+        latest = read_current_pr(facts.number, deadline)
         if latest is not None and latest.head_sha == facts.head_sha and current_attestation_head(latest.body) == latest.head_sha:
             return latest
-        if attempt + 1 < SYNCHRONIZE_SETTLE_ATTEMPTS:
-            time.sleep(SYNCHRONIZE_SETTLE_DELAY_SECONDS)
+        remaining = deadline - time.monotonic()
+        if attempt + 1 >= SYNCHRONIZE_SETTLE_ATTEMPTS or remaining <= 0:
+            break
+        time.sleep(min(SYNCHRONIZE_SETTLE_DELAY_SECONDS, remaining))
 
     fail("::error::could not read a settled current pull request snapshot for synchronize; refusing to judge stale or empty event data.\n")
 
@@ -333,7 +340,12 @@ def check_required_steps(facts: Facts, steps: list) -> None:
 
 
 def main() -> int:
-    facts = settled_facts(Facts())
+    facts = Facts()
+    if synchronize_event():
+        event_facts = Facts(event_payload(), use_environment=False)
+        if not event_facts.number or not event_facts.head_sha:
+            fail("::error::pull_request synchronize event has empty PR identity; refusing to judge empty event data.\n")
+        facts = event_facts
 
     reason = exemption_reason(facts)
     if reason:
@@ -346,6 +358,9 @@ def main() -> int:
         emit_output("compliant", "false")
         return 0
     emit_output("exempt", "false")
+
+    if synchronize_event():
+        facts = settled_facts(facts)
 
     check_signature(facts)
     label = f"PR #{facts.number}" if facts.number else "PR"
