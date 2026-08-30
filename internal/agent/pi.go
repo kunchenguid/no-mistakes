@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -165,6 +166,27 @@ var piProbeTimeout = 20 * time.Second
 // catalogue from there at online startup and falls back to its cache without
 // saying so, so only a reachable catalog makes an online rejection trustworthy.
 var piCatalogEndpoint = "pi.dev:443"
+
+// SetPiCatalogEndpointForTest points the catalogue reachability check at a
+// local listener (reachable) or a closed port (unreachable) so tests outside
+// this package never dial the real catalog host.
+func SetPiCatalogEndpointForTest(t *testing.T, reachable bool) {
+	t.Helper()
+	previous := piCatalogEndpoint
+	t.Cleanup(func() { piCatalogEndpoint = previous })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reachable {
+		t.Cleanup(func() { listener.Close() })
+		piCatalogEndpoint = listener.Addr().String()
+		return
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	piCatalogEndpoint = addr
+}
 
 func piCatalogReachable() bool {
 	conn, err := net.DialTimeout("tcp", piCatalogEndpoint, 3*time.Second)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -113,6 +114,7 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 }
 
 func TestNewPipelineAgent_RejectsUnknownPiAgentConfigModelBeforeExecution(t *testing.T) {
+	agent.SetPiCatalogEndpointForTest(t, true)
 	bin := writePiCatalogStub(t)
 	cfg := &config.Config{
 		Agent:             types.AgentPi,
@@ -132,6 +134,7 @@ func TestNewPipelineAgent_RejectsUnknownPiAgentConfigModelBeforeExecution(t *tes
 }
 
 func TestNewPipelineAgent_RejectsUnknownPiArgsOverrideModelWithItsSource(t *testing.T) {
+	agent.SetPiCatalogEndpointForTest(t, true)
 	bin := writePiCatalogStub(t)
 	cfg := &config.Config{
 		Agent:             types.AgentPi,

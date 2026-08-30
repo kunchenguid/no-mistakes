@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -382,25 +381,11 @@ exit 1
 	}
 }
 
-// setPiCatalogEndpoint points the catalogue reachability check at a local
-// listener (reachable) or a closed port (unreachable) so tests never dial the
-// real catalog host.
+// setPiCatalogEndpoint is the in-package alias for the cross-package test hook
+// so every rejecting test shares one implementation.
 func setPiCatalogEndpoint(t *testing.T, reachable bool) {
 	t.Helper()
-	previous := piCatalogEndpoint
-	t.Cleanup(func() { piCatalogEndpoint = previous })
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reachable {
-		t.Cleanup(func() { listener.Close() })
-		piCatalogEndpoint = listener.Addr().String()
-		return
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-	piCatalogEndpoint = addr
+	SetPiCatalogEndpointForTest(t, reachable)
 }
 
 func setPiProbeTimeout(t *testing.T, d time.Duration) {
