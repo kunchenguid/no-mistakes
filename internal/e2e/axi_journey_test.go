@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -839,6 +840,58 @@ func TestAxiPrePushAbortUnmovedHeadCustodyJourney(t *testing.T) {
 }
 
 func operatorContext() context.Context { return context.Background() }
+
+// TestAxiRunSkipsRepositoryPrePushHookForLocalGate reproduces the launch hang
+// from a repository whose ordinary upstream pushes run a substantial pre-push
+// gate. The no-mistakes push is only the control-plane trigger for the real
+// validation pipeline, so invoking that repository hook here can block before
+// the gate's post-receive hook registers any run.
+func TestAxiRunSkipsRepositoryPrePushHookForLocalGate(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
+
+	h.CommitChange("init-pre-push", "seed.txt", "seed\n", "seed for pre-push init")
+	initWorktree := h.AddWorktree("init-pre-push")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	h.CommitChange("feature/pre-push", "feature.txt", "change\n", "add pre-push feature")
+	operator := h.AddWorktree("feature/pre-push")
+	hookDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "pre-push-ran")
+	hook := "#!/bin/sh\nprintf 'invoked\\n' > \"$NM_E2E_PRE_PUSH_MARKER\"\nexit 97\n"
+	if err := os.WriteFile(filepath.Join(hookDir, "pre-push"), []byte(hook), 0o755); err != nil {
+		t.Fatalf("write pre-push hook: %v", err)
+	}
+	if out, err := h.runGit(context.Background(), operator, "config", "core.hooksPath", hookDir); err != nil {
+		t.Fatalf("configure pre-push hook: %v\n%s", err, out)
+	}
+
+	tracePath := filepath.Join(t.TempDir(), "git-trace.json")
+	out, err := h.RunInDirWithEnv(operator, map[string]string{
+		"GIT_TRACE2_EVENT":       tracePath,
+		"NM_E2E_PRE_PUSH_MARKER": marker,
+	}, "axi", "run", "--intent", "validate without duplicating the repository pre-push gate")
+	if err != nil {
+		t.Fatalf("axi run was blocked by the repository pre-push hook: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "gate:") {
+		t.Fatalf("axi run did not begin the pipeline:\n%s", out)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("repository pre-push hook ran for the local gate push (stat error %v)", err)
+	}
+	trace, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read git trace: %v", err)
+	}
+	if !strings.Contains(string(trace), `"--no-verify"`) {
+		t.Fatalf("local gate push did not bypass repository hooks:\n%s", trace)
+	}
+	if active := h.ActiveRun("feature/pre-push"); active == nil {
+		t.Fatal("axi run returned without registering the pipeline run")
+	}
+}
 
 func TestAxiAgentJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
