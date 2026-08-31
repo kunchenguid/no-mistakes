@@ -114,6 +114,33 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
+func TestPushReceivedRejectsGateFromDifferentHome(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	const repoID = "cross-home-repo"
+	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+	wrongGate := filepath.Join(t.TempDir(), "repos", repoID+".git")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: wrongGate,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil || !strings.Contains(err.Error(), "home/gate mismatch") {
+		t.Fatalf("push from different home error = %v, want explicit home/gate mismatch", err)
+	}
+}
+
 func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	review := &mockPassStep{name: types.StepReview}
 	testStep := &mockPassStep{name: types.StepTest}

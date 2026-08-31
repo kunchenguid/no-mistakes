@@ -701,6 +701,10 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		return "", err
 	}
 
+	if !samePath(params.Gate, m.paths.RepoDir(repoID)) {
+		return "", fmt.Errorf("home/gate mismatch: gate %q does not belong to daemon home %q", params.Gate, m.paths.RepoDir(repoID))
+	}
+
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)

@@ -451,7 +451,7 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	}
 
 	kept := f.service.Recover(f.ctx, true)
-	if !kept.Recovered || kept.Changed {
+	if !kept.Recovered || kept.Changed || kept.State != StateCustodyReturned || kept.Safety != "custody_returned" {
 		t.Fatalf("keep-local recover = %#v", kept)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != divergedHead {
@@ -465,6 +465,57 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	}
 	if !f.custodyReturned() {
 		t.Fatal("keep-local did not stamp custody")
+	}
+}
+
+// TestRecoverKeepLocalMissingPreservedHeadDoesNotClaimRecovery pins the
+// missing-head boundary: --keep-local may return custody only after the
+// preserved head is verified. A dead run with no recoverable object must stay
+// manual-only instead of reporting recovered=true and stranding ownership.
+func TestRecoverKeepLocalMissingPreservedHeadDoesNotClaimRecovery(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	missing := strings.Repeat("f", 40)
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunFailed, missing); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Changed || state.State != StatePipelineOwned || state.Safety != "blocked_recover_preserved_head_missing" {
+		t.Fatalf("missing-head keep-local recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("missing-head recovery stamped custody")
+	}
+}
+
+// TestNormalizeRecoveredStateDoesNotLeavePipelineOwnership proves the durable
+// custody stamp wins over a stale pre-recovery classification. This is the
+// state returned by the live recovery loop: recovered=true must not send the
+// caller back to recover_custody forever.
+func TestNormalizeRecoveredStateDoesNotLeavePipelineOwnership(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := State{
+		State:    StatePipelineOwned,
+		Local:    LocalState{Branch: "feature/recover", Head: f.submitted, Clean: true},
+		Pipeline: PipelineState{CurrentHead: f.preserved},
+	}
+	f.service.normalizeRecoveredState(f.ctx, &state, run)
+	if state.State != StateCustodyReturned || state.Safety != "custody_returned" {
+		t.Fatalf("normalized recovered state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "run_pipeline" {
+		t.Fatalf("normalized recovered next action = %#v", state.NextAction)
 	}
 }
 

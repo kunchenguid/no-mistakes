@@ -48,7 +48,22 @@ case "$GATE_DIR" in
     GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
     ;;
 esac
-out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" 2>&1)
+case "$GATE_DIR" in
+  /*) ;;
+  *)
+    printf 'no-mistakes: cannot resolve gate directory\n' >&2
+    exit 1
+    ;;
+esac
+GATE_HOME=$(cd "$GATE_DIR/../.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
+case "$GATE_HOME" in
+  /*) ;;
+  *)
+    printf 'no-mistakes: cannot derive gate home from %s\n' "$GATE_DIR" >&2
+    exit 1
+    ;;
+esac
+out=$(NM_HOOK_HELPER=1 NM_HOME="$GATE_HOME" "$NM_BIN" daemon admit-push --gate "$GATE_DIR" 2>&1)
 status=$?
 if [ $status -ne 0 ]; then
   printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
@@ -164,6 +179,28 @@ case "$GATE_DIR" in
 esac
 LOG="$GATE_DIR/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
+case "$GATE_DIR" in
+  /*) ;;
+  *)
+    [ -n "$GATE_DIR" ] || LOG="./notify-push.log"
+    {
+      printf '[%s] notify-push failed: cannot resolve gate directory\n\n' "$(nm_ts)"
+    } >> "$LOG"
+    printf 'no-mistakes: notify-push failed: cannot resolve gate directory\n' >&2
+    exit 0
+    ;;
+esac
+GATE_HOME=$(cd "$GATE_DIR/../.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
+case "$GATE_HOME" in
+  /*) ;;
+  *)
+    {
+      printf '[%s] notify-push failed: cannot derive gate home from %s\n\n' "$(nm_ts)" "$GATE_DIR"
+    } >> "$LOG"
+    printf 'no-mistakes: notify-push failed: cannot derive gate home from %s\n' "$GATE_DIR" >&2
+    exit 0
+    ;;
+esac
 notify_failed=0
 while read oldrev newrev refname; do
 	  set -- --gate "$GATE_DIR" \
@@ -176,7 +213,7 @@ while read oldrev newrev refname; do
 	    set -- "$@" --push-option "$opt"
 	    i=$((i + 1))
 	  done
-	  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" 2>&1)
+	  out=$(NM_HOOK_HELPER=1 NM_HOME="$GATE_HOME" "$NM_BIN" daemon notify-push "$@" 2>&1)
   status=$?
   if [ $status -ne 0 ]; then
     notify_failed=1

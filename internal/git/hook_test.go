@@ -16,6 +16,7 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"#!/bin/sh",
 		"NM_BIN='/opt/No Mistakes/no-mistakes'",
 		"git rev-parse --absolute-git-dir",
+		"NM_HOME=\"$GATE_HOME\" \"$NM_BIN\" daemon admit-push",
 		"daemon admit-push --gate \"$GATE_DIR\"",
 		"gate push refused before ref mutation",
 		preservedPreReceiveHook,
@@ -110,6 +111,9 @@ func TestPostReceiveHookScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "daemon notify-push") {
 		t.Fatal("hook should invoke the CLI notify subcommand")
+	}
+	if !strings.Contains(script, "NM_HOME=\"$GATE_HOME\" \"$NM_BIN\" daemon notify-push") {
+		t.Fatal("hook should bind notify-push to the gate's owning home")
 	}
 	if !strings.Contains(script, "GIT_PUSH_OPTION_COUNT") {
 		t.Fatal("hook should forward git push options to notify-push")
@@ -473,6 +477,85 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 	}
 	if gotAbs != wantAbs {
 		t.Fatalf("--gate = %q (resolved %q), want bare dir %q", gate, gotAbs, wantAbs)
+	}
+}
+
+func TestReceiveHooksRouteToGateHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("receive hooks are /bin/sh-only")
+	}
+
+	for _, inheritedHome := range []struct {
+		name string
+		home string
+	}{
+		{name: "opposite home", home: "opposite"},
+		{name: "unset home", home: ""},
+	} {
+		t.Run(inheritedHome.name, func(t *testing.T) {
+			ctx := context.Background()
+			base := t.TempDir()
+			gateHome := filepath.Join(base, "home-b")
+			oppositeHome := filepath.Join(base, "home-a")
+			const repoID = "cross-home-hook"
+			bare := filepath.Join(gateHome, "repos", repoID+".git")
+			if err := InitBare(ctx, bare); err != nil {
+				t.Fatal(err)
+			}
+
+			work := filepath.Join(base, "work")
+			runGitOrFatal(t, base, "init", work)
+			runGitOrFatal(t, work, "config", "user.email", "test@test.com")
+			runGitOrFatal(t, work, "config", "user.name", "Test")
+			runGitOrFatal(t, work, "commit", "--allow-empty", "-m", "initial")
+			runGitOrFatal(t, work, "remote", "add", "gate", bare)
+
+			fakeBin := filepath.Join(base, "no-mistakes")
+			marker := filepath.Join(gateHome, "repos", repoID+".git", "socket-received")
+			fakeScript := "#!/bin/sh\n" +
+				"if [ \"$1\" = daemon ] && [ \"$2\" = notify-push ]; then\n" +
+				"  mkdir -p \"$NM_HOME/repos/" + repoID + ".git\"\n" +
+				"  printf '%s\\n' \"$NM_HOME\" > \"$NM_HOME/repos/" + repoID + ".git/socket-received\"\n" +
+				"fi\n" +
+				"exit 0\n"
+			if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			hooksDir := filepath.Join(bare, "hooks")
+			if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(preReceiveHookScript(fakeBin)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(hooksDir, "post-receive"), []byte(postReceiveHookScript(fakeBin)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			env := make([]string, 0, len(os.Environ())+1)
+			for _, value := range os.Environ() {
+				if strings.HasPrefix(value, "NM_HOME=") {
+					continue
+				}
+				env = append(env, value)
+			}
+			if inheritedHome.home == "opposite" {
+				env = append(env, "NM_HOME="+oppositeHome)
+			}
+			cmd := exec.Command("git", "-C", work, "push", "gate", "HEAD:refs/heads/main")
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("push: %v: %s", err, out)
+			}
+
+			got, err := os.ReadFile(marker)
+			if err != nil {
+				t.Fatalf("gate-owned notification socket was not reached: %v", err)
+			}
+			if strings.TrimSpace(string(got)) != gateHome {
+				t.Fatalf("notification home = %q, want gate home %q", strings.TrimSpace(string(got)), gateHome)
+			}
+			if _, err := os.Stat(filepath.Join(oppositeHome, "repos", repoID+".git", "socket-received")); !os.IsNotExist(err) {
+				t.Fatalf("notification reached opposite home, stat error: %v", err)
+			}
+		})
 	}
 }
 

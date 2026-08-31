@@ -567,6 +567,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	state, run, _ := s.inspect(ctx)
 	if run != nil && run.CustodyReturnedAt != nil {
+		s.normalizeRecoveredState(ctx, &state, run)
 		state.Recovered = true
 		state.Changed = false
 		return state
@@ -995,10 +996,31 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 		state.NextAction = nil
 		return state
 	}
-	state, _, _ := s.inspect(ctx)
+	state, freshRun, ok := s.inspect(ctx)
+	// The stamp is the custody transition. If inspection raced with the
+	// terminal run's old classification, never report a successful recovery
+	// while continuing to advertise pipeline ownership.
+	if ok {
+		s.normalizeRecoveredState(ctx, &state, freshRun)
+	}
 	state.Recovered = true
 	state.Changed = changed
 	return state
+}
+
+// normalizeRecoveredState applies the durable custody transition to a state
+// snapshot that was classified before or during the recovery stamp. A stale
+// pipeline_owned result must never be returned with recovered=true: callers
+// use that state to decide whether another recovery is required.
+func (s *Service) normalizeRecoveredState(ctx context.Context, state *State, run *db.Run) {
+	if state == nil || run == nil || run.CustodyReturnedAt == nil || state.State != StatePipelineOwned {
+		return
+	}
+	if run.LastPushedSHA == nil {
+		s.classifyCustodyReturned(ctx, state)
+		return
+	}
+	s.classifyRelation(ctx, state, ptr(run.LastPushedSHA), run.BaseSHA, false)
 }
 
 func recoverAnchorRef(runID string) string {

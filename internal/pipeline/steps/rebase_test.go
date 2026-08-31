@@ -156,6 +156,39 @@ func TestRebaseStep_UsesConfiguredPRBaseBranch(t *testing.T) {
 	}
 }
 
+// TestUpdateHeadSHA_DocsOnlyFreshPushDoesNotUseEmptyDiffShortcut reproduces
+// the fresh-lane failure: the zero old SHA lets a stale default-branch mirror
+// make merge-base resolve to the pushed documentation head, so the aggregate
+// diff is empty even though the new push contains markdown changes.
+func TestUpdateHeadSHA_DocsOnlyFreshPushDoesNotUseEmptyDiffShortcut(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("@AGENTS.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "AGENTS.md", "CLAUDE.md")
+	gitCmd(t, dir, "commit", "-m", "update agent guidance")
+	gitCmd(t, dir, "commit", "--allow-empty", "-m", "pipeline bookkeeping")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	// Model the default-branch mirror already pointing at this fresh head.
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", headSHA)
+
+	zeroSHA := strings.Repeat("0", 40)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, zeroSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/main"
+	outcome, err := updateHeadSHA(context.Background(), sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.SkipRemaining {
+		t.Fatal("docs-only fresh push was treated as an empty branch diff")
+	}
+}
+
 func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
