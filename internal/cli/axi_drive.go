@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -203,12 +202,9 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	} else if strings.TrimSpace(closesIssue) != "" {
 		// Reattaching to an active run: forward the issue number so the PR
 		// step can render the footer even when triggerRun was not called.
-		var result ipc.UpdateRunIssueNumberResult
-		if err := env.client.Call(ipc.MethodUpdateRunIssueNumber, &ipc.UpdateRunIssueNumberParams{
-			RunID:       runID,
-			IssueNumber: strings.TrimSpace(closesIssue),
-		}, &result); err != nil {
-			slog.Warn("failed to forward issue number to active run", "run", runID, "err", err)
+		if err := forwardIssueNumberToActiveRun(env.client, runID, closesIssue); err != nil {
+			return emitError(cmd, 1, err.Error(),
+				"Retry once the daemon is healthy; the PR will not include --closes unless this update succeeds.")
 		}
 	}
 
@@ -233,6 +229,31 @@ func normalizeIssueNumber(issueNumber string) (string, error) {
 		}
 	}
 	return issueNumber, nil
+}
+
+type issueNumberUpdateClient interface {
+	Call(method string, params interface{}, result interface{}) error
+}
+
+func forwardIssueNumberToActiveRun(client issueNumberUpdateClient, runID, issueNumber string) error {
+	issueNumber = strings.TrimSpace(issueNumber)
+	if issueNumber == "" {
+		return nil
+	}
+	if client == nil {
+		return errors.New("forward issue number to active run: daemon client unavailable")
+	}
+	var result ipc.UpdateRunIssueNumberResult
+	if err := client.Call(ipc.MethodUpdateRunIssueNumber, &ipc.UpdateRunIssueNumberParams{
+		RunID:       runID,
+		IssueNumber: issueNumber,
+	}, &result); err != nil {
+		return fmt.Errorf("forward issue number to active run: %w", err)
+	}
+	if !result.OK {
+		return errors.New("forward issue number to active run: daemon rejected update")
+	}
+	return nil
 }
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {

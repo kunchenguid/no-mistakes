@@ -592,6 +592,54 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	}
 }
 
+func TestForwardIssueNumberToActiveRunRequiresUpdateSuccess(t *testing.T) {
+	client := &scriptedIssueNumberUpdateClient{err: errors.New("database unavailable")}
+
+	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("forward error = %v, want daemon update failure", err)
+	}
+	if client.method != ipc.MethodUpdateRunIssueNumber {
+		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunIssueNumber)
+	}
+	params, ok := client.params.(*ipc.UpdateRunIssueNumberParams)
+	if !ok {
+		t.Fatalf("params type = %T, want *ipc.UpdateRunIssueNumberParams", client.params)
+	}
+	if params.RunID != "run-1" || params.IssueNumber != "42" {
+		t.Fatalf("params = %#v, want run-1/42", params)
+	}
+}
+
+func TestForwardIssueNumberToActiveRunSkipsEmptyIssue(t *testing.T) {
+	client := &scriptedIssueNumberUpdateClient{}
+
+	if err := forwardIssueNumberToActiveRun(client, "run-1", "  "); err != nil {
+		t.Fatalf("empty issue should not update: %v", err)
+	}
+	if client.method != "" {
+		t.Fatalf("empty issue made IPC call %q", client.method)
+	}
+}
+
+type scriptedIssueNumberUpdateClient struct {
+	method string
+	params interface{}
+	err    error
+}
+
+func (s *scriptedIssueNumberUpdateClient) Call(method string, params interface{}, result interface{}) error {
+	s.method = method
+	s.params = params
+	if s.err != nil {
+		return s.err
+	}
+	if out, ok := result.(*ipc.UpdateRunIssueNumberResult); ok {
+		out.OK = true
+	}
+	return nil
+}
+
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	t.Chdir(t.TempDir())
 

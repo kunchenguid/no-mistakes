@@ -945,7 +945,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if strings.TrimSpace(issueNumber) != "" {
 		trimmedIssueNumber := strings.TrimSpace(issueNumber)
 		if err := m.db.UpdateRunIssueNumber(run.ID, trimmedIssueNumber); err != nil {
-			slog.Warn("failed to persist issue number", "run", run.ID, "issue_number", trimmedIssueNumber, "err", err)
+			msg := fmt.Sprintf("persist issue number: %s", err)
+			m.db.UpdateRunError(run.ID, msg)
+			trackStartFailure("persist_issue_number")
+			return "", fmt.Errorf("persist issue number: %w", err)
 		}
 	}
 

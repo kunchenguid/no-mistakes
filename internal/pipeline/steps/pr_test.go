@@ -1033,6 +1033,26 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	}
 }
 
+func TestAssemblePRBody_OmitsIssueFooterThatCannotFitLimit(t *testing.T) {
+	t.Parallel()
+	limit := 80
+	sctx := &pipeline.StepContext{
+		IssueNumber: "42",
+		Config: &config.Config{PR: config.PR{
+			IssueLinkTemplate: strings.Repeat("x", limit),
+		}},
+	}
+
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d:\n%s", scm.PRBodyLen(got), limit, got)
+	}
+	if strings.Contains(got, strings.Repeat("x", limit)) {
+		t.Fatalf("oversized issue footer should be omitted, got:\n%s", got)
+	}
+}
+
 func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) {
 	t.Parallel()
 	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("intent 😀 ", 1000)}
@@ -1421,6 +1441,23 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected oversized PR body to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestBuildPRBody_OmitsIssueFooterThatCannotFitLimit(t *testing.T) {
+	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
+	sctx.IssueNumber = "42"
+	sctx.Config.PR.IssueLinkTemplate = strings.Repeat("x", maxPullRequestBodyBytes)
+	body := "## What Changed\n\n- essential summary survives"
+
+	got := buildPRBody(body, "low risk", "", "", sctx)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if strings.Contains(got, strings.Repeat("x", 128)) {
+		t.Fatalf("oversized issue footer should be omitted, got body length %d", scm.PRBodyLen(got))
+	}
+	if !strings.Contains(got, "essential summary survives") {
+		t.Fatalf("expected body content to survive, got:\n%s", got)
 	}
 }
 
