@@ -156,10 +156,10 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tSESSION\tΔ IN (round)\tΔ OUT\tΔ CACHE RD\tIN (raw)\tOUT (raw)\tCACHE RD (raw)\tCACHE WR\tFRESH IN\tREASON")
 	for _, inv := range invocations {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			inv.StepName, inv.Round, inv.Purpose, inv.SessionMode,
 			optInt(inv.DeltaInputTokens), optInt(inv.DeltaOutputTokens), optInt(inv.DeltaCacheReadTokens),
-			inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens,
+			optInt(inv.InputTokens), optInt(inv.OutputTokens), optInt(inv.CacheReadTokens),
 			optInt(inv.CacheCreationTokens), optInt(inv.FreshInputTokens), optInt(inv.ReasoningTokens),
 		)
 	}

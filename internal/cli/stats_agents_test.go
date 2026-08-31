@@ -30,8 +30,8 @@ func TestStatsAgentsReportsLocalPerformanceTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	seed := []db.AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "deadbeef00000000", StartedAt: 1, CompletedAt: 2, DurationMS: 60_000, ExitStatus: "ok", InputTokens: 100, OutputTokens: 10, CacheReadTokens: 40, CacheCreationTokens: statsIntPtr(20)},
-		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000", StartedAt: 3, CompletedAt: 4, DurationMS: 30_000, ExitStatus: "ok", InputTokens: 50, OutputTokens: 5, CacheReadTokens: 45, CacheCreationTokens: statsIntPtr(25)},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "deadbeef00000000", StartedAt: 1, CompletedAt: 2, DurationMS: 60_000, ExitStatus: "ok", InputTokens: statsIntPtr(100), OutputTokens: statsIntPtr(10), CacheReadTokens: statsIntPtr(40), CacheCreationTokens: statsIntPtr(20)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000", StartedAt: 3, CompletedAt: 4, DurationMS: 30_000, ExitStatus: "ok", InputTokens: statsIntPtr(50), OutputTokens: statsIntPtr(5), CacheReadTokens: statsIntPtr(45), CacheCreationTokens: statsIntPtr(25)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "feedface00000000", StartedAt: 5, CompletedAt: 6, DurationMS: 45_000, ExitStatus: "ok"},
 	}
 	for _, inv := range seed {
@@ -98,7 +98,7 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 		Model: "gpt-5.6-sol", ModelProvider: strPtrCLI("openai"),
 		SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000",
 		StartedAt: 1, CompletedAt: 2, DurationMS: 10_000, SubprocessWaitMS: statsInt64Ptr(2_000),
-		ExitStatus: "ok", InputTokens: 2500, OutputTokens: 250, CacheReadTokens: 1800,
+		ExitStatus: "ok", InputTokens: statsIntPtr(2500), OutputTokens: statsIntPtr(250), CacheReadTokens: statsIntPtr(1800),
 		FreshInputTokens: statsIntPtr(700), ReasoningTokens: statsIntPtr(9),
 		DeltaInputTokens: statsIntPtr(1500), DeltaOutputTokens: statsIntPtr(150), DeltaCacheReadTokens: statsIntPtr(1200),
 		ModelRoundtrips: statsIntPtr(24), ToolCalls: statsIntPtr(7),

@@ -22,9 +22,9 @@ func TestAgentInvocations_InsertAndReadBack(t *testing.T) {
 		CompletedAt:         1_700_000_090,
 		DurationMS:          90_000,
 		ExitStatus:          "ok",
-		InputTokens:         1000,
-		OutputTokens:        200,
-		CacheReadTokens:     800,
+		InputTokens:         intPtr(1000),
+		OutputTokens:        intPtr(200),
+		CacheReadTokens:     intPtr(800),
 		CacheCreationTokens: intPtr(50),
 	}
 	if _, err := d.InsertAgentInvocation(inv); err != nil {
@@ -40,7 +40,8 @@ func TestAgentInvocations_InsertAndReadBack(t *testing.T) {
 	}
 	back := got[0]
 	if back.Purpose != "review-fix" || back.Round != 2 || back.SessionMode != InvocationModeResumed ||
-		back.DurationMS != 90_000 || back.InputTokens != 1000 || back.CacheReadTokens != 800 || back.Model != "gpt-5.2-codex" {
+		back.DurationMS != 90_000 || back.InputTokens == nil || *back.InputTokens != 1000 ||
+		back.CacheReadTokens == nil || *back.CacheReadTokens != 800 || back.Model != "gpt-5.2-codex" {
 		t.Fatalf("readback mismatch: %+v", back)
 	}
 	if back.CacheCreationTokens == nil || *back.CacheCreationTokens != 50 {
@@ -62,7 +63,7 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		Model: "gpt-5.6-sol", ModelProvider: strPtr("openai"),
 		SessionMode: InvocationModeFallback, SessionKey: "key1", FallbackReason: strPtr(FallbackReasonExit),
 		StartedAt: 1, CompletedAt: 2, DurationMS: 5000, SubprocessWaitMS: int64Ptr(1200),
-		ExitStatus: "ok", InputTokens: 2500, OutputTokens: 250, CacheReadTokens: 1800,
+		ExitStatus: "ok", InputTokens: intPtr(2500), OutputTokens: intPtr(250), CacheReadTokens: intPtr(1800),
 		CacheCreationTokens: intPtr(0), FreshInputTokens: intPtr(700), ReasoningTokens: intPtr(9),
 		DeltaInputTokens: intPtr(1500), DeltaOutputTokens: intPtr(150), DeltaCacheReadTokens: intPtr(1200),
 		ModelRoundtrips: intPtr(4), ToolCalls: intPtr(3),
@@ -101,6 +102,9 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 	}
 	m := got[1]
 	for name, isNil := range map[string]bool{
+		"InputTokens":      m.InputTokens == nil,
+		"OutputTokens":     m.OutputTokens == nil,
+		"CacheReadTokens":  m.CacheReadTokens == nil,
 		"ModelProvider":    m.ModelProvider == nil,
 		"FallbackReason":   m.FallbackReason == nil,
 		"SubprocessWaitMS": m.SubprocessWaitMS == nil,
@@ -180,8 +184,8 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 
 	seed := []AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5},
-		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "codex", SessionMode: InvocationModeFallback, StartedAt: 5, CompletedAt: 6, DurationMS: 70, ExitStatus: "error", FailureCategory: "exit"},
 	}
 	for _, inv := range seed {
@@ -425,8 +429,8 @@ func TestOpenMigratesSessionFidelityColumns(t *testing.T) {
 		t.Fatalf("got %d rows, want 1", len(got))
 	}
 	legacy := got[0]
-	if legacy.InputTokens != 500 {
-		t.Fatalf("legacy input tokens = %d, want 500", legacy.InputTokens)
+	if legacy.InputTokens == nil || *legacy.InputTokens != 500 {
+		t.Fatalf("legacy input tokens = %v, want 500", legacy.InputTokens)
 	}
 	if legacy.ModelProvider != nil || legacy.SubprocessWaitMS != nil ||
 		legacy.ModelRoundtrips != nil || legacy.ToolCalls != nil || legacy.FindingCount != nil {

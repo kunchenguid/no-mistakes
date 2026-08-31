@@ -23,9 +23,10 @@ func (u *usageAgent) SupportsSessionResume() bool { return u.resumable }
 
 func (u *usageAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	result := &agent.Result{
-		Output: json.RawMessage(`{}`),
-		Model:  "test-model-1",
-		Usage:  agent.TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60},
+		Output:        json.RawMessage(`{}`),
+		Model:         "test-model-1",
+		Usage:         agent.TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60},
+		UsageReported: true,
 	}
 	if opts.Session != nil {
 		if opts.Session.ID != "" {
@@ -100,7 +101,7 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	if review.Agent != "usage-agent" || review.Model != "test-model-1" {
 		t.Fatalf("agent/model = %q/%q", review.Agent, review.Model)
 	}
-	if review.InputTokens != 100 || review.OutputTokens != 20 || review.CacheReadTokens != 60 {
+	if review.InputTokens == nil || *review.InputTokens != 100 || review.OutputTokens == nil || *review.OutputTokens != 20 || review.CacheReadTokens == nil || *review.CacheReadTokens != 60 {
 		t.Fatalf("token usage not recorded: %+v", review)
 	}
 	if review.ExitStatus != "ok" || review.StartedAt == 0 || review.CompletedAt == 0 {
@@ -112,6 +113,53 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	evidence := invocations[1]
 	if evidence.SessionMode != db.InvocationModeCold || evidence.Purpose != "review" {
 		t.Fatalf("evidence row = %+v", evidence)
+	}
+}
+
+// TestExecutor_TimeoutTelemetryLeavesUnknownMetricsNullable proves a cancelled
+// turn does not fabricate zero token, tool, or subprocess measurements merely
+// because the absolute wall-clock limit produced no final agent.Result.
+func TestExecutor_TimeoutTelemetryLeavesUnknownMetricsNullable(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	ag := &hangingAgent{
+		name: "timed-out-agent",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if opts.OnLifecycle != nil {
+				opts.OnLifecycle(agent.LifecycleEvent{Agent: "timed-out-agent", Phase: agent.LifecyclePhaseActivity})
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			_, err := sctx.RunAgent(agent.RunOpts{Prompt: "review", Purpose: "review"})
+			return nil, err
+		},
+	}
+	exec := NewExecutor(database, p, &config.Config{AgentTimeout: 20 * time.Millisecond}, ag, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("expected timeout")
+	}
+
+	invocations, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invocations) != 1 {
+		t.Fatalf("invocations = %d, want 1", len(invocations))
+	}
+	got := invocations[0]
+	if got.ExitStatus != "cancelled" || got.FailureCategory != "wall_clock_timeout" {
+		t.Fatalf("timeout classification = %q/%q, want cancelled/wall_clock_timeout", got.ExitStatus, got.FailureCategory)
+	}
+	if got.InputTokens != nil || got.OutputTokens != nil || got.CacheReadTokens != nil ||
+		got.FreshInputTokens != nil || got.DeltaInputTokens != nil || got.DeltaOutputTokens != nil || got.DeltaCacheReadTokens != nil {
+		t.Fatalf("unknown token fields must stay nullable: %+v", got)
+	}
+	if got.ModelRoundtrips != nil || got.ToolCalls != nil || got.SubprocessWaitMS != nil {
+		t.Fatalf("unknown activity metrics must stay nullable: %+v", got)
 	}
 }
 

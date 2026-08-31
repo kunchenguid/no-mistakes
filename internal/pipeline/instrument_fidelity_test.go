@@ -106,9 +106,8 @@ func TestPerfRecording_ResumedSessionRecordsPerRoundDeltas(t *testing.T) {
 	}
 
 	// Raw counters are cumulative.
-	if r1.InputTokens != 1000 || r2.InputTokens != 2500 {
-		t.Fatalf("raw input = %d/%d, want 1000/2500", r1.InputTokens, r2.InputTokens)
-	}
+	assertPtr(t, "r1 raw input", r1.InputTokens, 1000)
+	assertPtr(t, "r2 raw input", r2.InputTokens, 2500)
 	// Deltas are the per-round additions.
 	assertPtr(t, "r1 delta input", r1.DeltaInputTokens, 1000)
 	assertPtr(t, "r2 delta input", r2.DeltaInputTokens, 1500)

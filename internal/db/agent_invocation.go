@@ -60,10 +60,13 @@ type AgentInvocation struct {
 	CompletedAt     int64
 	DurationMS      int64
 	ExitStatus      string // ok | error | cancelled
-	FailureCategory string // parse | exit | spawn | cancelled | other ("" when ok)
-	InputTokens     int
-	OutputTokens    int
-	CacheReadTokens int
+	FailureCategory string // parse | exit | spawn | wall_clock_timeout | cancelled | other ("" when ok)
+	// Raw token counters are nullable because a cancelled invocation may never
+	// publish a final usage record. Nil is unknown; a non-nil zero is a
+	// provider-reported zero.
+	InputTokens     *int
+	OutputTokens    *int
+	CacheReadTokens *int
 	// CacheCreationTokens is the provider's cache-creation cost. Nil when the
 	// provider does not surface it (codex), distinguishing "not reported" from a
 	// genuine zero.
@@ -214,6 +217,7 @@ func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, c
 		`SELECT input_tokens, output_tokens, cache_read_tokens
 		 FROM agent_invocations
 		 WHERE run_id = ? AND session_key = ?
+		   AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cache_read_tokens IS NOT NULL
 		 ORDER BY started_at DESC, id DESC LIMIT 1`,
 		runID, sessionKey,
 	).Scan(&input, &output, &cacheRead)

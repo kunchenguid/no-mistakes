@@ -14,8 +14,8 @@ import (
 )
 
 // ErrAgentTimeout is the context cause used when the default per-invocation
-// agent deadline expires. Callers wrap it with a diagnostic that names the
-// budget; a late successful return after this cause is still a timeout.
+// absolute wall-clock limit expires. Callers wrap it with a diagnostic that
+// names the limit; a late successful return after this cause is still refused.
 var ErrAgentTimeout = errors.New("agent timeout")
 
 // AgentTimeout is the per-invocation budget applied at the shared agent-run
@@ -31,7 +31,7 @@ func AgentTimeout(cfg *config.Config) time.Duration {
 // call. The parent StepContext.Ctx is left unchanged so post-agent work
 // (commits, git, parsing) is not cancelled by the invocation budget.
 //
-// If the parent context already has a deadline (review's round budget, Test's
+// If the parent context already has a deadline (a review or Test invocation's
 // explicit wrap, intent extraction, caller cancellation), that bound is
 // honored and no shorter default is stacked. Otherwise AgentTimeout is
 // applied. A late successful return after the deadline is rejected.
@@ -44,13 +44,13 @@ func (sctx *StepContext) RunAgent(opts agent.RunOpts) (*agent.Result, error) {
 }
 
 // RunAgentContext is RunAgent with an explicit parent, used when a step has
-// already installed a more specific deadline (review round, Test invocation).
+// already installed a more specific per-invocation deadline (Review or Test).
 func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, "")
 }
 
 // RunAgentSessionContext is RunAgentSession with an explicit parent so a
-// fixer turn can share a round budget (review) or a per-invocation wrap (Test).
+// fixer turn can use a step-specific per-invocation wall-clock limit.
 func (sctx *StepContext) RunAgentSessionContext(parent context.Context, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, role)
 }
@@ -151,7 +151,9 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.mu.Unlock()
 }
 
-// evidence renders what was actually observed, for the timeout message.
+// evidence renders what was actually observed at an absolute wall-clock
+// limit. Activity never resets that hard safety limit; it only determines the
+// honest operator-facing classification at expiry.
 func (a *agentActivity) evidence() string {
 	if a == nil {
 		return "agent activity was not observed for this invocation"
@@ -161,14 +163,15 @@ func (a *agentActivity) evidence() string {
 	launched, launchedAt, pid := a.launched, a.launchedAt, a.launchedPID
 	a.mu.Unlock()
 	if observed > 0 {
-		return fmt.Sprintf("agent last produced output %s ago (%d observed)",
-			roundActivity(time.Since(last)), observed)
+		age := roundActivity(time.Since(last))
+		return fmt.Sprintf("agent was active at the absolute wall-clock limit; agent last produced output %s ago (last-activity age %s; %d observed)",
+			age, age, observed)
 	}
 	if launched {
-		return fmt.Sprintf("agent produced no output at all in %s after its subprocess started (pid=%d)",
+		return fmt.Sprintf("agent produced no output at all in %s after its subprocess started (pid=%d) before the absolute wall-clock limit",
 			roundActivity(time.Since(launchedAt)), pid)
 	}
-	return fmt.Sprintf("agent produced no output at all in %s and never reported a subprocess start",
+	return fmt.Sprintf("agent produced no output at all in %s and never reported a subprocess start before the absolute wall-clock limit",
 		roundActivity(time.Since(begun)))
 }
 
@@ -243,9 +246,9 @@ func classifyAgentRun(ctx context.Context, applied time.Duration, activity *agen
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		if applied > 0 && errors.Is(cause, ErrAgentTimeout) {
 			return diagnoseAgentTimeout(
-				fmt.Sprintf("agent timed out after %s", applied), activity, err, cause)
+				fmt.Sprintf("agent timed out after %s at its absolute wall-clock limit", applied), activity, err, cause)
 		}
-		// The budget belongs to the caller (a review round, a Test invocation).
+		// The limit belongs to the caller (a Review or Test invocation).
 		// Keep its cause identity so the caller's own classifier still matches,
 		// and hand it the measurement plus whatever the adapter managed to say.
 		return diagnoseAgentTimeout("", activity, err, cause)
@@ -333,7 +336,7 @@ func (a *timeoutAgent) Close() error { return a.inner.Close() }
 
 func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	if _, bounded := ctx.Deadline(); bounded {
-		// An outer seam (RunAgent, a review round, a Test wrap) already owns the
+		// An outer seam (RunAgent or a Review/Test invocation) already owns the
 		// budget and the diagnosis for this invocation; re-diagnosing here would
 		// nest the same measurement inside itself. The backstop this wrapper
 		// exists for still holds: a result produced after the deadline is

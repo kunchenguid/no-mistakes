@@ -51,8 +51,8 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	// actually observed. An agent that never emitted anything is a different
 	// operator problem from one that streamed until the deadline, and the run
 	// error is the only place that distinction survives.
-	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired review budget named", got)
+	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
+		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
 	}
 	if !strings.Contains(got, "produced no output at all") {
 		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
@@ -62,13 +62,55 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport pins the other half
-// of the diagnostic contract at the review round budget: whatever the adapter
+// TestReviewStep_ActiveAtWallClockLimitPersistsAccurateDiagnosis proves an
+// agent producing native activity until the hard deadline is never persisted
+// as silent/no-output. AXI status renders this durable run error on failure.
+func TestReviewStep_ActiveAtWallClockLimitPersistsAccurateDiagnosis(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "active-review-agent",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(2 * time.Millisecond):
+					opts.OnLifecycle(agent.LifecycleEvent{Agent: "active-review-agent", Phase: agent.LifecyclePhaseActivity})
+				}
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 40 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected wall-clock expiry")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Error == nil {
+		t.Fatal("durable run error is nil")
+	}
+	for _, want := range []string{"absolute wall-clock limit", "active at the absolute wall-clock limit", "last-activity age"} {
+		if !strings.Contains(*run.Error, want) {
+			t.Fatalf("run error = %q, want %q", *run.Error, want)
+		}
+	}
+	if strings.Contains(*run.Error, "no output at all") || strings.Contains(*run.Error, "silent") {
+		t.Fatalf("active agent was misclassified: %q", *run.Error)
+	}
+}
+
+// TestReviewStep_WallClockTimeoutPreservesTheAgentReport pins the other half
+// of the diagnostic contract at the review invocation limit: whatever the adapter
 // managed to report reaches the operator. For a native agent that error is the
 // killed subprocess's exit status and stderr - the only account of what the
 // process was actually doing - and it is what makes a silent 30-minute review
 // timeout diagnosable instead of a dead end.
-func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
+func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "reporting-review-agent",
@@ -82,7 +124,7 @@ func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
 
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected the review round budget to fail the run")
+		t.Fatal("expected the review invocation limit to fail the run")
 	}
 
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -96,25 +138,29 @@ func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
 	if !strings.Contains(got, "provider authentication required") {
 		t.Fatalf("run error = %q, want the agent's own report preserved", got)
 	}
-	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired review budget named", got)
+	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
+		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
 	}
 }
 
-// TestReviewStep_EachRoundGetsItsOwnAgentBudget pins the documented
-// review_agent_timeout contract: the deadline bounds ONE review round -
-// its optional fix turn plus the rereview turn share a single budget - and
-// every later auto-fix round is derived fresh from the step's parent context.
-// Without the fresh derivation, a step context reused across rounds would
-// carry round 1's already-spent deadline into round 2 and fail a healthy agent.
-func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
+// TestReviewStep_EachAgentInvocationGetsItsOwnBudget pins the
+// review_agent_timeout ownership contract across two complete auto-fix cycles.
+// The first successful fixer deliberately consumes enough time that the old
+// shared round deadline would leave its rereviewer with a visibly smaller
+// budget. Every fixer and every fresh, session-free rereviewer must instead
+// start with the full configured wall-clock limit.
+func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	const timeout = time.Hour
+	const (
+		timeout   = time.Second
+		fixerWork = 200 * time.Millisecond
+	)
 	type call struct {
 		fixTurn  bool
 		deadline time.Time
+		started  time.Time
 	}
 	var calls []call
 
@@ -127,12 +173,16 @@ func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
 				t.Errorf("agent call %d ran with no deadline", len(calls)+1)
 			}
 			isFix := strings.Contains(opts.Prompt, "Investigate previous review findings")
-			calls = append(calls, call{fixTurn: isFix, deadline: dl})
+			calls = append(calls, call{fixTurn: isFix, deadline: dl, started: time.Now()})
 			if isFix {
-				return &agent.Result{Output: json.RawMessage("fixed it")}, nil
+				if len(calls) == 2 {
+					time.Sleep(fixerWork)
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"fixed it"}`)}, nil
 			}
-			// Round 1 raises an auto-fixable finding; later rounds are clean.
-			if len(calls) == 1 {
+			// Initial review and the first rereview each request another fix;
+			// the second independent rereview certifies the result.
+			if len(calls) == 1 || len(calls) == 3 {
 				return &agent.Result{Output: json.RawMessage(findings)}, nil
 			}
 			return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
@@ -141,35 +191,34 @@ func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ReviewAgentTimeout = timeout
-	sctx.Config.AutoFix.Review = 1
+	sctx.Config.AutoFix.Review = 2
 
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
-	// round 1: review. round 2: fix + rereview.
-	if len(calls) != 3 {
-		t.Fatalf("agent calls = %d, want 3 (review, fix, rereview); got %+v", len(calls), calls)
+	// round 1: review; rounds 2 and 3: fixer + independent rereviewer.
+	if len(calls) != 5 {
+		t.Fatalf("agent calls = %d, want 5 (review, fix, rereview, fix, rereview); got %+v", len(calls), calls)
 	}
-	if calls[0].fixTurn || !calls[1].fixTurn || calls[2].fixTurn {
-		t.Fatalf("turn order = %+v, want review, fix, rereview", calls)
+	wantFix := []bool{false, true, false, true, false}
+	for i := range calls {
+		if calls[i].fixTurn != wantFix[i] {
+			t.Fatalf("turn order = %+v, want review, fix, rereview, fix, rereview", calls)
+		}
+		remaining := calls[i].deadline.Sub(calls[i].started)
+		if remaining < timeout-100*time.Millisecond {
+			t.Errorf("call %d started with %v, want a fresh %v budget", i+1, remaining, timeout)
+		}
 	}
-
-	// The fix turn and the rereview turn of round 2 share one round budget.
-	if !calls[1].deadline.Equal(calls[2].deadline) {
-		t.Errorf("round 2 fix and rereview deadlines differ (%v vs %v); one round must share one budget",
-			calls[1].deadline, calls[2].deadline)
+	if extension := calls[2].deadline.Sub(calls[1].deadline); extension < fixerWork-50*time.Millisecond {
+		t.Errorf("long fixer extended rereviewer deadline by %v, want about %v; fixer consumed rereviewer budget", extension, fixerWork)
 	}
-	// Round 2 is derived fresh, so its budget starts after round 1's.
-	if !calls[1].deadline.After(calls[0].deadline) {
-		t.Errorf("round 2 deadline %v is not later than round 1 deadline %v; the round budget leaked across rounds",
-			calls[1].deadline, calls[0].deadline)
-	}
-	// Each round's budget is the configured timeout, not a shrinking remainder.
-	if remaining := time.Until(calls[2].deadline); remaining <= timeout/2 {
-		t.Errorf("round 2 budget remaining %v is far below the configured %v; the round did not get a full budget",
-			remaining, timeout)
+	for i := 1; i < len(calls); i++ {
+		if !calls[i].deadline.After(calls[i-1].deadline) {
+			t.Errorf("call %d deadline %v did not refresh after call %d deadline %v", i+1, calls[i].deadline, i, calls[i-1].deadline)
+		}
 	}
 }
 

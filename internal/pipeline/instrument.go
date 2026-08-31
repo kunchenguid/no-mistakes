@@ -98,7 +98,10 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 	}
 	a.recordResult(&inv, sessionKey, result)
 	if runErr != nil {
-		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			inv.ExitStatus = "cancelled"
+			inv.FailureCategory = "wall_clock_timeout"
+		} else if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
 			inv.ExitStatus = "cancelled"
 			inv.FailureCategory = "cancelled"
 		} else {
@@ -125,11 +128,14 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 		provider := result.ModelProvider
 		inv.ModelProvider = &provider
 	}
-	inv.InputTokens = result.Usage.InputTokens
-	inv.OutputTokens = result.Usage.OutputTokens
-	inv.CacheReadTokens = result.Usage.CacheReadTokens
 
 	if result.UsageReported {
+		input := result.Usage.InputTokens
+		output := result.Usage.OutputTokens
+		cacheRead := result.Usage.CacheReadTokens
+		inv.InputTokens = &input
+		inv.OutputTokens = &output
+		inv.CacheReadTokens = &cacheRead
 		fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
 		inv.FreshInputTokens = &fresh
 	}

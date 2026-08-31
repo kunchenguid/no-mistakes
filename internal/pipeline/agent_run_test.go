@@ -214,6 +214,9 @@ func TestRunAgent_TimeoutReportsMeasuredSilenceWhenTheAgentNeverEmits(t *testing
 	if !strings.Contains(err.Error(), "produced no output at all") {
 		t.Fatalf("error = %q, want the measured absence of output", err)
 	}
+	if !strings.Contains(err.Error(), "absolute wall-clock limit") {
+		t.Fatalf("error = %q, want the hard limit distinguished from no-output evidence", err)
+	}
 	if strings.Contains(err.Error(), "silent for 30ms") {
 		t.Fatalf("error = %q, must not restate the budget as if it were a measurement", err)
 	}
@@ -250,7 +253,10 @@ func TestRunAgent_TimeoutReportsRecentOutputWhenTheAgentWasStreaming(t *testing.
 	if err == nil || !errors.Is(err, ErrAgentTimeout) {
 		t.Fatalf("error = %v, want ErrAgentTimeout", err)
 	}
-	if !strings.Contains(err.Error(), "last produced output") {
+	if !strings.Contains(err.Error(), "active at the absolute wall-clock limit") {
+		t.Fatalf("error = %q, want active-at-wall-clock-limit classification", err)
+	}
+	if !strings.Contains(err.Error(), "last-activity age") {
 		t.Fatalf("error = %q, want the measured recency of the agent's last output", err)
 	}
 	if strings.Contains(err.Error(), "no output at all") {
