@@ -405,7 +405,7 @@ A late successful return after the deadline is rejected, so post-agent commits a
 
 The diagnostic identifies expiration as an **absolute wall-clock limit** and separately reports what activity was actually measured. Activity never resets or extends the hard limit. Evidence resets whenever a retry or fallback starts a replacement attempt, including provider fallback, failed session resume, and OpenCode's prompt-only structured-output fallback, so the diagnostic describes only the attempt that reached the limit:
 
-- `agent was active at the absolute wall-clock limit; agent last produced output 4s ago (last-activity age 4s; 312 observed)` - the current attempt was working close to expiration. The turn needs a larger budget, or the request is too large for one turn.
+- `agent produced output during the invocation; last output was 4s before the absolute wall-clock limit (last-activity age 4s; 312 output events observed)` - the current attempt emitted output and reports exactly how recently. Historical output alone does not prove that the child was active at expiration.
 - `agent produced no output at all in 30m0s after its subprocess started (pid=1234) before the absolute wall-clock limit` - the current attempt launched and then emitted nothing. Check that the agent CLI is authenticated and responsive.
 - `agent produced no output at all in 30m0s and never reported a subprocess start before the absolute wall-clock limit` - the current attempt never reached a reported running agent process.
 

@@ -62,10 +62,10 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestReviewStep_ActiveAtWallClockLimitPersistsAccurateDiagnosis proves an
-// agent producing native activity until the hard deadline is never persisted
-// as silent/no-output. AXI status renders this durable run error on failure.
-func TestReviewStep_ActiveAtWallClockLimitPersistsAccurateDiagnosis(t *testing.T) {
+// TestReviewStep_RecentActivityPersistsMeasuredDiagnosis proves an agent
+// producing native activity until the hard deadline is never persisted as
+// silent/no-output. AXI status renders this durable run error on failure.
+func TestReviewStep_RecentActivityPersistsMeasuredDiagnosis(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "active-review-agent",
@@ -94,13 +94,64 @@ func TestReviewStep_ActiveAtWallClockLimitPersistsAccurateDiagnosis(t *testing.T
 	if run.Error == nil {
 		t.Fatal("durable run error is nil")
 	}
-	for _, want := range []string{"absolute wall-clock limit", "active at the absolute wall-clock limit", "last-activity age"} {
+	for _, want := range []string{"absolute wall-clock limit", "produced output during the invocation", "last-activity age", "output events observed"} {
 		if !strings.Contains(*run.Error, want) {
 			t.Fatalf("run error = %q, want %q", *run.Error, want)
 		}
 	}
 	if strings.Contains(*run.Error, "no output at all") || strings.Contains(*run.Error, "silent") {
-		t.Fatalf("active agent was misclassified: %q", *run.Error)
+		t.Fatalf("output-producing agent was misclassified: %q", *run.Error)
+	}
+	if strings.Contains(*run.Error, "active at the absolute wall-clock limit") {
+		t.Fatalf("historical activity was presented as proof at expiry: %q", *run.Error)
+	}
+}
+
+func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	deadlineSeen := make(chan time.Time, 1)
+	ag := &mockAgent{
+		name: "near-deadline-fixer",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("fixer context has no deadline")
+			}
+			deadlineSeen <- deadline
+			if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix timeout ownership"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.Config.ReviewAgentTimeout = 40 * time.Millisecond
+
+	summary, err := executeReviewFixWithTimeout(sctx, types.StepReview, fixExecutionOptions{
+		ErrorPrefix:     "agent fix failed",
+		FallbackSummary: "fix review findings",
+		AfterAgentRun: func(*agent.Result) error {
+			deadline := <-deadlineSeen
+			if wait := time.Until(deadline) + 10*time.Millisecond; wait > 0 {
+				time.Sleep(wait)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("post-agent commit inherited expired invocation context: %v", err)
+	}
+	if summary != "fix timeout ownership" {
+		t.Fatalf("summary = %q", summary)
+	}
+	if err := sctx.Ctx.Err(); err != nil {
+		t.Fatalf("step parent context was cancelled: %v", err)
+	}
+	if got := strings.TrimSpace(gitCmd(t, dir, "show", "--format=%s", "--no-patch", "HEAD")); !strings.Contains(got, "fix timeout ownership") {
+		t.Fatalf("post-agent commit missing from HEAD: %q", got)
 	}
 }
 

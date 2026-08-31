@@ -53,6 +53,17 @@ func TestStatsAgentsReportsLocalPerformanceTelemetry(t *testing.T) {
 			t.Fatalf("stats --agents missing %q in:\n%s", want, out)
 		}
 	}
+	reviewFixLine := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "review-fix") {
+			reviewFixLine = line
+			break
+		}
+	}
+	fields := strings.Fields(reviewFixLine)
+	if len(fields) < 12 || fields[9] != "-" || fields[10] != "-" || fields[11] != "-" {
+		t.Fatalf("stats --agents must render unknown raw token aggregates as \"-\":\n%s", out)
+	}
 
 	out, err = executeCmd("stats", "--run", run.ID)
 	if err != nil {

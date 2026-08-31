@@ -79,11 +79,11 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK\tFRESH IN TOK\tREASON TOK")
 	for _, a := range aggregates {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			a.Purpose, a.Count,
 			formatMS(a.AvgDurationMS), formatMS(a.TotalDurationMS),
 			a.Cold, a.Started, a.Resumed, a.Fallback, a.Errors,
-			a.InputTokens, a.OutputTokens, a.CacheReadTokens, optInt64(a.CacheCreationTokens),
+			optInt64(a.InputTokens), optInt64(a.OutputTokens), optInt64(a.CacheReadTokens), optInt64(a.CacheCreationTokens),
 			optInt64(a.FreshInputTokens), optInt64(a.ReasoningTokens),
 		)
 	}

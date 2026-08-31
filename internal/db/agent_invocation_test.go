@@ -184,8 +184,8 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 
 	seed := []AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5)},
-		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5)},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5), CacheReadTokens: intPtr(3)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(5), CacheReadTokens: intPtr(2)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "codex", SessionMode: InvocationModeFallback, StartedAt: 5, CompletedAt: 6, DurationMS: 70, ExitStatus: "error", FailureCategory: "exit"},
 	}
 	for _, inv := range seed {
@@ -204,7 +204,10 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	}
 	review := byPurpose["review"]
 	if review.Count != 2 || review.TotalDurationMS != 150 || review.AvgDurationMS != 75 ||
-		review.Started != 1 || review.Resumed != 1 || review.InputTokens != 20 {
+		review.Started != 1 || review.Resumed != 1 ||
+		review.InputTokens == nil || *review.InputTokens != 20 ||
+		review.OutputTokens == nil || *review.OutputTokens != 10 ||
+		review.CacheReadTokens == nil || *review.CacheReadTokens != 5 {
 		t.Fatalf("review aggregate = %+v", review)
 	}
 	fix := byPurpose["review-fix"]
@@ -238,7 +241,8 @@ func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
 		t.Fatalf("got %d aggregates, want 1", len(aggregates))
 	}
 	a := aggregates[0]
-	if a.SubprocessWaitMS != nil || a.CacheCreationTokens != nil ||
+	if a.InputTokens != nil || a.OutputTokens != nil || a.CacheReadTokens != nil ||
+		a.SubprocessWaitMS != nil || a.CacheCreationTokens != nil ||
 		a.FreshInputTokens != nil || a.ReasoningTokens != nil ||
 		a.ModelRoundtrips != nil || a.ToolCalls != nil {
 		t.Fatalf("unknown aggregate metrics became recorded values: %+v", a)
@@ -248,7 +252,7 @@ func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
 func TestAgentInvocationAggregatesHidePartialMetrics(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 	for _, inv := range []AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 10, ExitStatus: "ok", FreshInputTokens: intPtr(3)},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 10, ExitStatus: "ok", InputTokens: intPtr(9), OutputTokens: intPtr(4), CacheReadTokens: intPtr(2), FreshInputTokens: intPtr(3)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 3, CompletedAt: 4, DurationMS: 10, ExitStatus: "ok"},
 	} {
 		if _, err := d.InsertAgentInvocation(inv); err != nil {
@@ -259,8 +263,8 @@ func TestAgentInvocationAggregatesHidePartialMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if aggregates[0].FreshInputTokens != nil {
-		t.Fatalf("partial fresh input = %v, want nil", *aggregates[0].FreshInputTokens)
+	if aggregates[0].InputTokens != nil || aggregates[0].OutputTokens != nil || aggregates[0].CacheReadTokens != nil || aggregates[0].FreshInputTokens != nil {
+		t.Fatalf("partial aggregate metrics must remain unknown: %+v", aggregates[0])
 	}
 }
 

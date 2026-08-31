@@ -228,8 +228,9 @@ func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, c
 }
 
 // AgentInvocationAggregate summarizes invocations for one purpose, powering
-// the read-only performance report. Nullable sums preserve unknown when no row
-// reported that metric. MetricsRows reports activity-metric coverage.
+// the read-only performance report. Nullable sums preserve unknown when any
+// contributing row did not report that metric. MetricsRows reports activity-
+// metric coverage.
 type AgentInvocationAggregate struct {
 	Purpose             string
 	Count               int
@@ -241,9 +242,9 @@ type AgentInvocationAggregate struct {
 	Resumed             int
 	Fallback            int
 	Errors              int
-	InputTokens         int64
-	OutputTokens        int64
-	CacheReadTokens     int64
+	InputTokens         *int64
+	OutputTokens        *int64
+	CacheReadTokens     *int64
 	CacheCreationTokens *int64
 	FreshInputTokens    *int64
 	ReasoningTokens     *int64
@@ -273,9 +274,9 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       COALESCE(SUM(CASE WHEN session_mode = 'resumed' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN session_mode = 'fallback' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN exit_status != 'ok' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(input_tokens), 0),
-		       COALESCE(SUM(output_tokens), 0),
-		       COALESCE(SUM(cache_read_tokens), 0),
+		       CASE WHEN COUNT(input_tokens) = COUNT(*) THEN SUM(input_tokens) END,
+		       CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END,
+		       CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END,
 		       CASE WHEN COUNT(cache_creation_tokens) = COUNT(*) THEN SUM(cache_creation_tokens) END,
 		       CASE WHEN COUNT(fresh_input_tokens) = COUNT(*) THEN SUM(fresh_input_tokens) END,
 		       CASE WHEN COUNT(reasoning_tokens) = COUNT(*) THEN SUM(reasoning_tokens) END,

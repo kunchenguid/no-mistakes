@@ -155,6 +155,10 @@ func (a *agentActivity) observeLaunch(pid int) {
 // limit. Activity never resets that hard safety limit; it only determines the
 // honest operator-facing classification at expiry.
 func (a *agentActivity) evidence() string {
+	return a.evidenceAt(time.Now())
+}
+
+func (a *agentActivity) evidenceAt(now time.Time) string {
 	if a == nil {
 		return "agent activity was not observed for this invocation"
 	}
@@ -163,16 +167,16 @@ func (a *agentActivity) evidence() string {
 	launched, launchedAt, pid := a.launched, a.launchedAt, a.launchedPID
 	a.mu.Unlock()
 	if observed > 0 {
-		age := roundActivity(time.Since(last))
-		return fmt.Sprintf("agent was active at the absolute wall-clock limit; agent last produced output %s ago (last-activity age %s; %d observed)",
+		age := roundActivity(now.Sub(last))
+		return fmt.Sprintf("agent produced output during the invocation; last output was %s before the absolute wall-clock limit (last-activity age %s; %d output events observed)",
 			age, age, observed)
 	}
 	if launched {
 		return fmt.Sprintf("agent produced no output at all in %s after its subprocess started (pid=%d) before the absolute wall-clock limit",
-			roundActivity(time.Since(launchedAt)), pid)
+			roundActivity(now.Sub(launchedAt)), pid)
 	}
 	return fmt.Sprintf("agent produced no output at all in %s and never reported a subprocess start before the absolute wall-clock limit",
-		roundActivity(time.Since(begun)))
+		roundActivity(now.Sub(begun)))
 }
 
 func roundActivity(d time.Duration) time.Duration {

@@ -253,8 +253,8 @@ func TestRunAgent_TimeoutReportsRecentOutputWhenTheAgentWasStreaming(t *testing.
 	if err == nil || !errors.Is(err, ErrAgentTimeout) {
 		t.Fatalf("error = %v, want ErrAgentTimeout", err)
 	}
-	if !strings.Contains(err.Error(), "active at the absolute wall-clock limit") {
-		t.Fatalf("error = %q, want active-at-wall-clock-limit classification", err)
+	if !strings.Contains(err.Error(), "produced output during the invocation") {
+		t.Fatalf("error = %q, want historical output evidence", err)
 	}
 	if !strings.Contains(err.Error(), "last-activity age") {
 		t.Fatalf("error = %q, want the measured recency of the agent's last output", err)
@@ -262,9 +262,42 @@ func TestRunAgent_TimeoutReportsRecentOutputWhenTheAgentWasStreaming(t *testing.
 	if strings.Contains(err.Error(), "no output at all") {
 		t.Fatalf("error = %q, must not report silence for an agent that was streaming", err)
 	}
+	if strings.Contains(err.Error(), "active at the absolute wall-clock limit") {
+		t.Fatalf("error = %q, must not infer activity at expiry from historical output", err)
+	}
 	// Observation must stay an observation: the caller's own callback still runs.
 	if logged.Len() == 0 {
 		t.Fatal("streamed chunks did not reach the caller's OnChunk")
+	}
+}
+
+func TestAgentActivityEvidenceReportsHistoricalOutputWithoutInferringExpiryActivity(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_700_000_000, 0)
+
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+	}{
+		{name: "recent", age: 2 * time.Second},
+		{name: "stale", age: 20 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			activity := &agentActivity{
+				begun:    now.Add(-30 * time.Minute),
+				last:     now.Add(-tc.age),
+				observed: 7,
+			}
+			got := activity.evidenceAt(now)
+			for _, want := range []string{"produced output during the invocation", "last-activity age " + tc.age.String(), "7 output events observed"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("evidence = %q, want %q", got, want)
+				}
+			}
+			if strings.Contains(got, "active at the absolute wall-clock limit") {
+				t.Fatalf("evidence = %q, historical output cannot prove activity at expiry", got)
+			}
+		})
 	}
 }
 

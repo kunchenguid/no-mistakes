@@ -424,13 +424,17 @@ func sanitizePromptMultilineText(text string) string {
 }
 
 func executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
-	parent := sctx.Ctx
-	fixCtx, cancel, timeout := reviewAgentContext(parent, sctx.Config)
-	sctx.Ctx = fixCtx
-	defer func() {
-		sctx.Ctx = parent
+	fixCtx, cancel, timeout := reviewAgentContext(sctx.Ctx, sctx.Config)
+	defer cancel()
+	opts.AgentContext = fixCtx
+	afterAgentRun := opts.AfterAgentRun
+	opts.AfterAgentRun = func(result *agent.Result) error {
 		cancel()
-	}()
+		if afterAgentRun != nil {
+			return afterAgentRun(result)
+		}
+		return nil
+	}
 
 	summary, err := executeFixMode(sctx, stepName, opts)
 	if err != nil {
