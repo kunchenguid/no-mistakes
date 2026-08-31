@@ -15,6 +15,7 @@ const (
 	MethodGetRuns        = "get_runs"
 	MethodGetRunsForHead = "get_runs_for_head"
 	MethodGetActiveRun   = "get_active_run"
+	MethodStartFreshRun  = "start_fresh_run"
 	MethodRerun          = "rerun"
 	MethodSubscribe      = "subscribe"
 	MethodRespond        = "respond"
@@ -130,6 +131,20 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+}
+
+type StartFreshRunParams struct {
+	RepoID       string           `json:"repo_id"`
+	Branch       string           `json:"branch"`
+	HeadSHA      string           `json:"head_sha"`
+	WorkDir      string           `json:"work_dir"`
+	PriorRunIDs  []string         `json:"prior_run_ids"`
+	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
+	Intent       string           `json:"intent,omitempty"`
+}
+
+type StartFreshRunResult struct {
+	RunID string `json:"run_id"`
 }
 
 // SubscribeParams starts an event stream for a run.

@@ -263,6 +263,93 @@ func (s *Service) InspectCached(ctx context.Context) State {
 	return state
 }
 
+func (s *Service) FreshRunOwnershipState(ctx context.Context, expectedBranch, expectedHead string) *State {
+	state := s.InspectCached(ctx)
+	if state.Local.Branch == "" {
+		return &state
+	}
+	if expectedBranch != "" && state.Local.Branch != expectedBranch {
+		state.State = StateAmbiguousContext
+		state.Safety = "blocked_fresh_context_mismatch"
+		state.Error = "the fresh run request does not match the checked-out branch"
+		return &state
+	}
+	if expectedHead != "" && state.Local.Head != expectedHead {
+		state.State = StateAmbiguousContext
+		state.Safety = "blocked_fresh_context_mismatch"
+		state.Error = "the fresh run request does not match the checked-out HEAD"
+		return &state
+	}
+	if state.State == StateAmbiguousContext && state.Safety != "blocked_wrong_branch" {
+		return &state
+	}
+
+	switch state.State {
+	case StatePipelineOwned:
+		if RunHeadUnmoved(state) && (state.Pipeline.Status == string(types.RunPending) || state.Pipeline.Status == string(types.RunRunning)) {
+			return nil
+		}
+		if state.Safety == "blocked_recover_preserved_head_missing" && s.hasNoPipelineEvidence(ctx, state.Local.Branch) {
+			return nil
+		}
+		return &state
+	case StatePushInProgress:
+		return &state
+	default:
+		return nil
+	}
+}
+
+func (s *Service) hasNoPipelineEvidence(ctx context.Context, branch string) bool {
+	if s == nil || s.DB == nil || s.Repo == nil || strings.TrimSpace(branch) == "" {
+		return false
+	}
+	runs, err := s.DB.GetRunsByRepo(s.Repo.ID)
+	if err != nil {
+		return false
+	}
+	seen := false
+	for _, run := range runs {
+		if run.Branch != branch || !unpublishedPipelineHead(run) {
+			continue
+		}
+		seen = true
+		if !run.Status.Terminal() || run.TerminalHeadVerifiedAt == nil || !s.pipelineEvidenceAbsent(ctx, run) {
+			return false
+		}
+	}
+	return seen
+}
+
+func (s *Service) pipelineEvidenceAbsent(ctx context.Context, run *db.Run) bool {
+	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	localHeadExists, err := git.RefExists(ctx, s.workDir(), run.HeadSHA)
+	if err != nil || localHeadExists || recoveryEvidencePresent(ctx, s.workDir(), run.ID) {
+		return false
+	}
+
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" || git.ValidateBareRepository(ctx, gateDir) != nil {
+		return false
+	}
+	if recoveryEvidencePresent(ctx, gateDir, run.ID) {
+		return false
+	}
+	gateHeadExists, err := git.RefExists(ctx, gateDir, run.HeadSHA)
+	return err == nil && !gateHeadExists
+}
+
+func recoveryEvidencePresent(ctx context.Context, dir, runID string) bool {
+	ref := custody.RecoveryRef(runID)
+	if target, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(target) != "" {
+		return true
+	}
+	_, exists, err := git.ExactRefTarget(ctx, dir, ref)
+	return err != nil || exists
+}
+
 // Refresh explicitly verifies the exact configured push ref into a private
 // no-mistakes ref. It never updates an ordinary remote-tracking ref.
 func (s *Service) Refresh(ctx context.Context) State {

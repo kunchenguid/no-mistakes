@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/tui"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -56,6 +57,7 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	var run *ipc.RunInfo
 	var repoID string
 	var state *repoState
+	var wizardIdentity *freshRunIdentity
 	startedViaWizard := false
 
 	if runID != "" {
@@ -73,6 +75,17 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		state, err = detectRepoState(ctx, repo)
 		if err != nil {
 			return err
+		}
+		state.beforePush = func(ctx context.Context, workDir, branch string) error {
+			identity, err := captureFreshRunIdentity(ctx, client, repo.ID, workDir, branch)
+			if err != nil {
+				return err
+			}
+			if err := guardFreshRun(ctx, p, d, repo, workDir); err != nil {
+				return err
+			}
+			wizardIdentity = identity
+			return nil
 		}
 
 		// Skip the active-run check entirely when the state clearly calls
@@ -97,11 +110,14 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		interactive := terminalInteractive()
 		if rootDefault && runID == "" && repo != nil && state != nil && (autoYes || interactive) {
 			startedViaWizard = true
+			var wizardRunID string
 			// waitFn blocks inside the wizard's alt screen until the daemon
 			// has the run registered, so the handoff to runTUI below is
 			// seamless rather than flashing the pre-wizard terminal.
 			waitFn := func(ctx context.Context, branch string) error {
-				return awaitDaemonRunRegistration(ctx, client, repo.ID, branch, 5*time.Second)
+				var err error
+				wizardRunID, err = awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, branch, wizardIdentity, skipSteps)
+				return err
 			}
 			var res wizard.Result
 			var wErr error
@@ -118,9 +134,38 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 				return wErr
 			}
 			if res.Success {
-				run, err = waitForActiveRun(ctx, client, repo.ID, res.TargetBranch, 5*time.Second)
-				if err != nil {
-					return fmt.Errorf("wait for active run: %w", err)
+				if wizardRunID != "" {
+					var result ipc.GetRunResult
+					if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: wizardRunID}, &result); err != nil {
+						return fmt.Errorf("get wizard run: %w", err)
+					}
+					run = result.Run
+					if run == nil {
+						return fmt.Errorf("wizard run %s no longer exists", wizardRunID)
+					}
+				} else {
+					if wizardIdentity != nil {
+						wizardRunID, err = awaitDaemonRunRegistrationOrStartFresh(ctx, client, p, d, repo, state.workDir, res.TargetBranch, wizardIdentity, skipSteps)
+						if err != nil {
+							return err
+						}
+						var result ipc.GetRunResult
+						if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: wizardRunID}, &result); err != nil {
+							return fmt.Errorf("get fresh run: %w", err)
+						}
+						run = result.Run
+						if run == nil {
+							return fmt.Errorf("fresh run %s no longer exists", wizardRunID)
+						}
+					} else {
+						run, err = waitForActiveRun(ctx, client, repo.ID, res.TargetBranch, triggerWaitTimeout)
+						if err != nil {
+							return fmt.Errorf("wait for active run: %w", err)
+						}
+						if run == nil {
+							return fmt.Errorf("wizard did not record a pushed branch and HEAD for %q", res.TargetBranch)
+						}
+					}
 				}
 				if autoYes && run == nil {
 					return fmt.Errorf("no active run appeared after pushing %q", res.TargetBranch)
@@ -148,6 +193,41 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 	})
 
 	return runTUI(p.Socket(), client, run, update.CachedLatestVersion())
+}
+
+func awaitDaemonRunRegistrationOrStartFresh(ctx context.Context, client *ipc.Client, p *paths.Paths, d *db.DB, repo *db.Repo, workDir, branch string, identity *freshRunIdentity, skipSteps []types.StepName) (string, error) {
+	if identity == nil || identity.branch != branch || identity.headSHA == "" || identity.priorRunIDs == nil {
+		return "", fmt.Errorf("cannot identify the run created for %q: pre-push branch, HEAD, or run baseline is unavailable", branch)
+	}
+	run, err := waitForTriggeredRunForHead(ctx, client, repo.ID, branch, identity.headSHA, identity.priorRunIDs, triggerWaitTimeout)
+	if err != nil {
+		return "", err
+	}
+	if run != nil {
+		if err := validateFreshRunContext(ctx, workDir, identity.branch, identity.headSHA); err != nil {
+			return "", err
+		}
+		return run.ID, nil
+	}
+	if err := validateFreshRunContext(ctx, workDir, identity.branch, identity.headSHA); err != nil {
+		return "", err
+	}
+	if err := guardFreshRun(ctx, p, d, repo, workDir); err != nil {
+		return "", err
+	}
+	runID, err := startFreshRun(ctx, client, repo.ID, branch, identity.headSHA, workDir, identity.priorRunIDs, skipSteps, "")
+	if err != nil {
+		return "", fmt.Errorf("start fresh run for %q: %w", branch, err)
+	}
+	return runID, nil
+}
+
+func guardFreshRun(ctx context.Context, p *paths.Paths, d *db.DB, repo *db.Repo, workDir string) error {
+	env := &axiEnv{p: p, d: d, repo: repo}
+	if state := freshRunBranchOwnershipStateAt(ctx, env, workDir); state != nil {
+		return &branchOwnershipError{state: *state}
+	}
+	return nil
 }
 
 func attachEntrypoint(rootDefault bool, runID string) string {

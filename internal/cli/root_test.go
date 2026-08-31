@@ -196,6 +196,9 @@ func TestRootYesUsesVisibleWizardWhenInteractive(t *testing.T) {
 
 func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	setupTestRepo(t)
+	previousTimeout := triggerWaitTimeout
+	triggerWaitTimeout = 100 * time.Millisecond
+	defer func() { triggerWaitTimeout = previousTimeout }()
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
@@ -222,8 +225,8 @@ func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected -y to fail when no active run appears after push")
 	}
-	if !strings.Contains(err.Error(), "no active run") {
-		t.Fatalf("error should mention missing active run, got %v", err)
+	if !strings.Contains(err.Error(), "record a pushed branch") {
+		t.Fatalf("error should explain that the pushed branch identity is unavailable, got %v", err)
 	}
 }
 

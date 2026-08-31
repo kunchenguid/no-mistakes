@@ -137,6 +137,7 @@ type repoState struct {
 	defaultBranch string
 	detached      bool
 	dirty         bool
+	beforePush    func(context.Context, string, string) error
 }
 
 // needsBranch reports whether the user has no feature branch to work on —
@@ -240,6 +241,11 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 			return git.CommitAll(ctx, workDir, msg)
 		},
 		Push: func(ctx context.Context, branch string) error {
+			if state.beforePush != nil {
+				if err := state.beforePush(ctx, workDir, branch); err != nil {
+					return err
+				}
+			}
 			return git.PushWithOptions(ctx, workDir, gate.RemoteName, "refs/heads/"+branch, "", false, formatSkipPushOptions(skipSteps))
 		},
 		SuggestBranch: func(ctx context.Context) (string, error) {
