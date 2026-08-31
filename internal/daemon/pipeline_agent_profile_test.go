@@ -28,6 +28,14 @@ func captureDaemonWarnings(t *testing.T) *bytes.Buffer {
 	return &logs
 }
 
+// containsDaemonWarningText also checks the TextHandler representation of a
+// quoted Windows path. TextHandler escapes backslashes when the surrounding
+// warning value contains spaces, as the settings-source suffix does.
+func containsDaemonWarningText(logs *bytes.Buffer, want string) bool {
+	text := logs.String()
+	return strings.Contains(text, want) || strings.Contains(text, strings.ReplaceAll(want, `\`, `\\`))
+}
+
 func writePiCatalogStub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -192,7 +200,7 @@ func TestNewPipelineAgent_WarnsOnUnknownPiSettingsDefaultWithoutFailingSetup(t *
 	}
 	_ = ag.Close()
 	for _, want := range []string{"stealth/ox-alpha", settingsPath} {
-		if !strings.Contains(logs.String(), want) {
+		if !containsDaemonWarningText(logs, want) {
 			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
@@ -229,7 +237,7 @@ func TestNewPipelineAgent_WarnsOnUnknownPiProjectSettingsDefaultWithoutFailingSe
 	}
 	_ = ag.Close()
 	for _, want := range []string{"stealth/ox-alpha", projectSettings} {
-		if !strings.Contains(logs.String(), want) {
+		if !containsDaemonWarningText(logs, want) {
 			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}

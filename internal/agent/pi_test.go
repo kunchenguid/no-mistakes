@@ -155,6 +155,14 @@ func captureWarnings(t *testing.T) *bytes.Buffer {
 	return &logs
 }
 
+// containsWarningText also checks the TextHandler representation of a quoted
+// Windows path. TextHandler escapes backslashes when the surrounding warning
+// value contains spaces, as the settings-source suffix does.
+func containsWarningText(logs *bytes.Buffer, want string) bool {
+	text := logs.String()
+	return strings.Contains(text, want) || strings.Contains(text, strings.ReplaceAll(want, `\`, `\\`))
+}
+
 // writePiCatalogueStub records its working directory and argv like
 // writePiProbeStub and then prints a fixed provider/model catalogue for
 // --list-models.
@@ -311,7 +319,7 @@ func TestPiAgent_ValidateConfigurationResolvesProjectSettingsDefault(t *testing.
 		t.Fatalf("ValidateConfiguration: %v", err)
 	}
 	for _, want := range []string{projectSettings, "may be inert"} {
-		if !strings.Contains(logs.String(), want) {
+		if !containsWarningText(logs, want) {
 			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
@@ -735,7 +743,7 @@ func TestPiAgent_ValidateConfigurationWarnsInsteadOfAbortingWhenProjectTrustUnde
 		t.Fatalf("an undetermined project default must not abort setup: %v", err)
 	}
 	for _, want := range []string{"ghost-model", projectSettings, "inert"} {
-		if !strings.Contains(logs.String(), want) {
+		if !containsWarningText(logs, want) {
 			t.Fatalf("warning log = %q, want %q", logs.String(), want)
 		}
 	}
@@ -830,7 +838,7 @@ func TestPiAgent_ValidateConfigurationNamesGlobalSourceForGlobalModel(t *testing
 	if err := pa.ValidateConfiguration(context.Background(), workDir); err != nil {
 		t.Fatalf("a settings default must never abort setup: %v", err)
 	}
-	if !strings.Contains(logs.String(), globalSettings) {
+	if !containsWarningText(logs, globalSettings) {
 		t.Fatalf("warnings = %q, want the global settings path that supplied the model", logs.String())
 	}
 	if strings.Contains(logs.String(), projectSettings) {
@@ -885,7 +893,7 @@ func TestPiAgent_ValidateConfigurationWarnsOnIncompleteSettingsDefault(t *testin
 		t.Fatalf("an incomplete settings default must not abort setup: %v", err)
 	}
 	for _, want := range []string{"lonely-model", globalSettings} {
-		if !strings.Contains(logs.String(), want) {
+		if !containsWarningText(logs, want) {
 			t.Fatalf("warnings = %q, want %q", logs.String(), want)
 		}
 	}
