@@ -2779,9 +2779,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		PR: PR{
-		BaseBranch:        strings.TrimSpace(repo.PR.BaseBranch),
-		IssueLinkTemplate: resolveIssueLinkTemplate(repo.PR.IssueLinkTemplate),
-	},
+			BaseBranch:        strings.TrimSpace(repo.PR.BaseBranch),
+			IssueLinkTemplate: resolveIssueLinkTemplate(repo.PR.IssueLinkTemplate),
+		},
 		ForgeProfiles:  global.ForgeProfiles,
 		Providers:      providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
