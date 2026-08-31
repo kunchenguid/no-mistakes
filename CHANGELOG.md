@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.60.2](https://github.com/pixeloven/no-mistakes/compare/v1.60.1...v1.60.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **agent:** pass --print-timeout 24h by default in Antigravity adapter ([#896](https://github.com/pixeloven/no-mistakes/issues/896)) ([be9138f](https://github.com/pixeloven/no-mistakes/commit/be9138fdabb528acecafc78005b277028e1612c9))
+* **git:** carry local commit signing policy into gate worktrees ([1fd074e](https://github.com/pixeloven/no-mistakes/commit/1fd074e2542aa15d317d2f4d110d4856036ceba4))
+* **git:** preserve local commit signing policy ([b062786](https://github.com/pixeloven/no-mistakes/commit/b0627860d9cdcc555c9806bd61cb893ba70dd142))
+* **pipeline:** harden CI repair scope and attestation ([#899](https://github.com/pixeloven/no-mistakes/issues/899)) ([4a84a15](https://github.com/pixeloven/no-mistakes/commit/4a84a153dbcba764c76d7113fd8a8d886e35e3d6))
+* settle existing PR attestation event race ([d49dc33](https://github.com/pixeloven/no-mistakes/commit/d49dc33c7772aa46f63c3736a671a5f6971815db))
+
+
+### Performance Improvements
+
+* **pipeline:** cut CI test latency ([#901](https://github.com/pixeloven/no-mistakes/issues/901)) ([1a3f74d](https://github.com/pixeloven/no-mistakes/commit/1a3f74d86d2646967d6f1e7dce8853023c41768c))
+
 ## [1.60.1](https://github.com/kunchenguid/no-mistakes/compare/v1.60.0...v1.60.1) (2026-08-29)
 
 
