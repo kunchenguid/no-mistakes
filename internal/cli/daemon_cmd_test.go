@@ -120,3 +120,24 @@ func TestPRBaseBranchPushOptionRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip = %q, want epic/feature", got)
 	}
 }
+
+func TestIssueNumberPushOptionRoundTrip(t *testing.T) {
+	opt := formatIssueNumberPushOption(" 42 ")
+	if opt == "" {
+		t.Fatal("formatIssueNumberPushOption returned empty for a non-empty issue")
+	}
+	got, err := parseIssueNumberPushOptions([]string{"ci.skip", opt})
+	if err != nil {
+		t.Fatalf("parseIssueNumberPushOptions() error = %v", err)
+	}
+	if got != "42" {
+		t.Fatalf("parseIssueNumberPushOptions() = %q, want 42", got)
+	}
+}
+
+func TestParseIssueNumberPushOptionsRejectsInvalidValue(t *testing.T) {
+	_, err := parseIssueNumberPushOptions([]string{"no-mistakes.issue_number=42 Fixes #99"})
+	if err == nil {
+		t.Fatal("expected invalid issue number push option to fail")
+	}
+}

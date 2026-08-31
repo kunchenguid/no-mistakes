@@ -110,7 +110,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			issueNumber := parseIssueNumberPushOptions(pushOptions)
+			issueNumber, err := parseIssueNumberPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -272,8 +275,9 @@ func formatIssueNumberPushOption(issueNumber string) string {
 
 // parseIssueNumberPushOptions extracts and validates the issue number push
 // option, if any. The last occurrence wins. Only positive decimal integers
-// are accepted; anything else is silently dropped.
-func parseIssueNumberPushOptions(options []string) string {
+// are accepted; invalid values fail the notify-push command instead of being
+// silently dropped.
+func parseIssueNumberPushOptions(options []string) (string, error) {
 	issueNumber := ""
 	for _, option := range options {
 		value, ok := strings.CutPrefix(option, issueNumberPushOptionPrefix)
@@ -281,12 +285,15 @@ func parseIssueNumberPushOptions(options []string) string {
 			continue
 		}
 		validated, err := normalizeIssueNumber(strings.TrimSpace(value))
-		if err != nil || validated == "" {
-			continue
+		if err != nil {
+			return "", err
+		}
+		if validated == "" {
+			return "", fmt.Errorf("invalid issue number push option: value is required")
 		}
 		issueNumber = validated
 	}
-	return issueNumber
+	return issueNumber, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

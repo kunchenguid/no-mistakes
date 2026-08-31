@@ -60,6 +60,69 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	}
 }
 
+func TestUpdateRunIssueNumberNormalizesAndPersists(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunIssueNumber(run.ID, " 42 "); err != nil {
+		t.Fatalf("update issue number: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.IssueNumber == nil || *got.IssueNumber != "42" {
+		t.Fatalf("issue number = %#v, want 42", got.IssueNumber)
+	}
+}
+
+func TestUpdateRunIssueNumberClearsBlankValue(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
+		t.Fatalf("set issue number: %v", err)
+	}
+
+	if err := d.UpdateRunIssueNumber(run.ID, "  "); err != nil {
+		t.Fatalf("clear issue number: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.IssueNumber != nil {
+		t.Fatalf("issue number = %#v, want nil", got.IssueNumber)
+	}
+}
+
+func TestUpdateRunIssueNumberRejectsNonDecimalInput(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunIssueNumber(run.ID, "42 Fixes #99"); err == nil {
+		t.Fatal("expected malformed issue number to fail")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.IssueNumber != nil {
+		t.Fatalf("invalid issue number was persisted: %#v", got.IssueNumber)
+	}
+}
+
 func TestInsertRunWithIntent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

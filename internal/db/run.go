@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -733,14 +734,38 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 // number is rendered into the PR body footer by the PR step when the
 // repository configures pr.issue_link_template.
 func (d *DB) UpdateRunIssueNumber(id string, issueNumber string) error {
-	_, err := d.sql.Exec(
+	normalized, err := normalizeIssueNumberForStorage(issueNumber)
+	if err != nil {
+		return err
+	}
+	var value any
+	if normalized != "" {
+		value = normalized
+	}
+	_, err = d.sql.Exec(
 		`UPDATE runs SET issue_number = ?, updated_at = ? WHERE id = ?`,
-		issueNumber, now(), id,
+		value, now(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update run issue number: %w", err)
 	}
 	return nil
+}
+
+func normalizeIssueNumberForStorage(issueNumber string) (string, error) {
+	issueNumber = strings.TrimSpace(issueNumber)
+	if issueNumber == "" {
+		return "", nil
+	}
+	if issueNumber[0] == '0' {
+		return "", fmt.Errorf("invalid issue number %q: must be a positive decimal number", issueNumber)
+	}
+	for _, r := range issueNumber {
+		if r > unicode.MaxASCII || !unicode.IsDigit(r) {
+			return "", fmt.Errorf("invalid issue number %q: must be a positive decimal number", issueNumber)
+		}
+	}
+	return issueNumber, nil
 }
 
 // SetRunAwaitingAgent marks a run as parked awaiting the driving agent,
