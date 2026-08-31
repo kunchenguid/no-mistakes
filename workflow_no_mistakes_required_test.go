@@ -514,6 +514,10 @@ func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event 
 	inputExpression := regexp.MustCompile(`^\$\{\{\s*inputs\.([a-z0-9-]+)\s*\}\}$`)
 	env := make([]string, 0, len(compositeStep.Env)+3)
 	for name, expression := range compositeStep.Env {
+		if strings.TrimSpace(expression) == "${{ github.token }}" {
+			env = append(env, name+"=")
+			continue
+		}
 		matches := inputExpression.FindStringSubmatch(expression)
 		if matches == nil {
 			t.Fatalf("composite action env %q has unsupported expression %q", name, expression)

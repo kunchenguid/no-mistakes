@@ -27,11 +27,12 @@ by the very PR the gate is judging.
 name: Require no-mistakes
 on:
   pull_request:
-    types: [opened, edited, reopened]
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   check:
@@ -54,6 +55,17 @@ rulesets keep matching the same check across the fleet.
 An ordinary `pull_request`-triggered caller forwards no PR facts: the action
 reads the body, head SHA, head branch, author, and number from the workflow
 event payload. Pass the `pr-*` inputs only when driving it from another event.
+On `pull_request` `synchronize`, the PR number and head SHA must be present in
+the event itself; input overrides cannot replace that identity.
+
+For `synchronize`, include the event in the trigger as shown above. Existing-PR
+pipeline updates can push a new head before publishing the matching body
+attestation; for a non-exempt PR, the action re-reads the current PR through the
+`GITHUB_TOKEN` API for a short, bounded settlement window. The caller must grant
+only the read permissions shown above. The action fails closed when the snapshot
+is inaccessible, the event has empty identity, or the body never settles, and
+honors `GITHUB_API_URL` for GitHub Enterprise. Configured exemptions are
+evaluated from the trusted event identity before this API settlement.
 
 ## Inputs
 
@@ -62,7 +74,7 @@ event payload. Pass the `pr-*` inputs only when driving it from another event.
 | `exempt-authors` | `""` | Newline- or comma-separated author logins that bypass the gate (automation accounts that cannot be routed through the pipeline). |
 | `exempt-bot-authors` | `false` | When true, every `*[bot]` author bypasses the gate. |
 | `exempt-head-branches` | `""` | Glob patterns; a matching head branch bypasses the gate, for structural automation branches such as `release-please--*`. |
-| `pr-body`, `pr-head-sha`, `pr-head-ref`, `pr-author`, `pr-number` | `""` | Override the corresponding event-payload fact. |
+| `pr-body`, `pr-head-sha`, `pr-head-ref`, `pr-author`, `pr-number` | `""` | Override the corresponding event-payload fact when driving the action from another event. Synchronize events use their own event identity and the settled API snapshot. |
 
 Which steps are required is deliberately **not** an input. A caller configures
 who is exempt, never what the gate certifies, so no repository can weaken the
@@ -79,7 +91,8 @@ check while still reporting the same name.
 ## Boundary
 
 The action never checks out or executes repository code, so it is safe on
-`pull_request` runs from forks. Callers should keep `permissions: contents: read`
+`pull_request` runs from forks. Callers should keep permissions read-only
+(`contents: read` and, when using synchronize settlement, `pull-requests: read`)
 and stay on `pull_request` rather than `pull_request_target`.
 
 An exemption is trusted outer-repository policy supplied by the caller's pinned
@@ -132,4 +145,4 @@ tag or a commit SHA, never `@main`.
 
 `require_no_mistakes_action_test.go` in the repository root executes
 `verify.py` the way a runner does and covers every verdict, the exemption
-surface, and the event-payload fallback.
+surface, event-payload binding, and bounded synchronize settlement failures.
