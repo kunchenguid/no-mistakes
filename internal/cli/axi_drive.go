@@ -2,13 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	toon "github.com/toon-format/toon-go"
 	"io"
 	"strings"
 	"time"
-
-	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
@@ -58,6 +58,8 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var launchNonce string
+	var validationGeneration string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -70,6 +72,10 @@ func newAxiRunCmd() *cobra.Command {
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"--launch-nonce with --validation-generation enables strict proof mode.\n" +
+			"Before driving, AXI emits a receipt with the durable run ID, created or\n" +
+			"reused disposition, full submitted head, and a digest of the exact\n" +
+			"persisted intent; raw intent is never included.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
 			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +
@@ -80,26 +86,33 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
-				"auto_yes":   autoYes,
-				"has_intent": strings.TrimSpace(intent) != "",
-				"has_skip":   strings.TrimSpace(skipValue) != "",
+				"auto_yes":         autoYes,
+				"has_intent":       strings.TrimSpace(intent) != "",
+				"has_skip":         strings.TrimSpace(skipValue) != "",
+				"has_launch_nonce": launchNonce != "",
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, launchNonce, validationGeneration)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
+	cmd.Flags().StringVar(&validationGeneration, "validation-generation", "", "opaque generation bound to --launch-nonce proof mode")
 	return cmd
 }
 
 func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+	return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, "", "")
+}
+
+func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, launchNonce, validationGeneration string) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -121,7 +134,26 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		return emitError(cmd, 1, fmt.Sprintf("get current HEAD: %v", err))
 	}
 
-	runID := activeRunID(env, branch, headSHA)
+	runID := ""
+	var launchReceipt *ipc.LaunchReceipt
+	if launchNonce != "" {
+		if strings.TrimSpace(validationGeneration) == "" {
+			return emitError(cmd, 2, "--validation-generation is required with --launch-nonce")
+		}
+		receipt, err := claimLaunchReceipt(env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, digestLaunchIntent(intent))
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("claim launch receipt: %v", err))
+		}
+		if receipt != nil {
+			launchReceipt = receipt
+			runID = receipt.RunID
+		}
+	} else {
+		if validationGeneration != "" {
+			return emitError(cmd, 2, "--validation-generation requires --launch-nonce")
+		}
+		runID = activeRunID(env, branch, headSHA)
+	}
 	if runID == "" {
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
@@ -142,7 +174,14 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		if launchNonce != "" {
+			launchReceipt, err = triggerProofRun(ctx, env, branch, headSHA, skipSteps, intent, launchNonce, validationGeneration)
+			if err == nil {
+				runID = launchReceipt.RunID
+			}
+		} else {
+			runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		}
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -150,12 +189,20 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return emitError(cmd, 1, err.Error())
 		}
 	}
+	if launchReceipt != nil {
+		emitLaunchReceipt(cmd, *launchReceipt)
+	}
 
 	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
 	return renderDriveResult(cmd, run, ciReady)
+}
+
+func digestLaunchIntent(intent string) string {
+	sum := sha256.Sum256([]byte(intent))
+	return fmt.Sprintf("%x", sum)
 }
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
@@ -329,6 +376,75 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	return rr.RunID, nil
 }
 
+func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest string) (*ipc.LaunchReceipt, error) {
+	var result ipc.ClaimLaunchReceiptResult
+	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repoID, Branch: branch, LaunchNonce: launchNonce,
+		SubmittedHeadSHA: submittedHeadSHA, ValidationGeneration: validationGeneration, IntentDigest: intentDigest,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Receipt, nil
+}
+
+// triggerProofRun captures the immutable submitted commit and waits only for
+// the matching nonce-bound receipt. Ordinary active-run heuristics never prove
+// strict launch identity.
+func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, launchNonce, validationGeneration string) (*ipc.LaunchReceipt, error) {
+	pushOptions := formatSkipPushOptions(skipSteps)
+	pushOptions = append(pushOptions,
+		formatIntentPushOption(intent),
+		formatLaunchNoncePushOption(launchNonce),
+		formatValidationGenerationPushOption(validationGeneration),
+	)
+	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+		return nil, &branchOwnershipError{state: *state}
+	}
+	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
+	if pushErr != nil {
+		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
+			return nil, &branchOwnershipError{state: *state}
+		}
+		return nil, fmt.Errorf("push %q to gate: %w", branch, pushErr)
+	}
+	if receipt, err := waitForLaunchReceipt(ctx, env.client, env.repo.ID, branch, launchNonce, headSHA, validationGeneration, intent, triggerWaitTimeout); err != nil {
+		return nil, err
+	} else if receipt != nil {
+		return receipt, nil
+	}
+	var result ipc.StartFreshRunResult
+	if err := env.client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: env.repo.ID, Branch: branch, HeadSHA: headSHA, SkipSteps: skipSteps,
+		Intent: intent, LaunchNonce: launchNonce, ValidationGeneration: validationGeneration,
+	}, &result); err != nil {
+		return nil, fmt.Errorf("start fresh run: %w", err)
+	}
+	return &result.Receipt, nil
+}
+
+func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent string, timeout time.Duration) (*ipc.LaunchReceipt, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	poll := time.NewTicker(150 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		receipt, err := claimLaunchReceipt(client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, digestLaunchIntent(intent))
+		if err != nil {
+			return nil, err
+		}
+		if receipt != nil {
+			return receipt, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, nil
+		case <-poll.C:
+		}
+	}
+}
+
 // runIDsForHead snapshots the run IDs already present for a repo's exact branch
 // and head SHA before a push, so waitForTriggeredRunForHead can tell a run this
 // push created apart from a terminal run an earlier push left behind. Scoping to
@@ -409,6 +525,21 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 
 func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
 	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+}
+
+// emitLaunchReceipt writes the proof before driveRun subscribes, so callers
+// retain the daemon-authored binding even if later driving blocks or fails.
+func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
+	emitDoc(cmd, toon.Field{Key: "launch_receipt", Value: toon.NewObject(
+		toon.Field{Key: "run_id", Value: receipt.RunID},
+		toon.Field{Key: "disposition", Value: receipt.Disposition},
+		toon.Field{Key: "launch_nonce", Value: receipt.LaunchNonce},
+		toon.Field{Key: "validation_generation", Value: receipt.ValidationGeneration},
+		toon.Field{Key: "branch", Value: receipt.Branch},
+		toon.Field{Key: "head_sha", Value: receipt.HeadSHA},
+		toon.Field{Key: "submitted_head_sha", Value: receipt.SubmittedHeadSHA},
+		toon.Field{Key: "intent_digest", Value: receipt.IntentDigest},
+	)})
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

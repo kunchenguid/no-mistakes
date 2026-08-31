@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,6 +112,146 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 	if _, ok := finished.fields["duration_ms"]; !ok {
 		t.Fatal("expected duration_ms in run finished telemetry")
+	}
+}
+
+func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	repo, headSHA := setupTestGitRepo(t, p, d, "proof-launch-repo")
+
+	call := func(nonce, generation, intent string) (ipc.StartFreshRunResult, error) {
+		client, err := ipc.Dial(p.Socket())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		var result ipc.StartFreshRunResult
+		err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+			LaunchNonce: nonce, ValidationGeneration: generation,
+		}, &result)
+		return result, err
+	}
+
+	const generation = "generation-001"
+	intent := "persist these exact bytes\nprivate validation intent"
+	first, err := call("nonce-1", generation, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Receipt.Disposition != "created" || first.Receipt.RunID == "" ||
+		first.Receipt.LaunchNonce != "nonce-1" || first.Receipt.ValidationGeneration != generation ||
+		first.Receipt.Branch != "main" || first.Receipt.HeadSHA != headSHA ||
+		first.Receipt.SubmittedHeadSHA != headSHA || first.Receipt.IntentDigest != digestIntent(intent) {
+		t.Fatalf("first receipt = %#v", first.Receipt)
+	}
+	encoded, err := json.Marshal(first.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private validation intent") || strings.Contains(string(encoded), intent) {
+		t.Fatalf("launch receipt exposed raw intent: %s", encoded)
+	}
+	run, err := d.GetRun(first.Receipt.RunID)
+	if err != nil || run == nil || run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" ||
+		run.LaunchValidationGeneration == nil || *run.LaunchValidationGeneration != generation ||
+		run.LaunchIntentDigest == nil || *run.LaunchIntentDigest != digestIntent(intent) ||
+		run.Intent == nil || *run.Intent != intent || run.LaunchReceiptClaimedAt == nil {
+		t.Fatalf("persisted proof run = %#v, err=%v", run, err)
+	}
+
+	replay, err := call("nonce-1", generation, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Receipt.RunID != first.Receipt.RunID || replay.Receipt.Disposition != "reused" {
+		t.Fatalf("replay receipt = %#v, first = %#v", replay.Receipt, first.Receipt)
+	}
+	if _, err := call("nonce-1", "generation-002", intent); err == nil {
+		t.Fatal("changed validation generation reused a nonce")
+	}
+	if _, err := call("nonce-1", generation, intent+" changed"); err == nil {
+		t.Fatal("changed intent reused a nonce")
+	}
+}
+
+func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
+	repo, headSHA := setupTestGitRepo(t, p, d, "proof-push-repo")
+	const generation = "generation-push-001"
+	const intent = "opaque push intent"
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var pushed ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
+		Old: "0000000000000000000000000000000000000000", New: headSHA,
+		Intent: intent, LaunchNonce: "push-nonce", ValidationGeneration: generation,
+	}, &pushed); err != nil {
+		t.Fatal(err)
+	}
+	if pushed.RunID == "" {
+		t.Fatalf("push result = %#v", pushed)
+	}
+	if stored, err := d.GetRun(pushed.RunID); err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("push receipt claim state = %#v, err=%v", stored, err)
+	}
+
+	const callers = 4
+	results := make(chan ipc.StartFreshRunResult, callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			c, err := ipc.Dial(p.Socket())
+			if err == nil {
+				defer c.Close()
+				var result ipc.StartFreshRunResult
+				err = c.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+					RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+					LaunchNonce: "push-nonce", ValidationGeneration: generation,
+				}, &result)
+				results <- result
+			}
+			errs <- err
+		}()
+	}
+	created := 0
+	for range callers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		result := <-results
+		if result.Receipt.RunID != pushed.RunID {
+			t.Fatalf("concurrent receipt run = %q, want %q", result.Receipt.RunID, pushed.RunID)
+		}
+		if result.Receipt.Disposition == "created" {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created receipts = %d, want 1", created)
+	}
+
+	gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", "advance gate")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	if err := d.UpdateRunHeadSHA(pushed.RunID, "pipeline-fix-head"); err != nil {
+		t.Fatal(err)
+	}
+	var replay ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+		LaunchNonce: "push-nonce", ValidationGeneration: generation,
+	}, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.Receipt.HeadSHA != headSHA || replay.Receipt.SubmittedHeadSHA != headSHA || replay.Receipt.Disposition != "reused" {
+		t.Fatalf("immutable replay receipt = %#v, want submitted head %q", replay.Receipt, headSHA)
 	}
 }
 
