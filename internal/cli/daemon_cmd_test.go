@@ -109,3 +109,24 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestProofPushOptionsRoundTripAndRejectConflicts(t *testing.T) {
+	nonce := "request-7f3"
+	generation := "generation-7"
+	nonceOpt := formatLaunchNoncePushOption(nonce)
+	generationOpt := formatValidationGenerationPushOption(generation)
+	gotNonce, err := parseLaunchNoncePushOptions([]string{nonceOpt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotGeneration, err := parseValidationGenerationPushOptions([]string{generationOpt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotNonce != nonce || gotGeneration != generation {
+		t.Fatalf("proof push options = nonce %q generation %q", gotNonce, gotGeneration)
+	}
+	if _, err := parseValidationGenerationPushOptions([]string{generationOpt, formatValidationGenerationPushOption("generation-8")}); err == nil {
+		t.Fatal("conflicting validation generations were accepted")
+	}
+}
