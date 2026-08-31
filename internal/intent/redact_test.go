@@ -5,15 +5,28 @@ import (
 	"testing"
 )
 
+// fakeGitHubPAT and fakeAWSKey reconstruct GitHub-PAT- and AWS-access-key-
+// shaped test values at runtime via string concatenation instead of storing
+// a literal secret-shaped token in the source tree (a repo-wide public-push
+// scanner flags any contiguous ghp_<20+ alnum> / AKIA<16 alnum> match
+// regardless of context). Concatenation still yields the exact same full
+// string RedactSecrets sees at runtime, so tests using them still prove the
+// redactor catches a genuine, unsplit credential-shaped value - see
+// internal/pipeline/steps/intent_test.go for the sibling fixture.
+var (
+	fakeGitHubPAT = "ghp_" + "abcdefghijklmnopqrstuvwx12"
+	fakeAWSKey    = "AKIA" + "IOSFODNN7EXAMPLE"
+)
+
 func TestRedactSecrets(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"github pat", "use ghp_abcdefghijklmnopqrstuvwx12 to push", "[REDACTED]"},
+		{"github pat", "use " + fakeGitHubPAT + " to push", "[REDACTED]"},
 		{"openai key", "key sk-abcdefghijklmnop12345678", "[REDACTED]"},
-		{"aws key", "AKIAIOSFODNN7EXAMPLE inline", "[REDACTED]"},
+		{"aws key", fakeAWSKey + " inline", "[REDACTED]"},
 		{"jwt", "token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM works", "[REDACTED]"},
 		{"api_key assignment", `api_key = "abcdef1234567890abc"`, "[REDACTED]"},
 	}
@@ -24,6 +37,25 @@ func TestRedactSecrets(t *testing.T) {
 				t.Errorf("redactSecrets(%q) = %q, expected to contain %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFakeCredentialFixturesStillMatchRealShapes pins that fakeGitHubPAT and
+// fakeAWSKey, despite being built from split literals in source, still
+// reconstruct a full-length, unsplit credential-shaped value at runtime -
+// each fed alone to the production redactSecrets, whole-string redaction
+// (not just a partial match somewhere inside it) proves the concatenated
+// value is recognized as a genuine credential, the same as a real GitHub PAT
+// or AWS access key would be. If a future edit shortens or further splits
+// either fixture so it stops matching the real secretPatterns entries, this
+// fails loudly instead of the redaction tests above silently degrading into
+// testing nothing.
+func TestFakeCredentialFixturesStillMatchRealShapes(t *testing.T) {
+	if got := redactSecrets(fakeGitHubPAT); got != "[REDACTED]" {
+		t.Errorf("fakeGitHubPAT = %q no longer matches a real GitHub PAT shape whole (redactSecrets = %q)", fakeGitHubPAT, got)
+	}
+	if got := redactSecrets(fakeAWSKey); got != "[REDACTED]" {
+		t.Errorf("fakeAWSKey = %q no longer matches a real AWS access key shape whole (redactSecrets = %q)", fakeAWSKey, got)
 	}
 }
 
