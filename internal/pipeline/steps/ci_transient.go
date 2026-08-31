@@ -19,14 +19,18 @@ type failureClass string
 
 const (
 	// classGenuine is a failure the provider attributes to the job itself:
-	// its own exit status, its own configured timeout, or a workflow that
-	// could not start. Running it again on the same commit reproduces it, so
-	// it goes straight to the fix agent.
+	// its own exit status, its own configured timeout, or a workflow definition
+	// that failed at startup. Running it again on the same commit reproduces it,
+	// so it goes straight to the fix agent.
 	classGenuine failureClass = "genuine"
 	// classTransient is an outcome the provider attributes to itself rather
 	// than to the job. Only a cancelled check qualifies: nothing about the
 	// commit produced it, so one rerun is worth more than an agent round.
 	classTransient failureClass = "transient"
+	// classExternal is a terminal outcome that requires action outside the
+	// repository. GitHub ACTION_REQUIRED means the workflow never started, so
+	// there is no job verdict to rerun or repair.
+	classExternal failureClass = "external"
 	// classUnknown is a check whose state the provider did not report, or one
 	// this version does not recognize. It never earns a rerun: an
 	// indeterminate state is not evidence of a transient one.
@@ -64,7 +68,9 @@ func classifyCheckFailure(check scm.Check) failureClass {
 	switch strings.ToUpper(strings.TrimSpace(check.State)) {
 	case "CANCELLED", "CANCELED":
 		return classTransient
-	case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+	case "ACTION_REQUIRED":
+		return classExternal
+	case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "STARTUP_FAILURE":
 		return classGenuine
 	default:
 		// Includes the empty state: a provider that reported a failed bucket
@@ -413,9 +419,10 @@ func (b *checkRerunBudget) consumeRollupGrace(name string) bool {
 // transientRerunCandidates returns the checks that should be re-run before any
 // failure on this PR reaches the fix agent.
 //
-// It returns nothing when ANY terminally failed check is genuine or
-// indeterminate. That check needs the fix agent, and it must get it on its
-// first failure with no added latency, so a transient sibling never delays it.
+// It returns nothing when ANY terminally failed check is genuine, external, or
+// indeterminate. A genuine or indeterminate check needs the fix agent without
+// added latency; an external check needs a provider-side decision. A transient
+// sibling must not delay either outcome.
 // It also returns nothing once every transient check has spent its budget,
 // which is what makes the second failure of the same check escalate.
 func transientRerunCandidates(checks []scm.Check, budget *checkRerunBudget, limit int) []scm.Check {

@@ -124,7 +124,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	checksJSON := `[
 		{"name":"build","state":"SUCCESS","bucket":"pass"},
 		{"name":"test","state":"FAILURE","bucket":"fail"},
-		{"name":"lint","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"lint","state":"FAILURE","bucket":"fail"},
 		{"name":"deploy","state":"NEUTRAL"}
 	]`
 	env := fakeCIGH(t, "OPEN", checksJSON)
@@ -192,6 +192,65 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	}
 	if !foundDisabled {
 		t.Errorf("expected 'auto-fix disabled' in logs, got: %v", logs)
+	}
+}
+
+func TestCIStep_ActionRequiredParksWithoutCallingFixAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[
+		{"name":"CI","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"Guard generated files","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"Require no-mistakes","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"docs","state":"ACTION_REQUIRED","bucket":"fail"}
+	]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+	ag := &mockAgent{name: "must-not-run"}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+
+	var logs []string
+	sctx.Log = func(message string) { logs = append(logs, message) }
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("Execute() outcome = %#v, want non-auto-fixable approval gate", outcome)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("fix agent calls = %d, want 0 for workflows that never started", len(ag.calls))
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI workflows require provider approval before jobs can run" {
+		t.Fatalf("findings summary = %q", findings.Summary)
+	}
+	if len(findings.Items) != 4 {
+		t.Fatalf("findings = %+v, want one item for each blocked workflow", findings.Items)
+	}
+	for _, finding := range findings.Items {
+		if finding.Action != types.ActionAskUser {
+			t.Fatalf("finding action = %q, want ask-user", finding.Action)
+		}
+		if !strings.Contains(finding.Description, "no job or repository-code verdict exists to repair") {
+			t.Fatalf("finding description = %q, want no-code-verdict diagnosis", finding.Description)
+		}
+	}
+	for _, log := range logs {
+		if strings.Contains(log, "auto-fixing") {
+			t.Fatalf("logs = %v, must not invoke the code-fix path", logs)
+		}
 	}
 }
 

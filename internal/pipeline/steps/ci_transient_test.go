@@ -143,7 +143,9 @@ func TestClassifyCheckFailure(t *testing.T) {
 		// masked as infrastructure.
 		{"failure that cleared setup stays genuine", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE", PreRunFailure: false}, classGenuine},
 		{"job error", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ERROR"}, classGenuine},
-		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ACTION_REQUIRED"}, classGenuine},
+		// GitHub refused to start this workflow, so no repository job produced a
+		// verdict and the CI step must park for provider approval rather than fix.
+		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ACTION_REQUIRED"}, classExternal},
 		// A workflow that cannot start is reproducible (bad workflow file), not
 		// something a rerun clears.
 		{"startup failure", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "STARTUP_FAILURE"}, classGenuine},

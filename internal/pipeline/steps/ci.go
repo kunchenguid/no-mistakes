@@ -443,7 +443,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			// conclusive pass, failure, or skip must keep the PR non-ready. This
 			// includes cancelled and unknown provider states.
 			readinessPending := checksPending || hasUnresolvedChecks(checks)
-			failing := failingCheckNames(checks)
+			failing := repairableFailingCheckNames(checks)
+			approvalRequired := providerApprovalRequiredCheckNames(checks)
 
 			// A rerun the provider has answered is no longer outstanding. This
 			// runs before anything reads the rerun bookkeeping so a resolved
@@ -516,11 +517,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			sort.Strings(unresolvedCancelled)
 			sort.Strings(awaitingRerun)
 			hasFailures := len(failing) > 0
-			hasIssues := hasFailures || mergeConflict || len(unresolvedCancelled) > 0
+			hasIssues := hasFailures || mergeConflict || len(unresolvedCancelled) > 0 || len(approvalRequired) > 0
 			// reportedIssues is what the step tells the user about; failing
 			// stays the set the fix agent is asked to repair.
 			reportedIssues := mergeCheckNames(failing, unresolvedCancelled)
-			timeoutFailingChecks = append(timeoutFailingChecks[:0], mergeCheckNames(reportedIssues, awaitingRerun)...)
+			timeoutIssues := mergeCheckNames(reportedIssues, awaitingRerun)
+			timeoutIssues = mergeCheckNames(timeoutIssues, approvalRequired)
+			timeoutFailingChecks = append(timeoutFailingChecks[:0], timeoutIssues...)
 
 			if hasIssues || len(awaitingRerun) > 0 {
 				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
@@ -546,6 +549,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
 				lastMonitorLog = ""
+				if len(approvalRequired) > 0 && !hasFailures && !mergeConflict {
+					// GitHub blocks unapproved external-contributor workflows before
+					// creating a job, so there is no code verdict or log for a fixer to
+					// act on. Park at an explicit provider-approval gate instead of
+					// asking an agent to invent a repository edit.
+					sort.Strings(approvalRequired)
+					sctx.Log("CI workflows require provider approval before jobs can run; waiting for manual approval...")
+					return ciProviderApprovalRequiredOutcome(approvalRequired), nil
+				}
 				if !hasFailures && !mergeConflict && !sctx.Fixing {
 					// Every remaining issue is a transient check rather than a
 					// verdict on the code. No fix can clear one,

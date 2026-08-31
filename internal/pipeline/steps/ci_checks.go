@@ -82,6 +82,31 @@ func failingCheckNames(checks []scm.Check) []string {
 	return names
 }
 
+// providerApprovalRequiredCheckNames returns checks whose provider refused to
+// start them until a person approves the workflow. ACTION_REQUIRED is a
+// terminal red conclusion, but it is not a verdict produced by repository code
+// and no code edit can clear it. Keeping that distinction here prevents the CI
+// step from spending a fix-agent round on runs that created no jobs or logs.
+func providerApprovalRequiredCheckNames(checks []scm.Check) []string {
+	var names []string
+	for _, check := range checks {
+		if check.Failing() && classifyCheckFailure(check) == classExternal {
+			names = append(names, check.Name)
+		}
+	}
+	return names
+}
+
+func repairableFailingCheckNames(checks []scm.Check) []string {
+	var names []string
+	for _, check := range checks {
+		if check.Failing() && classifyCheckFailure(check) != classExternal {
+			names = append(names, check.Name)
+		}
+	}
+	return names
+}
+
 // terminalFailureCompletionTimes snapshots when each terminally failed check
 // finished, so a later poll can tell that CI has re-run since the fix push.
 //
@@ -192,6 +217,22 @@ func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pip
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
 			Description: "PR has merge conflicts with the base branch",
+		})
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
+func ciProviderApprovalRequiredOutcome(names []string) *pipeline.StepOutcome {
+	findings := Findings{Summary: "CI workflows require provider approval before jobs can run"}
+	for _, name := range names {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: fmt.Sprintf("CI workflow requires provider approval before it can run: %s - no job or repository-code verdict exists to repair", name),
+			Action:      types.ActionAskUser,
 		})
 	}
 	findingsJSON, _ := json.Marshal(findings)
