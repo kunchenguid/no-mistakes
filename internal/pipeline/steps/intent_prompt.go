@@ -95,8 +95,10 @@ func intentConformanceReviewClause(sctx *pipeline.StepContext) string {
 }
 
 // cleanedUserIntent returns the trimmed, secret-redacted, adversarial-stripped
-// user intent text suitable for embedding either into agent prompts or into
-// rendered surfaces like a PR body. Returns "" when no intent is available.
+// user intent text for embedding into agent prompts. It is not reviewer-facing
+// prose: it is a task brief addressed to an agent, so no rendered surface
+// publishes it verbatim (see the PR step's body rules, which take it as
+// drafting input only). Returns "" when no intent is available.
 func cleanedUserIntent(sctx *pipeline.StepContext) string {
 	if sctx == nil {
 		return ""

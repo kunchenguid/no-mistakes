@@ -97,6 +97,9 @@ test:
     branch: no-mistakes/evidence
     retention: 336h
     max_runs: 200
+
+pr:
+  style: rich
 ```
 
 ## Fields
@@ -715,6 +718,27 @@ Reaping runs after each finished run and again at daemon startup. An upgraded da
 `local_root` must be an absolute path outside `<NM_HOME>/worktrees`; a relative or managed-worktree path fails daemon startup and prevents new or recovered runs from starting. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
 
 The publication fields are global defaults. Repo config can override `store_in_repo` and `dir`; it can override `branch` only through the trusted default-branch copy. `local_root`, `retention`, and `max_runs` are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
+
+### pr.style
+
+How the PR step drafts the section of the pull request description it owns.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | `rich` |
+| Options | `rich`, `minimal` |
+
+| Value | Body the drafting agent writes |
+| --- | --- |
+| `rich` | A `## Summary` prose section stating what changed and why, followed by emoji-led `###` subsections chosen for the content the run established - production evidence, before and after, regression evidence, callers audited, deliberate scope decisions, known gaps - with every source of evidence linked inline: monitor, dashboard and log-query URLs, incident threads, `commit`/`blob#Lstart-Lend` permalinks, and referenced pull requests as full URLs. Bullets lead with a bold phrase, identifiers are backticked with their real repository paths, and repeated shapes become tables. |
+| `minimal` | The terse `## What Changed` bullet list: 1-3 bullets describing the concrete code and behavior changes in the branch. |
+
+Under both styles every claim must be derived from the final diff, and a link the agent cannot substantiate is omitted rather than guessed.
+Under both styles the extracted user intent reaches the drafting agent as prompt input only and is never published: it is a task brief addressed to an agent, so the agent restates its substance in reviewer-facing words instead of pasting it.
+The deterministic `## Risk Assessment`, `## Testing`, and `## Pipeline` sections are appended after the drafted section either way, and the drafting fallback (agent failure or timeout) always writes `## What Changed` with the final changed paths and statuses.
+This is global-only: it describes the operator's own PR writing style, so a repository's `.no-mistakes.yaml` cannot set it.
+An unrecognized value fails configuration loading.
 
 ### eval
 

@@ -177,6 +177,7 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	PR     PRGlobalRaw
 	// Eval is resolved at load time because it is global-only: it describes
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
@@ -211,6 +212,7 @@ type globalConfigRaw struct {
 	Commit                  CommitRaw                  `yaml:"commit"`
 	Intent                  IntentRaw                  `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
+	PR                      PRGlobalRaw                `yaml:"pr"`
 	Eval                    EvalRaw                    `yaml:"eval"`
 	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
 }
@@ -302,6 +304,22 @@ type ReviewRaw struct {
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
+}
+
+// PR body drafting styles for pr.style. "rich" opens the body with a "##
+// Summary" prose section followed by emoji-led "###" evidence subsections with
+// inline links; "minimal" keeps the terse "## What Changed" bullet list.
+const (
+	PRStyleRich    = "rich"
+	PRStyleMinimal = "minimal"
+)
+
+// PRGlobalRaw is the YAML representation of the operator's pull-request
+// settings. Style picks how the PR step drafts the body. It is global-only:
+// it describes the operator's own PR writing style, so it has no repository
+// counterpart and no pushed branch can change it.
+type PRGlobalRaw struct {
+	Style string `yaml:"style"`
 }
 
 // PRRaw is the YAML representation of pull-request settings.
@@ -583,9 +601,11 @@ type Config struct {
 	NoCI bool
 }
 
-// PR is the resolved pull-request configuration.
+// PR is the resolved pull-request configuration. Style comes from the global
+// config only (see PRGlobalRaw).
 type PR struct {
 	BaseBranch string
+	Style      string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -982,6 +1002,19 @@ intent:
 #     local_root: /var/lib/no-mistakes/evidence
 #     retention: 720h
 #     max_runs: 50
+
+# How the PR step drafts the pull-request description. "rich" (the default)
+# opens the body with a "## Summary" prose section and then adds emoji-led "###"
+# subsections for whatever the run actually established - production evidence,
+# before and after, regression evidence, callers audited, deliberate scope
+# decisions, known gaps - with every source of evidence linked inline and any
+# link it cannot substantiate omitted rather than guessed. "minimal" keeps the
+# terse "## What Changed" bullet list instead. Under both styles the Risk
+# Assessment, Testing, and Pipeline sections are appended by the pipeline, and
+# the extracted user intent reaches the drafting agent as input only - it is
+# never pasted into the body.
+# pr:
+#   style: rich
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
 # agent candidates, pinned to an explicit model and reasoning effort, against
@@ -1651,6 +1684,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		GateReconcileTimeout:    DefaultGateReconcileTimeout,
 		LogLevel:                "info",
 		SessionReuse:            true,
+		PR:                      PRGlobalRaw{Style: PRStyleRich},
 		Eval:                    evalDefaults(),
 	}
 }
@@ -1947,6 +1981,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	switch raw.PR.Style {
+	case "":
+	case PRStyleRich, PRStyleMinimal:
+		cfg.PR.Style = raw.PR.Style
+	default:
+		return nil, fmt.Errorf("parse global config: invalid pr.style %q; valid options: %s, %s", raw.PR.Style, PRStyleRich, PRStyleMinimal)
+	}
 	applyEvalOverrides(&cfg.Eval, &raw.Eval)
 
 	return cfg, nil
@@ -2623,7 +2664,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
+		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch), Style: global.PR.Style},
 		ForgeProfiles:  global.ForgeProfiles,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).

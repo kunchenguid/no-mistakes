@@ -813,3 +813,45 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+func TestLoadGlobalFromBytes_PRStyle(t *testing.T) {
+	cfg, err := LoadGlobalFromBytes([]byte("agent: claude\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PR.Style != PRStyleRich {
+		t.Errorf("default pr.style = %q, want %q", cfg.PR.Style, PRStyleRich)
+	}
+
+	cfg, err = LoadGlobalFromBytes([]byte("pr:\n  style: minimal\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PR.Style != PRStyleMinimal {
+		t.Errorf("pr.style = %q, want %q", cfg.PR.Style, PRStyleMinimal)
+	}
+
+	if _, err := LoadGlobalFromBytes([]byte("pr:\n  style: verbose\n")); err == nil {
+		t.Fatal("expected an unrecognized pr.style to fail configuration loading")
+	}
+
+	for _, want := range []string{"# pr:", "#   style: rich", `"minimal" keeps the`} {
+		if !strings.Contains(defaultConfigYAML, want) {
+			t.Errorf("defaultConfigYAML does not document %q", want)
+		}
+	}
+}
+
+func TestMerge_PRStyleComesFromGlobalOnly(t *testing.T) {
+	global, err := LoadGlobalFromBytes([]byte("pr:\n  style: minimal\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg := Merge(global, &RepoConfig{PR: PRRaw{BaseBranch: "release"}})
+	if cfg.PR.Style != PRStyleMinimal {
+		t.Errorf("merged pr.style = %q, want %q", cfg.PR.Style, PRStyleMinimal)
+	}
+	if cfg.PR.BaseBranch != "release" {
+		t.Errorf("merged pr.base_branch = %q, want %q", cfg.PR.BaseBranch, "release")
+	}
+}

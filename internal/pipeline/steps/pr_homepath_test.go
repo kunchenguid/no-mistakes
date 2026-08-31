@@ -89,7 +89,6 @@ type homePathLeakCase struct {
 	testFindings   string
 	testStepError  string
 	fixSummary     string
-	userIntent     string
 	agentTitle     string
 	agentBody      string
 	// wantVisible are strings that must survive redaction, so a "fix" that
@@ -270,12 +269,6 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			agentBody:   "## What Changed\n\n- fixtures now land in the run evidence directory instead of " + fixtureHome + "/tmp",
 			wantVisible: []string{"fixtures now land in the run evidence directory instead of ~/tmp"},
 		},
-		{
-			name:        "extracted user intent",
-			evidenceDir: fixtureEvidenceDir,
-			userIntent:  "Stop the exporter writing into " + fixtureHome + "/Downloads on every run.",
-			wantVisible: []string{"Stop the exporter writing into ~/Downloads on every run."},
-		},
 	}
 
 	for _, tc := range cases {
@@ -394,7 +387,6 @@ func buildHomePathLeakPRContentWithLimit(t *testing.T, tc homePathLeakCase, body
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.UserIntent = tc.userIntent
 	if tc.evidenceDir != "" {
 		sctx.EvidenceDir = tc.evidenceDir
 	}
