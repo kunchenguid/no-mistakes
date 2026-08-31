@@ -227,23 +227,16 @@ func TestRunAgent_TimeoutReportsRecentOutputWhenTheAgentWasStreaming(t *testing.
 	ag := &hangingAgent{
 		name: "busy",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A working agent: it streams right up to the deadline. This must
-			// never be described the same way as an agent that emitted nothing.
-			for {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(2 * time.Millisecond):
-					opts.OnChunk("thinking\n")
-				}
-			}
+			opts.OnChunk("thinking\n")
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
 	var logged strings.Builder
 	sctx := &StepContext{
 		Ctx:    context.Background(),
 		Agent:  ag,
-		Config: &config.Config{AgentTimeout: 60 * time.Millisecond},
+		Config: &config.Config{AgentTimeout: 100 * time.Millisecond},
 	}
 
 	_, err := sctx.RunAgent(agent.RunOpts{
@@ -301,6 +294,38 @@ func TestAgentActivityEvidenceReportsHistoricalOutputWithoutInferringExpiryActiv
 	}
 }
 
+func TestAgentActivityEvidenceFreezesAtTheAbsoluteDeadline(t *testing.T) {
+	t.Parallel()
+	deadline := time.Unix(1_700_000_000, 0)
+	activity := &agentActivity{begun: deadline.Add(-30 * time.Minute)}
+	activity.setCutoff(deadline)
+	activity.observeAt(deadline.Add(-3 * time.Second))
+	activity.observeAt(deadline.Add(-2 * time.Second))
+	activity.observeAt(deadline.Add(10 * time.Second))
+
+	got := activity.evidence()
+	for _, want := range []string{"last-activity age 2s", "2 output events observed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("evidence = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "12s") || strings.Contains(got, "3 output events") {
+		t.Fatalf("evidence included post-deadline cleanup activity: %q", got)
+	}
+}
+
+func TestAgentActivityNoOutputEvidenceUsesTheAbsoluteDeadline(t *testing.T) {
+	t.Parallel()
+	deadline := time.Unix(1_700_000_000, 0)
+	activity := &agentActivity{begun: deadline.Add(-30 * time.Minute)}
+	activity.setCutoff(deadline)
+
+	got := activity.evidence()
+	if !strings.Contains(got, "produced no output at all in 30m0s") {
+		t.Fatalf("evidence = %q, want no-output age frozen at the deadline", got)
+	}
+}
+
 func TestRunAgent_TimeoutPreservesWhatTheAdapterReported(t *testing.T) {
 	t.Parallel()
 	// A killed native agent's error is the only account of what its process was
@@ -344,20 +369,15 @@ func TestRunAgent_NativeSubprocessLivenessCountsAsObservedOutput(t *testing.T) {
 		name: "tooling",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			opts.OnLifecycle(agent.LifecycleEvent{Agent: "tooling", Phase: agent.LifecyclePhaseStart, PID: 4242})
-			for {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(2 * time.Millisecond):
-					opts.OnLifecycle(agent.LifecycleEvent{Agent: "tooling", Phase: agent.LifecyclePhaseActivity})
-				}
-			}
+			opts.OnLifecycle(agent.LifecycleEvent{Agent: "tooling", Phase: agent.LifecyclePhaseActivity})
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
 	sctx := &StepContext{
 		Ctx:    context.Background(),
 		Agent:  ag,
-		Config: &config.Config{AgentTimeout: 60 * time.Millisecond},
+		Config: &config.Config{AgentTimeout: 100 * time.Millisecond},
 	}
 
 	_, err := sctx.RunAgent(agent.RunOpts{
@@ -367,7 +387,7 @@ func TestRunAgent_NativeSubprocessLivenessCountsAsObservedOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
-	if !strings.Contains(err.Error(), "last produced output") {
+	if !strings.Contains(err.Error(), "produced output during the invocation") {
 		t.Fatalf("error = %q, want subprocess liveness counted as observed output", err)
 	}
 }

@@ -17,7 +17,9 @@ import (
 )
 
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
-type ReviewStep struct{}
+type ReviewStep struct {
+	now func() time.Time
+}
 
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
@@ -112,10 +114,10 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
-		// Every logical agent turn owns a fresh hard wall-clock limit. In
-		// particular, restore the step parent immediately after the fixer so the
-		// independent rereviewer cannot inherit the fixer's spent deadline.
-		summary, err := executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
+		// Every logical agent turn owns a fresh hard wall-clock limit. The fixer
+		// keeps the step parent for its synchronous preparation and commit work,
+		// so the independent rereviewer cannot inherit its spent deadline.
+		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
 			LogMessage:              "asking agent to fix identified issues...",
@@ -166,7 +168,6 @@ Previous review findings to address:
 	// fixer above cannot consume any of this independent, session-free turn's
 	// review_agent_timeout budget.
 	sctx.Log("reviewing changes...")
-	reviewCtx, cancelReview, timeout := reviewAgentContext(ctx, sctx.Config)
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -279,7 +280,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.RunAgentContext(reviewCtx, agent.RunOpts{
+	result, err := s.runReviewAgent(sctx, "agent review", "", agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -288,10 +289,6 @@ Risk assessment (after listing all findings):
 		Purpose:    "review",
 		Workload:   workload,
 	})
-	if err != nil {
-		err = reviewAgentError(reviewCtx, timeout, "agent review", err)
-	}
-	cancelReview()
 	if err != nil {
 		return nil, err
 	}
@@ -423,32 +420,36 @@ func sanitizePromptMultilineText(text string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
-	fixCtx, cancel, timeout := reviewAgentContext(sctx.Ctx, sctx.Config)
-	defer cancel()
-	opts.AgentContext = fixCtx
-	afterAgentRun := opts.AfterAgentRun
-	opts.AfterAgentRun = func(result *agent.Result) error {
-		cancel()
-		if afterAgentRun != nil {
-			return afterAgentRun(result)
-		}
-		return nil
+func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
+	role := opts.SessionRole
+	prefix := opts.ErrorPrefix
+	opts.ErrorPrefix = ""
+	opts.RunAgent = func(runOpts agent.RunOpts) (*agent.Result, error) {
+		return s.runReviewAgent(sctx, prefix, role, runOpts)
 	}
-
-	summary, err := executeFixMode(sctx, stepName, opts)
-	if err != nil {
-		return "", reviewAgentError(fixCtx, timeout, "agent fix", err)
-	}
-	return summary, nil
+	return executeFixMode(sctx, stepName, opts)
 }
 
-func reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
+func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+	ctx, cancel, timeout := s.reviewAgentContext(sctx.Ctx, sctx.Config)
+	result, err := sctx.RunAgentSessionContext(ctx, role, opts)
+	if err != nil {
+		err = reviewAgentError(ctx, timeout, prefix, err)
+	}
+	cancel()
+	return result, err
+}
+
+func (s *ReviewStep) reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
 	timeout := config.DefaultReviewAgentTimeout
 	if cfg != nil && cfg.ReviewAgentTimeout > 0 {
 		timeout = cfg.ReviewAgentTimeout
 	}
-	ctx, cancel := context.WithTimeoutCause(parent, timeout, errReviewAgentTimeout)
+	now := time.Now()
+	if s != nil && s.now != nil {
+		now = s.now()
+	}
+	ctx, cancel := context.WithDeadlineCause(parent, now.Add(timeout), errReviewAgentTimeout)
 	return ctx, cancel, timeout
 }
 

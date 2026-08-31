@@ -76,6 +76,9 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 
 func invokeAgent(parent context.Context, timeout time.Duration, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {
 	ctx, cancel, applied := bindAgentDeadline(parent, timeout)
+	if deadline, ok := ctx.Deadline(); ok {
+		activity.setCutoff(deadline)
+	}
 	result, err := run(ctx)
 	runErr := classifyAgentRun(ctx, applied, activity, err)
 	cancel()
@@ -110,6 +113,7 @@ type agentActivity struct {
 	launchedPID int
 	launchedAt  time.Time
 	launched    bool
+	cutoff      time.Time
 }
 
 func newAgentActivity() *agentActivity {
@@ -117,45 +121,78 @@ func newAgentActivity() *agentActivity {
 }
 
 func (a *agentActivity) observe() {
+	a.observeAt(time.Now())
+}
+
+func (a *agentActivity) observeAt(now time.Time) {
 	if a == nil {
 		return
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.cutoff.IsZero() && now.After(a.cutoff) {
+		return
+	}
 	a.observed++
-	a.last = time.Now()
-	a.mu.Unlock()
+	a.last = now
 }
 
 func (a *agentActivity) beginAttempt() {
 	if a == nil {
 		return
 	}
+	now := time.Now()
 	a.mu.Lock()
-	a.begun = time.Now()
+	defer a.mu.Unlock()
+	if !a.cutoff.IsZero() && now.After(a.cutoff) {
+		return
+	}
+	a.begun = now
 	a.last = time.Time{}
 	a.observed = 0
 	a.launchedPID = 0
 	a.launchedAt = time.Time{}
 	a.launched = false
-	a.mu.Unlock()
 }
 
 func (a *agentActivity) observeLaunch(pid int) {
 	if a == nil {
 		return
 	}
+	now := time.Now()
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.cutoff.IsZero() && now.After(a.cutoff) {
+		return
+	}
 	a.launched = true
 	a.launchedPID = pid
-	a.launchedAt = time.Now()
+	a.launchedAt = now
+}
+
+func (a *agentActivity) setCutoff(cutoff time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.cutoff = cutoff
 	a.mu.Unlock()
 }
 
-// evidence renders what was actually observed at an absolute wall-clock
-// limit. Activity never resets that hard safety limit; it only determines the
-// honest operator-facing classification at expiry.
+// evidence renders the activity snapshot at the absolute wall-clock limit.
+// Activity never resets that hard safety limit, and cleanup events after the
+// deadline cannot change the snapshot.
 func (a *agentActivity) evidence() string {
-	return a.evidenceAt(time.Now())
+	if a == nil {
+		return "agent activity was not observed for this invocation"
+	}
+	a.mu.Lock()
+	at := a.cutoff
+	a.mu.Unlock()
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return a.evidenceAt(at)
 }
 
 func (a *agentActivity) evidenceAt(now time.Time) string {
@@ -180,6 +217,9 @@ func (a *agentActivity) evidenceAt(now time.Time) string {
 }
 
 func roundActivity(d time.Duration) time.Duration {
+	if d < 0 {
+		d = 0
+	}
 	if d < time.Second {
 		return d.Round(time.Millisecond)
 	}
