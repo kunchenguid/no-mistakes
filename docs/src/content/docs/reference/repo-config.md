@@ -9,7 +9,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
 The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, and `test.evidence.branch` only from that trusted copy.
-`pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
+The whole `pr` block ([`pr.base_branch`](#prbase_branch), [`pr.issue_link_template`](#prissue_link_template)) is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent`.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -210,6 +210,44 @@ Because this setting controls where a PR lands, a pushed branch cannot redirect 
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
 The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
 An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
+
+### pr.issue_link_template
+
+Choose how a linked tracker issue is rendered in the footer of the PR body.
+
+| | |
+| --- | --- |
+| Type | `string` (Go `text/template`) |
+| Default | Empty. With no issue number supplied, no footer is added at all |
+| Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
+
+The footer exists so a tool-authored PR can carry the same tracker link a human contributor would type, for repositories whose CI requires one.
+It is supplementary PR-body text only: it never changes what any gate means or how a PR is judged.
+
+The issue number comes from `no-mistakes axi run --closes <number>`.
+The flag is optional, and without it the PR body is unchanged.
+
+The template receives two fields:
+
+| Field | Value |
+| --- | --- |
+| `{{.Issue}}` | The issue number, without a leading `#` |
+| `{{.Keyword}}` | The linking keyword, currently always `Closes` |
+
+```yaml
+pr:
+  # GitLab-style, and does not auto-close the issue:
+  issue_link_template: "Refs #{{.Issue}}"
+```
+
+When `--closes` is supplied but no template is configured, the built-in `Closes #{{.Issue}}` is used.
+Repositories differ on which keyword they want — `Closes` auto-closes the issue on merge, `Refs` only cross-links it — so that choice stays the repository's rather than the tool's.
+
+The footer is appended last and is budgeted against the forge's PR body size cap.
+If the rendered footer cannot fit within the cap, it is omitted and the omission is logged, rather than truncating the body around it.
+
+The issue number is read once, when the PR body is composed.
+A `--closes` passed while reattaching to a run whose body was already composed is refused with an explicit error rather than being silently accepted, because it could no longer appear in that PR.
 
 ### commands.test
 

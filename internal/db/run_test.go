@@ -1,6 +1,9 @@
 package db
 
 import (
+	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -77,6 +80,191 @@ func TestUpdateRunIssueNumberNormalizesAndPersists(t *testing.T) {
 	}
 	if got.IssueNumber == nil || *got.IssueNumber != "42" {
 		t.Fatalf("issue number = %#v, want 42", got.IssueNumber)
+	}
+}
+
+// The reattach race: an `axi run --closes` update that lands after the PR step
+// has already sampled the issue number can no longer reach the composed body,
+// so it must fail closed instead of reporting a write the PR will never show.
+func TestUpdateRunIssueNumberFailsClosedAfterPRBodyClaim(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	// The PR step composes the body, claiming whatever was set at that moment.
+	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim issue number: %v", err)
+	}
+	if claimed != "" {
+		t.Fatalf("claimed = %q, want empty", claimed)
+	}
+
+	// The reattach update arrives too late.
+	err = d.UpdateRunIssueNumber(run.ID, "42")
+	if !errors.Is(err, ErrIssueNumberLocked) {
+		t.Fatalf("update after claim = %v, want ErrIssueNumberLocked", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.IssueNumber != nil {
+		t.Fatalf("issue number = %#v, want nil: a refused update must not persist", got.IssueNumber)
+	}
+}
+
+// A database created before the claim column gains it on reopen, and its
+// pre-existing runs read back as unclaimed so a run that was already in flight
+// during an upgrade can still receive its issue number.
+func TestOpenMigratesIssueNumberLockedAtColumn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	// Simulate a pre-claim database.
+	if _, err := d.sql.Exec(`ALTER TABLE runs DROP COLUMN issue_number_locked_at`); err != nil {
+		t.Fatalf("drop column: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d.Close()
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get after migration: %v", err)
+	}
+	if got.IssueNumberLockedAt != nil {
+		t.Fatalf("migrated run = %#v, want unclaimed", got.IssueNumberLockedAt)
+	}
+	// An in-flight run from before the upgrade still accepts its issue number.
+	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
+		t.Fatalf("update after migration: %v", err)
+	}
+	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim after migration: %v", err)
+	}
+	if claimed != "42" {
+		t.Fatalf("claimed = %q, want 42", claimed)
+	}
+}
+
+// An update that wins the race must still apply, and the claim must observe it.
+func TestClaimIssueNumberForPRBodyObservesEarlierUpdate(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
+		t.Fatalf("update issue number: %v", err)
+	}
+	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("claim issue number: %v", err)
+	}
+	if claimed != "42" {
+		t.Fatalf("claimed = %q, want 42", claimed)
+	}
+}
+
+// The claim is idempotent: a PR step that runs again (resume, or updating an
+// existing PR) recomposes from the value it already claimed.
+func TestClaimIssueNumberForPRBodyIsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
+		t.Fatalf("update issue number: %v", err)
+	}
+
+	first, err := d.ClaimIssueNumberForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	second, err := d.ClaimIssueNumberForPRBody(run.ID)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if first != "42" || second != "42" {
+		t.Fatalf("claims = %q/%q, want 42/42", first, second)
+	}
+}
+
+// Exactly one of N concurrent reattach updates racing a claim may report
+// success, and the composed body must carry whatever the claim returned.
+func TestUpdateRunIssueNumberConcurrentWithClaimNeverReportsAPhantomWrite(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	claimed := ""
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		got, err := d.ClaimIssueNumberForPRBody(run.ID)
+		if err != nil {
+			t.Errorf("claim issue number: %v", err)
+			return
+		}
+		mu.Lock()
+		claimed = got
+		mu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		switch err := d.UpdateRunIssueNumber(run.ID, "42"); {
+		case err == nil:
+			mu.Lock()
+			accepted++
+			mu.Unlock()
+		case errors.Is(err, ErrIssueNumberLocked):
+			// Correctly refused: it lost the race to the claim.
+		default:
+			t.Errorf("update issue number: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The invariant: a reported success must be visible to the PR body.
+	if accepted == 1 && claimed != "42" {
+		t.Fatalf("update reported success but claim saw %q: the PR body would omit the footer", claimed)
+	}
+	if accepted == 0 && claimed != "" {
+		t.Fatalf("update was refused but claim saw %q", claimed)
 	}
 }
 

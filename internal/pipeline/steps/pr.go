@@ -85,13 +85,16 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
-	// Resolve the issue number from the DB once, avoiding a data race with
-	// concurrent IPC updates to the in-memory run struct.
-	if run, err := sctx.DB.GetRun(sctx.Run.ID); err != nil {
+	// Claim the issue number from the DB once. The claim both reads the value
+	// and closes the window in which a concurrent `axi run --closes` reattach
+	// could still change it: any such update now fails closed with
+	// db.ErrIssueNumberLocked instead of landing after this sample and leaving
+	// the composed body without the footer the caller was told it would get.
+	issueNumber, err := sctx.DB.ClaimIssueNumberForPRBody(sctx.Run.ID)
+	if err != nil {
 		return nil, fmt.Errorf("resolve issue number: %w", err)
-	} else if run != nil && run.IssueNumber != nil {
-		sctx.IssueNumber = strings.TrimSpace(*run.IssueNumber)
 	}
+	sctx.IssueNumber = issueNumber
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)

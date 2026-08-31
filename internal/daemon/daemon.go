@@ -1066,6 +1066,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 		if err := d.UpdateRunIssueNumber(p.RunID, p.IssueNumber); err != nil {
+			// The PR body already sampled the issue number, so this update
+			// could not reach the footer. Report a structured rejection rather
+			// than success for a write that will never be visible.
+			if errors.Is(err, db.ErrIssueNumberLocked) {
+				return &ipc.UpdateRunIssueNumberResult{
+					OK:     false,
+					Reason: ipc.IssueNumberRejectedPRBodyComposed,
+				}, nil
+			}
 			return nil, fmt.Errorf("update issue number: %w", err)
 		}
 		return &ipc.UpdateRunIssueNumberResult{OK: true}, nil

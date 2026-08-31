@@ -191,9 +191,18 @@ type UpdateRunIssueNumberParams struct {
 	IssueNumber string `json:"issue_number"`
 }
 
-// UpdateRunIssueNumberResult is the result of UpdateRunIssueNumber.
+// IssueNumberRejectedPRBodyComposed is the Reason reported when the run's PR
+// body was already composed, so the issue number could no longer reach its
+// footer. It is a rejection rather than a transport error because retrying
+// cannot help: the caller must edit the PR or start a fresh run.
+const IssueNumberRejectedPRBodyComposed = "pr_body_already_composed"
+
+// UpdateRunIssueNumberResult is the result of UpdateRunIssueNumber. OK is false
+// for a refused update, with Reason naming why so the caller can give advice
+// that fits instead of matching on error prose.
 type UpdateRunIssueNumberResult struct {
-	OK bool `json:"ok"`
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // --- Method results ---

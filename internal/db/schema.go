@@ -243,6 +243,11 @@ var migrationStatements = []string{
 	// Issue number for PR body footer linking (nullable; NULL means no issue
 	// link is rendered).
 	`ALTER TABLE runs ADD COLUMN issue_number TEXT`,
+	// Set once, atomically with the read that resolves the issue number into
+	// the PR body. NULL means no PR body has sampled the issue number yet, so
+	// a late --closes can still reach the footer; non-NULL closes that window
+	// (see UpdateRunIssueNumber / ClaimIssueNumberForPRBody).
+	`ALTER TABLE runs ADD COLUMN issue_number_locked_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

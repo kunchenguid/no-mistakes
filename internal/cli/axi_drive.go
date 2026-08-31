@@ -203,6 +203,12 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		// Reattaching to an active run: forward the issue number so the PR
 		// step can render the footer even when triggerRun was not called.
 		if err := forwardIssueNumberToActiveRun(env.client, runID, closesIssue); err != nil {
+			// A run whose PR body is already composed can never pick this up,
+			// so retrying is the wrong advice; say what to do instead.
+			if errors.Is(err, errIssueNumberPRBodyComposed) {
+				return emitError(cmd, 1, err.Error(),
+					"The issue link was NOT added. Add it to the PR description by hand, or pass --closes when starting a fresh run.")
+			}
 			return emitError(cmd, 1, err.Error(),
 				"Retry once the daemon is healthy; the PR will not include --closes unless this update succeeds.")
 		}
@@ -251,10 +257,18 @@ func forwardIssueNumberToActiveRun(client issueNumberUpdateClient, runID, issueN
 		return fmt.Errorf("forward issue number to active run: %w", err)
 	}
 	if !result.OK {
+		if result.Reason == ipc.IssueNumberRejectedPRBodyComposed {
+			return errIssueNumberPRBodyComposed
+		}
 		return errors.New("forward issue number to active run: daemon rejected update")
 	}
 	return nil
 }
+
+// errIssueNumberPRBodyComposed reports that the run's PR body was already
+// composed, so --closes could not reach its footer. Retrying cannot help.
+var errIssueNumberPRBodyComposed = errors.New(
+	"forward issue number to active run: the PR body was already composed, so --closes could not be applied")
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
 	if runID != "" {

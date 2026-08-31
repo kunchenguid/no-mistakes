@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -421,6 +422,50 @@ func TestPRStep_CreatesConfiguredDraftPR(t *testing.T) {
 			t.Logf("provider command: gh %s\npersisted PR URL: %s", line, *run.PRURL)
 			break
 		}
+	}
+}
+
+// Once the PR step has composed the body, a reattach `--closes` update can no
+// longer appear in it, so the DB must refuse the write instead of accepting one
+// the PR will never show. Regression for the reattach-vs-snapshot race.
+func TestPRStep_ComposedBodyLocksOutLateIssueNumberUpdate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	// The issue number was forwarded before the PR step sampled it, so it wins.
+	if err := sctx.DB.UpdateRunIssueNumber(sctx.Run.ID, "42"); err != nil {
+		t.Fatalf("update issue number: %v", err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "Closes #42") {
+		t.Fatalf("expected composed PR body to carry the issue footer, got:\n%s", string(logData))
+	}
+
+	// A second `axi run --closes` now arrives too late for this body.
+	err = sctx.DB.UpdateRunIssueNumber(sctx.Run.ID, "99")
+	if !errors.Is(err, db.ErrIssueNumberLocked) {
+		t.Fatalf("late update = %v, want db.ErrIssueNumberLocked", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.IssueNumber == nil || *run.IssueNumber != "42" {
+		t.Fatalf("issue number = %#v, want 42 unchanged", run.IssueNumber)
 	}
 }
 

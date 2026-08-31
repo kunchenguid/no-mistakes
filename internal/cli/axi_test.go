@@ -622,10 +622,43 @@ func TestForwardIssueNumberToActiveRunSkipsEmptyIssue(t *testing.T) {
 	}
 }
 
+// A rejection because the PR body was already composed is distinguishable from
+// a transport failure, so the caller can say "not applied, edit the PR" instead
+// of advising a retry that can never succeed.
+func TestForwardIssueNumberToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
+	client := &scriptedIssueNumberUpdateClient{
+		reject: ipc.IssueNumberRejectedPRBodyComposed,
+	}
+
+	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
+	if !errors.Is(err, errIssueNumberPRBodyComposed) {
+		t.Fatalf("forward error = %v, want errIssueNumberPRBodyComposed", err)
+	}
+	if !strings.Contains(err.Error(), "could not be applied") {
+		t.Fatalf("error %q should state the link was not applied", err.Error())
+	}
+}
+
+// A rejection with no recognized reason must stay an error rather than passing
+// as success, so an unknown refusal never reports a link that was not added.
+func TestForwardIssueNumberToActiveRunRejectsUnknownReason(t *testing.T) {
+	client := &scriptedIssueNumberUpdateClient{reject: "some_future_reason"}
+
+	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
+	if err == nil {
+		t.Fatal("unknown rejection reason reported success")
+	}
+	if errors.Is(err, errIssueNumberPRBodyComposed) {
+		t.Fatalf("unknown reason misreported as the composed-body case: %v", err)
+	}
+}
+
 type scriptedIssueNumberUpdateClient struct {
 	method string
 	params interface{}
 	err    error
+	// reject, when set, makes the daemon refuse the update with this reason.
+	reject string
 }
 
 func (s *scriptedIssueNumberUpdateClient) Call(method string, params interface{}, result interface{}) error {
@@ -635,6 +668,11 @@ func (s *scriptedIssueNumberUpdateClient) Call(method string, params interface{}
 		return s.err
 	}
 	if out, ok := result.(*ipc.UpdateRunIssueNumberResult); ok {
+		if s.reject != "" {
+			out.OK = false
+			out.Reason = s.reject
+			return nil
+		}
 		out.OK = true
 	}
 	return nil

@@ -78,11 +78,14 @@ type Run struct {
 	PRBaseBranch *string
 	// IssueNumber is an optional issue number to link in the PR body footer.
 	IssueNumber *string
-	CreatedAt   int64
-	UpdatedAt   int64
+	// IssueNumberLockedAt is non-nil once a PR body composition has sampled
+	// IssueNumber, after which UpdateRunIssueNumber refuses to change it.
+	IssueNumberLockedAt *int64
+	CreatedAt           int64
+	UpdatedAt           int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, pr_base_branch, issue_number, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, pr_base_branch, issue_number, issue_number_locked_at, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -94,7 +97,7 @@ func scanRun(row interface {
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.PRBaseBranch,
-		&r.IssueNumber,
+		&r.IssueNumber, &r.IssueNumberLockedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -730,9 +733,22 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 	return nil
 }
 
+// ErrIssueNumberLocked reports that a PR body composition already sampled this
+// run's issue number, so a later update could no longer reach the footer. It is
+// the fail-closed half of the claim protocol described on
+// ClaimIssueNumberForPRBody: callers must surface it rather than treat the
+// write as applied.
+var ErrIssueNumberLocked = errors.New("issue number already consumed by PR body composition")
+
 // UpdateRunIssueNumber sets the issue number on a run record. The issue
 // number is rendered into the PR body footer by the PR step when the
 // repository configures pr.issue_link_template.
+//
+// The write is refused with ErrIssueNumberLocked once the PR step has claimed
+// the value (issue_number_locked_at is non-NULL). Reporting success for a write
+// that can no longer change the PR body is the race this guard closes: the
+// reattach path in `axi run --closes` would otherwise tell the caller the link
+// was applied while the already-composed body shipped without it.
 func (d *DB) UpdateRunIssueNumber(id string, issueNumber string) error {
 	normalized, err := normalizeIssueNumberForStorage(issueNumber)
 	if err != nil {
@@ -742,14 +758,79 @@ func (d *DB) UpdateRunIssueNumber(id string, issueNumber string) error {
 	if normalized != "" {
 		value = normalized
 	}
-	_, err = d.sql.Exec(
-		`UPDATE runs SET issue_number = ?, updated_at = ? WHERE id = ?`,
+	res, err := d.sql.Exec(
+		`UPDATE runs SET issue_number = ?, updated_at = ? WHERE id = ? AND issue_number_locked_at IS NULL`,
 		value, now(), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update run issue number: %w", err)
 	}
-	return nil
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update run issue number: %w", err)
+	}
+	if affected > 0 {
+		return nil
+	}
+	// No row changed: either the run is gone or its issue number is locked.
+	// Distinguish the two so a missing run does not masquerade as a race.
+	var locked sql.NullInt64
+	switch err := d.sql.QueryRow(`SELECT issue_number_locked_at FROM runs WHERE id = ?`, id).Scan(&locked); {
+	case err == sql.ErrNoRows:
+		return fmt.Errorf("update run issue number: run not found: %s", id)
+	case err != nil:
+		return fmt.Errorf("update run issue number: %w", err)
+	case locked.Valid:
+		return ErrIssueNumberLocked
+	default:
+		// The lock was released between the update and this read, which the
+		// claim protocol never does. Treat an unexplained no-op as a failure
+		// rather than reporting a write that did not happen.
+		return fmt.Errorf("update run issue number: no row updated for run %s", id)
+	}
+}
+
+// ClaimIssueNumberForPRBody returns the run's issue number and marks it as
+// consumed by PR body composition, in one transaction. After the claim, a
+// concurrent UpdateRunIssueNumber fails with ErrIssueNumberLocked instead of
+// silently landing too late to appear in the composed body.
+//
+// The claim is deliberately never released. A PR step that runs again (a
+// resume, or a later update of an existing PR) recomposes from the value it
+// already claimed, so refusing the late write stays correct; the caller is told
+// to edit the PR or start a fresh run rather than being told a link was added
+// that never appears.
+func (d *DB) ClaimIssueNumberForPRBody(id string) (string, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return "", fmt.Errorf("claim issue number: %w", err)
+	}
+	defer tx.Rollback()
+
+	var issueNumber sql.NullString
+	var lockedAt sql.NullInt64
+	err = tx.QueryRow(
+		`SELECT issue_number, issue_number_locked_at FROM runs WHERE id = ?`, id,
+	).Scan(&issueNumber, &lockedAt)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("claim issue number: run not found: %s", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("claim issue number: %w", err)
+	}
+
+	if !lockedAt.Valid {
+		if _, err := tx.Exec(
+			`UPDATE runs SET issue_number_locked_at = ? WHERE id = ? AND issue_number_locked_at IS NULL`,
+			now(), id,
+		); err != nil {
+			return "", fmt.Errorf("claim issue number: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("claim issue number: %w", err)
+	}
+	return strings.TrimSpace(issueNumber.String), nil
 }
 
 func normalizeIssueNumberForStorage(issueNumber string) (string, error) {
