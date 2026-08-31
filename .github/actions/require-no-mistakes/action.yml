@@ -9,30 +9,35 @@ inputs:
     description: >-
       Pull request body to judge. Defaults to the body in the workflow event
       payload, so an ordinary pull_request-triggered caller passes nothing.
+      Synchronize events use the body from the settled API snapshot instead.
     required: false
     default: ""
   pr-head-sha:
     description: >-
       Commit the forge currently has as the PR head. The attestation must bind
-      to it. Defaults to the event payload's pull_request.head.sha.
+      to it. Defaults to the event payload's pull_request.head.sha. Synchronize
+      events require this identity in the event and do not accept an override.
     required: false
     default: ""
   pr-head-ref:
     description: >-
       PR head branch name, matched against exempt-head-branches. Defaults to the
-      event payload's pull_request.head.ref.
+      event payload's pull_request.head.ref. Synchronize exemptions use the
+      event value.
     required: false
     default: ""
   pr-author:
     description: >-
       PR author login, matched against exempt-authors. Defaults to the event
-      payload's pull_request.user.login.
+      payload's pull_request.user.login. Synchronize exemptions use the event
+      value.
     required: false
     default: ""
   pr-number:
     description: >-
-      PR number, used only in log output. Defaults to the event payload's
-      pull_request.number.
+      PR number, used in log output and synchronize API settlement. Defaults to
+      the event payload's pull_request.number; synchronize requires that value
+      in the event and does not accept an override.
     required: false
     default: ""
   exempt-authors:
