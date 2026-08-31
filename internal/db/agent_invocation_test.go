@@ -449,3 +449,79 @@ func TestOpenMigratesSessionFidelityColumns(t *testing.T) {
 		t.Fatalf("insert after migration: %v", err)
 	}
 }
+
+func TestOpenNormalizesLegacyUnknownRawTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "b", "h", "b")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if _, err := d.sql.Exec(`INSERT INTO agent_invocations
+		(id, run_id, step_name, round, purpose, agent, model, session_mode, session_key, exit_status, failure_category,
+		 started_at, completed_at, duration_ms, input_tokens, output_tokens, cache_read_tokens)
+		VALUES ('legacy-unknown', ?, 'review', 1, 'legacy-unknown', 'codex', '', 'cold', '', 'cancelled', 'cancelled',
+		        1, 2, 1, 0, 0, 0)`, run.ID); err != nil {
+		t.Fatalf("insert legacy unknown row: %v", err)
+	}
+	if _, err := d.sql.Exec(`INSERT INTO agent_invocations
+		(id, run_id, step_name, round, purpose, agent, model, session_mode, session_key, exit_status, failure_category,
+		 started_at, completed_at, duration_ms, input_tokens, output_tokens, cache_read_tokens, fresh_input_tokens)
+		VALUES ('reported-zero', ?, 'review', 2, 'reported-zero', 'codex', '', 'cold', '', 'ok', '',
+		        3, 4, 1, 0, 0, 0, 0)`, run.ID); err != nil {
+		t.Fatalf("insert reported zero row: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer d.Close()
+
+	invocations, err := d.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get after migration: %v", err)
+	}
+	if len(invocations) != 2 {
+		t.Fatalf("got %d invocations, want 2", len(invocations))
+	}
+	legacy := invocations[0]
+	if legacy.InputTokens != nil || legacy.OutputTokens != nil || legacy.CacheReadTokens != nil {
+		t.Fatalf("legacy unknown tokens = %v/%v/%v, want nil/nil/nil", legacy.InputTokens, legacy.OutputTokens, legacy.CacheReadTokens)
+	}
+	reported := invocations[1]
+	if reported.InputTokens == nil || *reported.InputTokens != 0 ||
+		reported.OutputTokens == nil || *reported.OutputTokens != 0 ||
+		reported.CacheReadTokens == nil || *reported.CacheReadTokens != 0 {
+		t.Fatalf("reported zero tokens changed: %+v", reported)
+	}
+
+	aggregates, err := d.AgentInvocationAggregates()
+	if err != nil {
+		t.Fatalf("aggregate after migration: %v", err)
+	}
+	byPurpose := make(map[string]AgentInvocationAggregate, len(aggregates))
+	for _, aggregate := range aggregates {
+		byPurpose[aggregate.Purpose] = aggregate
+	}
+	unknown := byPurpose["legacy-unknown"]
+	if unknown.InputTokens != nil || unknown.OutputTokens != nil || unknown.CacheReadTokens != nil {
+		t.Fatalf("legacy unknown aggregate became numeric: %+v", unknown)
+	}
+	zero := byPurpose["reported-zero"]
+	if zero.InputTokens == nil || *zero.InputTokens != 0 ||
+		zero.OutputTokens == nil || *zero.OutputTokens != 0 ||
+		zero.CacheReadTokens == nil || *zero.CacheReadTokens != 0 {
+		t.Fatalf("reported zero aggregate changed: %+v", zero)
+	}
+}

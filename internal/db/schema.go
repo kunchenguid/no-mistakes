@@ -157,9 +157,9 @@ CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
 );
 `
 
-// migrationStatements hold additive schema changes applied to databases that
-// were created before the referenced columns existed. Each statement must be
-// idempotent via its error being tolerated when the column already exists.
+// migrationStatements hold idempotent schema and data changes applied to
+// existing databases. Duplicate-column errors are tolerated for additive
+// schema changes.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
@@ -247,4 +247,8 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	`UPDATE agent_invocations
+	 SET input_tokens = NULL, output_tokens = NULL, cache_read_tokens = NULL
+	 WHERE input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0
+	   AND fresh_input_tokens IS NULL`,
 }
