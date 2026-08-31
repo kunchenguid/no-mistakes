@@ -142,6 +142,28 @@ func TestLoadRepo_TestAgentTimeoutIsNotARepoSetting(t *testing.T) {
 	}
 }
 
+// TestLoadRepo_GateReconcileTimingsAreNotRepoSettings proves
+// gate_reconcile_timeout / gate_reconcile_interval are inert in
+// .no-mistakes.yaml: RepoConfig has no matching fields, so a pushed branch
+// cannot widen the approval-gate reconcile budget. They are global-only
+// operator machine settings.
+func TestLoadRepo_GateReconcileTimingsAreNotRepoSettings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".no-mistakes.yaml")
+	data := "gate_reconcile_timeout: \"999s\"\ngate_reconcile_interval: \"999s\"\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadRepo(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Agent != "" || cfg.Commands.Test != "" || cfg.Commands.Lint != "" || cfg.Commands.Format != "" {
+		t.Fatalf("unrelated repo config fields changed: %#v", cfg)
+	}
+}
+
 func TestLoadRepo_AgentAcceptsList(t *testing.T) {
 	dir := t.TempDir()
 	data := `agent: [codex, claude]

@@ -1,4 +1,27 @@
 # Changelog
+
+## [1.61.0](https://github.com/kunchenguid/no-mistakes/compare/v1.60.3...v1.61.0) (2026-08-31)
+
+
+### Features
+
+* **config:** make gate reconcile timings configurable ([#862](https://github.com/kunchenguid/no-mistakes/issues/862)) ([d0c4feb](https://github.com/kunchenguid/no-mistakes/commit/d0c4feb46b2297d548dd284fdf989cd57fa96721))
+
+## [1.60.3](https://github.com/kunchenguid/no-mistakes/compare/v1.60.2...v1.60.3) (2026-08-29)
+
+
+### Performance Improvements
+
+* **pipeline:** cut CI test latency ([#901](https://github.com/kunchenguid/no-mistakes/issues/901)) ([1a3f74d](https://github.com/kunchenguid/no-mistakes/commit/1a3f74d86d2646967d6f1e7dce8853023c41768c))
+
+## [1.60.2](https://github.com/kunchenguid/no-mistakes/compare/v1.60.1...v1.60.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** pass --print-timeout 24h by default in Antigravity adapter ([#896](https://github.com/kunchenguid/no-mistakes/issues/896)) ([be9138f](https://github.com/kunchenguid/no-mistakes/commit/be9138fdabb528acecafc78005b277028e1612c9))
+* **pipeline:** harden CI repair scope and attestation ([#899](https://github.com/kunchenguid/no-mistakes/issues/899)) ([4a84a15](https://github.com/kunchenguid/no-mistakes/commit/4a84a153dbcba764c76d7113fd8a8d886e35e3d6))
+
 ## [1.60.1](https://github.com/kunchenguid/no-mistakes/compare/v1.60.0...v1.60.1) (2026-08-29)
 
 

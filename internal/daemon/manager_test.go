@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,12 +115,12 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	}
 }
 
-func TestProofLaunchReceiptsBindNonceIntentAndExactHead(t *testing.T) {
+func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
 	repo, headSHA := setupTestGitRepo(t, p, d, "proof-launch-repo")
 
-	call := func(nonce, intent string) (ipc.StartFreshRunResult, error) {
+	call := func(nonce, generation, intent string) (ipc.StartFreshRunResult, error) {
 		client, err := ipc.Dial(p.Socket())
 		if err != nil {
 			t.Fatal(err)
@@ -127,73 +128,60 @@ func TestProofLaunchReceiptsBindNonceIntentAndExactHead(t *testing.T) {
 		defer client.Close()
 		var result ipc.StartFreshRunResult
 		err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent, LaunchNonce: nonce,
+			RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+			LaunchNonce: nonce, ValidationGeneration: generation,
 		}, &result)
 		return result, err
 	}
 
-	first, err := call("nonce-1", "persist these exact bytes\n")
+	const generation = "generation-001"
+	intent := "persist these exact bytes\nprivate validation intent"
+	first, err := call("nonce-1", generation, intent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Receipt.Disposition != "created" || first.Receipt.RunID == "" || first.Receipt.LaunchNonce != "nonce-1" ||
-		first.Receipt.Branch != "main" || first.Receipt.HeadSHA != headSHA || first.Receipt.SubmittedHeadSHA != headSHA ||
-		first.Receipt.IntentDigest != digestIntent("persist these exact bytes\n") {
+	if first.Receipt.Disposition != "created" || first.Receipt.RunID == "" ||
+		first.Receipt.LaunchNonce != "nonce-1" || first.Receipt.ValidationGeneration != generation ||
+		first.Receipt.Branch != "main" || first.Receipt.HeadSHA != headSHA ||
+		first.Receipt.SubmittedHeadSHA != headSHA || first.Receipt.IntentDigest != digestIntent(intent) {
 		t.Fatalf("first receipt = %#v", first.Receipt)
 	}
+	encoded, err := json.Marshal(first.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private validation intent") || strings.Contains(string(encoded), intent) {
+		t.Fatalf("launch receipt exposed raw intent: %s", encoded)
+	}
 	run, err := d.GetRun(first.Receipt.RunID)
-	if err != nil || run == nil || run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" || run.Intent == nil || *run.Intent != "persist these exact bytes\n" {
+	if err != nil || run == nil || run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" ||
+		run.LaunchValidationGeneration == nil || *run.LaunchValidationGeneration != generation ||
+		run.LaunchIntentDigest == nil || *run.LaunchIntentDigest != digestIntent(intent) ||
+		run.Intent == nil || *run.Intent != intent || run.LaunchReceiptClaimedAt == nil {
 		t.Fatalf("persisted proof run = %#v, err=%v", run, err)
 	}
 
-	replay, err := call("nonce-1", "persist these exact bytes\n")
+	replay, err := call("nonce-1", generation, intent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if replay.Receipt.RunID != first.Receipt.RunID || replay.Receipt.Disposition != "reused" {
 		t.Fatalf("replay receipt = %#v, first = %#v", replay.Receipt, first.Receipt)
 	}
-	if _, err := call("nonce-1", "different intent"); err == nil {
-		t.Fatal("conflicting intent reused a nonce")
+	if _, err := call("nonce-1", "generation-002", intent); err == nil {
+		t.Fatal("changed validation generation reused a nonce")
 	}
-	other, err := call("nonce-2", "different intent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if other.Receipt.RunID == first.Receipt.RunID || other.Receipt.Disposition != "created" {
-		t.Fatalf("different nonce receipt = %#v, first = %#v", other.Receipt, first.Receipt)
+	if _, err := call("nonce-1", generation, intent+" changed"); err == nil {
+		t.Fatal("changed intent reused a nonce")
 	}
 }
 
-func TestProofLaunchRejectsMalformedNonceAndContextDrift(t *testing.T) {
-	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
-	repo, headSHA := setupTestGitRepo(t, p, d, "proof-drift-repo")
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	var result ipc.StartFreshRunResult
-	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: "goal", LaunchNonce: "bad nonce",
-	}, &result); err == nil {
-		t.Fatal("malformed nonce started a run")
-	}
-	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-		RepoID: repo.ID, Branch: "main", HeadSHA: strings.Repeat("0", len(headSHA)), Intent: "goal", LaunchNonce: "drift-nonce",
-	}, &result); err == nil {
-		t.Fatal("drifting head started a run")
-	}
-	if run, err := d.GetRunByLaunchNonce(repo.ID, "main", "drift-nonce"); err != nil || run != nil {
-		t.Fatalf("drift binding = %#v, err=%v", run, err)
-	}
-}
-
-func TestProofPushNonceAndConcurrentReplaysConverge(t *testing.T) {
+func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step { return []pipeline.Step{step} })
 	repo, headSHA := setupTestGitRepo(t, p, d, "proof-push-repo")
+	const generation = "generation-push-001"
+	const intent = "opaque push intent"
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -202,13 +190,17 @@ func TestProofPushNonceAndConcurrentReplaysConverge(t *testing.T) {
 	defer client.Close()
 	var pushed ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: "0000000000000000000000000000000000000000", New: headSHA,
-		Intent: "push intent", LaunchNonce: "push-nonce",
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
+		Old: "0000000000000000000000000000000000000000", New: headSHA,
+		Intent: intent, LaunchNonce: "push-nonce", ValidationGeneration: generation,
 	}, &pushed); err != nil {
 		t.Fatal(err)
 	}
-	if pushed.Receipt.Disposition != "created" || pushed.Receipt.LaunchNonce != "push-nonce" || pushed.Receipt.RunID == "" {
-		t.Fatalf("push receipt = %#v", pushed.Receipt)
+	if pushed.RunID == "" {
+		t.Fatalf("push result = %#v", pushed)
+	}
+	if stored, err := d.GetRun(pushed.RunID); err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("push receipt claim state = %#v, err=%v", stored, err)
 	}
 
 	const callers = 4
@@ -221,45 +213,45 @@ func TestProofPushNonceAndConcurrentReplaysConverge(t *testing.T) {
 				defer c.Close()
 				var result ipc.StartFreshRunResult
 				err = c.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
-					RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: "concurrent intent", LaunchNonce: "concurrent-nonce",
+					RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+					LaunchNonce: "push-nonce", ValidationGeneration: generation,
 				}, &result)
 				results <- result
 			}
 			errs <- err
 		}()
 	}
-	var runID string
 	created := 0
 	for range callers {
 		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
 		result := <-results
-		if runID == "" {
-			runID = result.Receipt.RunID
-		}
-		if result.Receipt.RunID != runID {
-			t.Fatalf("concurrent receipts disagree: %q and %q", runID, result.Receipt.RunID)
+		if result.Receipt.RunID != pushed.RunID {
+			t.Fatalf("concurrent receipt run = %q, want %q", result.Receipt.RunID, pushed.RunID)
 		}
 		if result.Receipt.Disposition == "created" {
 			created++
 		}
 	}
-	if runID == "" || created != 1 {
-		t.Fatalf("concurrent launch id=%q created=%d", runID, created)
+	if created != 1 {
+		t.Fatalf("created receipts = %d, want 1", created)
 	}
-	runs, err := d.GetRunsByRepoHead(repo.ID, "main", headSHA)
-	if err != nil {
+
+	gitCmd(t, repo.WorkingPath, "commit", "--allow-empty", "-m", "advance gate")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	if err := d.UpdateRunHeadSHA(pushed.RunID, "pipeline-fix-head"); err != nil {
 		t.Fatal(err)
 	}
-	matches := 0
-	for _, run := range runs {
-		if run.LaunchNonce != nil && *run.LaunchNonce == "concurrent-nonce" {
-			matches++
-		}
+	var replay ipc.StartFreshRunResult
+	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+		LaunchNonce: "push-nonce", ValidationGeneration: generation,
+	}, &replay); err != nil {
+		t.Fatal(err)
 	}
-	if matches != 1 {
-		t.Fatalf("durable concurrent nonce rows = %d", matches)
+	if replay.Receipt.HeadSHA != headSHA || replay.Receipt.SubmittedHeadSHA != headSHA || replay.Receipt.Disposition != "reused" {
+		t.Fatalf("immutable replay receipt = %#v, want submitted head %q", replay.Receipt, headSHA)
 	}
 }
 

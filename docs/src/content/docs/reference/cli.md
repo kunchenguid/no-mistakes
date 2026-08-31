@@ -100,50 +100,17 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
-no-mistakes axi run --intent "the user's goal" --launch-nonce request-7f3
 ```
 
-| Flag               | Type     | Default | Description                                                                 |
-| ------------------ | -------- | ------- | --------------------------------------------------------------------------- |
-| `--intent`         | `string` | (none)  | What the user set out to accomplish; required to start a new run            |
-| `--launch-nonce`   | `string` | (none)  | Enables strict receipt mode with an opaque request nonce                    |
-| `-y`, `--yes`      | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                   |
-| `--skip`           | `string` | (none)  | Comma-separated pipeline steps to skip                                      |
+| Flag          | Type     | Default | Description                                                      |
+| ------------- | -------- | ------- | ---------------------------------------------------------------- |
+| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
+| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
+| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
-
-### Strict launch receipt mode
-
-Passing `--launch-nonce` disables ordinary same-head reattachment for that
-invocation. The nonce is opaque but must be 1–128 URL-safe ASCII characters
-(`A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`). Before AXI subscribes to or drives
-the run, stdout emits a separate `launch_receipt:` TOON document:
-
-```text
-launch_receipt:
-  run_id: 01...
-  disposition: created
-  launch_nonce: request-7f3
-  branch: feature/proof
-  head_sha: <full SHA>
-  submitted_head_sha: <full SHA>
-  intent_digest: <sha256 hex>
-```
-
-The daemon derives every receipt value from the persisted row. `intent_digest`
-is SHA-256 of the exact bytes persisted for `--intent`; raw intent is absent
-from the receipt, telemetry, and ordinary AXI status output. The first observed
-receipt is `created`; lost-response retries and concurrent calls with the same
-nonce return the same row as `reused`. A different nonce creates a distinct run
-even at the same branch and head. Reusing a nonce with a changed head or intent,
-malformed nonce, conflicting push options, or a branch/head context drift fails
-without a receipt.
-
-The regular push path and the gate-already-up-to-date fallback use the same
-daemon receipt contract. Legacy runs without a nonce and ordinary AXI
-reattachment retain their existing behavior.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.

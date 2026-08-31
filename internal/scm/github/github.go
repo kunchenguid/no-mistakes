@@ -2,10 +2,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -151,10 +153,39 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
-		return errors.New("gh CLI is not authenticated")
+	cmd := h.cmd(ctx, "gh", authArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Keep timeout / missing-binary failures distinct from auth failure so a
+		// cancelled reconcile context is not reported as "log in again".
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("gh auth status timed out: %w", ctx.Err())
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("gh auth status interrupted: %w", ctx.Err())
+		}
+		if isMissingExecutable(err) {
+			return fmt.Errorf("gh CLI is not on PATH: %w", err)
+		}
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return fmt.Errorf("gh CLI is not authenticated: %s: %w", detail, err)
+		}
+		return fmt.Errorf("gh CLI is not authenticated: %w", err)
 	}
 	return nil
+}
+
+func isMissingExecutable(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return errors.Is(execErr.Err, exec.ErrNotFound) || errors.Is(execErr.Err, fs.ErrNotExist)
+	}
+	return false
 }
 
 func parsePullRequestURL(raw, expectedHost, expectedRepo string) (int, error) {
@@ -312,13 +343,39 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		return nil, err
 	}
 	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
-	args = append(args, "--title", content.Title, "--body-file", "-")
+	if strings.TrimSpace(content.Title) != "" {
+		args = append(args, "--title", content.Title)
+	}
+	args = append(args, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return pr, nil
+}
+
+var _ scm.PRContentReader = (*Host)(nil)
+
+func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return scm.PRContent{}, err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "title,body")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return scm.PRContent{}, fmt.Errorf("gh pr view: %w", err)
+	}
+	var parsed struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return scm.PRContent{}, fmt.Errorf("parse gh pr view: %w", err)
+	}
+	return scm.PRContent{Title: parsed.Title, Body: parsed.Body}, nil
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {

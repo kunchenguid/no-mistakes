@@ -50,18 +50,35 @@ func (a *antigravityAgent) Close() error { return nil }
 func (a *antigravityAgent) buildArgs(prompt, schemaPath, sessionID string) []string {
 	// Antigravity has strict flag parsing: only --print, --json-schema, --output-format
 	// We append user extraArgs before the strict ones.
-	args := make([]string, 0, len(a.extraArgs)+9)
+	args := make([]string, 0, len(a.extraArgs)+11)
 	args = append(args, a.extraArgs...)
 	if sessionID != "" {
 		args = append(args, "--conversation", sessionID)
 	}
 	args = append(args, "--dangerously-skip-permissions")
+	if !antigravityUserSetPrintTimeout(a.extraArgs) {
+		args = append(args, "--print-timeout", "24h")
+	}
 	args = append(args, "--print", prompt)
 	if schemaPath != "" {
 		args = append(args, "--json-schema", schemaPath)
 	}
 	args = append(args, "--output-format", "stream-json")
 	return args
+}
+
+// antigravityUserSetPrintTimeout reports whether extraArgs already specifies
+// --print-timeout, in which case buildArgs does not override it.
+func antigravityUserSetPrintTimeout(extraArgs []string) bool {
+	for i, arg := range extraArgs {
+		if arg == "--print-timeout" || strings.HasPrefix(arg, "--print-timeout=") {
+			return true
+		}
+		if strings.HasPrefix(arg, "-t=") || (arg == "-t" && i+1 < len(extraArgs)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {

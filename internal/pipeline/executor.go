@@ -31,8 +31,8 @@ import (
 type EventFunc func(ipc.Event)
 
 const (
-	defaultGateReconcileInterval = 2 * time.Minute
-	defaultGateReconcileTimeout  = 30 * time.Second
+	defaultGateReconcileInterval = config.DefaultGateReconcileInterval
+	defaultGateReconcileTimeout  = config.DefaultGateReconcileTimeout
 )
 
 type approvalResponse struct {
@@ -102,7 +102,7 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 	if onEvent == nil {
 		onEvent = func(ipc.Event) {}
 	}
-	return &Executor{
+	exec := &Executor{
 		db:                    database,
 		paths:                 p,
 		config:                cfg,
@@ -113,6 +113,12 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 		gateReconcileInterval: defaultGateReconcileInterval,
 		gateReconcileTimeout:  defaultGateReconcileTimeout,
 	}
+	if cfg != nil {
+		// Global config is the production path for these timings; SetGate*
+		// remains for tests and specialized embeddings.
+		exec.SetGateReconcileTimings(cfg.GateReconcileInterval, cfg.GateReconcileTimeout)
+	}
+	return exec
 }
 
 // runEvidenceDir resolves where this run's test evidence is written. The

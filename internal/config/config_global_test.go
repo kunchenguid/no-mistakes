@@ -41,6 +41,12 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.BranchSyncRemoteTimeout != DefaultBranchSyncRemoteTimeout {
 		t.Errorf("branch_sync_remote_timeout = %v, want %v", cfg.BranchSyncRemoteTimeout, DefaultBranchSyncRemoteTimeout)
 	}
+	if cfg.GateReconcileInterval != DefaultGateReconcileInterval {
+		t.Errorf("gate_reconcile_interval = %v, want %v", cfg.GateReconcileInterval, DefaultGateReconcileInterval)
+	}
+	if cfg.GateReconcileTimeout != DefaultGateReconcileTimeout {
+		t.Errorf("gate_reconcile_timeout = %v, want %v", cfg.GateReconcileTimeout, DefaultGateReconcileTimeout)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
 	}
@@ -116,6 +122,12 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.BranchSyncRemoteTimeout != DefaultBranchSyncRemoteTimeout {
 		t.Errorf("branch_sync_remote_timeout = %v, want %v", cfg.BranchSyncRemoteTimeout, DefaultBranchSyncRemoteTimeout)
+	}
+	if cfg.GateReconcileInterval != DefaultGateReconcileInterval {
+		t.Errorf("gate_reconcile_interval = %v, want %v", cfg.GateReconcileInterval, DefaultGateReconcileInterval)
+	}
+	if cfg.GateReconcileTimeout != DefaultGateReconcileTimeout {
+		t.Errorf("gate_reconcile_timeout = %v, want %v", cfg.GateReconcileTimeout, DefaultGateReconcileTimeout)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
@@ -206,6 +218,73 @@ func TestLoadGlobal_TestAgentTimeout(t *testing.T) {
 	}
 	if cfg.TestAgentTimeout != 90*time.Second {
 		t.Fatalf("test_agent_timeout = %v, want 90s", cfg.TestAgentTimeout)
+	}
+}
+
+func TestLoadGlobal_GateReconcileTimings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gate_reconcile_interval: 45s\ngate_reconcile_timeout: 90s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.GateReconcileInterval != 45*time.Second {
+		t.Fatalf("gate_reconcile_interval = %v, want 45s", cfg.GateReconcileInterval)
+	}
+	if cfg.GateReconcileTimeout != 90*time.Second {
+		t.Fatalf("gate_reconcile_timeout = %v, want 90s", cfg.GateReconcileTimeout)
+	}
+}
+
+// TestLoadGlobal_GateReconcileTimings_OperatorSlowAuthBudget is the documented
+// operator path: raise interval/timeout in global config.yaml so slow gh auth
+// probes fit the parked-gate reconcile budget (defaults remain 2m / 30s).
+func TestLoadGlobal_GateReconcileTimings_OperatorSlowAuthBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "gate_reconcile_interval: \"5m\"\ngate_reconcile_timeout: \"2m\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.GateReconcileInterval != 5*time.Minute {
+		t.Fatalf("gate_reconcile_interval = %v, want 5m", cfg.GateReconcileInterval)
+	}
+	if cfg.GateReconcileTimeout != 2*time.Minute {
+		t.Fatalf("gate_reconcile_timeout = %v, want 2m", cfg.GateReconcileTimeout)
+	}
+	merged := Merge(cfg, &RepoConfig{})
+	if merged.GateReconcileInterval != 5*time.Minute || merged.GateReconcileTimeout != 2*time.Minute {
+		t.Fatalf("Merge did not preserve global timings: interval=%v timeout=%v",
+			merged.GateReconcileInterval, merged.GateReconcileTimeout)
+	}
+	t.Logf("operator config.yaml loaded: gate_reconcile_interval=%v gate_reconcile_timeout=%v",
+		merged.GateReconcileInterval, merged.GateReconcileTimeout)
+}
+
+func TestLoadGlobal_InvalidGateReconcileTimings(t *testing.T) {
+	dir := t.TempDir()
+	for _, body := range []string{
+		`gate_reconcile_timeout: "not-a-duration"`,
+		`gate_reconcile_timeout: "0s"`,
+		`gate_reconcile_timeout: "-1s"`,
+		`gate_reconcile_interval: "0s"`,
+	} {
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadGlobal(path); err == nil {
+			t.Fatalf("LoadGlobal(%q) error = nil, want error", body)
+		}
 	}
 }
 
@@ -603,6 +682,20 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if d != DefaultBranchSyncRemoteTimeout {
 		t.Errorf("YAML branch_sync_remote_timeout = %v, Go default = %v", d, DefaultBranchSyncRemoteTimeout)
+	}
+	d, err = time.ParseDuration(raw.GateReconcileInterval)
+	if err != nil {
+		t.Fatalf("YAML gate_reconcile_interval %q is not a valid duration: %v", raw.GateReconcileInterval, err)
+	}
+	if d != DefaultGateReconcileInterval {
+		t.Errorf("YAML gate_reconcile_interval = %v, Go default = %v", d, DefaultGateReconcileInterval)
+	}
+	d, err = time.ParseDuration(raw.GateReconcileTimeout)
+	if err != nil {
+		t.Fatalf("YAML gate_reconcile_timeout %q is not a valid duration: %v", raw.GateReconcileTimeout, err)
+	}
+	if d != DefaultGateReconcileTimeout {
+		t.Errorf("YAML gate_reconcile_timeout = %v, Go default = %v", d, DefaultGateReconcileTimeout)
 	}
 	d, err = time.ParseDuration(raw.ReviewAgentTimeout)
 	if err != nil {

@@ -110,6 +110,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			validationGeneration, err := parseValidationGenerationPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
+			if (launchNonce == "") != (validationGeneration == "") {
+				return fmt.Errorf("launch_nonce and validation_generation push options must be supplied together")
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -128,13 +135,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:        gatePath,
-				Ref:         ref,
-				Old:         oldSHA,
-				New:         newSHA,
-				SkipSteps:   skipSteps,
-				Intent:      intent,
-				LaunchNonce: launchNonce,
+				Gate:                 gatePath,
+				Ref:                  ref,
+				Old:                  oldSHA,
+				New:                  newSHA,
+				SkipSteps:            skipSteps,
+				Intent:               intent,
+				LaunchNonce:          launchNonce,
+				ValidationGeneration: validationGeneration,
 			}, &result)
 		},
 	}
@@ -199,37 +207,54 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
 
-// launchNoncePushOptionPrefix carries an opaque proof-mode request binding
-// through the line-oriented Git push-option transport.
-const launchNoncePushOptionPrefix = "no-mistakes.launch-nonce="
+const (
+	launchNoncePushOptionPrefix          = "no-mistakes.launch-nonce="
+	validationGenerationPushOptionPrefix = "no-mistakes.validation-generation="
+)
 
 func formatLaunchNoncePushOption(nonce string) string {
-	if nonce == "" {
-		return ""
-	}
-	return launchNoncePushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(nonce))
+	return formatOpaquePushOption(launchNoncePushOptionPrefix, nonce)
 }
 
-// parseLaunchNoncePushOptions rejects duplicate conflicting values instead of
-// silently selecting one, because that would manufacture a false proof.
+func formatValidationGenerationPushOption(generation string) string {
+	return formatOpaquePushOption(validationGenerationPushOptionPrefix, generation)
+}
+
+func formatOpaquePushOption(prefix, value string) string {
+	if value == "" {
+		return ""
+	}
+	return prefix + base64.StdEncoding.EncodeToString([]byte(value))
+}
+
 func parseLaunchNoncePushOptions(options []string) (string, error) {
-	nonce := ""
+	return parseOpaquePushOptions(options, launchNoncePushOptionPrefix, "launch nonce")
+}
+
+func parseValidationGenerationPushOptions(options []string) (string, error) {
+	return parseOpaquePushOptions(options, validationGenerationPushOptionPrefix, "validation generation")
+}
+
+// parseOpaquePushOptions rejects conflicting duplicates rather than selecting
+// one and manufacturing a receipt for a request no caller actually made.
+func parseOpaquePushOptions(options []string, prefix, label string) (string, error) {
+	value := ""
 	for _, option := range options {
-		encoded, ok := strings.CutPrefix(option, launchNoncePushOptionPrefix)
+		encoded, ok := strings.CutPrefix(option, prefix)
 		if !ok {
 			continue
 		}
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
-			return "", fmt.Errorf("decode launch nonce push option: %w", err)
+			return "", fmt.Errorf("decode %s push option: %w", label, err)
 		}
-		value := string(decoded)
-		if nonce != "" && nonce != value {
-			return "", fmt.Errorf("conflicting launch nonce push options")
+		parsed := string(decoded)
+		if value != "" && value != parsed {
+			return "", fmt.Errorf("conflicting %s push options", label)
 		}
-		nonce = value
+		value = parsed
 	}
-	return nonce, nil
+	return value, nil
 }
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
