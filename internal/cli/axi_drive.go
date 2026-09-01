@@ -858,11 +858,10 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 // respond text flag. It enforces that the inline and file/stdin forms are
 // mutually exclusive, reads the file (or stdin, when path is "-") verbatim,
 // and returns the effective text that feeds the exact same downstream path as
-// the inline flag. An empty path means the inline form is in use; a non-empty
-// inline with a non-empty path is an error. The returned error is the whole
-// story - the caller wraps it in emitError.
+// the inline flag. The returned error is the whole story - the caller wraps it
+// in emitError.
 func resolveRespondText(cmd *cobra.Command, flag, inline, path string) (string, error) {
-	if path != "" && (inline != "" || cmd.Flags().Changed(flag)) {
+	if cmd.Flags().Changed(flag) && cmd.Flags().Changed(flag+"-file") {
 		return "", fmt.Errorf("--%s and --%s-file are mutually exclusive; supply exactly one", flag, flag)
 	}
 	if path == "" {

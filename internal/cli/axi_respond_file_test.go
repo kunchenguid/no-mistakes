@@ -58,58 +58,43 @@ func TestResolveRespondText_MissingFile(t *testing.T) {
 	}
 }
 
-func TestRunAxiRespond_MutualExclusionInlineAndFile(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "instructions.txt")
-	if err := os.WriteFile(p, []byte("from file"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := &cobra.Command{}
-	cmd.SetOut(io.Discard)
-	err := runAxiRespond(cmd, respondArgs{
-		action:           "fix",
-		instructions:     "inline note",
-		instructionsFile: p,
-	})
-	assertExitCode(t, err, 2)
-}
-
-func TestRunAxiRespond_MutualExclusionAddFindingAndFile(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "finding.json")
-	if err := os.WriteFile(p, []byte(`{"description":"x"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cmd := &cobra.Command{}
-	cmd.SetOut(io.Discard)
-	err := runAxiRespond(cmd, respondArgs{
-		action:         "fix",
-		addFinding:     `{"description":"inline"}`,
-		addFindingFile: p,
-	})
-	assertExitCode(t, err, 2)
-}
-
-func TestAxiRespond_EmptyInlineAndFileAreMutuallyExclusive(t *testing.T) {
+func TestAxiRespond_InlineAndFileAreMutuallyExclusive(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "respond.txt")
 	if err := os.WriteFile(p, []byte("from file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	tests := []struct {
+	flagPairs := []struct {
 		name       string
 		inlineFlag string
 		fileFlag   string
 	}{
-		{name: "instructions", inlineFlag: "--instructions=", fileFlag: "--instructions-file=" + p},
-		{name: "add finding", inlineFlag: "--add-finding=", fileFlag: "--add-finding-file=" + p},
+		{name: "instructions", inlineFlag: "instructions", fileFlag: "instructions-file"},
+		{name: "add finding", inlineFlag: "add-finding", fileFlag: "add-finding-file"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := executeCmd("axi", "respond", "--action", "fix", tt.inlineFlag, tt.fileFlag)
-			assertExitCode(t, err, 2)
-			if !strings.Contains(out, "mutually exclusive") {
-				t.Fatalf("expected a clear mutual-exclusion error, got %q", out)
-			}
-		})
+	values := []struct {
+		name        string
+		inlineValue string
+		fileValue   string
+	}{
+		{name: "both nonempty", inlineValue: "inline", fileValue: p},
+		{name: "empty inline", inlineValue: "", fileValue: p},
+		{name: "empty file", inlineValue: "inline", fileValue: ""},
+	}
+	for _, pair := range flagPairs {
+		for _, value := range values {
+			t.Run(pair.name+"/"+value.name, func(t *testing.T) {
+				out, err := executeCmd(
+					"axi", "respond", "--action", "fix",
+					"--"+pair.inlineFlag+"="+value.inlineValue,
+					"--"+pair.fileFlag+"="+value.fileValue,
+				)
+				assertExitCode(t, err, 2)
+				if !strings.Contains(out, "mutually exclusive") {
+					t.Fatalf("expected a clear mutual-exclusion error, got %q", out)
+				}
+			})
+		}
 	}
 }
 
