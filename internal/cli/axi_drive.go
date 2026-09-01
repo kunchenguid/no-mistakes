@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -688,6 +689,7 @@ func successReportHelp(fixes []fixRow) []string {
 
 func newAxiRespondCmd() *cobra.Command {
 	var action, step, findings, instructions, addFinding string
+	var instructionsFile, addFindingFile string
 	var autoYes bool
 
 	cmd := &cobra.Command{
@@ -705,12 +707,14 @@ func newAxiRespondCmd() *cobra.Command {
 				"auto_yes": autoYes,
 			}, func() error {
 				return runAxiRespond(cmd, respondArgs{
-					action:       action,
-					step:         step,
-					findings:     findings,
-					instructions: instructions,
-					addFinding:   addFinding,
-					autoYes:      autoYes,
+					action:           action,
+					step:             step,
+					findings:         findings,
+					instructions:     instructions,
+					instructionsFile: instructionsFile,
+					addFinding:       addFinding,
+					addFindingFile:   addFindingFile,
+					autoYes:          autoYes,
 				})
 			})
 		},
@@ -718,23 +722,48 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
-	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
-	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix). "+
+		"CAUTION: this text is passed on the command line, so your shell runs command substitution on it first - "+
+		"backticked spans and $(...) are executed and silently replaced before no-mistakes sees them. "+
+		"Prefer --instructions-file for guidance containing backticks or $(...).")
+	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix). "+
+		"CAUTION: like --instructions, this text is passed on the command line and so is subject to the "+
+		"caller shell's command substitution. Prefer --add-finding-file for JSON containing backticks or $(...).")
+	cmd.Flags().StringVar(&instructionsFile, "instructions-file", "", "read --instructions guidance verbatim from a file; use - to read from stdin, so the text never transits "+
+		"the caller shell (no command substitution). Mutually exclusive with --instructions.")
+	cmd.Flags().StringVar(&addFindingFile, "add-finding-file", "", "read --add-finding JSON verbatim from a file; use - to read from stdin, so the text never transits "+
+		"the caller shell (no command substitution). Mutually exclusive with --add-finding.")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every subsequent gate until a decision point or outcome")
 	return cmd
 }
 
 type respondArgs struct {
-	action       string
-	step         string
-	findings     string
-	instructions string
-	addFinding   string
-	autoYes      bool
+	action           string
+	step             string
+	findings         string
+	instructions     string
+	instructionsFile string
+	addFinding       string
+	addFindingFile   string
+	autoYes          bool
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	ctx := cmd.Context()
+
+	// Resolve inline vs file/stdin text before anything else, so flag-usage
+	// errors (mutual exclusion, unreadable file, double stdin) surface without
+	// needing a daemon and before any other validation runs.
+	if ra.instructionsFile == "-" && ra.addFindingFile == "-" {
+		return emitError(cmd, 2, "stdin can only be read once: --instructions-file - and --add-finding-file - cannot both read from stdin")
+	}
+	var err error
+	if ra.instructions, err = resolveRespondText(cmd, "instructions", ra.instructions, ra.instructionsFile); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
+	if ra.addFinding, err = resolveRespondText(cmd, "add-finding", ra.addFinding, ra.addFindingFile); err != nil {
+		return emitError(cmd, 2, err.Error())
+	}
 
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
@@ -823,6 +852,36 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
 	return renderDriveResult(cmd, final, ciReady)
+}
+
+// resolveRespondText reconciles the inline and file/stdin forms of an axi
+// respond text flag. It enforces that the inline and file/stdin forms are
+// mutually exclusive, reads the file (or stdin, when path is "-") verbatim,
+// and returns the effective text that feeds the exact same downstream path as
+// the inline flag. An empty path means the inline form is in use; a non-empty
+// inline with a non-empty path is an error. The returned error is the whole
+// story - the caller wraps it in emitError.
+func resolveRespondText(cmd *cobra.Command, flag, inline, path string) (string, error) {
+	if inline != "" && path != "" {
+		return "", fmt.Errorf("--%s and --%s-file are mutually exclusive; supply exactly one", flag, flag)
+	}
+	if path == "" {
+		return inline, nil
+	}
+	r := cmd.InOrStdin()
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		r = f
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("read --%s-file %s: %v", flag, path, err)
+	}
+	return string(data), nil
 }
 
 // gateStatusFor returns the current status of step in rv, defaulting to the
