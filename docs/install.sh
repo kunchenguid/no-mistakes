@@ -29,7 +29,18 @@ case "$ARCH" in
   *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+# GitHub's unauthenticated REST API is capped at 60 req/hr/IP; the HTML
+# /releases/latest redirect is not, and lands on /releases/tag/<tag>.
+latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+VERSION=""
+case "$latest_url" in
+  */releases/tag/*)
+    VERSION="${latest_url##*/releases/tag/}"
+    VERSION="${VERSION%%\?*}"
+    VERSION="${VERSION%%#*}"
+    VERSION="${VERSION%/}"
+    ;;
+esac
 if [ -z "$VERSION" ]; then
   echo "Could not determine latest release"
   exit 1

@@ -119,6 +119,69 @@ func TestInstallScriptFailsWhenDaemonRestartFails(t *testing.T) {
 	}
 }
 
+func TestInstallScriptResolvesVersionFromLatestRedirect(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
+	home := t.TempDir()
+	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
+	binaryScript := "#!/bin/sh\nexit 0\n"
+	makeInstallArchive(t, archivePath, binaryScript)
+	fakeBin := makeFakeInstallCommands(t)
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	curlLog := filepath.Join(t.TempDir(), "curl.log")
+
+	runInstallScript(t, home, fakeBin, map[string]string{
+		"FAKE_RELEASE_ARCHIVE":      archivePath,
+		"FAKE_CURL_LOG":             curlLog,
+		"FAKE_LATEST_EFFECTIVE_URL": "https://github.com/kunchenguid/no-mistakes/releases/tag/v1.2.3",
+	})
+
+	data, err := os.ReadFile(curlLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(data)
+	if strings.Contains(logged, "api.github.com") {
+		t.Fatalf("install.sh default path must not call api.github.com, got curl URLs:\n%s", logged)
+	}
+	if !strings.Contains(logged, "https://github.com/kunchenguid/no-mistakes/releases/latest") {
+		t.Fatalf("install.sh should resolve the latest tag via the /releases/latest redirect, got curl URLs:\n%s", logged)
+	}
+	if !strings.Contains(logged, "https://github.com/kunchenguid/no-mistakes/releases/download/v1.2.3/no-mistakes-v1.2.3-darwin-arm64.tar.gz") {
+		t.Fatalf("install.sh should download the versioned asset parsed from the redirect, got curl URLs:\n%s", logged)
+	}
+
+	realBin := filepath.Join(home, ".no-mistakes", "bin", "no-mistakes")
+	assertFileContent(t, realBin, binaryScript)
+}
+
+func TestInstallScriptFailsWhenLatestRedirectHasNoTag(t *testing.T) {
+	skipInstallScriptTestsOnWindows(t)
+
+	home := t.TempDir()
+	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
+	makeInstallArchive(t, archivePath, "#!/bin/sh\nexit 0\n")
+	fakeBin := makeFakeInstallCommands(t)
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runInstallScriptCommand(t, home, fakeBin, map[string]string{
+		"FAKE_RELEASE_ARCHIVE":      archivePath,
+		"FAKE_LATEST_EFFECTIVE_URL": "https://github.com/kunchenguid/no-mistakes/releases/latest",
+	})
+	if err == nil {
+		t.Fatalf("install.sh should fail when the latest URL has no tag\n%s", output)
+	}
+	if !strings.Contains(string(output), "Could not determine latest release") {
+		t.Fatalf("install.sh should keep the empty-version guard, got:\n%s", output)
+	}
+}
+
 func TestPowerShellInstallScriptChecksDaemonRestartFailure(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("docs", "install.ps1"))
 	if err != nil {
@@ -233,16 +296,26 @@ out=""
 url=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o) out="$2"; shift 2 ;;
+    -o|--output) out="$2"; shift 2 ;;
+    -w|--write-out) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
-if [ -n "$out" ]; then
+if [ -n "$FAKE_CURL_LOG" ]; then
+  printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
+fi
+case "$url" in
+  */releases/latest)
+    printf '%s' "${FAKE_LATEST_EFFECTIVE_URL:-https://github.com/kunchenguid/no-mistakes/releases/tag/v1.2.3}"
+    exit 0
+    ;;
+esac
+if [ -n "$out" ] && [ "$out" != "/dev/null" ]; then
   cp "$FAKE_RELEASE_ARCHIVE" "$out"
   exit 0
 fi
-	printf '{"tag_name":"v1.2.3"}'
+exit 1
 `)
 	writeExecutable(t, filepath.Join(binDir, "sudo"), "#!/bin/sh\nexec \"$@\"\n")
 	return binDir

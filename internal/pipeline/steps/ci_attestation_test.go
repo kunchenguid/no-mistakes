@@ -55,7 +55,20 @@ func runVerifyPy(t *testing.T, body, headSHA string) (conclusion, output string)
 		t.Fatalf("seed GITHUB_OUTPUT: %v", err)
 	}
 	cmd := exec.Command(python, verifyPyRelPath)
-	cmd.Env = append(os.Environ(),
+	env := os.Environ()
+	// These unit tests exercise the verifier as a plain PR snapshot. CI sets
+	// GITHUB_EVENT_NAME= pull_request and may select the synchronize settlement
+	// path, which requires a live GitHub API and makes deterministic round trips
+	// fail on every platform.
+	for _, key := range []string{"GITHUB_EVENT_NAME", "GITHUB_EVENT_ACTION", "GITHUB_EVENT_PATH", "GITHUB_REPOSITORY", "GITHUB_TOKEN"} {
+		for i, entry := range env {
+			if strings.HasPrefix(entry, key+"=") {
+				env = append(env[:i], env[i+1:]...)
+				break
+			}
+		}
+	}
+	cmd.Env = append(env,
 		"PR_BODY="+body,
 		"PR_HEAD_SHA="+headSHA,
 		"PR_NUMBER=42",
