@@ -58,6 +58,15 @@ Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` 
 Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
 Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
+## Bounding the review loop
+
+`auto_fix.review` caps only the *automatic* review fix rounds; a driver answering `axi respond --action fix` at every gate could loop indefinitely. The optional [`review` policy](/no-mistakes/reference/global-config/#review) bounds the whole loop:
+
+- `review.max_fix_rounds` counts automatic and gate-driven fix rounds together. At the cap the step still parks with every outstanding finding, the gate shows `fix_rounds: <used>/<max>`, and a further `fix` is refused (`fix_rounds_exhausted`) - approve, skip, and abort remain. Nothing is auto-approved and no severity is dropped.
+- `review.auto_fix_ask_user` lets the automatic loop fix `ask-user` findings too, so a run parks once with what survived the budget instead of once per finding.
+- `review.gate_severity: error` makes only `error` findings park the review step; warnings are reported but never spend a fix round.
+- `review.rereview_scope: fix-diff` makes each rereview verify the previous findings and read only the fix-round diff instead of re-enumerating the branch.
+
 ## Finding actions
 
 Agent-driven findings now use an `action` field instead of `requires_human_review`:

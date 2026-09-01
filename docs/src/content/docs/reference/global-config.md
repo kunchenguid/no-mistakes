@@ -581,6 +581,31 @@ Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
 
+### review
+
+Review-loop policy: how many fix rounds the review step may take, which findings the automatic loop fixes, which severity parks, and what a rereview reads. Every key is optional; leaving the block out keeps the pre-policy behaviour (unbounded fix loop, only `auto-fix` findings fixed automatically, a park on any `error` or `warning`, full-branch rereviews). A repository may set the same keys in its `.no-mistakes.yaml`; the trusted default-branch copy wins over these global values.
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+| Field                      | Type     | Default   | Description |
+| -------------------------- | -------- | --------- | ----------- |
+| `review.max_fix_rounds`    | `int`    | `0`       | Cap on total review fix rounds - automatic `auto_fix.review` rounds and gate-driven `axi respond --action fix` rounds together. At the cap the step still parks with every outstanding finding, but a further `fix` is refused (`fix_rounds_exhausted`); approve, skip, and abort remain. `0` = unbounded. |
+| `review.auto_fix_ask_user` | `bool`   | `false`   | Let the automatic review fix loop also fix `ask-user` findings while fix rounds remain, parking once with whatever survives the budget. The fixer keeps its rule against reverting the author's intentional code and reports such findings unresolved. |
+| `review.gate_severity`     | `string` | `warning` | Least severe finding that parks the review step: `warning` or `error`. At `error`, warnings and info are reported but never park and never spend a fix round. |
+| `review.rereview_scope`    | `string` | `full`    | What a post-fix rereview reads: `full` re-enumerates the whole branch every round; `fix-diff` verifies each previous finding and reviews only the fix-round diff plus the call sites a fix changed. |
+
+```yaml
+review:
+  max_fix_rounds: 2
+  auto_fix_ask_user: true
+  gate_severity: error
+  rereview_scope: fix-diff
+```
+
+The gate shows the budget as `fix_rounds: <used>/<max>` whenever a cap is set, so a driving agent reads it before answering. See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for the loop these knobs bound.
+
 ### ci.rerun_transient
 
 How many times the CI step may re-run a single provider-attributed check before that check reaches an approval gate.

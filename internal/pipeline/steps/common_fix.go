@@ -61,6 +61,17 @@ func hasBlockingFindings(items []Finding) bool {
 	return false
 }
 
+// hasErrorFindings is the review gate predicate under
+// review.gate_severity: error - only error findings park.
+func hasErrorFindings(items []Finding) bool {
+	for _, f := range items {
+		if f.Severity == "error" {
+			return true
+		}
+	}
+	return false
+}
+
 // assertPipelineHeadContinuity fails closed when the worktree HEAD is no longer
 // equal to or a descendant of the head the pipeline itself last recorded
 // (sctx.Run.HeadSHA). Every post-review step calls this guard at entry, and
