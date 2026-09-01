@@ -307,6 +307,15 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 
 	switch run.Status {
 	case types.RunCompleted:
+		// A human approved this run's CI gate while a live check was not
+		// resolved (see pipeline.ApprovalOverrideVerifier / run.CIOverrideReason).
+		// The TUI must say so, or the human-facing surface disagrees with axi
+		// (outcomeForRun), which already renders outcome=passed-with-override -
+		// exactly the ambiguity this exists to remove.
+		if run.CIOverrideReason != "" {
+			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+			return style.Render("⚠ Pipeline passed with override: "+run.CIOverrideReason) + elapsed
+		}
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 		return style.Render("✓ Pipeline passed") + elapsed
 	case types.RunFailed:

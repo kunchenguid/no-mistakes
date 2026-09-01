@@ -138,6 +138,34 @@ func TestOutcomeBanner_SuccessShowsCheckmark(t *testing.T) {
 	}
 }
 
+// TestOutcomeBanner_CIOverrideShowsReason is the P1 regression from the
+// upstream review of PR 923 ("TUI hides persisted CI overrides"): a human
+// approving a still-unresolved CI gate is recorded on run.CIOverrideReason
+// (see pipeline.ApprovalOverrideVerifier), and axi already renders that as
+// outcome=passed-with-override with the reason attached. Before this fix the
+// TUI's completion banner rendered exactly the same "✓ Pipeline passed" for
+// this run as for a genuinely green one, so the two human/agent-facing
+// surfaces disagreed. The banner must show the override and its reason.
+func TestOutcomeBanner_CIOverrideShowsReason(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	run.CIOverrideReason = "live checks for https://github.com/test/repo/pull/42 not all passed: deploy (pending)"
+	steps := []ipc.StepResultInfo{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepCI, Status: types.StepStatusCompleted},
+	}
+	banner := stripANSI(renderOutcomeBanner(run, steps))
+	if strings.Contains(banner, "✓ Pipeline passed") && !strings.Contains(banner, "override") {
+		t.Errorf("banner reads as a plain clean pass, indistinguishable from a genuinely green run: %s", banner)
+	}
+	if !strings.Contains(banner, "override") {
+		t.Errorf("expected the banner to say 'override', got: %s", banner)
+	}
+	if !strings.Contains(banner, run.CIOverrideReason) {
+		t.Errorf("expected the banner to include the override reason %q, got: %s", run.CIOverrideReason, banner)
+	}
+}
+
 func TestOutcomeBanner_FailureShowsX(t *testing.T) {
 	run := testRun()
 	run.Status = types.RunFailed
