@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -272,7 +273,11 @@ func TestUntrackedFilesPreservesRawPaths(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()
 
-	for _, name := range []string{" plain ", "café.txt", "tab\tname"} {
+	names := []string{"café.txt", "name with space.txt"}
+	if runtime.GOOS != "windows" {
+		names = []string{" plain ", "café.txt", "name with space.txt", "tab\tname"}
+	}
+	for _, name := range names {
 		writeFile(t, filepath.Join(dir, name), "new\n")
 	}
 
@@ -280,7 +285,7 @@ func TestUntrackedFilesPreservesRawPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UntrackedFiles failed: %v", err)
 	}
-	want := []string{" plain ", "café.txt", "tab\tname"}
+	want := names
 	if len(files) != len(want) {
 		t.Fatalf("UntrackedFiles = %#v, want %#v", files, want)
 	}
