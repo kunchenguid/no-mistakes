@@ -95,7 +95,7 @@ type actionRun struct {
 	exemptBots  string
 	exemptRefs  string
 	eventPath   string
-	githubToken string // set to attempt the live PR lookup; empty forces the event-payload fallback
+	githubToken string // set (with githubAPI/githubRepo) to attempt the live PR lookup; when body/headSHA are also empty, an unset or failing live lookup now fails the gate closed rather than falling back to the event payload
 	githubAPI   string // GITHUB_API_URL override, normally a local httptest.Server for tests
 	githubRepo  string // GITHUB_REPOSITORY, e.g. "owner/name"
 }
@@ -449,25 +449,48 @@ func TestRequireActionReadsTheEventPayloadWhenInputsAreOmitted(t *testing.T) {
 	if err := os.WriteFile(eventPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write event payload: %v", err)
 	}
+	// The live lookup is the only source once no explicit pr-body/pr-head-sha
+	// is forwarded (see TestRequireActionFailsClosedWhenLiveLookupUnavailable
+	// for the case where it is not configured at all) - so this test serves
+	// the event payload's OWN current values back from the stub live API,
+	// proving the compliant read and the head-bind check both still apply on
+	// the live path exactly as they did on the payload path before this fix.
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, compliant, requiredWorkflowTestHeadSHA)
 
-	got := runRequireAction(t, actionRun{eventPath: eventPath})
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
 	if got.conclusion != "success" {
 		t.Fatalf("conclusion = %q, want success\n%s", got.conclusion, got.output)
 	}
 	if !strings.Contains(got.output, "PR #812") {
 		t.Errorf("output does not name the PR from the event payload:\n%s", got.output)
 	}
+}
 
-	// The same payload with a head the attestation does not cover must fail, so
-	// the payload path is genuinely bound and not merely tolerated.
-	moved := strings.Replace(payload, requiredWorkflowTestHeadSHA, "ffffffffffffffffffffffffffffffffffffffff", 1)
-	movedPath := filepath.Join(t.TempDir(), "event.json")
-	if err := os.WriteFile(movedPath, []byte(moved), 0o644); err != nil {
-		t.Fatalf("write moved event payload: %v", err)
-	}
-	got = runRequireAction(t, actionRun{eventPath: movedPath})
+// TestRequireActionLiveLookupHeadBindStillApplies covers the head-bind check
+// on the live-lookup path specifically: the live PR body is otherwise
+// compliant, but its live head SHA has moved past what the attestation
+// covers (a push landed after the attestation was written, before this job
+// polled). The gate must still fail exactly as it does on the explicit-input
+// and payload-fallback paths - the live source does not get a weaker check.
+func TestRequireActionLiveLookupHeadBindStillApplies(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
+	movedHead := "ffffffffffffffffffffffffffffffffffffffff"
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, compliant, movedHead)
+
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
 	if got.conclusion != "failure" {
-		t.Fatalf("conclusion = %q, want failure after the head moved\n%s", got.conclusion, got.output)
+		t.Fatalf("conclusion = %q, want failure after the live head moved past the attestation\n%s", got.conclusion, got.output)
 	}
 	if !strings.Contains(got.output, "does not match") {
 		t.Errorf("output does not report the head_sha bind failure:\n%s", got.output)
@@ -584,10 +607,16 @@ func TestRequireActionLiveLookupGovernsFailureToo(t *testing.T) {
 	}
 }
 
-// TestRequireActionFallsBackWhenLiveLookupUnavailable is the safe-degradation
-// case: no token (or an unreachable API) must not hard-fail the whole gate,
-// only lose the rerun protection, with a visible warning explaining why.
-func TestRequireActionFallsBackWhenLiveLookupUnavailable(t *testing.T) {
+// TestRequireActionFailsClosedWhenLiveLookupUnavailable is the P1 regression
+// for the upstream review of PR 923 ("lookup failure restores stale
+// verdicts"): before this fix, no token (or an unreachable API) fell back to
+// evaluating the workflow's own cached event payload and still emitted a
+// compliance verdict from it - exactly the staleness hole a rerun of an old
+// job could exploit (see the module docstring). It must instead fail the
+// whole gate closed, with no compliance verdict at all, and a clear error
+// naming both remediations (grant pull-requests: read, or forward explicit
+// pr-body/pr-head-sha).
+func TestRequireActionFailsClosedWhenLiveLookupUnavailable(t *testing.T) {
 	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
 	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
 
@@ -601,24 +630,35 @@ func TestRequireActionFallsBackWhenLiveLookupUnavailable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := runRequireAction(t, tc.run)
-			if got.conclusion != "success" {
-				t.Fatalf("conclusion = %q, want success via the event-payload fallback\n%s", got.conclusion, got.output)
+			if got.conclusion != "failure" {
+				t.Fatalf("conclusion = %q, want failure (fail closed, never certify from the cached event payload)\n%s", got.conclusion, got.output)
 			}
-			if !strings.Contains(got.output, "::warning::Could not verify this PR's live body/head") {
-				t.Errorf("output does not warn that the live lookup was unavailable:\n%s", got.output)
+			if got.outputs["compliant"] != "false" {
+				t.Errorf("compliant output = %q, want false - a lookup failure must never emit a verdict at all", got.outputs["compliant"])
+			}
+			if !strings.Contains(got.output, "::error::Could not verify this PR's live body/head") {
+				t.Errorf("output does not report the live lookup failure as an error:\n%s", got.output)
 			}
 			if !strings.Contains(got.output, "pull-requests: read") {
-				t.Errorf("warning does not name the missing permission:\n%s", got.output)
+				t.Errorf("error does not name the missing-permission remediation:\n%s", got.output)
+			}
+			if !strings.Contains(got.output, "pr-body") || !strings.Contains(got.output, "pr-head-sha") {
+				t.Errorf("error does not name the explicit-inputs remediation:\n%s", got.output)
+			}
+			// The compliant-looking event payload must never be evaluated:
+			// none of the checks it would have passed appear in the output.
+			if strings.Contains(got.output, "Found no-mistakes signature") {
+				t.Errorf("output evaluated the cached event payload instead of failing closed:\n%s", got.output)
 			}
 		})
 	}
 }
 
-// TestRequireActionFallsBackWhenLiveAPICallFails covers a token and repo both
-// present but the API call itself failing (unreachable host, non-200): the
-// gate must still fall back to the event payload rather than hard-failing on
-// infrastructure noise, and must still warn.
-func TestRequireActionFallsBackWhenLiveAPICallFails(t *testing.T) {
+// TestRequireActionFailsClosedWhenLiveAPICallFails is the same P1 regression
+// as TestRequireActionFailsClosedWhenLiveLookupUnavailable, for a token and
+// repo both present but the API call itself failing (non-200): infrastructure
+// noise must fail the gate closed, not fall back to the event payload.
+func TestRequireActionFailsClosedWhenLiveAPICallFails(t *testing.T) {
 	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
 	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
 	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusForbidden, "", "")
@@ -629,11 +669,14 @@ func TestRequireActionFallsBackWhenLiveAPICallFails(t *testing.T) {
 		githubAPI:   server.URL,
 		githubRepo:  "kunchenguid/no-mistakes",
 	})
-	if got.conclusion != "success" {
-		t.Fatalf("conclusion = %q, want success via the event-payload fallback after a 403\n%s", got.conclusion, got.output)
+	if got.conclusion != "failure" {
+		t.Fatalf("conclusion = %q, want failure after a 403 (fail closed, never certify from the cached event payload)\n%s", got.conclusion, got.output)
 	}
-	if !strings.Contains(got.output, "::warning::Could not verify this PR's live body/head") {
-		t.Errorf("output does not warn that the live lookup failed:\n%s", got.output)
+	if got.outputs["compliant"] != "false" {
+		t.Errorf("compliant output = %q, want false", got.outputs["compliant"])
+	}
+	if !strings.Contains(got.output, "::error::Could not verify this PR's live body/head") {
+		t.Errorf("output does not report the live lookup failure as an error:\n%s", got.output)
 	}
 }
 

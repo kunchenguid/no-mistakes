@@ -63,10 +63,13 @@ inputs:
       a fresh timestamp (see verify.py's module docstring). Defaults to the
       job's own ambient token; forwarding it does not by itself grant any
       permission. Requires the caller's `permissions:` to include
-      `pull-requests: read` - without it the live lookup 403s and the action
-      falls back to the event payload with a visible warning rather than
-      failing the whole gate. Never broadens `contents:` beyond read; this
-      action still never checks out or executes repository code.
+      `pull-requests: read` unless explicit pr-body/pr-head-sha inputs are
+      forwarded instead - without one of those two, the live lookup 403s and
+      the action FAILS THE WHOLE GATE CLOSED rather than falling back to the
+      event payload, because evaluating compliance against that cached
+      payload is exactly the staleness hole this input exists to close. Never
+      broadens `contents:` beyond read; this action still never checks out or
+      executes repository code.
     required: false
     default: ${{ github.token }}
 

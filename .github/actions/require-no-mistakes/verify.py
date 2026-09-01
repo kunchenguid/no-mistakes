@@ -28,8 +28,15 @@ this repository's check-collapsing logic (internal/scm/github collapseLatestByNa
 treat as the current state - permanently resurrecting a stale failure on an
 otherwise-green commit with no clean recovery short of a new SHA. Live facts
 close that hole: a rerun of any age re-derives its verdict from the PR's
-actual current state instead of a frozen snapshot. The event payload remains
-the fallback when a live lookup is not possible (see main()'s warning).
+actual current state instead of a frozen snapshot.
+
+When a live lookup is REQUIRED (no explicit pr-body/pr-head-sha input was
+forwarded) and it fails, main() fails the whole gate closed rather than
+falling back to the cached event payload: evaluating compliance against that
+payload is precisely the staleness hole described above, so a lookup failure
+must never itself become a route to a passing verdict on stale data. Grant
+this workflow `pull-requests: read`, or forward explicit pr-body/pr-head-sha
+inputs, to avoid depending on the live lookup at all.
 
 NON-GOAL: this gate is a CONTRIBUTOR GUARDRAIL, not a forgery-proof security
 boundary. The signature line and the attestation are author-editable assertions
@@ -95,17 +102,18 @@ LIVE_LOOKUP_TIMEOUT_SECONDS = 10
 def live_pr_facts(number: str) -> dict | None:
     """Fetch the PR's current body and head SHA directly from the GitHub API.
 
-    This is the primary source for the head-bind comparison; event_payload()
-    is the fallback. See the module docstring for why the cached event
-    payload is untrustworthy specifically on an Actions job rerun.
+    This is the only source Facts uses for body/head_sha whenever a caller
+    forwards no explicit pr-body/pr-head-sha input. See the module docstring
+    for why the cached event_payload() is untrustworthy specifically on an
+    Actions job rerun, and why main() fails the whole gate closed - rather
+    than falling back to event_payload() - when this returns None in that
+    situation.
 
     Returns None - never raises - whenever a live lookup cannot be attempted
     (no token, no repo, no PR number) or fails for any reason (network error,
-    non-2xx response, unexpected body), so main() falls back to the event
-    payload with a visible warning instead of hard-failing the whole gate on
-    infrastructure noise. A caller that has not granted the token
-    `pull-requests: read` degrades the same way: the request 403s, this
-    returns None, and the fallback with its warning kicks in.
+    non-2xx response, unexpected body). A caller that has not granted the
+    token `pull-requests: read` degrades the same way: the request 403s and
+    this returns None.
     """
     token = env("GITHUB_TOKEN")
     repo = env("GITHUB_REPOSITORY")
@@ -328,15 +336,13 @@ def check_required_steps(facts: Facts, steps: list) -> None:
 
 def main() -> int:
     facts = Facts()
-    if facts.live_lookup_attempted and not facts.live_lookup_used:
-        print(
-            "::warning::Could not verify this PR's live body/head via the GitHub API; "
-            "falling back to the workflow's own cached event payload, which can be "
-            "stale if this job was rerun (see verify.py's module docstring). Add "
-            "`pull-requests: read` to this workflow's `permissions:` so "
-            "require-no-mistakes can verify against live PR state."
-        )
 
+    # Exemption is evaluated even when the live lookup below failed: it never
+    # certifies compliance (it always emits compliant=false, see the comment
+    # below) and its inputs (author, head_ref) come from configured caller
+    # policy plus author/branch facts that do not change across a rerun the
+    # way body/head_sha can, so it carries none of the staleness risk the
+    # live-lookup gate exists to close.
     reason = exemption_reason(facts)
     if reason:
         print(f"Skipping no-mistakes enforcement: {reason}.")
@@ -348,6 +354,29 @@ def main() -> int:
         emit_output("compliant", "false")
         return 0
     emit_output("exempt", "false")
+
+    if facts.live_lookup_attempted and not facts.live_lookup_used:
+        # No explicit pr-body/pr-head-sha was forwarded (the documented
+        # zero-input integration), so this run needed the live lookup to
+        # know the PR's current body/head - and it failed. Falling back to
+        # the workflow's own cached event payload here would be exactly the
+        # hole this whole change exists to close: a GitHub Actions job RERUN
+        # replays the payload archived at the run's ORIGINAL trigger, not a
+        # live event, so evaluating compliance against it can certify a
+        # stale, already-superseded verdict instead of the PR's current
+        # state (see the module docstring). Fail closed instead of silently
+        # downgrading to that stale source.
+        fail(
+            "::error::Could not verify this PR's live body/head via the GitHub API, so "
+            "require-no-mistakes cannot safely evaluate compliance: falling back to the "
+            "workflow's own cached event payload risks certifying a stale, "
+            "already-superseded verdict if this job was rerun (see verify.py's module "
+            "docstring).\n\n"
+            "Add `pull-requests: read` to this workflow's `permissions:` so "
+            "require-no-mistakes can verify against live PR state, or forward explicit "
+            "`pr-body`/`pr-head-sha` inputs to bypass the live lookup entirely.\n\n"
+            f"PR author: {facts.author}\n"
+        )
 
     check_signature(facts)
     label = f"PR #{facts.number}" if facts.number else "PR"

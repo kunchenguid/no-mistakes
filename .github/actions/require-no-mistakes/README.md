@@ -27,10 +27,13 @@ timestamp - which both GitHub's own required-check view and this repository's
 `collapseLatestByName` check-collapsing treat as the current state, pinning a
 stale FAILURE next to an already-green commit with no clean recovery short of
 a new SHA. See `verify.py`'s module docstring for the full incident this
-guards against. When a live lookup is not possible (no `pull-requests: read`,
-no token, or the API call fails) the action falls back to the event payload,
-exactly as before, and prints a `::warning::` naming the missing permission so
-the reduced protection is visible in the job log rather than silent.
+guards against. When a live lookup is required (no explicit `pr-body`/
+`pr-head-sha` input was forwarded - the default zero-input integration) and it
+is not possible (no `pull-requests: read`, no token, or the API call fails),
+the action **fails the whole gate closed** instead of falling back to the
+event payload: evaluating compliance against that cached payload is the exact
+staleness hole described above, so a lookup failure must never itself become
+a route to a passing verdict on stale data.
 
 ## Usage
 
@@ -46,7 +49,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read # optional but recommended: enables the live-lookup rerun guard below
+  pull-requests: read # required unless the caller forwards explicit pr-body/pr-head-sha: the gate fails closed without it
 
 jobs:
   check:
@@ -98,9 +101,11 @@ The action never checks out or executes repository code, so it is safe on
 `pull_request` runs from forks. Callers should keep `permissions: contents: read`
 and stay on `pull_request` rather than `pull_request_target`. The live lookup
 only ever reads (`GET /repos/{owner}/{repo}/pulls/{number}`) with whatever
-token the caller forwards; it never requests or requires write access, and a
-caller that omits `pull-requests: read` loses only the rerun guard, not
-correctness on a first run.
+token the caller forwards; it never requests or requires write access. A
+caller that omits `pull-requests: read` and forwards no explicit `pr-body`/
+`pr-head-sha` fails the gate closed on every run - it never silently falls
+back to a less-protected mode - so grant the permission, or forward those
+explicit inputs, rather than relying on the default zero-input integration.
 
 An exemption is trusted outer-repository policy supplied by the caller's pinned
 workflow. It does not claim that no-mistakes ran: exempt PRs report
@@ -152,4 +157,4 @@ tag or a commit SHA, never `@main`.
 
 `require_no_mistakes_action_test.go` in the repository root executes
 `verify.py` the way a runner does and covers every verdict, the exemption
-surface, and the event-payload fallback.
+surface, and the live-lookup-failure fail-closed path.
