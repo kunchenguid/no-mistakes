@@ -139,8 +139,8 @@ Answer the current approval gate and continue until the next gate, CI-ready deci
 
 ```sh
 no-mistakes axi respond --action approve
-no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
-no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
+no-mistakes axi respond --action fix --findings F1,F2 --instructions-file guidance.txt
+no-mistakes axi respond --action fix --add-finding-file finding.json
 no-mistakes axi respond --action skip
 ```
 
@@ -155,6 +155,7 @@ no-mistakes axi respond --action skip
 | `--add-finding-file` | `string` | (none)   | Read the finding JSON verbatim from a file; use `-` to read from stdin, so the text never transits the caller shell (no command substitution). Mutually exclusive with `--add-finding`. |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
 
+Only one file flag can use `-` in a response, because stdin can be consumed only once; write one value to a file when supplying both guidance and a finding.
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when the CI monitor reports readiness but the PR still needs a human merge.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
