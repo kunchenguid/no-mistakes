@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
+    max_fix_rounds              INTEGER,
     ci_fix_attempts             INTEGER NOT NULL DEFAULT 0
 );
 
@@ -185,6 +186,7 @@ var migrationStatements = []string{
 	// written before the provider call, so a crash mid-request spends the
 	// budget rather than silently granting a free retry.
 	`ALTER TABLE runs ADD COLUMN ci_rerun_state TEXT`,
+	`ALTER TABLE step_results ADD COLUMN max_fix_rounds INTEGER`,
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,

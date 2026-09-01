@@ -181,6 +181,16 @@ Run the pipeline and decide on its findings as they come up:
    self-fixed. (Other steps such as test and lint may auto-fix within the
    pipeline and re-run before they ever gate.)
 
+   **Fix rounds may be capped.** When the configuration sets
+   ` + "`review.max_fix_rounds`" + `, the gate shows ` + "`fix_rounds: <used>/<max>`" + `.
+   The cap counts automatic and gate-driven fix rounds together. Once it reads
+   ` + "`<max>/<max> used`" + `, ` + "`--action fix`" + ` is refused with an error whose
+   message starts with ` + "`fix_rounds_exhausted`" + `; the gate stays open, so respond
+   with ` + "`--action approve`" + ` (accept as-is), ` + "`skip`" + `, or ` + "`abort`" + ` instead of
+   retrying the fix. With ` + "`review.auto_fix_ask_user: true`" + ` the pipeline has
+   already spent its rounds on the ask-user findings too, so what you see at the
+   gate is what survived the budget.
+
    Choose one response:
    ` + "```sh" + `
    # accept the step as-is and continue

@@ -809,6 +809,12 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 
 	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added); err != nil {
+		if strings.Contains(err.Error(), types.FixRoundsExhaustedCode) {
+			// The step is still parked; only the fix was refused.
+			return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err),
+				"The gate is still open: respond again with --action approve (accept as-is), skip, or abort",
+				"review.max_fix_rounds caps automatic and gate-driven fix rounds together; raise it in config and rerun if more fixing is wanted")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
 

@@ -182,6 +182,9 @@ type GlobalConfig struct {
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
 	Eval Eval
+	// Review is the operator's machine-wide review-loop policy (round cap,
+	// ask-user fixing, gate severity). A trusted repo value wins over it.
+	Review ReviewPolicyRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -212,6 +215,7 @@ type globalConfigRaw struct {
 	Intent                  IntentRaw                  `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
 	Eval                    EvalRaw                    `yaml:"eval"`
+	Review                  ReviewPolicyRaw            `yaml:"review"`
 	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
 }
 
@@ -302,7 +306,77 @@ type ReviewRaw struct {
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
+	// ReviewPolicyRaw is the review-loop policy (round cap, ask-user fixing,
+	// gate severity). It is shared with the global config; the repo copy is
+	// honored only from the trusted default branch and wins over the global
+	// value when set.
+	ReviewPolicyRaw `yaml:",inline"`
 }
+
+// Review gate severities: the least severe finding severity that parks the
+// review step for a decision.
+const (
+	// ReviewGateSeverityWarning is the default: any error or warning finding
+	// parks the review step (the behavior every configuration written before
+	// review.gate_severity existed resolves to).
+	ReviewGateSeverityWarning = FindingSeverityWarningName
+	// ReviewGateSeverityError parks only on error findings. Warning and info
+	// findings are reported but never park and never spend a fix round; a
+	// warning is by definition "worth addressing, can be done in a follow up".
+	ReviewGateSeverityError = FindingSeverityErrorName
+)
+
+// Finding severity names as the review prompt spells them. Duplicated here
+// rather than imported from internal/types because config must not depend on
+// the pipeline vocabulary package; validateReviewPolicyRaw is the only consumer.
+const (
+	FindingSeverityErrorName   = "error"
+	FindingSeverityWarningName = "warning"
+)
+
+// ReviewPolicyRaw is the YAML representation of the review-loop policy. Every
+// field is optional and the zero value reproduces the pre-policy behavior
+// exactly: an unbounded fix loop, only "auto-fix" findings fixed
+// automatically, and a park on any error or warning finding. Pointer fields
+// distinguish "not set" (inherit) from an explicit zero/false.
+//
+// The policy exists because a 444-run audit found the review step's cost was
+// structural: an unbounded fix->rereview ratchet driven by an agent answering
+// "fix" at every gate (rounds beyond the second fix round were 63% of fix-loop
+// time), a park on every error-or-warning finding, and ask-user findings that
+// the gate agent authorized for fixing 100% of the time anyway.
+type ReviewPolicyRaw struct {
+	// MaxFixRounds caps the total number of review fix rounds - automatic
+	// auto_fix rounds AND gate-driven `axi respond --action fix` rounds
+	// together. Once the cap is reached the step still parks with every
+	// outstanding finding visible, but a further fix is refused; the driver
+	// must approve, skip, or abort. 0 (default) leaves the loop unbounded.
+	MaxFixRounds *int `yaml:"max_fix_rounds"`
+	// AutoFixAskUser, when true, lets the automatic review fix loop also fix
+	// findings classified "ask-user" while fix rounds remain, instead of
+	// parking for each one. Whatever survives the budget parks once, all at
+	// the same gate. The fixer keeps its rule against reverting the author's
+	// intentional code and reports such findings unresolved instead.
+	AutoFixAskUser *bool `yaml:"auto_fix_ask_user"`
+	// GateSeverity is the least severe finding that parks the review step:
+	// "warning" (default) or "error". At "error", warning and info findings
+	// are reported but never park and never spend a fix round.
+	GateSeverity string `yaml:"gate_severity"`
+	// RereviewScope selects what a post-fix rereview reads: "full" (default)
+	// re-enumerates the whole branch every round, the pre-policy behavior;
+	// "fix-diff" verifies each previous finding and reviews only the fix-round
+	// diff (commits after the starting head plus the worktree) and the call
+	// sites a fix changed. The audit measured full rereviews yielding a flat
+	// ~2 new findings per round regardless of round number - sampling the
+	// branch, not converging - at ~7 minutes each.
+	RereviewScope string `yaml:"rereview_scope"`
+}
+
+// Rereview scopes (review.rereview_scope).
+const (
+	ReviewRereviewScopeFull    = "full"
+	ReviewRereviewScopeFixDiff = "fix-diff"
+)
 
 // PRRaw is the YAML representation of pull-request settings.
 type PRRaw struct {
@@ -597,9 +671,67 @@ type Document struct {
 
 // Review is the resolved review-step config. PathInstructions come from the
 // trusted default-branch repo config and scope extra review guidance to the
-// changed paths each glob matches.
+// changed paths each glob matches. The policy fields resolve global then
+// trusted-repo overrides onto the pre-policy defaults (see ReviewPolicyRaw).
 type Review struct {
 	PathInstructions []PathInstruction
+	// MaxFixRounds caps total review fix rounds; 0 means unbounded.
+	MaxFixRounds int
+	// AutoFixAskUser lets the automatic fix loop fix ask-user findings while
+	// fix rounds remain.
+	AutoFixAskUser bool
+	// GateSeverity is ReviewGateSeverityWarning or ReviewGateSeverityError.
+	GateSeverity string
+	// RereviewScope is ReviewRereviewScopeFull or ReviewRereviewScopeFixDiff.
+	RereviewScope string
+}
+
+// FixRoundsRemain reports whether another review fix round is allowed after
+// `used` fix rounds. Unbounded when MaxFixRounds is 0.
+func (r Review) FixRoundsRemain(used int) bool {
+	return r.MaxFixRounds <= 0 || used < r.MaxFixRounds
+}
+
+func reviewPolicyDefaults() Review {
+	return Review{GateSeverity: ReviewGateSeverityWarning, RereviewScope: ReviewRereviewScopeFull}
+}
+
+func applyReviewPolicyOverrides(dst *Review, src *ReviewPolicyRaw) {
+	if src == nil {
+		return
+	}
+	if src.MaxFixRounds != nil {
+		dst.MaxFixRounds = *src.MaxFixRounds
+	}
+	if src.AutoFixAskUser != nil {
+		dst.AutoFixAskUser = *src.AutoFixAskUser
+	}
+	if sev := strings.ToLower(strings.TrimSpace(src.GateSeverity)); sev != "" {
+		dst.GateSeverity = sev
+	}
+	if scope := strings.ToLower(strings.TrimSpace(src.RereviewScope)); scope != "" {
+		dst.RereviewScope = scope
+	}
+}
+
+// validateReviewPolicyRaw rejects a negative round cap or an unknown gate
+// severity. It runs on the global config and on both repo copies (see
+// validateReviewRaw for why the pushed copy is validated too).
+func validateReviewPolicyRaw(policy ReviewPolicyRaw) error {
+	if policy.MaxFixRounds != nil && *policy.MaxFixRounds < 0 {
+		return fmt.Errorf("review.max_fix_rounds must be >= 0 (0 leaves the fix loop unbounded), got %d", *policy.MaxFixRounds)
+	}
+	switch strings.ToLower(strings.TrimSpace(policy.GateSeverity)) {
+	case "", ReviewGateSeverityWarning, ReviewGateSeverityError:
+	default:
+		return fmt.Errorf("review.gate_severity must be %q or %q, got %q", ReviewGateSeverityError, ReviewGateSeverityWarning, policy.GateSeverity)
+	}
+	switch strings.ToLower(strings.TrimSpace(policy.RereviewScope)) {
+	case "", ReviewRereviewScopeFull, ReviewRereviewScopeFixDiff:
+		return nil
+	default:
+		return fmt.Errorf("review.rereview_scope must be %q or %q, got %q", ReviewRereviewScopeFull, ReviewRereviewScopeFixDiff, policy.RereviewScope)
+	}
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -919,6 +1051,28 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+
+# Review-loop policy. Every key is optional; leaving the block out keeps the
+# pre-policy behavior (unbounded fix loop, only "auto-fix" findings fixed
+# automatically, a park on any error or warning finding). A repository's
+# .no-mistakes.yaml may set the same keys; its trusted default-branch copy wins.
+# review:
+#   # Cap on total review fix rounds - automatic auto_fix rounds AND gate-driven
+#   # "axi respond --action fix" rounds together. At the cap the step still parks
+#   # with every outstanding finding, but a further fix is refused: the driver
+#   # must approve, skip, or abort. 0 = unbounded.
+#   max_fix_rounds: 0
+#   # Let the automatic review fix loop also fix "ask-user" findings while fix
+#   # rounds remain, parking once with whatever survives the budget.
+#   auto_fix_ask_user: false
+#   # Least severe finding that parks the review step: "warning" (default) or
+#   # "error". At "error", warnings and info are reported but never park and
+#   # never spend a fix round.
+#   gate_severity: warning
+#   # What a post-fix rereview reads: "full" (default) re-enumerates the whole
+#   # branch every round; "fix-diff" verifies each previous finding and reviews
+#   # only the fix-round diff plus the call sites a fix changed.
+#   rereview_scope: full
 
 # How many times the CI step may re-run a single check the provider reported as
 # cancelled before that check reaches an approval gate instead of the fix agent.
@@ -1851,6 +2005,10 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.AgentConfig = profiles
 	}
+	if err := validateReviewPolicyRaw(raw.Review); err != nil {
+		return nil, err
+	}
+	cfg.Review = raw.Review
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
 			return nil, err
@@ -2114,6 +2272,9 @@ func validatePRRaw(pr PRRaw) error {
 // invalid block has to fail here, before it merges, rather than brick the
 // repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
+	if err := validateReviewPolicyRaw(review.ReviewPolicyRaw); err != nil {
+		return err
+	}
 	if len(review.PathInstructions) > MaxReviewPathInstructions {
 		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
 	}
@@ -2593,6 +2754,13 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
 
+	// Review-loop policy: operator's global value, then the trusted repo copy
+	// (EffectiveRepoConfig already discarded a pushed-branch review block).
+	review := reviewPolicyDefaults()
+	applyReviewPolicyOverrides(&review, &global.Review)
+	applyReviewPolicyOverrides(&review, &repo.Review.ReviewPolicyRaw)
+	review.PathInstructions = resolvePathInstructions(repo.Review.PathInstructions)
+
 	cfg := &Config{
 		Agent:                 global.Agent,
 		Agents:                copyAgents(global.Agents),
@@ -2622,7 +2790,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		Review:         review,
 		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
 		ForgeProfiles:  global.ForgeProfiles,
 		// repo is the EffectiveRepoConfig result, so this value is already

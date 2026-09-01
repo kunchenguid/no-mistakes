@@ -64,6 +64,9 @@ type Executor struct {
 	approvalCh  chan approvalResponse // buffered channel for approval responses
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
+	// waitingFixBudget is the parked step's review fix-round budget; an
+	// exhausted budget makes Respond refuse ActionFix (review.max_fix_rounds).
+	waitingFixBudget fixBudget
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -169,6 +172,14 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if step != e.waitingStep {
 		e.mu.Unlock()
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+	}
+	// The cap on review fix rounds is enforced here, at the only entry point
+	// for a gate-driven fix, so the executor loop below never has to decide
+	// what to do with a fix it cannot run. The step stays parked.
+	if action == types.ActionFix && e.waitingFixBudget.exhausted() {
+		budget := e.waitingFixBudget
+		e.mu.Unlock()
+		return &FixRoundsExhaustedError{Step: step, Used: budget.used, Max: budget.max}
 	}
 	e.waiting = false
 	e.mu.Unlock()
@@ -424,6 +435,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.mu.Lock()
 	e.waiting = true
 	e.waitingStep = gate.step.Name()
+	// The recovered gate re-parks under the same fix-round budget the live
+	// gate had: rounds after the first are fix rounds.
+	e.waitingFixBudget = fixBudget{used: max(gate.round-1, 0), max: gatePolicyFor(gate.step.Name(), e.config).maxFixRounds}
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
@@ -694,9 +708,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if e.config != nil {
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
+	// Review-loop policy (config.Review): zero for every other step.
+	policy := gatePolicyFor(stepName, e.config)
 
 	// Mark step as running
-	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+	if err := e.db.StartStepWithLimits(sr.ID, autoFixLimit, policy.maxFixRounds); err != nil {
 		return false, "", fmt.Errorf("start step %s: %w", stepName, err)
 	}
 	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
@@ -956,8 +972,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
-		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
+		// Fix rounds used so far: every round after the first is a fix round
+		// (automatic or gate-driven), which is what review.max_fix_rounds caps.
+		fixRoundsUsed := max(roundNum-1, 0)
+		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit && policy.fixRoundsRemain(fixRoundsUsed) {
+			fixableFindings := policy.fixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
@@ -984,7 +1003,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(outcome.Findings) {
+		if !outcome.NeedsApproval && !policy.parksOnFindingsJSON(outcome.Findings) {
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
@@ -1010,9 +1029,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Mark executor as ready to receive approval before updating DB or
 		// emitting events, so that callers who poll the DB status can
 		// immediately call Respond once they see it.
+		budget := fixBudget{used: fixRoundsUsed, max: policy.maxFixRounds}
+		if budget.exhausted() {
+			writeLog(fmt.Sprintf("%s fix rounds exhausted (%d/%d, review.max_fix_rounds): a further fix is refused at this gate; approve, skip, or abort", stepName, budget.used, budget.max))
+		}
 		e.mu.Lock()
 		e.waiting = true
 		e.waitingStep = stepName
+		e.waitingFixBudget = budget
 		e.mu.Unlock()
 
 		// Parking starts before the gate becomes observable. This includes the

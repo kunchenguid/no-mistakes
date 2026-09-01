@@ -216,6 +216,18 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	return result
 }
 
+// FilterFindingsBy returns a new Findings carrying the run-level fields of
+// findings and only the items keep accepts. The original is not mutated.
+func FilterFindingsBy(findings Findings, keep func(Finding) bool) Findings {
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
+	for _, item := range findings.Items {
+		if keep(item) {
+			result.Items = append(result.Items, item)
+		}
+	}
+	return result
+}
+
 // AutoFixableFindings returns a new Findings containing only items where
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.

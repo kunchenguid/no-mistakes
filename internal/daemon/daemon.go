@@ -1364,6 +1364,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if s.AutoFixLimit != nil {
 		info.AutoFixLimit = *s.AutoFixLimit
 	}
+	if s.MaxFixRounds != nil {
+		info.MaxFixRounds = *s.MaxFixRounds
+	}
 	if stats, err := d.StepFindingStats(s); err == nil {
 		info.ReportedFindings = stats.ReportedFindings
 		info.FixedFindings = stats.FixedFindings

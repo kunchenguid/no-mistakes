@@ -76,19 +76,22 @@ type fixRow struct {
 // stepView is a render-ready view of a single pipeline step, decoupled from
 // whether it came from the daemon (ipc) or the local database.
 type stepView struct {
-	ID               string
-	Name             string
-	Status           string
-	DurationMS       int64
-	FindingsJSON     string
-	FixSummaries     []string
-	StartedAt        *int64
-	LastActivityAt   *int64
-	LastActivity     string
-	AgentPID         *int
-	RoundCount       int
-	FixRoundCount    int
-	AutoFixLimit     int
+	ID             string
+	Name           string
+	Status         string
+	DurationMS     int64
+	FindingsJSON   string
+	FixSummaries   []string
+	StartedAt      *int64
+	LastActivityAt *int64
+	LastActivity   string
+	AgentPID       *int
+	RoundCount     int
+	FixRoundCount  int
+	AutoFixLimit   int
+	// MaxFixRounds is the review fix-round cap (review.max_fix_rounds) in
+	// force for this step; 0 when unbounded.
+	MaxFixRounds     int
 	PendingFixSource string
 	QuietWarning     time.Duration
 }
@@ -134,6 +137,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			RoundCount:       s.RoundCount,
 			FixRoundCount:    s.FixRoundCount,
 			AutoFixLimit:     s.AutoFixLimit,
+			MaxFixRounds:     s.MaxFixRounds,
 			PendingFixSource: s.PendingFixSource,
 		}
 		if s.LastActivity != nil {
@@ -172,6 +176,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 		}
 		if s.AutoFixLimit != nil {
 			sv.AutoFixLimit = *s.AutoFixLimit
+		}
+		if s.MaxFixRounds != nil {
+			sv.MaxFixRounds = *s.MaxFixRounds
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -457,6 +464,14 @@ func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
 	})
 }
 
+// fixRoundsSummary renders the review fix-round budget at a gate.
+func fixRoundsSummary(used, maxRounds int) string {
+	if used >= maxRounds {
+		return fmt.Sprintf("%d/%d used - further fix refused at this gate (review.max_fix_rounds); respond with --action approve, skip, or abort", used, maxRounds)
+	}
+	return fmt.Sprintf("%d/%d used", used, maxRounds)
+}
+
 func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	parsed, _ := types.ParseFindingsJSON(gate.FindingsJSON)
 	gfields := []toon.Field{
@@ -474,6 +489,12 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 	// unless config explicitly opts back in.
 	if gate.Name == string(types.StepReview) {
 		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+	}
+	// The review fix-round budget (review.max_fix_rounds), when one is in
+	// force: the driver reads it before answering, because an exhausted budget
+	// refuses `--action fix` and leaves approve, skip, and abort.
+	if gate.MaxFixRounds > 0 {
+		gfields = append(gfields, toon.Field{Key: "fix_rounds", Value: fixRoundsSummary(gate.FixRoundCount, gate.MaxFixRounds)})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

@@ -338,6 +338,62 @@ Pattern matching rules. [`review.path_instructions`](#reviewpath_instructions) u
 
 `*` never crosses a `/`, on every platform, so `**/*.go` is not "every Go file"; it behaves as a single-segment wildcard. Use `*.go` to match by extension at any depth, or `internal/**` to cover a subtree.
 
+### review.max_fix_rounds
+
+Cap on total review fix rounds for this repository - automatic `auto_fix.review` rounds and gate-driven `axi respond --action fix` rounds together. At the cap the review step still parks with every outstanding finding visible, but a further `fix` response is refused with an error starting `fix_rounds_exhausted`; approve, skip, and abort remain. Never auto-approves, never drops severity.
+
+| | |
+|---|---|
+| Type | `int` |
+| Default | Inherits the global `review.max_fix_rounds` (`0` = unbounded) |
+
+Read **only from the trusted default-branch copy**, like `review.path_instructions`.
+
+### review.auto_fix_ask_user
+
+Let the automatic review fix loop also fix `ask-user` findings while fix rounds remain, instead of parking for each one. Whatever survives the budget parks once, all at the same gate. The fixer keeps its rule against reverting the author's intentional code and reports such findings unresolved.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits the global value (`false`) |
+
+Read **only from the trusted default-branch copy**: it widens what the pipeline changes on its own.
+
+### review.gate_severity
+
+Least severe finding that parks the review step: `warning` (any `error` or `warning` finding parks) or `error` (warnings and info are reported but never park and never spend a fix round).
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Inherits the global value (`warning`) |
+
+Read **only from the trusted default-branch copy**. Test and lint gates are unaffected.
+
+### review.rereview_scope
+
+What a post-fix rereview reads: `full` re-enumerates the whole branch every round; `fix-diff` verifies each previous finding and reviews only the fix-round diff (commits after the starting head plus the worktree) and the call sites a fix changed. The fix-round-provenance standard applies either way.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Inherits the global value (`full`) |
+
+Read **only from the trusted default-branch copy**.
+
+```yaml
+review:
+  max_fix_rounds: 2
+  auto_fix_ask_user: true
+  gate_severity: error
+  rereview_scope: fix-diff
+  path_instructions:
+    - path: "docs/**"
+      instructions: |
+        Prose changes only. Do not request test coverage.
+```
+
 ### auto_fix
 
 Override auto-fix attempt limits for specific steps. Fields not set here inherit from global config.

@@ -51,12 +51,16 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)
+	scopedRereview := sctx.Fixing && scopedRereviewEnabled(sctx)
 	if sctx.Fixing {
 		startingHeadSHA := sctx.ReviewStartingHeadSHA
 		if startingHeadSHA == "" {
 			startingHeadSHA = sctx.Run.HeadSHA
 		}
 		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, startingHeadSHA)
+		if scopedRereview {
+			reviewScope = fmt.Sprintf("fix-round changes only: commits after starting head %s through HEAD plus the uncommitted worktree (branch base commit %s)", startingHeadSHA, baseSHA)
+		}
 	}
 
 	// Bounded workload size (changed files + net lines) for local telemetry, so
@@ -235,31 +239,19 @@ Context:
 - default branch: %s
 - ignore patterns: %s
 
-Task:
-- Read the relevant history and diff yourself.
-- Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
-- Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
-- For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
-- For any new or changed logic, construct at least one concrete input or state and trace it through the code, looking for a case that produces a wrong result without erroring.
-- When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
-- Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
-- Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
-- Do NOT run tests during review. The pipeline has a dedicated test step after review.
-- Analyze for bugs, risks, and code simplification opportunities.
-- "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
-- Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
-- Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
+%s
 
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
+- Every finding must name an input, state, or call sequence the system can actually receive through a supported entry point under its stated contract. Do not report hazards the accepting layer already rules out or the contract does not cover - sparse-array holes in JSON-sourced data, wall-clock rollback, in-process Proxy or prototype adversaries, hypothetical callers that do not exist, format edge cases a stricter upstream validator already rejects - unless the code's stated contract covers them.
 - Use severity "error" for problems that should absolutely not get merged, "warning" for things that are worth addressing but can be done in a follow up, and "info" for things that are nice to have.
 - Be concise and actionable. No generic advice like "add more tests".
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
 - If the change is clean, return an empty findings array.
 - For each finding, set the action field to one of:
-  - "ask-user": the finding is about functional requirements or product behavior, or otherwise challenges the author's deliberate intent. Even if it seems obviously wrong, we should ask the user for review. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt, default to "ask-user".
-  - "auto-fix": the finding is a non-functional, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent.
+  - "ask-user": the finding is about functional requirements or product behavior, or otherwise challenges the author's deliberate intent. Even if it seems obviously wrong, we should ask the user for review. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt about the author's INTENT, default to "ask-user".
+  - "auto-fix": the finding is a non-functional, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent. A concrete, traced correctness, security, or error-handling defect whose smallest fix stays inside the changed code is "auto-fix" regardless of its severity; severity says how bad the defect is, not who decides the remedy.
   - "no-op": the finding is informational and does not require any action (e.g. noting a pattern, acknowledging a tradeoff).
 - Classify by the remedy, not only by the topic. If the smallest honest remedy for a finding would add new durable state, a schema change, new background, retry, or persistence machinery, a new subsystem, or otherwise EXTEND the change beyond its stated intent rather than CORRECT what it already does, the action must be "ask-user" even when the defect itself looks mechanical. Say in the description that the remedy, not the defect, is what needs authorization.
 - For each finding, set review_scope to exactly one of:
@@ -280,6 +272,7 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
+		reviewTaskBlock(scopedRereview),
 		historySection,
 		pathInstructions,
 	)
@@ -327,6 +320,12 @@ Risk assessment (after listing all findings):
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
+	if sctx.Config != nil && sctx.Config.Review.GateSeverity == config.ReviewGateSeverityError {
+		// review.gate_severity: error - warning and info findings are
+		// reported but never park the review step (a warning is by the
+		// prompt's own definition "can be done in a follow up").
+		needsApproval = hasErrorFindings(findings.Items)
+	}
 	findingsJSON, _ := json.Marshal(findings)
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
@@ -335,6 +334,50 @@ Risk assessment (after listing all findings):
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	})
+}
+
+// scopedRereviewEnabled reports whether review.rereview_scope asks post-fix
+// rereviews to read only the fix-round diff.
+func scopedRereviewEnabled(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.Review.RereviewScope == config.ReviewRereviewScopeFixDiff
+}
+
+// reviewTaskShared is the analysis discipline every review turn carries
+// regardless of scope.
+const reviewTaskShared = `- Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
+- For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
+- For any new or changed logic, construct at least one concrete input or state and trace it through the code, looking for a case that produces a wrong result without erroring.
+- When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
+- Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
+- Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
+- Do NOT run tests during review. The pipeline has a dedicated test step after review.
+- Analyze for bugs, risks, and code simplification opportunities.
+- "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
+- Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.`
+
+// reviewTaskBlock renders the Task section of the review prompt. The full
+// form (initial reviews, and every rereview under the default
+// review.rereview_scope: full) demands a complete pass over the branch. The
+// scoped form (rereviews under review.rereview_scope: fix-diff) verifies each
+// previous finding and reviews the fix-round diff and the call sites a fix
+// changed, but does not re-enumerate author code the initial round already
+// covered. The fix-round-provenance clause and its revert-to-minimal-fix ramp
+// apply to both forms.
+func reviewTaskBlock(scopedRereview bool) string {
+	if scopedRereview {
+		return `Task (re-review of this run's fix round, scoped to the fix-round diff):
+- Read the fix-round diff yourself: every commit after the starting head through HEAD, plus the uncommitted worktree.
+- First verify each previous finding against the current code: resolved, partially resolved, or still reachable. Report every finding that is not fully resolved.
+- Then review the fix-round diff itself for defects it introduced, inspecting the call sites, shared helpers, tests, and invariants whose behavior a fix changed.
+- Author code outside the fix-round diff was reviewed in the initial round and is out of scope for this re-review; do not re-enumerate the branch. Raise such code only when a fix changed its behavior.
+` + reviewTaskShared + `
+- Return when every previous finding has been verified and the fix-round diff has been inspected. Do not continue into a full branch review.`
+	}
+	return `Task:
+- Read the relevant history and diff yourself.
+- Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
+` + reviewTaskShared + `
+- Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.`
 }
 
 // fixRoundProvenanceClause reframes a rereview's fix-round changes as
