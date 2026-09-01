@@ -562,6 +562,26 @@ func HasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
 	return out != "", nil
 }
 
+// UntrackedFiles returns each untracked path in git's order. Ignored files
+// are not included.
+func UntrackedFiles(ctx context.Context, dir string) ([]string, error) {
+	out, err := Run(ctx, dir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		// Porcelain format: XY <path> where XY is a 2-char status code + space
+		if line[:2] == "??" {
+			files = append(files, strings.TrimSpace(line[3:]))
+		}
+	}
+	return files, nil
+}
+
 // CreateBranch creates a new branch with the given name and switches to it.
 // Fails if the branch already exists.
 func CreateBranch(ctx context.Context, dir, name string) error {

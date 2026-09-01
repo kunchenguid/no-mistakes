@@ -524,6 +524,106 @@ func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	}
 }
 
+func TestPreflightGuardDirtyTreeNamesUntrackedFiles(t *testing.T) {
+	dir := t.TempDir()
+	run(t, dir, "git", "init")
+	run(t, dir, "git", "config", "user.email", "test@test.com")
+	run(t, dir, "git", "config", "user.name", "Test")
+	run(t, dir, "git", "commit", "--allow-empty", "-m", "initial")
+	run(t, dir, "git", "checkout", "-b", "feature/x")
+	if err := os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "plans", "spec.md"), []byte("spec\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("scratch/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "scratch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scratch", "notes.md"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, dir)
+	guard := preflightGuard(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}, "feature/x")
+	if guard == nil {
+		t.Fatal("expected guard for uncommitted changes")
+	}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := guard(cmd); err == nil {
+		t.Fatal("expected structured preflight error")
+	}
+	got := out.String()
+	for _, want := range []string{
+		"uncommitted changes in the working tree",
+		"Untracked files (not in git yet): docs/plans/spec.md",
+		"git add <path>",
+		"`.git/info/exclude`",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected hint %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "git add -A") {
+		t.Fatalf("hint must never recommend `git add -A`, got:\n%s", got)
+	}
+	if strings.Contains(got, "scratch") {
+		t.Fatalf("hint must not name ignored files, got:\n%s", got)
+	}
+}
+
+func TestPreflightGuardDirtyTreeTrackedOnlyHasNoUntrackedList(t *testing.T) {
+	dir := t.TempDir()
+	run(t, dir, "git", "init")
+	run(t, dir, "git", "config", "user.email", "test@test.com")
+	run(t, dir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "initial")
+	run(t, dir, "git", "checkout", "-b", "feature/x")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, dir)
+	guard := preflightGuard(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}, "feature/x")
+	if guard == nil {
+		t.Fatal("expected guard for uncommitted changes")
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := guard(cmd); err == nil {
+		t.Fatal("expected structured preflight error")
+	}
+	got := out.String()
+	if !strings.Contains(got, "uncommitted changes in the working tree") {
+		t.Fatalf("expected dirty-tree error, got:\n%s", got)
+	}
+	for _, forbidden := range []string{"Untracked files", "git add -A"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("tracked-only hint must not contain %q, got:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestUntrackedHintBoundsLongLists(t *testing.T) {
+	paths := []string{"a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt"}
+	hint := untrackedHint(paths)
+	if !strings.Contains(hint, "e.txt") || !strings.Contains(hint, "(+2 more)") {
+		t.Fatalf("expected first five paths and (+2 more), got:\n%s", hint)
+	}
+	if strings.Contains(hint, "f.txt") {
+		t.Fatalf("hint must not list the sixth path, got:\n%s", hint)
+	}
+}
+
 func TestStatusEmptyHelpIncludesRequiredIntent(t *testing.T) {
 	out := axiDoc(
 		toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
