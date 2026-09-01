@@ -862,7 +862,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 // inline with a non-empty path is an error. The returned error is the whole
 // story - the caller wraps it in emitError.
 func resolveRespondText(cmd *cobra.Command, flag, inline, path string) (string, error) {
-	if inline != "" && path != "" {
+	if path != "" && (inline != "" || cmd.Flags().Changed(flag)) {
 		return "", fmt.Errorf("--%s and --%s-file are mutually exclusive; supply exactly one", flag, flag)
 	}
 	if path == "" {

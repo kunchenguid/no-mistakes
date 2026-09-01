@@ -88,6 +88,31 @@ func TestRunAxiRespond_MutualExclusionAddFindingAndFile(t *testing.T) {
 	assertExitCode(t, err, 2)
 }
 
+func TestAxiRespond_EmptyInlineAndFileAreMutuallyExclusive(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "respond.txt")
+	if err := os.WriteFile(p, []byte("from file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		inlineFlag string
+		fileFlag   string
+	}{
+		{name: "instructions", inlineFlag: "--instructions=", fileFlag: "--instructions-file=" + p},
+		{name: "add finding", inlineFlag: "--add-finding=", fileFlag: "--add-finding-file=" + p},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := executeCmd("axi", "respond", "--action", "fix", tt.inlineFlag, tt.fileFlag)
+			assertExitCode(t, err, 2)
+			if !strings.Contains(out, "mutually exclusive") {
+				t.Fatalf("expected a clear mutual-exclusion error, got %q", out)
+			}
+		})
+	}
+}
+
 func TestRunAxiRespond_StdinOnlyReadOnce(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(io.Discard)
