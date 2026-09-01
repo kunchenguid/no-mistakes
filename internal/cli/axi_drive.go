@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	toon "github.com/toon-format/toon-go"
 
@@ -237,11 +239,22 @@ func untrackedHint(untracked []string) string {
 	if len(shown) > maxUntrackedPaths {
 		shown = shown[:maxUntrackedPaths]
 	}
-	rendered := strings.Join(shown, sep)
+	renderedPaths := make([]string, len(shown))
+	for i, path := range shown {
+		renderedPaths[i] = displayUntrackedPath(path)
+	}
+	rendered := strings.Join(renderedPaths, sep)
 	if dropped := len(untracked) - len(shown); dropped > 0 {
 		rendered += fmt.Sprintf("%s(+%d more)", sep, dropped)
 	}
 	return fmt.Sprintf("Untracked files (not in git yet): %s", rendered)
+}
+
+func displayUntrackedPath(path string) string {
+	if strings.TrimSpace(path) != path || strings.IndexFunc(path, func(r rune) bool { return !unicode.IsGraphic(r) }) >= 0 {
+		return strconv.QuoteToGraphic(path)
+	}
+	return path
 }
 
 // branchOwnershipError carries the shared branch-sync classification that

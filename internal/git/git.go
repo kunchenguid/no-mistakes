@@ -565,18 +565,18 @@ func HasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
 // UntrackedFiles returns each untracked path in git's order. Ignored files
 // are not included.
 func UntrackedFiles(ctx context.Context, dir string) ([]string, error) {
-	out, err := Run(ctx, dir, "status", "--porcelain", "--untracked-files=all")
+	out, err := RunRaw(ctx, dir, "status", "--porcelain", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		if len(line) < 4 {
+	for _, entry := range strings.Split(string(out), "\x00") {
+		if len(entry) < 3 {
 			continue
 		}
-		// Porcelain format: XY <path> where XY is a 2-char status code + space
-		if line[:2] == "??" {
-			files = append(files, strings.TrimSpace(line[3:]))
+		// Porcelain format: XY <path>\0 where XY is a 2-char status code + space.
+		if entry[:2] == "??" {
+			files = append(files, entry[3:])
 		}
 	}
 	return files, nil

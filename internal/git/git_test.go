@@ -268,6 +268,29 @@ func TestHasUncommittedChangesUntrackedFile(t *testing.T) {
 	}
 }
 
+func TestUntrackedFilesPreservesRawPaths(t *testing.T) {
+	dir := initTestRepo(t)
+	ctx := context.Background()
+
+	for _, name := range []string{" plain ", "café.txt", "tab\tname"} {
+		writeFile(t, filepath.Join(dir, name), "new\n")
+	}
+
+	files, err := UntrackedFiles(ctx, dir)
+	if err != nil {
+		t.Fatalf("UntrackedFiles failed: %v", err)
+	}
+	want := []string{" plain ", "café.txt", "tab\tname"}
+	if len(files) != len(want) {
+		t.Fatalf("UntrackedFiles = %#v, want %#v", files, want)
+	}
+	for i, path := range files {
+		if path != want[i] {
+			t.Fatalf("UntrackedFiles[%d] = %q, want %q", i, path, want[i])
+		}
+	}
+}
+
 func TestHasUncommittedChangesStagedOnly(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()
