@@ -187,7 +187,7 @@ Run the pipeline and decide on its findings as they come up:
    no-mistakes axi respond --action approve
 
    # have the pipeline fix specific findings, then continue
-   no-mistakes axi respond --action fix --findings <id1,id2> --instructions "<optional guidance>"
+   no-mistakes axi respond --action fix --findings <id1,id2> --instructions-file <guidance-file>
 
    # skip this step
    no-mistakes axi respond --action skip
@@ -204,8 +204,15 @@ Run the pipeline and decide on its findings as they come up:
 
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
 
+    Put nontrivial guidance or finding JSON in a file and pass it with
+    `--instructions-file <path>` or `--add-finding-file <path>`. Use `-` as the
+    path to read that value from stdin. This preserves literal backticks and `$(...)`;
+    the inline `--instructions` and `--add-finding` forms are subject to command
+    substitution by the caller shell. The inline and file forms of each flag
+    are mutually exclusive, and only one file flag can read stdin in a response.
+
     Two extra flags are available on `respond` when you need them:
-    - `--add-finding '<json>'` (with `--action fix`) folds a finding you
+    - `--add-finding-file <path>` (with `--action fix`) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
       the gate's own `findings` table.

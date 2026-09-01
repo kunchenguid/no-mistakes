@@ -139,8 +139,8 @@ Answer the current approval gate and continue until the next gate, CI-ready deci
 
 ```sh
 no-mistakes axi respond --action approve
-no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
-no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
+no-mistakes axi respond --action fix --findings F1,F2 --instructions-file guidance.txt
+no-mistakes axi respond --action fix --add-finding-file finding.json
 no-mistakes axi respond --action skip
 ```
 
@@ -149,10 +149,13 @@ no-mistakes axi respond --action skip
 | `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
-| `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
-| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
+| `--instructions` | `string` | (none)        | Guidance applied to selected findings. **Shell-substitution pitfall:** this is passed on the command line, so your shell runs command substitution on it first and silently replaces backticked spans and `$(...)` before no-mistakes sees them; prefer `--instructions-file` (or `-` for stdin) when guidance contains backticks or `$(...)`.                            |
+| `--instructions-file` | `string` | (none)   | Read guidance verbatim from a file; use `-` to read from stdin, so the text never transits the caller shell (no command substitution). Mutually exclusive with `--instructions`. |
+| `--add-finding`  | `string` | (none)        | JSON finding object to add and fix. **Shell-substitution pitfall:** like `--instructions`, this is passed on the command line and subject to the caller shell's command substitution; prefer `--add-finding-file` (or `-` for stdin) when the JSON contains backticks or `$(...)`. |
+| `--add-finding-file` | `string` | (none)   | Read the finding JSON verbatim from a file; use `-` to read from stdin, so the text never transits the caller shell (no command substitution). Mutually exclusive with `--add-finding`. |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
 
+Only one file flag can use `-` in a response, because stdin can be consumed only once; write one value to a file when supplying both guidance and a finding.
 After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when the CI monitor reports readiness but the PR still needs a human merge.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
