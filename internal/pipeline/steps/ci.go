@@ -157,12 +157,17 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 
 // VerifyApprovalOverride implements pipeline.ApprovalOverrideVerifier. It
 // re-polls the live checks once, synchronously, at the moment a human answers
-// ActionApprove on a CI gate raised by ciFailureOutcome, so an approval over a
-// check that is still failing can never be silently reported as a plain
-// "outcome=passed" - see the interface doc for the incident this exists for.
-// Read-only: unlike Execute and ReconcileApprovalGate, it never fixes, reruns,
-// or pushes anything, and it never blocks the approval itself - it only
-// decides how the resulting completion is recorded.
+// ActionApprove on a CI gate raised by ciFailureOutcome, so an approval over
+// checks that are not genuinely all green can never be silently reported as a
+// plain "outcome=passed" - see the interface doc for the incident this exists
+// for. Resolution uses allChecksPassed - the same trusted all-green semantics
+// the CI step's own polling loop uses (see its allChecksPassed callsite) -
+// rather than the narrower !hasFailingChecks, because an empty check list or
+// a check still pending/cancelled/otherwise unresolved is not evidence of a
+// clean pass either; !hasFailingChecks previously treated all of those as
+// clean. Read-only: unlike Execute and ReconcileApprovalGate, it never fixes,
+// reruns, or pushes anything, and it never blocks the approval itself - it
+// only decides how the resulting completion is recorded.
 func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
@@ -192,10 +197,13 @@ func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, err
 	if err != nil {
 		return fmt.Sprintf("could not verify live CI state: %v", err), nil
 	}
-	if !hasFailingChecks(checks) {
+	if allChecksPassed(checks) {
 		return "", nil
 	}
-	return fmt.Sprintf("live checks for %s still failing: %s", prURL, strings.Join(failingCheckNames(checks), ", ")), nil
+	if len(checks) == 0 {
+		return fmt.Sprintf("live checks for %s: no checks reported", prURL), nil
+	}
+	return fmt.Sprintf("live checks for %s not all passed: %s", prURL, strings.Join(unresolvedCheckNames(checks), ", ")), nil
 }
 
 func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {

@@ -34,6 +34,31 @@ func TestCIStep_VerifyApprovalOverride(t *testing.T) {
 			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"PR must be raised via no-mistakes","state":"SUCCESS","bucket":"pass"}]`,
 			wantUnresolved: false,
 		},
+		// Regression for the upstream review P1 "unresolved checks become
+		// clean passes": before this fix, VerifyApprovalOverride used
+		// !hasFailingChecks, which reads pending/cancelled/unknown-bucket
+		// checks (none of them Failing()) as a clean pass. It must instead
+		// use allChecksPassed, the same trusted all-green semantics the CI
+		// step's own polling loop uses, so anything short of every check
+		// being pass/skip is reported as unresolved.
+		{
+			name:           "still pending",
+			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"deploy","state":"IN_PROGRESS","bucket":"pending"}]`,
+			wantUnresolved: true,
+			wantContains:   "deploy",
+		},
+		{
+			name:           "cancelled",
+			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"deploy","state":"CANCELLED","bucket":"cancel"}]`,
+			wantUnresolved: true,
+			wantContains:   "deploy",
+		},
+		{
+			name:           "unknown bucket",
+			checksJSON:     `[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"legacy","state":"SOMETHING_NEW","bucket":"weird"}]`,
+			wantUnresolved: true,
+			wantContains:   "legacy",
+		},
 	}
 
 	for _, tc := range cases {
@@ -81,5 +106,31 @@ func TestCIStep_VerifyApprovalOverride_NoPRURL(t *testing.T) {
 	}
 	if unresolved == "" {
 		t.Fatal("unresolved = \"\", want a fail-closed reason when there is no PR URL to verify")
+	}
+}
+
+// TestCIStep_VerifyApprovalOverride_EmptyChecks is the other half of the
+// upstream review P1 "unresolved checks become clean passes": before this
+// fix, !hasFailingChecks(nil) is true (an empty slice contains no failing
+// check), so a PR reporting zero live checks at all read as a clean pass.
+// allChecksPassed correctly treats an empty check list as NOT passed, and
+// VerifyApprovalOverride must report that as unresolved rather than clear.
+func TestCIStep_VerifyApprovalOverride_EmptyChecks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := fakeCIGHNoChecks(t)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, nil, dir, "base", "deadbeef", config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+
+	step := &CIStep{}
+	unresolved, err := step.VerifyApprovalOverride(sctx)
+	if err != nil {
+		t.Fatalf("VerifyApprovalOverride() error = %v", err)
+	}
+	if unresolved == "" {
+		t.Fatal("unresolved = \"\", want a fail-closed reason when the PR reports no checks at all")
 	}
 }

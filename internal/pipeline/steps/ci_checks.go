@@ -82,6 +82,22 @@ func failingCheckNames(checks []scm.Check) []string {
 	return names
 }
 
+// unresolvedCheckNames returns "name (bucket)" for every check that does not
+// count toward allChecksPassed - i.e. everything but CheckBucketPass and
+// CheckBucketSkip. Unlike failingCheckNames, this also surfaces pending,
+// cancelled, and any other non-terminal-pass bucket, so a caller reporting an
+// approval override can name pending/unknown checks, not just failing ones.
+func unresolvedCheckNames(checks []scm.Check) []string {
+	var names []string
+	for _, c := range checks {
+		if c.Bucket == scm.CheckBucketPass || c.Bucket == scm.CheckBucketSkip {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%s (%s)", c.Name, c.Bucket))
+	}
+	return names
+}
+
 // terminalFailureCompletionTimes snapshots when each terminally failed check
 // finished, so a later poll can tell that CI has re-run since the fix push.
 //
