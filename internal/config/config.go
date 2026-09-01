@@ -58,6 +58,13 @@ const (
 	DefaultDaemonConnectTimeout = 3 * time.Second
 	// DefaultBranchSyncRemoteTimeout bounds each remote Git operation (ls-remote, fetch) in internal/branchsync. Global-config-only; a pushed branch cannot change it. Timeout still fails closed.
 	DefaultBranchSyncRemoteTimeout = 60 * time.Second
+	// DefaultGateReconcileInterval is how often a parked approval gate is
+	// rechecked. Global-config-only; a pushed branch cannot change it.
+	DefaultGateReconcileInterval = 2 * time.Minute
+	// DefaultGateReconcileTimeout is the deadline for one approval-gate
+	// reconciliation check (including host.Available / gh auth status).
+	// Global-config-only; a pushed branch cannot change it.
+	DefaultGateReconcileTimeout = 30 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -147,7 +154,13 @@ type GlobalConfig struct {
 	TestAgentTimeout        time.Duration     `yaml:"-"`
 	DaemonConnectTimeout    time.Duration     `yaml:"-"`
 	BranchSyncRemoteTimeout time.Duration     `yaml:"-"`
-	LogLevel                string            `yaml:"log_level"`
+	// GateReconcileInterval / GateReconcileTimeout bound how often and how
+	// long a parked approval gate is rechecked. They are machine-local
+	// operator knobs (slow hosts, contended gh auth) and global-only so a
+	// pushed branch cannot widen or shrink the reconcile budget.
+	GateReconcileInterval time.Duration `yaml:"-"`
+	GateReconcileTimeout  time.Duration `yaml:"-"`
+	LogLevel              string        `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -184,6 +197,8 @@ type globalConfigRaw struct {
 	CITimeout               string                     `yaml:"ci_timeout"`
 	DaemonConnectTimeout    string                     `yaml:"daemon_connect_timeout"`
 	BranchSyncRemoteTimeout string                     `yaml:"branch_sync_remote_timeout"`
+	GateReconcileInterval   string                     `yaml:"gate_reconcile_interval"`
+	GateReconcileTimeout    string                     `yaml:"gate_reconcile_timeout"`
 	BabysitTimeout          string                     `yaml:"babysit_timeout"`
 	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
 	AgentTimeout            string                     `yaml:"agent_timeout"`
@@ -541,6 +556,8 @@ type Config struct {
 	AgentTimeout          time.Duration
 	ReviewAgentTimeout    time.Duration
 	TestAgentTimeout      time.Duration
+	GateReconcileInterval time.Duration
+	GateReconcileTimeout  time.Duration
 	LogLevel              string
 	SessionReuse          bool
 	Eval                  Eval
@@ -823,6 +840,13 @@ daemon_connect_timeout: "3s"
 # Maximum time guarded branch synchronization waits for one remote Git operation
 # (ls-remote or fetch) before treating the target as offline. Global-only.
 branch_sync_remote_timeout: "60s"
+
+# How often a parked approval gate is rechecked, and the deadline for each
+# check (including gh auth status). Raise gate_reconcile_timeout on a slow or
+# contended machine so a transient auth-status delay is not cancelled mid-call.
+# Global-only.
+gate_reconcile_interval: "2m"
+gate_reconcile_timeout: "30s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
@@ -1623,6 +1647,8 @@ func DefaultGlobalConfig() *GlobalConfig {
 		TestAgentTimeout:        DefaultTestAgentTimeout,
 		DaemonConnectTimeout:    DefaultDaemonConnectTimeout,
 		BranchSyncRemoteTimeout: DefaultBranchSyncRemoteTimeout,
+		GateReconcileInterval:   DefaultGateReconcileInterval,
+		GateReconcileTimeout:    DefaultGateReconcileTimeout,
 		LogLevel:                "info",
 		SessionReuse:            true,
 		Eval:                    evalDefaults(),
@@ -1885,6 +1911,20 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.BranchSyncRemoteTimeout = d
+	}
+	if raw.GateReconcileInterval != "" {
+		d, err := parsePositiveDuration("gate_reconcile_interval", raw.GateReconcileInterval)
+		if err != nil {
+			return nil, err
+		}
+		cfg.GateReconcileInterval = d
+	}
+	if raw.GateReconcileTimeout != "" {
+		d, err := parsePositiveDuration("gate_reconcile_timeout", raw.GateReconcileTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.GateReconcileTimeout = d
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
@@ -2554,21 +2594,23 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	cfg := &Config{
-		Agent:                global.Agent,
-		Agents:               copyAgents(global.Agents),
-		ACPXPath:             global.ACPXPath,
-		ForgejoAXIPath:       global.ForgejoAXIPath,
-		ACPRegistryOverrides: global.ACPRegistryOverrides,
-		AgentPathOverride:    global.AgentPathOverride,
-		AgentArgsOverride:    global.AgentArgsOverride,
-		AgentConfig:          global.AgentConfig,
-		CITimeout:            global.CITimeout,
-		StepQuietWarning:     global.StepQuietWarning,
-		AgentTimeout:         global.AgentTimeout,
-		ReviewAgentTimeout:   global.ReviewAgentTimeout,
-		TestAgentTimeout:     global.TestAgentTimeout,
-		LogLevel:             global.LogLevel,
-		SessionReuse:         global.SessionReuse,
+		Agent:                 global.Agent,
+		Agents:                copyAgents(global.Agents),
+		ACPXPath:              global.ACPXPath,
+		ForgejoAXIPath:        global.ForgejoAXIPath,
+		ACPRegistryOverrides:  global.ACPRegistryOverrides,
+		AgentPathOverride:     global.AgentPathOverride,
+		AgentArgsOverride:     global.AgentArgsOverride,
+		AgentConfig:           global.AgentConfig,
+		CITimeout:             global.CITimeout,
+		StepQuietWarning:      global.StepQuietWarning,
+		AgentTimeout:          global.AgentTimeout,
+		ReviewAgentTimeout:    global.ReviewAgentTimeout,
+		TestAgentTimeout:      global.TestAgentTimeout,
+		GateReconcileInterval: global.GateReconcileInterval,
+		GateReconcileTimeout:  global.GateReconcileTimeout,
+		LogLevel:              global.LogLevel,
+		SessionReuse:          global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,

@@ -50,6 +50,10 @@ daemon_connect_timeout: "3s"
 
 branch_sync_remote_timeout: "60s"
 
+gate_reconcile_interval: "2m"
+
+gate_reconcile_timeout: "30s"
+
 log_level: info
 
 session_reuse: true
@@ -473,6 +477,28 @@ Maximum time guarded branch synchronization (`sync`, `axi sync`, and the TUI's s
 Accepts any positive Go `time.ParseDuration` string.
 
 Raise this if your environment's Git credential helper (for example `gh auth git-credential`, invoked by Git as a child process against a private remote) legitimately takes longer than the default - this is a real, non-outage latency characteristic that has been observed taking 19-22s in some environments, not a hang. It is a machine/environment setting, not a per-repository one: it is read only from global config and has no matching field in a repository's `.no-mistakes.yaml`, so a pushed branch cannot widen or narrow how long the local service waits before failing closed. It never changes the fail-closed guarantee itself - a timeout or unknown remote state still always refuses synchronization without changing files or refs, whatever this value is set to.
+
+### gate_reconcile_interval
+
+How often the daemon rechecks a parked approval gate while waiting for user approval. Today this applies to the CI step's parked gate, which re-probes provider availability (including `gh auth status`) and clears the gate when the PR was merged or closed.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `2m`                   |
+
+Accepts any positive Go `time.ParseDuration` string. Global-only: there is no matching field in a repository's `.no-mistakes.yaml`.
+
+### gate_reconcile_timeout
+
+Maximum wall time one parked approval-gate reconcile attempt may spend before the attempt stops, the gate stays parked, and the next interval wait begins. Covers host probes such as `gh auth status` that can hang without returning.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `30s`                  |
+
+Accepts any positive Go `time.ParseDuration` string. Global-only: there is no matching field in a repository's `.no-mistakes.yaml`. Raise this if a legitimate credential helper or network path routinely needs longer than the default for auth probes during reconcile. Timeout and interruption are reported distinctly from authentication failure; that distinction does not require raising this value.
 
 ### log_level
 

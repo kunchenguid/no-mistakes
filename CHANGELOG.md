@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.61.0](https://github.com/kunchenguid/no-mistakes/compare/v1.60.3...v1.61.0) (2026-08-31)
+
+
+### Features
+
+* **config:** make gate reconcile timings configurable ([#862](https://github.com/kunchenguid/no-mistakes/issues/862)) ([d0c4feb](https://github.com/kunchenguid/no-mistakes/commit/d0c4feb46b2297d548dd284fdf989cd57fa96721))
+
+## [1.60.3](https://github.com/kunchenguid/no-mistakes/compare/v1.60.2...v1.60.3) (2026-08-29)
+
+
+### Performance Improvements
+
+* **pipeline:** cut CI test latency ([#901](https://github.com/kunchenguid/no-mistakes/issues/901)) ([1a3f74d](https://github.com/kunchenguid/no-mistakes/commit/1a3f74d86d2646967d6f1e7dce1853023c41768))
+
 ## [1.60.2](https://github.com/pixeloven/no-mistakes/compare/v1.60.1...v1.60.2) (2026-08-31)
 
 
