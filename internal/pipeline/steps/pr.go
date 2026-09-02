@@ -94,13 +94,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, err
+	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		if runPRURL(sctx) != "" {
-			if err := requireOwnedPRIdentity(sctx, existing); err != nil {
-				return nil, err
-			}
-		}
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
@@ -169,11 +168,51 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	return nil
 }
 
-// requireOwnedPRIdentity fails closed unless the discovered PR is proven to
-// be the run's persisted review object. Retarget uses this before any base
-// move. Title/body update of a first-attach FindPR hit (no persisted URL)
-// still proceeds so a later pr.base_branch change updates the open PR
-// instead of opening a duplicate.
+// bindExistingPR prefers the run's persisted PR URL over a branch-only
+// FindPR hit. A sibling first-list-hit is not mutated and does not fail the
+// run: the owned PR is the object that retarget and title/body update use.
+// First-attach (no persisted URL) keeps the discovered PR so a later
+// pr.base_branch change updates the open PR instead of opening a duplicate.
+func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, error) {
+	owned := runPRURL(sctx)
+	if owned == "" {
+		return discovered, nil
+	}
+	existing := discovered
+	if !samePRIdentity(owned, discovered) {
+		existing = prFromOwnedURL(owned)
+		if sctx != nil && sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("using persisted pull request %s instead of discovered %s", owned, describePR(discovered)))
+		}
+	}
+	if strings.TrimSpace(existing.BaseBranch) != "" {
+		return existing, nil
+	}
+	reader, ok := host.(scm.PRBaseBranchReader)
+	if !ok || sctx == nil {
+		return existing, nil
+	}
+	base, err := reader.GetPRBaseBranch(sctx.Ctx, existing)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted pull request %s: %w", owned, err)
+	}
+	existing.BaseBranch = strings.TrimSpace(base)
+	return existing, nil
+}
+
+func prFromOwnedURL(owned string) *scm.PR {
+	pr := &scm.PR{URL: owned}
+	if n, err := scm.ExtractPRNumber(owned); err == nil {
+		pr.Number = n
+	}
+	return pr
+}
+
+// requireOwnedPRIdentity fails closed unless the PR about to be mutated is
+// proven to be the run's persisted review object. Retarget uses this before
+// any base move. Title/body update of a first-attach FindPR hit (no
+// persisted URL) still proceeds so a later pr.base_branch change updates
+// the open PR instead of opening a duplicate.
 func requireOwnedPRIdentity(sctx *pipeline.StepContext, existing *scm.PR) error {
 	owned := runPRURL(sctx)
 	if owned == "" {

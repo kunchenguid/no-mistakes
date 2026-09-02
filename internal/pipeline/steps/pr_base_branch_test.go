@@ -229,7 +229,7 @@ func TestRetargetExistingPRIfNeeded_MatchingIdentityRetargets(t *testing.T) {
 	}
 }
 
-func TestPRStep_RefusesToRetargetPRThatDoesNotMatchRunIdentity(t *testing.T) {
+func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/99", "develop")
@@ -241,9 +241,8 @@ func TestPRStep_RefusesToRetargetPRThatDoesNotMatchRunIdentity(t *testing.T) {
 	owned := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &owned
 
-	_, err := (&PRStep{}).Execute(sctx)
-	if err == nil {
-		t.Fatal("expected error when FindPR returns a different PR than the run owns")
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
 	}
 
 	logData, readErr := os.ReadFile(logFile)
@@ -251,11 +250,32 @@ func TestPRStep_RefusesToRetargetPRThatDoesNotMatchRunIdentity(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	ghLog := string(logData)
-	if strings.Contains(ghLog, "--base epic/feature") {
-		t.Fatalf("mismatched PR must not be retargeted, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "pr edit 99") {
+		t.Fatalf("sibling FindPR hit must not be mutated, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "pr edit 42") {
+		t.Fatalf("expected persisted PR #42 to be updated, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "pr create") {
-		t.Fatalf("identity mismatch must fail closed, not open a duplicate, got:\n%s", ghLog)
+		t.Fatalf("owned PR must be updated, not duplicated, got:\n%s", ghLog)
+	}
+}
+
+func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
+	t.Parallel()
+	owned := "https://github.com/test/repo/pull/42"
+	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
+	sibling := &scm.PR{Number: "99", URL: "https://github.com/test/repo/pull/99", BaseBranch: "develop"}
+
+	got, err := bindExistingPR(sctx, nil, sibling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !samePRIdentity(owned, got) {
+		t.Fatalf("bindExistingPR = %+v, want persisted %s", got, owned)
+	}
+	if got == sibling {
+		t.Fatal("bindExistingPR returned the sibling pointer")
 	}
 }
 
