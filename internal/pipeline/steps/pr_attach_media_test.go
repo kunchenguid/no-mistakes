@@ -112,6 +112,34 @@ func TestPRStep_DefaultConfigEmbedsGitHubScreenshotAttachment(t *testing.T) {
 	}
 }
 
+func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
+	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+	step := &PRStep{mediaUploader: uploader}
+
+	first, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("uploads across two renders = %d, want 1", len(uploader.calls))
+	}
+	for i, body := range []string{first.Body, second.Body} {
+		if !strings.Contains(body, "![Checkout screenshot]("+testAttachmentURL+")") {
+			t.Fatalf("render %d did not contain cached attachment:\n%s", i+1, body)
+		}
+	}
+}
+
 func TestPRStep_DeduplicatesScreenshotUploadsByPath(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

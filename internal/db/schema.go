@@ -134,6 +134,20 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
     PRIMARY KEY (run_id, role)
 );
 
+-- User-attachment URLs are durable for the life of a run so restarting the
+-- pipeline from Review can render the same evidence without uploading another
+-- orphaned GitHub asset. The digest prevents reuse if a file is overwritten at
+-- the same path during a repair.
+CREATE TABLE IF NOT EXISTS run_media_attachments (
+    run_id    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    path      TEXT NOT NULL,
+    digest    TEXT NOT NULL,
+    url       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, path)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
