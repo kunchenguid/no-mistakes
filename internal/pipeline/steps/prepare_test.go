@@ -238,7 +238,7 @@ func TestEnsurePrepared_RestoresDirtyInitializedSubmodule(t *testing.T) {
 	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
 		t.Fatalf("submodule head after preparation = %q, want %q", got, moduleHead)
 	}
-	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); got != "pending before prepare\n" {
+	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); strings.ReplaceAll(got, "\r\n", "\n") != "pending before prepare\n" {
 		t.Fatalf("submodule worktree after preparation = %q, want pending state", got)
 	}
 	if got := gitStatusPorcelain(t, dir); got != beforeStatus {
