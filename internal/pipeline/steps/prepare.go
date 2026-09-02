@@ -113,7 +113,7 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 		if !submodule.initialized {
 			continue
 		}
-		if _, err := git.Run(ctx, workDir, "submodule", "update", "--init", "--no-fetch", "--", submodule.path); err != nil {
+		if _, err := git.Run(ctx, workDir, "submodule", "update", "--init", "--no-fetch", "--force", "--", submodule.path); err != nil {
 			return err
 		}
 	}
@@ -368,6 +368,9 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 			directories[directory] = info.Mode().Perm()
 		}
 	}
+	if err := captureEmptyUntrackedDirectories(ctx, workDir, directories); err != nil {
+		return fmt.Errorf("snapshot empty untracked directories: %w", err)
+	}
 	directorySnapshots := make([]preparationDirectorySnapshot, 0, len(directories))
 	for path, mode := range directories {
 		directorySnapshots = append(directorySnapshots, preparationDirectorySnapshot{path: path, mode: mode})
@@ -376,6 +379,81 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 		workDir: workDir, head: head, indexPath: indexPath, indexSnapshot: indexSnapshot, stagedPatch: stagedPatch, unstagedPatch: unstagedPatch, untrackedDir: untrackedDir, directories: directorySnapshots,
 	})
 	return nil
+}
+
+func captureEmptyUntrackedDirectories(ctx context.Context, workDir string, directories map[string]os.FileMode) error {
+	out, err := git.RunRaw(ctx, workDir, "ls-files", "--others", "--directory", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	for _, root := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		if root == "" {
+			continue
+		}
+		root, err = preparationRelativePath(strings.TrimSuffix(root, "/"))
+		if err != nil {
+			return err
+		}
+		rootPath := filepath.Join(workDir, root)
+		info, err := os.Lstat(rootPath)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := filepath.WalkDir(rootPath, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(workDir, path)
+			if err != nil {
+				return err
+			}
+			ignored, err := preparationPathIgnored(ctx, workDir, rel)
+			if err != nil {
+				return err
+			}
+			if ignored {
+				return filepath.SkipDir
+			}
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return err
+			}
+			if len(entries) != 0 {
+				return nil
+			}
+			for directory := rel; directory != "."; directory = filepath.Dir(directory) {
+				if _, ok := directories[directory]; ok {
+					continue
+				}
+				info, err := os.Stat(filepath.Join(workDir, directory))
+				if err != nil {
+					return err
+				}
+				directories[directory] = info.Mode().Perm()
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func preparationPathIgnored(ctx context.Context, workDir, path string) (bool, error) {
+	_, err := git.RunRaw(ctx, workDir, "check-ignore", "--quiet", "--", path)
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(err.Error(), "exit status 1") {
+		return false, nil
+	}
+	return false, err
 }
 
 func (s preparationSnapshot) restore(ctx context.Context) error {
@@ -417,19 +495,22 @@ func (s preparationSnapshot) restore(ctx context.Context) error {
 			}
 		}
 		entries, err := os.ReadDir(repository.untrackedDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("read untracked preparation snapshot: %w", err)
 		}
-		for _, entry := range entries {
-			if err := copyPath(filepath.Join(repository.untrackedDir, entry.Name()), filepath.Join(repository.workDir, entry.Name())); err != nil {
-				return fmt.Errorf("restore untracked %s: %w", entry.Name(), err)
+		if err == nil {
+			for _, entry := range entries {
+				if err := copyPath(filepath.Join(repository.untrackedDir, entry.Name()), filepath.Join(repository.workDir, entry.Name())); err != nil {
+					return fmt.Errorf("restore untracked %s: %w", entry.Name(), err)
+				}
 			}
 		}
 		for _, directory := range repository.directories {
-			if err := os.Chmod(filepath.Join(repository.workDir, directory.path), directory.mode); err != nil {
+			path := filepath.Join(repository.workDir, directory.path)
+			if err := os.MkdirAll(path, directory.mode); err != nil {
+				return fmt.Errorf("restore untracked directory %s: %w", directory.path, err)
+			}
+			if err := os.Chmod(path, directory.mode); err != nil {
 				return fmt.Errorf("restore untracked directory %s: %w", directory.path, err)
 			}
 		}

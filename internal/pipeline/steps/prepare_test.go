@@ -198,6 +198,47 @@ func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
 	}
 }
 
+func TestEnsurePrepared_RestoresDirtyInitializedSubmodule(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "remote", "add", "origin", remote)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	moduleHead := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "module", "module.txt"), []byte("pending before prepare\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeStatus := gitStatusPorcelain(t, dir)
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: dirtySubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare with dirty initialized submodule: %v", err)
+	}
+	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
+		t.Fatalf("submodule head after preparation = %q, want %q", got, moduleHead)
+	}
+	if got := readFile(t, filepath.Join(dir, "module", "module.txt")); got != "pending before prepare\n" {
+		t.Fatalf("submodule worktree after preparation = %q, want pending state", got)
+	}
+	if got := gitStatusPorcelain(t, dir); got != beforeStatus {
+		t.Fatalf("parent status after preparation = %q, want %q", got, beforeStatus)
+	}
+}
+
 func TestEnsurePrepared_DoesNotInitializeUnrelatedSubmodule(t *testing.T) {
 	dir, baseSHA, _ := setupGitRepo(t)
 	remote := t.TempDir()
@@ -397,6 +438,31 @@ func TestEnsurePrepared_IgnoresWorktreeTempDirectory(t *testing.T) {
 	}
 }
 
+func TestEnsurePrepared_RestoresEmptyUntrackedDirectories(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	empty := filepath.Join(dir, "pending", "nested", "empty")
+	if err := os.MkdirAll(empty, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(empty, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare with empty untracked directory: %v", err)
+	}
+	info, err := os.Stat(empty)
+	if err != nil {
+		t.Fatalf("empty untracked directory was not restored: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o750 {
+		t.Fatalf("empty directory mode = %#o, want %#o", info.Mode().Perm(), 0o750)
+	}
+}
+
 func TestEnsurePrepared_RestoresIntentToAdd(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "intent.go"), []byte("package intent\n"), 0o644); err != nil {
@@ -540,6 +606,13 @@ func registeredSubmodulePreparationCommand() string {
 		return `git -C module config user.name test & git -C module config user.email test@example.com & echo prepared>module\prepared.txt & git -C module add prepared.txt & git -C module commit -m prepared`
 	}
 	return `git -C module config user.name test && git -C module config user.email test@example.com && echo prepared > module/prepared.txt && git -C module add prepared.txt && git -C module commit -m prepared`
+}
+
+func dirtySubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `git -C module config user.name test & git -C module config user.email test@example.com & echo committed>module\module.txt & git -C module add module.txt & git -C module commit -m prepared & echo changed-after-commit>module\module.txt`
+	}
+	return `git -C module config user.name test && git -C module config user.email test@example.com && echo committed > module/module.txt && git -C module add module.txt && git -C module commit -m prepared && echo changed-after-commit > module/module.txt`
 }
 
 func initializesSubmodulePreparationCommand() string {
