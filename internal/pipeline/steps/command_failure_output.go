@@ -21,7 +21,11 @@ const configuredCommandFailureMarkerReserve = 512
 const configuredCommandFailureLineSearchBytes = 4 * 1024
 
 func logConfiguredCommandOutput(sctx *pipeline.StepContext, output string, step types.StepName) string {
-	projection := configuredCommandFailureSummary(output, step)
+	return logCommandOutput(sctx, output, configuredCommandStepLabel(step), step)
+}
+
+func logCommandOutput(sctx *pipeline.StepContext, output, commandLabel string, logStep types.StepName) string {
+	projection := commandFailureSummary(output, commandLabel, logStep)
 	if projection == output {
 		sctx.Log(output)
 		return projection
@@ -32,6 +36,10 @@ func logConfiguredCommandOutput(sctx *pipeline.StepContext, output string, step 
 }
 
 func configuredCommandFailureSummary(output string, step types.StepName) string {
+	return commandFailureSummary(output, configuredCommandStepLabel(step), step)
+}
+
+func commandFailureSummary(output, commandLabel string, logStep types.StepName) string {
 	if len(output) <= configuredCommandFailureSummaryMaxBytes {
 		return strings.ToValidUTF8(output, "?")
 	}
@@ -46,14 +54,13 @@ func configuredCommandFailureSummary(output string, step types.StepName) string 
 	head := strings.ToValidUTF8(output[:headEnd], "?")
 	tail := strings.ToValidUTF8(output[tailStart:], "?")
 	omitted := tailStart - headEnd
-	stepLabel := configuredCommandStepLabel(step)
 	marker := fmt.Sprintf(
 		"\n\n[configured %s output truncated: original byte count: %d; omitted byte count: %d; complete output: %s step log (`no-mistakes axi logs --step %s --full`)]\n\n",
-		stepLabel,
+		commandLabel,
 		len(output),
 		omitted,
-		stepLabel,
-		step,
+		commandLabel,
+		logStep,
 	)
 	return head + marker + tail
 }
