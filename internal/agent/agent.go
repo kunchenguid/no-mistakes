@@ -282,7 +282,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 	}
 
-	output, err := parseStructuredTextOutput(text, schema)
+	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
 		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
@@ -303,7 +303,7 @@ func outputSnippet(text string) string {
 	return trimmed
 }
 
-func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMessage, error) {
+func parseStructuredTextOutput(text string, schema json.RawMessage, preferTerminal bool) (json.RawMessage, error) {
 	validationSchema, err := textValidationSchema(schema)
 	if err != nil {
 		return nil, err
@@ -354,7 +354,10 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 
 	bareParsed, bareErr := bareJSONObjects(text, validationSchema)
 	if len(bareParsed) > 1 {
-		return nil, fmt.Errorf("multiple bare JSON objects found in output")
+		if !preferTerminal {
+			return nil, fmt.Errorf("multiple bare JSON objects found in output")
+		}
+		bareParsed = bareParsed[len(bareParsed)-1:]
 	}
 	if fenced != nil && len(bareParsed) == 1 {
 		if !jsonEqual(fenced, bareParsed[0]) {

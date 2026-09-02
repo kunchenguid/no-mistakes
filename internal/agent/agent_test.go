@@ -523,6 +523,29 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousBareJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
+	text := `Draft: {"findings":["a"],"summary":"draft"}. Final: {"findings":["a"],"summary":"final"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"summary":{"type":"string"}
+		},
+		"required":["findings","summary"]
+	}`)
+	result, err := finalizeTextResult("acp:omp", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "final" {
+		t.Errorf("expected summary=final, got %v", output["summary"])
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaRejectsBareJSONMissingRequiredKeys(t *testing.T) {
 	text := `I inspected the diff and found no issues. {"foo":"bar"}`
 	schema := json.RawMessage(`{
