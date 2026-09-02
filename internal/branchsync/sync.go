@@ -690,6 +690,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if !objectExists(ctx, gateDir, preserved) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
+		if local == ptr(run.SubmittedHeadSHA) && !objectExists(ctx, gateDir, local) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is present in the local gate but not under the matching run recovery ref %s, and the gate cannot compare it with the invoking head %s; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved, gateAnchor, local))
+		}
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
@@ -1534,8 +1537,12 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if !objectExists(ctx, gateDir, run.HeadSHA) {
 		return false
 	}
-	if !state.Local.Clean || !objectExists(ctx, gateDir, local) {
+	if !state.Local.Clean {
 		return false
+	}
+	localInGate := objectExists(ctx, gateDir, local)
+	if !localInGate {
+		return local == ptr(run.SubmittedHeadSHA) && gateRecoveryAnchorMatches(ctx, gateDir, run.ID, preserved)
 	}
 	if isAncestor(ctx, gateDir, local, preserved) {
 		return true
@@ -1786,6 +1793,16 @@ func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved str
 	}
 	anchored, err := git.Run(ctx, repoDir, "rev-parse", anchorRef+"^{commit}")
 	return err == nil && anchored == preserved, nil
+}
+
+func gateRecoveryAnchorMatches(ctx context.Context, repoDir, runID, preserved string) bool {
+	anchorRef := custody.RecoveryRef(runID)
+	_, exists, err := git.ExactRefTarget(ctx, repoDir, anchorRef)
+	if err != nil || !exists {
+		return false
+	}
+	anchored, err := git.Run(ctx, repoDir, "rev-parse", anchorRef+"^{commit}")
+	return err == nil && anchored == preserved
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
