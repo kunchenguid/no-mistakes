@@ -65,7 +65,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		}
 
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareCleanupTimeout)
-		cleanupErr := runPreparationCleanup(cleanupCtx, sctx.WorkDir, head)
+		cleanupErr := runPreparationCleanup(cleanupCtx, sctx.WorkDir, head, snapshot.submodules)
 		cancel()
 		restoreCtx, cancelRestore := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareRestoreTimeout)
 		restoreErr := snapshot.restore(restoreCtx)
@@ -82,13 +82,13 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 			removeSnapshot = false
 			restoreErr = preparationRestoreError(snapshot, restoreErr)
 		}
+		sctx.Log(fmt.Sprintf("dependency preparation attempt completed in %s", time.Since(started).Round(time.Millisecond)))
 		if err := errors.Join(commandErr, cleanupErr, restoreErr); err != nil {
 			return err
 		}
 		if err := os.WriteFile(marker, []byte(prepareCmd+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write preparation marker: %w", err)
 		}
-		sctx.Log(fmt.Sprintf("dependency preparation completed in %s", time.Since(started).Round(time.Millisecond)))
 		return nil
 	})
 }
@@ -105,9 +105,17 @@ func preparationMarkerPath(ctx context.Context, workDir string) (string, error) 
 	return filepath.Clean(path), nil
 }
 
-func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string) error {
+func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string, submodules []preparationSubmodule) error {
 	if _, err := git.Run(ctx, workDir, "reset", "--hard", originalHead); err != nil {
 		return err
+	}
+	for _, submodule := range submodules {
+		if !submodule.initialized {
+			continue
+		}
+		if _, err := git.Run(ctx, workDir, "submodule", "update", "--init", "--no-fetch", "--", submodule.path); err != nil {
+			return err
+		}
 	}
 	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git reset --hard"); err != nil {
 		return err
@@ -115,10 +123,26 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git clean -ffd"); err != nil {
 		return err
 	}
+	for _, submodule := range submodules {
+		if submodule.initialized {
+			continue
+		}
+		if !submoduleWorktreeInitialized(workDir, submodule.path) {
+			continue
+		}
+		if _, err := git.Run(ctx, workDir, "submodule", "deinit", "--force", "--", submodule.path); err != nil {
+			return err
+		}
+	}
 	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
 		return err
 	}
 	return nil
+}
+
+func submoduleWorktreeInitialized(workDir, path string) bool {
+	_, err := os.Lstat(filepath.Join(workDir, path, ".git"))
+	return err == nil
 }
 
 func preparationRestoreError(snapshot preparationSnapshot, err error) error {
@@ -128,6 +152,12 @@ func preparationRestoreError(snapshot preparationSnapshot, err error) error {
 type preparationSnapshot struct {
 	dir          string
 	repositories []preparationRepositorySnapshot
+	submodules   []preparationSubmodule
+}
+
+type preparationSubmodule struct {
+	path        string
+	initialized bool
 }
 
 type preparationRepositorySnapshot struct {
@@ -138,6 +168,12 @@ type preparationRepositorySnapshot struct {
 	stagedPatch   string
 	unstagedPatch string
 	untrackedDir  string
+	directories   []preparationDirectorySnapshot
+}
+
+type preparationDirectorySnapshot struct {
+	path string
+	mode os.FileMode
 }
 
 func snapshotPreparationState(ctx context.Context, workDir, gateDir string) (preparationSnapshot, error) {
@@ -154,13 +190,17 @@ func snapshotPreparationState(ctx context.Context, workDir, gateDir string) (pre
 		snapshot.remove()
 		return preparationSnapshot{}, err
 	}
-	paths, err := preparationSubmodulePaths(ctx, workDir)
+	submodules, err := preparationSubmodules(ctx, workDir)
 	if err != nil {
 		snapshot.remove()
 		return preparationSnapshot{}, err
 	}
-	for i, path := range paths {
-		if err := snapshot.captureRepository(ctx, filepath.Join(workDir, path), fmt.Sprintf("submodule-%d", i)); err != nil {
+	snapshot.submodules = submodules
+	for i, submodule := range submodules {
+		if !submodule.initialized {
+			continue
+		}
+		if err := snapshot.captureRepository(ctx, filepath.Join(workDir, submodule.path), fmt.Sprintf("submodule-%d", i)); err != nil {
 			snapshot.remove()
 			return preparationSnapshot{}, err
 		}
@@ -193,15 +233,57 @@ func preparationSnapshotParent(ctx context.Context, workDir, gateDir string) (st
 	return parent, nil
 }
 
-func preparationSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
+func preparationSubmodules(ctx context.Context, workDir string) ([]preparationSubmodule, error) {
+	registered, err := registeredSubmodulePaths(ctx, workDir)
+	if err != nil {
+		return nil, err
+	}
 	out, err := git.RunRaw(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", `printf '%s\0' "$displaypath"`)
 	if err != nil {
 		return nil, fmt.Errorf("list registered submodules: %w", err)
 	}
-	var paths []string
+	initialized := make(map[string]bool)
+	initializedPaths := make([]string, 0)
 	for _, path := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
 		if path == "" {
 			continue
+		}
+		path, err = preparationRelativePath(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid submodule path: %w", err)
+		}
+		if !initialized[path] {
+			initialized[path] = true
+			initializedPaths = append(initializedPaths, path)
+		}
+	}
+	submodules := make([]preparationSubmodule, 0, len(registered)+len(initializedPaths))
+	registeredPaths := make(map[string]bool, len(registered))
+	for _, path := range registered {
+		registeredPaths[path] = true
+		submodules = append(submodules, preparationSubmodule{path: path, initialized: initialized[path]})
+	}
+	for _, path := range initializedPaths {
+		if !registeredPaths[path] {
+			submodules = append(submodules, preparationSubmodule{path: path, initialized: true})
+		}
+	}
+	return submodules, nil
+}
+
+func registeredSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
+	out, err := git.RunRaw(ctx, workDir, "config", "--null", "--file", ".gitmodules", "--get-regexp", `^submodule\..*\.path$`)
+	if err != nil {
+		if strings.Contains(err.Error(), "exit status 1") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list registered submodules: %w", err)
+	}
+	var paths []string
+	for _, entry := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		_, path, ok := strings.Cut(entry, "\n")
+		if !ok {
+			return nil, fmt.Errorf("invalid registered submodule entry %q", entry)
 		}
 		path, err = preparationRelativePath(path)
 		if err != nil {
@@ -263,6 +345,7 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 	if err != nil {
 		return fmt.Errorf("list %s untracked files: %w", name, err)
 	}
+	directories := make(map[string]os.FileMode)
 	for _, path := range untracked {
 		path, err = preparationRelativePath(path)
 		if err != nil {
@@ -274,9 +357,23 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 		if err := copyPath(filepath.Join(workDir, path), filepath.Join(untrackedDir, path)); err != nil {
 			return fmt.Errorf("snapshot untracked %s: %w", path, err)
 		}
+		for directory := filepath.Dir(path); directory != "."; directory = filepath.Dir(directory) {
+			if _, ok := directories[directory]; ok {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(workDir, directory))
+			if err != nil {
+				return fmt.Errorf("read untracked directory %s: %w", directory, err)
+			}
+			directories[directory] = info.Mode().Perm()
+		}
+	}
+	directorySnapshots := make([]preparationDirectorySnapshot, 0, len(directories))
+	for path, mode := range directories {
+		directorySnapshots = append(directorySnapshots, preparationDirectorySnapshot{path: path, mode: mode})
 	}
 	s.repositories = append(s.repositories, preparationRepositorySnapshot{
-		workDir: workDir, head: head, indexPath: indexPath, indexSnapshot: indexSnapshot, stagedPatch: stagedPatch, unstagedPatch: unstagedPatch, untrackedDir: untrackedDir,
+		workDir: workDir, head: head, indexPath: indexPath, indexSnapshot: indexSnapshot, stagedPatch: stagedPatch, unstagedPatch: unstagedPatch, untrackedDir: untrackedDir, directories: directorySnapshots,
 	})
 	return nil
 }
@@ -329,6 +426,11 @@ func (s preparationSnapshot) restore(ctx context.Context) error {
 		for _, entry := range entries {
 			if err := copyPath(filepath.Join(repository.untrackedDir, entry.Name()), filepath.Join(repository.workDir, entry.Name())); err != nil {
 				return fmt.Errorf("restore untracked %s: %w", entry.Name(), err)
+			}
+		}
+		for _, directory := range repository.directories {
+			if err := os.Chmod(filepath.Join(repository.workDir, directory.path), directory.mode); err != nil {
+				return fmt.Errorf("restore untracked directory %s: %w", directory.path, err)
 			}
 		}
 	}

@@ -34,10 +34,13 @@ func copyPath(srcPath, dstPath string) error {
 		return os.Symlink(target, dstPath)
 	}
 	if info.IsDir() {
-		if err := os.MkdirAll(dstPath, info.Mode().Perm()); err != nil {
+		if err := os.MkdirAll(dstPath, 0o700); err != nil {
 			return err
 		}
-		return copyDirContents(srcPath, dstPath)
+		if err := copyDirContents(srcPath, dstPath); err != nil {
+			return err
+		}
+		return os.Chmod(dstPath, info.Mode().Perm())
 	}
 	return copyFile(srcPath, dstPath, info.Mode().Perm())
 }
@@ -58,5 +61,5 @@ func copyFile(srcPath, dstPath string, perm os.FileMode) error {
 	if _, err := io.Copy(dst, src); err != nil {
 		return err
 	}
-	return nil
+	return dst.Chmod(perm)
 }

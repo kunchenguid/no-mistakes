@@ -230,6 +230,119 @@ func TestEnsurePrepared_DoesNotInitializeUnrelatedSubmodule(t *testing.T) {
 	}
 }
 
+func TestEnsurePrepared_DeinitializesSubmoduleInitializedByPreparation(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "remote", "add", "origin", remote)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: initializesSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare initializes submodule: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "module", ".git")); !os.IsNotExist(err) {
+		t.Fatalf("preparation left newly initialized submodule: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("preparation left submodule mutation: %q", got)
+	}
+}
+
+func TestEnsurePrepared_RestoresDeletedInitializedSubmodule(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "remote", "add", "origin", remote)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	moduleHead := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: removesSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare removes submodule: %v", err)
+	}
+	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
+		t.Fatalf("restored submodule head = %q, want %q", got, moduleHead)
+	}
+}
+
+func TestEnsurePrepared_RestoresUntrackedModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix executable modes")
+	}
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	path := filepath.Join(dir, "private", "tool")
+	if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tool\n"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare dependencies: %v", err)
+	}
+	for _, target := range []string{filepath.Dir(path), path} {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o777 {
+			t.Fatalf("mode for %s = %#o, want %#o", target, got, 0o777)
+		}
+	}
+}
+
+func TestEnsurePrepared_LogsDurationAfterFailure(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: failingPreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	if err := ensurePrepared(sctx, types.StepTest); err == nil {
+		t.Fatal("failing preparation unexpectedly succeeded")
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "dependency preparation attempt completed in") {
+		t.Fatalf("preparation logs did not include attempt duration: %q", logs)
+	}
+}
+
 func TestEnsurePrepared_RestoresAfterCleanupTimeout(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
@@ -241,8 +354,8 @@ func TestEnsurePrepared_RestoresAfterCleanupTimeout(t *testing.T) {
 	previousTimeout := prepareCleanupTimeout
 	previousCleanup := runPreparationCleanup
 	prepareCleanupTimeout = time.Millisecond
-	runPreparationCleanup = func(ctx context.Context, workDir, head string) error {
-		if err := cleanupPreparationChanges(context.Background(), workDir, head); err != nil {
+	runPreparationCleanup = func(ctx context.Context, workDir, head string, submodules []preparationSubmodule) error {
+		if err := cleanupPreparationChanges(context.Background(), workDir, head, submodules); err != nil {
 			return err
 		}
 		<-ctx.Done()
@@ -427,6 +540,27 @@ func registeredSubmodulePreparationCommand() string {
 		return `git -C module config user.name test & git -C module config user.email test@example.com & echo prepared>module\prepared.txt & git -C module add prepared.txt & git -C module commit -m prepared`
 	}
 	return `git -C module config user.name test && git -C module config user.email test@example.com && echo prepared > module/prepared.txt && git -C module add prepared.txt && git -C module commit -m prepared`
+}
+
+func initializesSubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `git -c protocol.file.allow=always submodule update --init module & git -C module config user.name test & git -C module config user.email test@example.com & echo prepared>module\prepared.txt & git -C module add prepared.txt & git -C module commit -m prepared`
+	}
+	return `git -c protocol.file.allow=always submodule update --init module && git -C module config user.name test && git -C module config user.email test@example.com && echo prepared > module/prepared.txt && git -C module add prepared.txt && git -C module commit -m prepared`
+}
+
+func removesSubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `rmdir /s /q module`
+	}
+	return `rm -rf module`
+}
+
+func failingPreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `exit /b 1`
+	}
+	return `false`
 }
 
 func readFile(t *testing.T, path string) string {
