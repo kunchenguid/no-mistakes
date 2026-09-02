@@ -717,7 +717,9 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // normally the gate branch, or the latest terminal run's verified unpublished
 // head while custody remains outstanding. An explicit intent overrides the
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
-// runs without one infer intent afresh.
+// runs without one infer intent afresh. The selected run's PR URL is inherited
+// so a later --base-branch retarget can prove it is moving the same review
+// object rather than the first branch-only FindPR hit.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
@@ -792,8 +794,12 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	if storedPRBaseBranch == "" && selectedRun.PRBaseBranch != nil {
 		storedPRBaseBranch = strings.TrimSpace(*selectedRun.PRBaseBranch)
 	}
+	inheritedPRURL := ""
+	if selectedRun.PRURL != nil {
+		inheritedPRURL = strings.TrimSpace(*selectedRun.PRURL)
+	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritedPRURL)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -855,13 +861,13 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, "")
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch, inheritedPRURL string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -921,6 +927,14 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if inherited := strings.TrimSpace(inheritedPRURL); inherited != "" {
+		if err := m.db.UpdateRunPRURL(run.ID, inherited); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("inherit PR URL: %s", err))
+			trackStartFailure("inherit_pr_url")
+			return "", fmt.Errorf("inherit PR URL: %w", err)
+		}
+		run.PRURL = &inherited
 	}
 
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())

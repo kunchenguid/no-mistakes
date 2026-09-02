@@ -96,8 +96,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		if err := assertDiscoveredPRMatchesRun(sctx, existing); err != nil {
-			return nil, err
+		if runPRURL(sctx) != "" {
+			if err := requireOwnedPRIdentity(sctx, existing); err != nil {
+				return nil, err
+			}
 		}
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
@@ -145,7 +147,7 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	if actual == requested {
 		return nil
 	}
-	if err := assertDiscoveredPRMatchesRun(sctx, existing); err != nil {
+	if err := requireOwnedPRIdentity(sctx, existing); err != nil {
 		return err
 	}
 	retargeter, ok := host.(scm.PRBaseRetargeter)
@@ -167,14 +169,15 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	return nil
 }
 
-// assertDiscoveredPRMatchesRun fails closed when the run already owns a PR
-// and the branch-only FindPR hit is a different review object. A run with
-// no persisted identity is first-attach: lookup stays branch-only so a
-// later pr.base_branch change updates the open PR instead of duplicating it.
-func assertDiscoveredPRMatchesRun(sctx *pipeline.StepContext, existing *scm.PR) error {
+// requireOwnedPRIdentity fails closed unless the discovered PR is proven to
+// be the run's persisted review object. Retarget uses this before any base
+// move. Title/body update of a first-attach FindPR hit (no persisted URL)
+// still proceeds so a later pr.base_branch change updates the open PR
+// instead of opening a duplicate.
+func requireOwnedPRIdentity(sctx *pipeline.StepContext, existing *scm.PR) error {
 	owned := runPRURL(sctx)
 	if owned == "" {
-		return nil
+		return fmt.Errorf("refusing to retarget pull request %s: this run has no persisted PR identity", describePR(existing))
 	}
 	if samePRIdentity(owned, existing) {
 		return nil

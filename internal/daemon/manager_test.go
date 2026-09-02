@@ -749,6 +749,51 @@ func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
 	}
 }
 
+func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "pr-url-rerun-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("pr-url-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+	prURL := "https://github.com/test/repo/pull/42"
+	if err := d.UpdateRunPRURL(first.RunID, prURL); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "pr-url-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL == nil || *got.PRURL != prURL {
+		t.Fatalf("rerun PRURL = %#v, want inherited %s", got.PRURL, prURL)
+	}
+}
+
 func TestResolveRerunHeadUsesPreservedTerminalHeadInsteadOfStaleGateBranch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

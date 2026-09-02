@@ -120,6 +120,8 @@ func TestPRStep_RetargetsExistingPRWhenPerRunBaseDiffers(t *testing.T) {
 	sctx.Env = env
 	runBase := "epic/feature"
 	sctx.Run.PRBaseBranch = &runBase
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
 
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
@@ -186,6 +188,28 @@ func TestRetargetExistingPRIfNeeded_MismatchedIdentityFailsClosed(t *testing.T) 
 	}
 }
 
+func TestRetargetExistingPRIfNeeded_MissingIdentityFailsClosed(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{Run: &db.Run{}, Log: func(string) {}}
+	host := &recordingRetargetHost{}
+	discovered := &scm.PR{
+		Number:     "99",
+		URL:        "https://github.com/test/repo/pull/99",
+		BaseBranch: "develop",
+	}
+
+	err := retargetExistingPRIfNeeded(sctx, host, discovered, "epic/feature")
+	if err == nil {
+		t.Fatal("expected error when the run has no persisted PR identity")
+	}
+	if host.calls != 0 {
+		t.Fatalf("retargeted %s to %s; an unproven pull request must not be moved", describePR(host.pr), host.base)
+	}
+	if !strings.Contains(err.Error(), "no persisted PR identity") {
+		t.Fatalf("error = %v, want missing identity", err)
+	}
+}
+
 func TestRetargetExistingPRIfNeeded_MatchingIdentityRetargets(t *testing.T) {
 	t.Parallel()
 	owned := "https://github.com/test/repo/pull/42"
@@ -237,7 +261,7 @@ func TestPRStep_RefusesToRetargetPRThatDoesNotMatchRunIdentity(t *testing.T) {
 
 func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testing.T) {
 	t.Parallel()
-	sctx := &pipeline.StepContext{}
+	sctx := &pipeline.StepContext{Run: &db.Run{}}
 	host := nonRetargetHost{}
 	cases := []struct {
 		name string
@@ -254,6 +278,8 @@ func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testin
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			owned := tc.pr.URL
+			sctx.Run.PRURL = &owned
 			err := retargetExistingPRIfNeeded(sctx, host, tc.pr, "epic/feature")
 			if err == nil {
 				t.Fatal("expected error, got nil")
