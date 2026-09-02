@@ -19,8 +19,8 @@ const prepareCleanupTimeout = 30 * time.Second
 // ensurePrepared runs the trusted preparation command before the first
 // configured Test, Lint, or Format command. Successful preparation is shared
 // for the executor lifetime. Only ignored materialization (for example
-// node_modules) survives: tracked and ordinary untracked changes are removed
-// so setup cannot ride into a later pipeline fix commit.
+// node_modules) survives preparation; its tracked and ordinary untracked
+// mutations are removed so setup cannot ride into a later pipeline fix commit.
 func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 	prepareCmd := strings.TrimSpace(sctx.Config.Commands.Prepare)
 	if prepareCmd == "" {
@@ -38,12 +38,9 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 			return fmt.Errorf("read preparation marker: %w", err)
 		}
 
-		status, err := git.Run(sctx.Ctx, sctx.WorkDir, "status", "--porcelain", "--untracked-files=all")
+		snapshot, err := snapshotPreparationState(sctx.Ctx, sctx.WorkDir)
 		if err != nil {
-			return fmt.Errorf("check worktree before preparation: %w", err)
-		}
-		if strings.TrimSpace(status) != "" {
-			return fmt.Errorf("refusing to prepare dependencies in a dirty worktree; commit or clean pipeline changes first")
+			return err
 		}
 		head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 		if err != nil {
@@ -60,6 +57,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareCleanupTimeout)
 		defer cancel()
 		cleanupErr := cleanupPreparationChanges(cleanupCtx, sctx.WorkDir, head)
+		restoreErr := snapshot.restore(cleanupCtx, sctx.WorkDir)
 		if commandErr != nil {
 			commandErr = fmt.Errorf("run prepare command: %w", commandErr)
 		} else if exitCode != 0 {
@@ -68,7 +66,10 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		if cleanupErr != nil {
 			cleanupErr = fmt.Errorf("clean preparation changes: %w", cleanupErr)
 		}
-		if err := errors.Join(commandErr, cleanupErr); err != nil {
+		if restoreErr != nil {
+			restoreErr = fmt.Errorf("restore pre-preparation changes: %w", restoreErr)
+		}
+		if err := errors.Join(commandErr, cleanupErr, restoreErr); err != nil {
 			return err
 		}
 		if err := os.WriteFile(marker, []byte(prepareCmd+"\n"), 0o600); err != nil {
@@ -95,7 +96,45 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "reset", "--hard", originalHead); err != nil {
 		return err
 	}
-	if _, err := git.Run(ctx, workDir, "clean", "-fd"); err != nil {
+	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
+		return err
+	}
+	return nil
+}
+
+type preparationSnapshot struct {
+	stash string
+}
+
+func snapshotPreparationState(ctx context.Context, workDir string) (preparationSnapshot, error) {
+	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return preparationSnapshot{}, fmt.Errorf("check worktree before preparation: %w", err)
+	}
+	if strings.TrimSpace(status) == "" {
+		return preparationSnapshot{}, nil
+	}
+	if _, err := git.Run(ctx, workDir, "stash", "push", "--include-untracked", "--message", "no-mistakes preparation snapshot"); err != nil {
+		return preparationSnapshot{}, fmt.Errorf("snapshot pre-preparation changes: %w", err)
+	}
+	stash, err := git.Run(ctx, workDir, "rev-parse", "--verify", "refs/stash")
+	if err != nil {
+		return preparationSnapshot{}, fmt.Errorf("resolve preparation snapshot: %w", err)
+	}
+	if _, err := git.Run(ctx, workDir, "stash", "apply", "--index", stash); err != nil {
+		return preparationSnapshot{}, fmt.Errorf("restore pre-preparation changes for prepare command: %w", err)
+	}
+	return preparationSnapshot{stash: stash}, nil
+}
+
+func (s preparationSnapshot) restore(ctx context.Context, workDir string) error {
+	if s.stash == "" {
+		return nil
+	}
+	if _, err := git.Run(ctx, workDir, "stash", "apply", "--index", s.stash); err != nil {
+		return err
+	}
+	if _, err := git.Run(ctx, workDir, "stash", "drop", "stash@{0}"); err != nil {
 		return err
 	}
 	return nil
