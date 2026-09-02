@@ -1,13 +1,16 @@
 package steps
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -16,7 +19,7 @@ import (
 func TestEnsurePrepared_RunsOnceAndKeepsOnlyIgnoredMaterialization(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
@@ -51,7 +54,7 @@ func TestEnsurePrepared_RunsOnceAndKeepsOnlyIgnoredMaterialization(t *testing.T)
 func TestConfiguredTestAndLintSharePreparation(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{
 		Prepare: preparationCommand(),
 		Test:    dependencyExistsCommand(),
 		Lint:    dependencyExistsCommand(),
@@ -81,7 +84,7 @@ func TestConfiguredTestAndLintSharePreparation(t *testing.T) {
 func TestEnsurePrepared_RemovesNestedRepositoryMutation(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: nestedRepositoryPreparationCommand()})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: nestedRepositoryPreparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
@@ -110,7 +113,7 @@ func TestEnsurePrepared_RestoresPendingTrackedAndUntrackedChanges(t *testing.T) 
 	}
 	beforeStatus := gitStatusPorcelain(t, dir)
 
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare dependencies: %v", err)
@@ -146,7 +149,7 @@ func TestEnsurePrepared_PreservesConcurrentSharedStash(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: concurrentStashPreparationCommand(other)})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: concurrentStashPreparationCommand(other)})
 	sctx.Shared = &pipeline.RunShared{}
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
@@ -182,7 +185,7 @@ func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	moduleHead := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD")
 
-	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: registeredSubmodulePreparationCommand()})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: registeredSubmodulePreparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare dependencies: %v", err)
@@ -192,6 +195,147 @@ func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
 	}
 	if got := gitStatusPorcelain(t, dir); got != "" {
 		t.Fatalf("preparation left submodule mutation in parent worktree: %q", got)
+	}
+}
+
+func TestEnsurePrepared_DoesNotInitializeUnrelatedSubmodule(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "remote", "add", "origin", remote)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "config", "-f", ".gitmodules", "submodule.module.url", "file:///missing-submodule")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add unavailable module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "submodule", "deinit", "-f", "module")
+
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: successfulPreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare with uninitialized submodule: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "module", ".git")); !os.IsNotExist(err) {
+		t.Fatalf("preparation initialized unavailable submodule: %v", err)
+	}
+}
+
+func TestEnsurePrepared_RestoresAfterCleanupTimeout(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := gitStatusPorcelain(t, dir)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	previousTimeout := prepareCleanupTimeout
+	previousCleanup := runPreparationCleanup
+	prepareCleanupTimeout = time.Millisecond
+	runPreparationCleanup = func(ctx context.Context, workDir, head string) error {
+		if err := cleanupPreparationChanges(context.Background(), workDir, head); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() {
+		prepareCleanupTimeout = previousTimeout
+		runPreparationCleanup = previousCleanup
+	})
+
+	if err := ensurePrepared(sctx, types.StepTest); err == nil {
+		t.Fatal("preparation unexpectedly succeeded after cleanup timeout")
+	}
+	if got := gitStatusPorcelain(t, dir); got != before {
+		t.Fatalf("pending worktree state after cleanup timeout = %q, want %q", got, before)
+	}
+}
+
+func TestEnsurePrepared_IgnoresWorktreeTempDirectory(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	tempDir := filepath.Join(dir, ".tmp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMP", tempDir)
+	t.Setenv("TEMP", tempDir)
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := gitStatusPorcelain(t, dir)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare with worktree temp directory: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != before {
+		t.Fatalf("pending worktree state after preparation = %q, want %q", got, before)
+	}
+}
+
+func TestEnsurePrepared_RestoresIntentToAdd(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "intent.go"), []byte("package intent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--intent-to-add", "intent.go")
+	beforeStatus := gitStatusPorcelain(t, dir)
+	beforeIndex := gitCmd(t, dir, "ls-files", "--stage", "--debug", "--", "intent.go")
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare with intent-to-add: %v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != beforeStatus {
+		t.Fatalf("intent-to-add status after preparation = %q, want %q", got, beforeStatus)
+	}
+	if got := gitCmd(t, dir, "ls-files", "--stage", "--debug", "--", "intent.go"); got != beforeIndex {
+		t.Fatalf("intent-to-add index after preparation = %q, want %q", got, beforeIndex)
+	}
+}
+
+func TestPreparationSnapshot_RetainsRecoveryData(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
+	snapshot, err := snapshotPreparationState(sctx.Ctx, dir, sctx.GateDir)
+	if err != nil {
+		t.Fatalf("snapshot preparation state: %v", err)
+	}
+	t.Cleanup(snapshot.remove)
+	if err := os.Remove(snapshot.repositories[0].indexSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	err = snapshot.restore(context.Background())
+	if err == nil {
+		t.Fatal("restore unexpectedly succeeded with missing snapshot index")
+	}
+	if _, statErr := os.Stat(snapshot.dir); statErr != nil {
+		t.Fatalf("recovery snapshot was removed: %v", statErr)
+	}
+	if recoveryErr := preparationRestoreError(snapshot, err); !strings.Contains(recoveryErr.Error(), snapshot.dir) {
+		t.Fatalf("recovery error = %q, want snapshot location", recoveryErr)
+	}
+}
+
+func TestPreparationSnapshot_RejectsGateInsideWorktree(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{})
+	gateDir := filepath.Join(dir, "gate")
+	gitCmd(t, dir, "init", "--bare", "gate")
+	if _, err := snapshotPreparationState(sctx.Ctx, dir, gateDir); err == nil {
+		t.Fatal("snapshot accepted a gate directory inside the worktree")
 	}
 }
 
@@ -264,6 +408,13 @@ func dependencyFormattingCommand() string {
 	return `test -f .deps/count && echo formatted >> feature.txt`
 }
 
+func successfulPreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `exit /b 0`
+	}
+	return `true`
+}
+
 func concurrentStashPreparationCommand(other string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf(`if not exist .deps mkdir .deps & echo unrelated>"%s\unrelated.txt" & git -C "%s" add unrelated.txt & git -C "%s" stash push -m unrelated & git rev-parse refs/stash>.deps\unrelated-stash`, other, other, other)
@@ -285,4 +436,13 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(contents)
+}
+
+func newPreparationTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
+	t.Helper()
+	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+	sctx.GateDir = gateDir
+	return sctx
 }
