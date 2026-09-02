@@ -254,9 +254,10 @@ func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
 }
 
 // TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction pins the TUI
-// half of the lost-head release: the affordance is offered, the confirmation
-// says plainly that nothing changes and nothing can be restored, and the
-// shared recovery service is still the only thing that acts.
+// half of the head-lost release: the affordance is offered, the confirmation
+// describes both the lost and orphan-but-contained cases with wording true
+// for both, and the shared recovery service is still the only thing that
+// acts.
 func TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction(t *testing.T) {
 	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunCancelled}
 	m := NewModel("socket", nil, run)
@@ -268,7 +269,7 @@ func TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction(t *testing.T) {
 	m.branchSync = &lost
 
 	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
-	for _, want := range []string{"no longer exists", "u recover custody"} {
+	for _, want := range []string{"no longer importable", "already contains every head", "u recover custody"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("lost-head status missing %q:\n%s", want, view)
 		}
@@ -291,7 +292,7 @@ func TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction(t *testing.T) {
 		t.Fatalf("u must open confirmation without acting: confirm=%v calls=%d", m.recoverConfirm, recoverCalls)
 	}
 	plain := stripANSI(m.View())
-	for _, want := range []string{"no longer exists", "cannot be restored", strings.Repeat("d", 40), "u/enter recover"} {
+	for _, want := range []string{"no longer importable", "already contains every head", strings.Repeat("d", 40), "u/enter recover"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("lost-head confirmation missing %q:\n%s", want, plain)
 		}

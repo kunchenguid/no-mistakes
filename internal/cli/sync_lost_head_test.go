@@ -200,40 +200,70 @@ func TestAxiSyncLostPipelineHeadWithSurvivingGateCommitsStaysBlocked(t *testing.
 // other half of the reported dead end: `axi run` still refuses while a
 // terminal run owns the branch, but the refusal it emits must carry the
 // supported custody-return command instead of a next action that only
-// reprints the same block.
+// reprints the same block. The lost case is the one where the recorded head
+// is provably missing from the worktree and the local gate; the orphan case
+// shares the same safety code and next action but reports the head as no
+// longer reachable as an ancestor of this branch.
 func TestFreshRunRefusalOnLostPipelineHeadPointsAtTheSupportedRecovery(t *testing.T) {
-	state := branchsync.State{
-		State:  branchsync.StatePipelineOwned,
-		Safety: branchsync.SafetyPipelineOwnedHeadLost,
-		Local:  branchsync.LocalState{Branch: "feature/lost", Head: strings.Repeat("a", 40), Clean: true},
-		Pipeline: branchsync.PipelineState{
-			RunID: "run-1", Status: "cancelled", Phase: "pre_push",
-			SubmittedHead: strings.Repeat("a", 40), CurrentHead: strings.Repeat("d", 40),
+	lostHead := strings.Repeat("d", 40)
+	cases := []struct {
+		name  string
+		state branchsync.State
+	}{
+		{
+			name: "lost_head_missing_from_worktree_and_gate",
+			state: branchsync.State{
+				State:  branchsync.StatePipelineOwned,
+				Safety: branchsync.SafetyPipelineOwnedHeadLost,
+				Local:  branchsync.LocalState{Branch: "feature/lost", Head: strings.Repeat("a", 40), Clean: true},
+				Pipeline: branchsync.PipelineState{
+					RunID: "run-1", Status: "cancelled", Phase: "pre_push",
+					SubmittedHead: strings.Repeat("a", 40), CurrentHead: lostHead,
+				},
+				Error:      "the run finished cancelled and its recorded pipeline head " + lostHead + " no longer exists in the invoking worktree or the local gate; every head this run recorded is already contained in this branch, so returning custody strands nothing and changes no file or ref",
+				NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"},
+			},
 		},
-		Error:      "the run finished cancelled and its recorded pipeline head " + strings.Repeat("d", 40) + " no longer exists in the invoking worktree or the local gate",
-		NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"},
+		{
+			name: "orphan_head_unreachable_as_ancestor_of_this_branch",
+			state: branchsync.State{
+				State:  branchsync.StatePipelineOwned,
+				Safety: branchsync.SafetyPipelineOwnedHeadLost,
+				Local:  branchsync.LocalState{Branch: "feature/lost", Head: strings.Repeat("a", 40), Clean: true},
+				Pipeline: branchsync.PipelineState{
+					RunID: "run-1", Status: "cancelled", Phase: "pre_push",
+					SubmittedHead: strings.Repeat("a", 40), CurrentHead: lostHead,
+				},
+				Error:      "the run finished cancelled and its recorded pipeline head " + lostHead + " is no longer reachable as an ancestor of this branch, but every head this run recorded is already contained in this branch; returning custody strands nothing and changes no file or ref",
+				NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"},
+			},
+		},
 	}
 
-	var out bytes.Buffer
-	cmd := &cobra.Command{}
-	cmd.SetOut(&out)
-	err := emitBranchOwnershipError(cmd, &branchOwnershipError{state: state})
-	var ee *exitError
-	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
-		t.Fatalf("fresh-run refusal should exit 1, got %#v", err)
-	}
-	rendered := out.String()
-	for _, want := range []string{
-		"safety: blocked_pipeline_owned_head_lost",
-		"code: recover_custody",
-		"Run `no-mistakes axi sync --recover`",
-		strings.Repeat("d", 40),
-	} {
-		if !strings.Contains(rendered, want) {
-			t.Errorf("fresh-run refusal missing %q:\n%s", want, rendered)
-		}
-	}
-	if strings.Contains(rendered, "Run `no-mistakes axi status`") {
-		t.Errorf("fresh-run refusal still points at the dead-end command:\n%s", rendered)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+			err := emitBranchOwnershipError(cmd, &branchOwnershipError{state: tc.state})
+			var ee *exitError
+			if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+				t.Fatalf("fresh-run refusal should exit 1, got %#v", err)
+			}
+			rendered := out.String()
+			for _, want := range []string{
+				"safety: blocked_pipeline_owned_head_lost",
+				"code: recover_custody",
+				"Run `no-mistakes axi sync --recover`",
+				lostHead,
+			} {
+				if !strings.Contains(rendered, want) {
+					t.Errorf("fresh-run refusal missing %q:\n%s", want, rendered)
+				}
+			}
+			if strings.Contains(rendered, "Run `no-mistakes axi status`") {
+				t.Errorf("fresh-run refusal still points at the dead-end command:\n%s", rendered)
+			}
+		})
 	}
 }

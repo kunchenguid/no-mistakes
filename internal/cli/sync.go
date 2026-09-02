@@ -31,9 +31,11 @@ func newSyncCmd() *cobra.Command {
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
 			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
 			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
-			"carry every local change. Unproven divergence refuses. When that head is proven\n" +
-			"gone from the worktree and the gate and this branch already contains every head\n" +
-			"the run recorded, it returns custody alone and changes no file or ref.\n" +
+			"carry every local change. Unproven divergence refuses. When that head is no\n" +
+			"longer importable - either provably gone from the worktree and the gate, or\n" +
+			"still reachable as a commit but no longer an ancestor of this branch - and\n" +
+			"this branch already contains every head the run recorded, it returns custody\n" +
+			"alone and changes no file or ref.\n" +
 			"A run cancelled before the pipeline changed anything releases the branch by\n" +
 			"itself (user_owned) and makes --recover a no-op. --recover --keep-local keeps\n" +
 			"the current local head instead and never touches the worktree.",
@@ -214,9 +216,10 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 		if state.Safety == branchsync.SafetyPipelineOwnedHeadLost {
-			fmt.Fprintln(cmd.OutOrStdout(), "  change is the custody record itself: the recorded pipeline head no longer")
-			fmt.Fprintln(cmd.OutOrStdout(), "  exists anywhere and cannot be restored, and this branch already contains")
-			fmt.Fprintln(cmd.OutOrStdout(), "  every head the run recorded, so no file, ref, or commit is touched.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  change is the custody record itself: the recorded pipeline head is no longer")
+			fmt.Fprintln(cmd.OutOrStdout(), "  importable - either provably gone from every store, or still reachable as a")
+			fmt.Fprintln(cmd.OutOrStdout(), "  commit but no longer an ancestor of this branch - and this branch already")
+			fmt.Fprintln(cmd.OutOrStdout(), "  contains every head the run recorded, so no file, ref, or commit is touched.")
 		} else if keepLocal {
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the preserved pipeline commits and moving the")
 			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
@@ -284,7 +287,7 @@ func humanSyncSummary(state branchsync.State) string {
 		case branchsync.SafetyPipelineOwnedRecoverable:
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
 		case branchsync.SafetyPipelineOwnedHeadLost:
-			return "run ended and its recorded pipeline head no longer exists; this branch already contains every head it recorded, so `no-mistakes sync --recover` returns custody without changing a file"
+			return "run ended and its recorded pipeline head is no longer importable - either provably gone from every store, or still reachable as a commit but no longer an ancestor of this branch; this branch already contains every head it recorded, so `no-mistakes sync --recover` returns custody without changing a file"
 		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:

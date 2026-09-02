@@ -21,7 +21,7 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		switch state.State {
 		case branchsync.StatePipelineOwned:
 			if state.Safety == branchsync.SafetyPipelineOwnedHeadLost {
-				message = "Run ended and its recorded pipeline head no longer exists; those commits cannot be restored. This branch already contains every head the run recorded, so recovering custody changes no file."
+				message = "Run ended; its recorded pipeline head is no longer importable - either provably gone from every store, or reachable as a commit but no longer an ancestor of this branch. This branch already contains every head the run recorded, so recovering custody changes no file."
 				footer = "u recover custody"
 			} else if recoverableBranchSync(state) {
 				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
@@ -115,13 +115,15 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	}
 	var b strings.Builder
 	if state.Safety == branchsync.SafetyPipelineOwnedHeadLost {
-		fmt.Fprintf(&b, "The run ended %s and its recorded pipeline head no longer exists in this\n", state.Pipeline.Status)
-		fmt.Fprintf(&b, "worktree or the local gate. This branch already contains every head that run\n")
-		fmt.Fprintf(&b, "recorded, so recovery only returns custody: no file and no ref changes.\n\n")
-		fmt.Fprintf(&b, "Local branch: %s\n", state.Local.Branch)
-		fmt.Fprintf(&b, "Local HEAD:   %s\n", state.Local.Head)
-		fmt.Fprintf(&b, "Lost HEAD:    %s\n\n", state.Pipeline.CurrentHead)
-		b.WriteString("The pipeline commits recorded at that head are gone and cannot be restored by any command.")
+		fmt.Fprintf(&b, "The run ended %s and its recorded pipeline head is no longer importable -\n", state.Pipeline.Status)
+		fmt.Fprintf(&b, "either it is provably gone from this worktree or the local gate, or it is\n")
+		fmt.Fprintf(&b, "still reachable as a commit but no longer an ancestor of this branch. This\n")
+		fmt.Fprintf(&b, "branch already contains every head that run recorded, so recovery only\n")
+		fmt.Fprintf(&b, "returns custody: no file and no ref changes.\n\n")
+		fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
+		fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
+		fmt.Fprintf(&b, "Recorded HEAD:  %s\n\n", state.Pipeline.CurrentHead)
+		b.WriteString("When the head is provably gone the commits cannot be restored; when it is only orphaned the commits already live on through the integrated branch. In both cases the custody return moves nothing.")
 		return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 	}
 	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits. Recovery returns\n", state.Pipeline.Status)
