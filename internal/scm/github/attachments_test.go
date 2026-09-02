@@ -172,6 +172,50 @@ func TestUserAssetClientUploadFile(t *testing.T) {
 	}
 }
 
+func TestUserAssetClientUploadFileRejectsReplacedFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	png := filepath.Join(dir, "checkout.png")
+	if err := os.WriteFile(png, []byte("safe-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := ValidateUserAsset(png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other.png")
+	if err := os.WriteFile(other, []byte("private!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(png); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, png); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"url":"https://github.com/user-attachments/assets/c919a728-162d-435e-83a4-a8636a76a8aa"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := &UserAssetClient{
+		HTTP:         server.Client(),
+		UploadPrefix: server.URL + "/",
+		Token:        "gho_test",
+		RepositoryID: 1,
+		acceptedHost: "github.com",
+	}
+	if _, err := client.UploadFile(context.Background(), asset); err == nil || !strings.Contains(err.Error(), "changed after attachment validation") {
+		t.Fatalf("error = %v, want replaced-file refusal", err)
+	}
+	if requests != 0 {
+		t.Fatalf("upload requests = %d, want 0", requests)
+	}
+}
+
 func TestUserAssetClientUploadFileRejectsUnexpectedURL(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

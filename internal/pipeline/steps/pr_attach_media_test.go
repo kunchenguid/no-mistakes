@@ -112,6 +112,30 @@ func TestPRStep_DefaultConfigEmbedsGitHubScreenshotAttachment(t *testing.T) {
 	}
 }
 
+func TestPRStep_DeduplicatesScreenshotUploadsByPath(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
+	enableDefaultEvidence(sctx)
+	png := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.png", []byte("png-bytes"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Desktop checkout","path":%q},{"kind":"screenshot","label":"Mobile checkout","path":%q}]}`, png, png)
+	insertCompletedStep(t, sctx, types.StepTest, findings, "")
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("uploads = %d, want 1", len(uploader.calls))
+	}
+	for _, label := range []string{"Desktop checkout", "Mobile checkout"} {
+		if !strings.Contains(content.Body, "!["+label+"]("+testAttachmentURL+")") {
+			t.Fatalf("expected attachment for %s, got:\n%s", label, content.Body)
+		}
+	}
+}
+
 func TestPRStep_StoreInRepoKeepsCommitLinkAndAttachment(t *testing.T) {
 	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")

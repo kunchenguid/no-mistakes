@@ -76,6 +76,7 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 	artifacts := collectPRTestingArtifacts(sctx, steps, rounds)
 	var eligible []types.TestArtifact
 	var skipped []string
+	seenPaths := make(map[string]bool)
 	for _, artifact := range artifacts {
 		if reason := skipMediaAttach(artifact); reason != "" {
 			if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
@@ -83,6 +84,12 @@ func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm
 			}
 			continue
 		}
+		path := filepath.Clean(artifact.Path)
+		if seenPaths[path] {
+			continue
+		}
+		seenPaths[path] = true
+		artifact.Path = path
 		eligible = append(eligible, artifact)
 	}
 	ok, reason := mediaAttachEnabled(sctx, provider)

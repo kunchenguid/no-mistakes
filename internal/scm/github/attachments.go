@@ -91,6 +91,7 @@ type UserAsset struct {
 	ContentType string
 	Size        int64
 	Video       bool
+	fileInfo    fs.FileInfo
 }
 
 // SupportsUserAttachments reports whether host can serve the unofficial
@@ -154,7 +155,7 @@ func ValidateUserAsset(path string) (UserAsset, error) {
 	if info.Size() > limit {
 		return UserAsset{}, fmt.Errorf("%s: %s must be at most %.1f MB", path, kind, float64(limit)/(1024*1024))
 	}
-	return UserAsset{Path: path, ContentType: contentType, Size: info.Size(), Video: video}, nil
+	return UserAsset{Path: path, ContentType: contentType, Size: info.Size(), Video: video, fileInfo: info}, nil
 }
 
 func userAssetContentType(path string) (string, bool, error) {
@@ -226,12 +227,18 @@ func (c *UserAssetClient) UploadFile(ctx context.Context, asset UserAsset) (stri
 		return "", errors.New("user-attachments upload prefix is empty")
 	}
 
-	open := func() (io.ReadCloser, error) { return os.Open(asset.Path) }
-	body, err := open()
+	body, err := os.Open(asset.Path)
 	if err != nil {
 		return "", err
 	}
 	defer body.Close()
+	openedInfo, err := body.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !openedInfo.Mode().IsRegular() || openedInfo.Size() != asset.Size || asset.fileInfo == nil || !os.SameFile(asset.fileInfo, openedInfo) {
+		return "", fmt.Errorf("%s changed after attachment validation", asset.Path)
+	}
 
 	endpoint, err := url.Parse(prefix)
 	if err != nil {
@@ -252,9 +259,12 @@ func (c *UserAssetClient) UploadFile(ctx context.Context, asset UserAsset) (stri
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.GetBody = open
 
-	resp, err := c.httpClient().Do(req)
+	httpClient := *c.httpClient()
+	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
