@@ -1951,9 +1951,8 @@ func TestPRStep_RichPromptInstructsEvidenceStyle(t *testing.T) {
 
 	for _, want := range []string{
 		`Open with a "## Summary" section in prose, not bullets`,
-		`add "###" subsections`,
+		`add further "###" subsections`,
 		"### 🔥 Production evidence",
-		"### ⚠️ Deliberate scope decisions",
 		"Link every source of evidence inline",
 		"blob#Lstart-Lend permalinks",
 		"A link you cannot substantiate must be omitted, never guessed",
@@ -1968,6 +1967,50 @@ func TestPRStep_RichPromptInstructsEvidenceStyle(t *testing.T) {
 	}
 	if strings.Contains(capturedPrompt, `1-3 concise bullet points`) {
 		t.Errorf("rich prompt still carries the minimal bullet rule, got:\n%s", capturedPrompt)
+	}
+}
+
+func TestPRStep_RichPromptRequiresThreeFixedSections(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "")
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			payload := json.RawMessage(`{"title":"feat: add bar","body":"## Summary\n\nAdds a Bar() helper."}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	whatIdx := strings.Index(capturedPrompt, "### ✅ What this PR does")
+	correctIdx := strings.Index(capturedPrompt, "### ✔️ Already correct, no change needed")
+	deferredIdx := strings.Index(capturedPrompt, "### ⚠️ Not in this PR, needs attention later")
+
+	if whatIdx == -1 {
+		t.Fatalf("rich prompt missing mandatory %q, got:\n%s", "### ✅ What this PR does", capturedPrompt)
+	}
+	if correctIdx == -1 {
+		t.Fatalf("rich prompt missing %q, got:\n%s", "### ✔️ Already correct, no change needed", capturedPrompt)
+	}
+	if deferredIdx == -1 {
+		t.Fatalf("rich prompt missing %q, got:\n%s", "### ⚠️ Not in this PR, needs attention later", capturedPrompt)
+	}
+	if !(whatIdx < correctIdx && correctIdx < deferredIdx) {
+		t.Fatalf("rich prompt must order the three fixed sections What -> Already correct -> Not in this PR, got:\n%s", capturedPrompt)
+	}
+	if !strings.Contains(capturedPrompt, "MANDATORY, always present, always first") {
+		t.Errorf("rich prompt must mark %q as mandatory, got:\n%s", "### ✅ What this PR does", capturedPrompt)
 	}
 }
 
