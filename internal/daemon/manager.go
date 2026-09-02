@@ -718,8 +718,8 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // head while custody remains outstanding. An explicit intent overrides the
 // selected run. Otherwise an authoritative intent is inherited byte-for-byte;
 // runs without one infer intent afresh. The selected run's PR URL is inherited
-// so a later --base-branch retarget can prove it is moving the same review
-// object rather than the first branch-only FindPR hit.
+// when that PR is not already merged or closed, so a later --base-branch
+// retarget can prove it is moving the same still-open review object.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
@@ -796,7 +796,13 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 	inheritedPRURL := ""
 	if selectedRun.PRURL != nil {
-		inheritedPRURL = strings.TrimSpace(*selectedRun.PRURL)
+		state := ""
+		if selectedRun.PRState != nil {
+			state = strings.ToLower(strings.TrimSpace(*selectedRun.PRState))
+		}
+		if state != "merged" && state != "closed" {
+			inheritedPRURL = strings.TrimSpace(*selectedRun.PRURL)
+		}
 	}
 
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritedPRURL)

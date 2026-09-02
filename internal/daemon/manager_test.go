@@ -794,6 +794,53 @@ func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
 	}
 }
 
+func TestRerunDoesNotInheritClosedPRURL(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "closed-pr-url-rerun-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("closed-pr-url-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+	if err := d.UpdateRunPRURL(first.RunID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRState(first.RunID, "closed"); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "closed-pr-url-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL != nil && *got.PRURL != "" {
+		t.Fatalf("rerun PRURL = %#v, want no inherit of a closed PR", got.PRURL)
+	}
+}
+
 func TestResolveRerunHeadUsesPreservedTerminalHeadInsteadOfStaleGateBranch(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

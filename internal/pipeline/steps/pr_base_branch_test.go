@@ -266,8 +266,9 @@ func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
 	owned := "https://github.com/test/repo/pull/42"
 	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
 	sibling := &scm.PR{Number: "99", URL: "https://github.com/test/repo/pull/99", BaseBranch: "develop"}
+	host := &recordingRetargetHost{state: scm.PRStateOpen}
 
-	got, err := bindExistingPR(sctx, nil, sibling)
+	got, err := bindExistingPR(sctx, host, sibling)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +277,45 @@ func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
 	}
 	if got == sibling {
 		t.Fatal("bindExistingPR returned the sibling pointer")
+	}
+	if host.stateCalls != 1 {
+		t.Fatalf("GetPRState calls = %d, want 1 before prefer-owned", host.stateCalls)
+	}
+}
+
+func TestPRStep_StaleIdentityRefusesRetargetOfEitherPR(t *testing.T) {
+	t.Parallel()
+	for _, state := range []scm.PRState{scm.PRStateClosed, scm.PRStateMerged} {
+		t.Run(string(state), func(t *testing.T) {
+			owned := "https://github.com/test/repo/pull/42"
+			sctx := &pipeline.StepContext{
+				Run: &db.Run{PRURL: &owned, PRBaseBranch: strptr("epic/feature")},
+				Log: func(string) {},
+			}
+			host := &recordingRetargetHost{state: state}
+			discovered := &scm.PR{
+				Number:     "99",
+				URL:        "https://github.com/test/repo/pull/99",
+				BaseBranch: "develop",
+			}
+
+			bound, err := bindExistingPR(sctx, host, discovered)
+			if err == nil {
+				t.Fatal("expected stale identity to refuse retarget")
+			}
+			if bound != nil {
+				t.Fatalf("bindExistingPR = %+v, want nil when retarget is refused", bound)
+			}
+			if host.stateCalls != 1 {
+				t.Fatalf("GetPRState calls = %d, want 1", host.stateCalls)
+			}
+			if host.calls != 0 {
+				t.Fatalf("retargeted %s to %s; stale identity must not move either PR", describePR(host.pr), host.base)
+			}
+			if !strings.Contains(err.Error(), "stale") && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(string(state))) {
+				t.Fatalf("error = %v, want stale/closed/merged identity", err)
+			}
+		})
 	}
 }
 
@@ -315,9 +355,11 @@ func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testin
 // tests can prove the discovered PR was not moved.
 type recordingRetargetHost struct {
 	scm.Host
-	calls int
-	pr    *scm.PR
-	base  string
+	calls      int
+	stateCalls int
+	pr         *scm.PR
+	base       string
+	state      scm.PRState
 }
 
 func (h *recordingRetargetHost) SetPRBaseBranch(_ context.Context, pr *scm.PR, base string) error {
@@ -326,6 +368,16 @@ func (h *recordingRetargetHost) SetPRBaseBranch(_ context.Context, pr *scm.PR, b
 	h.base = base
 	return nil
 }
+
+func (h *recordingRetargetHost) GetPRState(_ context.Context, _ *scm.PR) (scm.PRState, error) {
+	h.stateCalls++
+	if h.state == "" {
+		return scm.PRStateOpen, nil
+	}
+	return h.state, nil
+}
+
+func strptr(s string) *string { return &s }
 
 // nonRetargetHost is a scm.Host that does not implement PRBaseRetargeter, so
 // a per-run --base-branch override cannot silently skip when the live forge

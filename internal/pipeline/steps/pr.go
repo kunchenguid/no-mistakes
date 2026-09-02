@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -169,18 +170,39 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 }
 
 // bindExistingPR prefers the run's persisted PR URL over a branch-only
-// FindPR hit. A sibling first-list-hit is not mutated and does not fail the
-// run: the owned PR is the object that retarget and title/body update use.
-// First-attach (no persisted URL) keeps the discovered PR so a later
-// pr.base_branch change updates the open PR instead of opening a duplicate.
+// FindPR hit after GetPRState proves that identity is still open. A closed
+// or merged persisted PR is stale: title/body update the discovered PR, and
+// a per-run --base-branch retarget is refused rather than moving either
+// object. First-attach (no persisted URL) keeps the discovered PR.
 func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, error) {
 	owned := runPRURL(sctx)
 	if owned == "" {
 		return discovered, nil
 	}
+	if host == nil {
+		return nil, fmt.Errorf("read persisted pull request %s state: host unavailable", owned)
+	}
+	ownedPR := discovered
+	if !samePRIdentity(owned, discovered) {
+		ownedPR = prFromOwnedURL(owned)
+	}
+	ctx := context.Background()
+	if sctx != nil && sctx.Ctx != nil {
+		ctx = sctx.Ctx
+	}
+	state, err := host.GetPRState(ctx, ownedPR)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
+	}
+	if state != scm.PRStateOpen {
+		if runPRBaseBranch(sctx) != "" {
+			return nil, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
+		}
+		return discovered, nil
+	}
 	existing := discovered
 	if !samePRIdentity(owned, discovered) {
-		existing = prFromOwnedURL(owned)
+		existing = ownedPR
 		if sctx != nil && sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("using persisted pull request %s instead of discovered %s", owned, describePR(discovered)))
 		}
@@ -189,10 +211,10 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 		return existing, nil
 	}
 	reader, ok := host.(scm.PRBaseBranchReader)
-	if !ok || sctx == nil {
+	if !ok {
 		return existing, nil
 	}
-	base, err := reader.GetPRBaseBranch(sctx.Ctx, existing)
+	base, err := reader.GetPRBaseBranch(ctx, existing)
 	if err != nil {
 		return nil, fmt.Errorf("read persisted pull request %s: %w", owned, err)
 	}
