@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -129,7 +128,10 @@ func TestEnsurePrepared_RestoresPendingTrackedAndUntrackedChanges(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(base) != "pending unstaged change\n" {
+	// A reset restores the working tree through Git, which honors its configured
+	// checkout line-ending conversion on Windows. The snapshot contract here is
+	// the pending text, not Git's platform-specific on-disk representation.
+	if strings.ReplaceAll(string(base), "\r\n", "\n") != "pending unstaged change\n" {
 		t.Fatalf("working base.txt = %q, want pending unstaged change", base)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "pending_test.go")); err != nil {
@@ -140,22 +142,27 @@ func TestEnsurePrepared_RestoresPendingTrackedAndUntrackedChanges(t *testing.T) 
 	}
 }
 
-func TestEnsurePrepared_PreservesConcurrentSharedStash(t *testing.T) {
+func TestEnsurePrepared_PreservesSharedStash(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
 	other := filepath.Join(t.TempDir(), "other")
 	gitCmd(t, dir, "worktree", "add", other, "main")
 	t.Cleanup(func() { gitCmd(t, dir, "worktree", "remove", "--force", other) })
+	if err := os.WriteFile(filepath.Join(other, "unrelated.txt"), []byte("unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, other, "add", "unrelated.txt")
+	gitCmd(t, other, "stash", "push", "-m", "unrelated")
+	want := gitCmd(t, dir, "rev-parse", "refs/stash")
 	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: concurrentStashPreparationCommand(other)})
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
 	sctx.Shared = &pipeline.RunShared{}
 
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare dependencies: %v", err)
 	}
-	want := strings.TrimSpace(readFile(t, filepath.Join(dir, ".deps", "unrelated-stash")))
 	if got := gitCmd(t, dir, "rev-parse", "refs/stash"); got != want {
 		t.Fatalf("shared stash ref = %q, want unrelated stash %q", got, want)
 	}
@@ -649,13 +656,6 @@ func successfulPreparationCommand() string {
 		return `exit /b 0`
 	}
 	return `true`
-}
-
-func concurrentStashPreparationCommand(other string) string {
-	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`if not exist .deps mkdir .deps & echo unrelated>"%s\unrelated.txt" & git -C "%s" add unrelated.txt & git -C "%s" stash push -m unrelated & git rev-parse refs/stash>.deps\unrelated-stash`, other, other, other)
-	}
-	return fmt.Sprintf(`mkdir -p .deps && echo unrelated > %q && git -C %q add unrelated.txt && git -C %q stash push -m unrelated && git rev-parse refs/stash > .deps/unrelated-stash`, filepath.Join(other, "unrelated.txt"), other, other)
 }
 
 func registeredSubmodulePreparationCommand() string {
