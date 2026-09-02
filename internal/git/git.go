@@ -586,6 +586,85 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
+// LocalCommitSigningPolicy returns the explicit worktree/local commit signing policy.
+// Empty means unset and preserves ordinary Git precedence.
+func LocalCommitSigningPolicy(ctx context.Context, dir string) (string, error) {
+	policy, err := configPolicyAtScope(ctx, dir, "--worktree")
+	if err == nil {
+		return policy, nil
+	}
+	if !isWorktreeConfigWriteUnavailable(err) {
+		return "", err
+	}
+	return configPolicyAtScope(ctx, dir, "--local")
+}
+
+func configPolicyAtScope(ctx context.Context, dir, scope string) (string, error) {
+	return configPolicyAtScopeWithEnv(ctx, dir, nil, scope)
+}
+
+func configPolicyAtScopeWithEnv(ctx context.Context, dir string, env []string, scope string) (string, error) {
+	policy, err := RunWithEnv(ctx, dir, env, "config", scope, "--get", "commit.gpgsign")
+	if err == nil {
+		return policy, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", nil
+	}
+	return "", err
+}
+
+// CommitWithLocalSigningPolicy creates a commit with the explicit local signing
+// policy applied only to this command. Unset leaves ambient Git precedence.
+func RunWithSigningPolicy(ctx context.Context, dir string, args ...string) (string, error) {
+	policy, err := LocalCommitSigningPolicy(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+	if policy != "" {
+		args = append([]string{"-c", "commit.gpgsign=" + policy}, args...)
+	}
+	return Run(ctx, dir, args...)
+}
+
+func CommitWithLocalSigningPolicy(ctx context.Context, dir, message, hookPath string) error {
+	return CommitWithLocalSigningPolicyFromEnv(ctx, dir, nil, message, hookPath)
+}
+
+func CommitWithLocalSigningPolicyFromEnv(ctx context.Context, dir string, env []string, message, hookPath string) error {
+	policy, err := configPolicyAtScopeWithEnv(ctx, dir, env, "--worktree")
+	if err != nil && isWorktreeConfigWriteUnavailable(err) {
+		policy, err = configPolicyAtScopeWithEnv(ctx, dir, env, "--local")
+	}
+	if err != nil {
+		return err
+	}
+	args := make([]string, 0, 8)
+	if policy != "" {
+		args = append(args, "-c", "commit.gpgsign="+policy)
+	}
+	if hookPath != "" {
+		args = append(args, "-c", "core.hooksPath="+hookPath, "commit", "--no-verify")
+	} else {
+		args = append(args, "commit")
+	}
+	args = append(args, "-m", message)
+	_, err = RunWithEnv(ctx, dir, env, args...)
+	return err
+}
+
+func SetWorktreeCommitSigningPolicy(ctx context.Context, dir, policy string) error {
+	if policy == "" {
+		return nil
+	}
+	if policy != "true" && policy != "false" {
+		return fmt.Errorf("invalid commit signing policy %q", policy)
+	}
+	_, err := Run(ctx, dir, "config", "--worktree", "commit.gpgsign", policy)
+	return err
+}
+
 // CopyLocalCommitSettings copies repository-local commit settings from srcDir
 // into dstDir. It carries user.name, user.email, and an explicitly configured
 // commit.gpgsign value. Missing values in srcDir are ignored, so ordinary Git
@@ -603,7 +682,13 @@ func CommitAll(ctx context.Context, dir, message string) error {
 // Older Git without `--worktree` support falls back to `--local`.
 func CopyLocalCommitSettings(ctx context.Context, srcDir, dstDir string) error {
 	for _, key := range []string{"user.name", "user.email", "commit.gpgsign"} {
-		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+		var value string
+		var err error
+		if key == "commit.gpgsign" {
+			value, err = LocalCommitSigningPolicy(ctx, srcDir)
+		} else {
+			value, err = Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+		}
 		if err != nil {
 			return err
 		}
