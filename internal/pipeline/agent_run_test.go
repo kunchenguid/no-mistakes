@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -117,6 +119,39 @@ func TestRunAgent_SuccessfulOutputUnchanged(t *testing.T) {
 	if sctx.Ctx.Err() != nil {
 		t.Fatalf("parent context cancelled after successful run: %v", sctx.Ctx.Err())
 	}
+}
+
+func TestRunAgentPropagatesPersistedCommitSigningPolicy(t *testing.T) {
+	policy := "false"
+	ag := &hangingAgent{
+		name: "capture",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			env := make(map[string]string)
+			for _, entry := range opts.Env {
+				key, value, _ := strings.Cut(entry, "=")
+				env[key] = value
+			}
+			count := mustAtoi(t, env["GIT_CONFIG_COUNT"])
+			index := strconv.Itoa(count - 1)
+			if env["GIT_CONFIG_KEY_"+index] != "commit.gpgsign" || env["GIT_CONFIG_VALUE_"+index] != policy {
+				t.Fatalf("agent environment does not carry persisted policy: %#v", env)
+			}
+			return &agent.Result{Text: "ok"}, nil
+		},
+	}
+	sctx := &StepContext{Ctx: context.Background(), Agent: ag, Run: &db.Run{CommitSigningPolicy: &policy}}
+	if _, err := sctx.RunAgent(agent.RunOpts{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustAtoi(t *testing.T, value string) int {
+	t.Helper()
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestRunAgent_HonorsExistingSoonerDeadline(t *testing.T) {

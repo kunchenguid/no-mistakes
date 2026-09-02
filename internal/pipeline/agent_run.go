@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
@@ -61,6 +62,13 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	if sctx != nil {
 		ag = sctx.Agent
 		timeout = AgentTimeout(sctx.Config)
+		if sctx.Run != nil && sctx.Run.CommitSigningPolicy != nil {
+			var err error
+			opts.Env, err = git.CommitSigningPolicyEnv(opts.Env, *sctx.Run.CommitSigningPolicy)
+			if err != nil {
+				return nil, fmt.Errorf("apply commit signing policy to agent: %w", err)
+			}
+		}
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(parent, timeout, activity, func(ctx context.Context) (*agent.Result, error) {

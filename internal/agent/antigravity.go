@@ -112,7 +112,7 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	args := a.buildArgs(opts.Prompt, schemaPath, requestedSession)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = a.gitSafeEnv(opts.CWD)
+	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
 	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "antigravity"))

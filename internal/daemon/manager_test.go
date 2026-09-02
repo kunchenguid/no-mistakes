@@ -705,7 +705,8 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		return []pipeline.Step{step}
 	})
 
-	_, headSHA := setupTestGitRepo(t, p, d, "selected-rerun-repo")
+	repo, headSHA := setupTestGitRepo(t, p, d, "selected-rerun-repo")
+	gitCmd(t, repo.WorkingPath, "config", "commit.gpgsign", "false")
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -723,6 +724,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForRunTerminalState(t, d, first.RunID)
+	gitCmd(t, repo.WorkingPath, "config", "commit.gpgsign", "true")
 	selectedIntent := "  selected exact requirements\n"
 	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
 		t.Fatal(err)
@@ -755,6 +757,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+	if got.CommitSigningPolicy == nil || *got.CommitSigningPolicy != "false" {
+		t.Fatalf("commit signing policy = %v, want inherited false", got.CommitSigningPolicy)
 	}
 }
 

@@ -185,24 +185,14 @@ func commitStepCorrection(sctx *pipeline.StepContext, message string, hookFree b
 		}
 		defer os.RemoveAll(hooksDir)
 	}
-	policy, err := stepGitRun(sctx, "config", "--worktree", "--bool", "--get", "--default", "", "commit.gpgsign")
-	if err != nil && strings.Contains(err.Error(), "worktree") {
-		policy, err = stepGitRun(sctx, "config", "--local", "--bool", "--get", "--default", "", "commit.gpgsign")
-	}
-	if err != nil {
-		return err
-	}
 	args := make([]string, 0, 8)
-	if policy != "" {
-		args = append(args, "-c", "commit.gpgsign="+policy)
-	}
 	if hooksDir != "" {
 		args = append(args, "-c", "core.hooksPath="+hooksDir, "commit", "--no-verify")
 	} else {
 		args = append(args, "commit")
 	}
 	args = append(args, "-m", message)
-	_, err = stepGitRun(sctx, args...)
+	_, err = stepGitRunWithSigningPolicy(sctx, args...)
 	return err
 }
 

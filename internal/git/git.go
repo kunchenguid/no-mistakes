@@ -590,10 +590,10 @@ func CommitAll(ctx context.Context, dir, message string) error {
 // Empty means unset and preserves ordinary Git precedence.
 func LocalCommitSigningPolicy(ctx context.Context, dir string) (string, error) {
 	policy, err := configPolicyAtScope(ctx, dir, "--worktree")
-	if err == nil {
+	if err == nil && policy != "" {
 		return policy, nil
 	}
-	if !isWorktreeConfigWriteUnavailable(err) {
+	if err != nil && !isWorktreeConfigWriteUnavailable(err) {
 		return "", err
 	}
 	return configPolicyAtScope(ctx, dir, "--local")
@@ -604,7 +604,7 @@ func configPolicyAtScope(ctx context.Context, dir, scope string) (string, error)
 }
 
 func configPolicyAtScopeWithEnv(ctx context.Context, dir string, env []string, scope string) (string, error) {
-	policy, err := RunWithEnv(ctx, dir, env, "config", scope, "--get", "commit.gpgsign")
+	policy, err := RunWithEnv(ctx, dir, env, "config", scope, "--bool", "--get", "commit.gpgsign")
 	if err == nil {
 		return policy, nil
 	}
@@ -617,9 +617,8 @@ func configPolicyAtScopeWithEnv(ctx context.Context, dir string, env []string, s
 
 // CommitWithLocalSigningPolicy creates a commit with the explicit local signing
 // policy applied only to this command. Unset leaves ambient Git precedence.
-func RunWithSigningPolicy(ctx context.Context, dir string, args ...string) (string, error) {
-	policy, err := LocalCommitSigningPolicy(ctx, dir)
-	if err != nil {
+func RunWithSigningPolicy(ctx context.Context, dir, policy string, args ...string) (string, error) {
+	if err := validateCommitSigningPolicy(policy); err != nil {
 		return "", err
 	}
 	if policy != "" {
@@ -655,13 +654,39 @@ func CommitWithLocalSigningPolicyFromEnv(ctx context.Context, dir string, env []
 }
 
 func SetWorktreeCommitSigningPolicy(ctx context.Context, dir, policy string) error {
-	if policy == "" {
-		return nil
+	if err := validateCommitSigningPolicy(policy); err != nil {
+		return err
 	}
-	if policy != "true" && policy != "false" {
+	if err := setCommitSigningPolicyAtScope(ctx, dir, "--worktree", policy); err != nil {
+		if !isWorktreeConfigWriteUnavailable(err) {
+			return err
+		}
+		return setCommitSigningPolicyAtScope(ctx, dir, "--local", policy)
+	}
+	return nil
+}
+
+func validateCommitSigningPolicy(policy string) error {
+	if policy != "" && policy != "true" && policy != "false" {
 		return fmt.Errorf("invalid commit signing policy %q", policy)
 	}
-	_, err := Run(ctx, dir, "config", "--worktree", "commit.gpgsign", policy)
+	return nil
+}
+
+func setCommitSigningPolicyAtScope(ctx context.Context, dir, scope, policy string) error {
+	args := []string{"config", scope}
+	if policy == "" {
+		args = append(args, "--unset-all", "commit.gpgsign")
+	} else {
+		args = append(args, "commit.gpgsign", policy)
+	}
+	_, err := Run(ctx, dir, args...)
+	if policy == "" {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 5 {
+			return nil
+		}
+	}
 	return err
 }
 

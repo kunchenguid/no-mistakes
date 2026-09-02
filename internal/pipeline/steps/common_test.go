@@ -623,6 +623,29 @@ func TestCommitAgentFixes_PersistsUncertifiedRangeForReview(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixesUsesPersistedSigningPolicy(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	gitCmd(t, dir, "config", "commit.gpgsign", "true")
+	gitCmd(t, dir, "config", "gpg.program", filepath.Join(t.TempDir(), "missing-signer"))
+	gitCmd(t, dir, "config", "user.signingkey", "test-signing-key")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	policy := "false"
+	sctx.Run.CommitSigningPolicy = &policy
+	sctx.ReviewStartingHeadSHA = headSHA
+	if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepReview, "apply fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	commit := gitCmd(t, dir, "cat-file", "commit", "HEAD")
+	if strings.Contains(commit, "\ngpgsig ") || strings.HasPrefix(commit, "gpgsig ") {
+		t.Fatal("persisted unsigned policy produced a signed correction commit")
+	}
+}
+
 func TestCommitAgentFixes_BypassesMissingLegacyHuskyRuntime(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)

@@ -793,7 +793,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSourceAndPolicy(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, repo.WorkingPath)
+	return m.startRunWithIntentSourceAndPolicy(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, selectedRun.CommitSigningPolicy)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -862,6 +862,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	return m.startRunWithIntentSourceAndPolicy(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil)
+}
+
+func (m *RunManager) startRunWithIntentSourceAndPolicy(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, inheritedPolicy *string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -967,16 +971,26 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
-	commitPolicy, err := git.LocalCommitSigningPolicy(ctx, repo.WorkingPath)
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("capture commit signing policy: %s", err))
-		trackStartFailure("capture_commit_signing_policy")
-		return "", fmt.Errorf("capture commit signing policy: %w", err)
+	commitPolicy := ""
+	if inheritedPolicy != nil {
+		commitPolicy = strings.TrimSpace(*inheritedPolicy)
+	} else {
+		commitPolicy, err = git.LocalCommitSigningPolicy(ctx, repo.WorkingPath)
+		if err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("capture commit signing policy: %s", err))
+			trackStartFailure("capture_commit_signing_policy")
+			return "", fmt.Errorf("capture commit signing policy: %w", err)
+		}
 	}
 	if err := git.CopyLocalCommitSettings(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git commit settings: %s", err))
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git commit settings: %w", err)
+	}
+	if err := git.SetWorktreeCommitSigningPolicy(ctx, wtDir, commitPolicy); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree commit signing policy: %s", err))
+		trackStartFailure("configure_commit_signing_policy")
+		return "", fmt.Errorf("configure worktree commit signing policy: %w", err)
 	}
 	if err := m.db.SetRunCommitSigningPolicy(run.ID, commitPolicy); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("record commit signing policy: %s", err))

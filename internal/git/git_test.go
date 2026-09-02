@@ -263,6 +263,45 @@ func TestCopyLocalCommitSettings_PreservesSignedAndDefaultBehavior(t *testing.T)
 	}
 }
 
+func TestLocalCommitSigningPolicyCanonicalizesAndFallsBackToLocal(t *testing.T) {
+	ctx := context.Background()
+	repo := initTestRepo(t)
+	run(t, repo, "git", "config", "extensions.worktreeConfig", "true")
+	run(t, repo, "git", "config", "--local", "commit.gpgsign", "yes")
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	run(t, repo, "git", "worktree", "add", "-b", "linked", linked)
+	policy, err := LocalCommitSigningPolicy(ctx, linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy != "true" {
+		t.Fatalf("policy = %q, want canonical true from local fallback", policy)
+	}
+}
+
+func TestSetWorktreeCommitSigningPolicyRestoresAllStatesWithLocalFallback(t *testing.T) {
+	ctx := context.Background()
+	repo := initTestRepo(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	run(t, repo, "git", "worktree", "add", "-b", "linked", linked)
+
+	if err := SetWorktreeCommitSigningPolicy(ctx, linked, "false"); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(t, linked, "git", "config", "--local", "--bool", "--get", "commit.gpgsign"); got != "false" {
+		t.Fatalf("policy = %q, want false", got)
+	}
+	if err := SetWorktreeCommitSigningPolicy(ctx, linked, ""); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "config", "--local", "--get", "commit.gpgsign")
+	cmd.Dir = linked
+	if err := cmd.Run(); err == nil {
+		t.Fatal("unset policy remained in local config")
+	}
+}
+
 func TestGetRemoteURLNotFound(t *testing.T) {
 	dir := initTestRepo(t)
 	ctx := context.Background()

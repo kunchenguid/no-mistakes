@@ -2,14 +2,44 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 type environmentContextKey struct{}
+
+func CommitSigningPolicyEnv(extra []string, policy string) ([]string, error) {
+	if err := validateCommitSigningPolicy(policy); err != nil {
+		return nil, err
+	}
+	result := append([]string(nil), extra...)
+	if policy == "" {
+		return result, nil
+	}
+	count := 0
+	for _, entry := range append(os.Environ(), extra...) {
+		key, value, ok := strings.Cut(entry, "=")
+		if key != "GIT_CONFIG_COUNT" || !ok {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Errorf("invalid GIT_CONFIG_COUNT %q", value)
+		}
+		count = parsed
+	}
+	return append(result,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(count)+"=commit.gpgsign",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"="+policy,
+	), nil
+}
 
 // WithEnvironment freezes an environment overlay into ctx for Git commands
 // and any hooks or credential helpers they spawn.
