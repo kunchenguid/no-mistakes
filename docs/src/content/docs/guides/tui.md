@@ -77,6 +77,7 @@ Step status icons:
 | `✗` | Failed |
 
 Completed steps show their duration.
+When no lint command is configured, the Document row is labeled `Document + Lint housekeeping`; its duration is the shared documentation-and-lint agent invocation, while Lint shows only its cached-result handoff duration.
 Steps with fixed findings, and steps currently fixing reported findings, show a right-aligned count such as `2/3 fixed` or `0/3 fixed`.
 The first number counts completed fixes, not findings selected for an in-progress fix.
 Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
