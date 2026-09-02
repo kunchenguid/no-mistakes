@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -226,5 +228,62 @@ func TestExecutor_ApprovalOverride_RecoveredPathStillFailing(t *testing.T) {
 	}
 	if reread.OverrideReason == nil || *reread.OverrideReason == "" {
 		t.Fatal("recovered-path OverrideReason = nil, want the still-unresolved reason recorded and durable")
+	}
+}
+
+// TestExecutor_ApprovalOverride_RunCompletedEventCarriesReason is the producer
+// half of the "TUI hides persisted CI overrides" P1: recording the override on
+// the step row (tested above) is not enough - the live run_completed delta must
+// carry the reason so an attached TUI can show the passed-with-override banner
+// without a snapshot read. Before the fix emitRunEvent dropped the reason and
+// the banner read as a plain green pass on the event path.
+func TestExecutor_ApprovalOverride_RunCompletedEventCarriesReason(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+
+	var mu sync.Mutex
+	var completedReason *string
+	var sawCompleted bool
+	onEvent := func(e ipc.Event) {
+		if e.Type != ipc.EventRunCompleted {
+			return
+		}
+		mu.Lock()
+		sawCompleted = true
+		completedReason = e.CIOverrideReason
+		mu.Unlock()
+	}
+
+	step := newOverrideVerifyingApprovalStep(types.StepCI, `{"summary":"CI check failing: required-check"}`,
+		func(*StepContext) (string, error) {
+			return "live checks for https://example/pr/1 still failing: required-check", nil
+		})
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, onEvent)
+
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+
+	waitForStepStatus(t, database, run.ID, step.Name(), types.StepStatusAwaitingApproval)
+	if err := exec.Respond(step.Name(), types.ActionApprove, nil); err != nil {
+		t.Fatalf("Respond(approve) error = %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor did not complete after approval")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawCompleted {
+		t.Fatal("no run_completed event emitted")
+	}
+	if completedReason == nil || *completedReason == "" {
+		t.Fatal("run_completed event CIOverrideReason = nil, want the override reason carried on the delta")
+	}
+	if !strings.Contains(*completedReason, "required-check") {
+		t.Errorf("run_completed CIOverrideReason = %q, want it to name %q", *completedReason, "required-check")
 	}
 }

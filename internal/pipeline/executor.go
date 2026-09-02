@@ -1547,7 +1547,33 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		Error:  run.Error,
 		PRURL:  run.PRURL,
 	}
+	// A completed run may have passed with a CI approval override; the TUI
+	// banner reads the reason off the delta (like PRURL) so it never needs a
+	// snapshot to distinguish it from a genuinely green run. Derived from step
+	// rows so both ActionApprove sites (live wait and Resume) are covered.
+	// Gated on the terminal status, not the event type: errorRun emits the same
+	// event for failed/cancelled runs, whose banner never reads it.
+	if run.Status == types.RunCompleted {
+		if reason := e.runOverrideReason(run.ID); reason != "" {
+			event.CIOverrideReason = &reason
+		}
+	}
 	e.onEvent(event)
+}
+
+// runOverrideReason returns the first step OverrideReason recorded for the run,
+// deriving the run-level CI override reason the same way daemon.runToInfo does.
+func (e *Executor) runOverrideReason(runID string) string {
+	steps, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return ""
+	}
+	for _, s := range steps {
+		if s.OverrideReason != nil && *s.OverrideReason != "" {
+			return *s.OverrideReason
+		}
+	}
+	return ""
 }
 
 func (e *Executor) emitCIReadinessEvent(run *db.Run, repo *db.Repo, ready, declaredNoCI bool) {

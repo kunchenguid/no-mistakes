@@ -356,6 +356,11 @@ type Event struct {
 	StateRev    int64 `json:"state_rev,omitempty"`
 	CIReady     *bool `json:"ci_ready,omitempty"`
 	CIReadyNoCI *bool `json:"ci_ready_no_ci,omitempty"`
+	// CIOverrideReason rides run_completed so the live TUI banner can show a
+	// passed-with-override run without a snapshot read. It is derived from the
+	// run's step OverrideReason the same way RunInfo.CIOverrideReason is, and
+	// is set only on completion (the only event whose banner reads it).
+	CIOverrideReason *string `json:"ci_override_reason,omitempty"`
 }
 
 // --- Helpers ---

@@ -11,6 +11,31 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// TestModel_ApplyEvent_RunCompletedCarriesCIOverride is the consumer half of
+// the "TUI hides persisted CI overrides" P1: renderOutcomeBanner reads the
+// override reason correctly (see TestOutcomeBanner_CIOverrideShowsReason), but
+// before the fix the live run_completed event never populated m.run
+// .CIOverrideReason, so the banner showed a plain "✓ Pipeline passed" for an
+// overridden run on the event path. Drive the real event (do NOT set the field
+// on the fixture) and assert it survives to the banner.
+func TestModel_ApplyEvent_RunCompletedCarriesCIOverride(t *testing.T) {
+	run := testRun()
+	m := NewModel("/tmp/sock", nil, run)
+	reason := "live checks for https://github.com/test/repo/pull/42 not all passed: deploy (pending)"
+
+	m.applyEvent(ipc.Event{
+		Type:             ipc.EventRunCompleted,
+		RunID:            run.ID,
+		Status:           ptr(string(types.RunCompleted)),
+		CIOverrideReason: ptr(reason),
+	})
+
+	banner := stripANSI(renderOutcomeBanner(m.run, m.steps))
+	if !strings.Contains(banner, "override") || !strings.Contains(banner, reason) {
+		t.Errorf("banner did not carry the override from the run_completed event: %q", banner)
+	}
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

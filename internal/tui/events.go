@@ -67,6 +67,12 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		if event.PRURL != nil {
 			m.run.PRURL = event.PRURL
 		}
+		// Carry the CI approval override onto the model so renderOutcomeBanner
+		// shows "passed with override" on the live event path, not just after a
+		// snapshot. Without this the banner disagrees with axi's outcome word.
+		if event.CIOverrideReason != nil {
+			m.run.CIOverrideReason = *event.CIOverrideReason
+		}
 		if m.syntheticSteps {
 			m.steps = nil
 			m.run.Steps = nil
