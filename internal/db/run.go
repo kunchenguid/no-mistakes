@@ -31,7 +31,8 @@ type Run struct {
 	// this run. They remain nil only for runs recorded before these fields.
 	NoMistakesVersion  *string
 	NoMistakesBuildSHA *string
-	// CommitSigningPolicy is the immutable tri-state policy captured from the initiating worktree.
+	// CommitSigningPolicy is the immutable canonical tri-state captured at the
+	// run lineage's initial admission or inherited by a rerun.
 	CommitSigningPolicy *string
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until

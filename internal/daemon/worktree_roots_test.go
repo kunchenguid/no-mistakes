@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -859,6 +860,56 @@ func TestPrepareRecoveredRun_LocatesThePlacementItsRunRecorded(t *testing.T) {
 	}
 	if _, err := m.prepareRecoveredRun(context.Background(), stored); err != nil && strings.Contains(err.Error(), "worktree is missing") {
 		t.Fatalf("recovery lost the run's recorded worktree %q: %v", created, err)
+	}
+}
+
+func TestPrepareRecoveredRunRestoresPersistedSigningPolicy(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "signing-recovery")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunCommitSigningPolicy(run.ID, "false"); err != nil {
+		t.Fatal(err)
+	}
+
+	worktree := filepath.Join(t.TempDir(), "repo-runs", run.ID)
+	gitCmd(t, p.RepoDir(repo.ID), "worktree", "add", "--detach", worktree, headSHA)
+	if err := d.SetRunWorktreeDir(run.ID, worktree); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, worktree, "config", "commit.gpgsign", "true")
+
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Policy restoration precedes validation of the durable approval gate. This
+	// fixture intentionally omits unrelated step records and checks the restored
+	// Git state at that recovery boundary.
+	_, _ = NewRunManager(d, p, nil).prepareRecoveredRun(context.Background(), stored)
+	got, err := gitpkg.Run(context.Background(), worktree, "config", "--bool", "--get", "commit.gpgsign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "false" {
+		t.Fatalf("recovered worktree policy = %q, want persisted false", got)
 	}
 }
 

@@ -615,8 +615,8 @@ func configPolicyAtScopeWithEnv(ctx context.Context, dir string, env []string, s
 	return "", err
 }
 
-// CommitWithLocalSigningPolicy creates a commit with the explicit local signing
-// policy applied only to this command. Unset leaves ambient Git precedence.
+// RunWithSigningPolicy runs Git with the supplied signing policy applied only
+// to this command. Unset leaves ambient Git precedence.
 func RunWithSigningPolicy(ctx context.Context, dir, policy string, args ...string) (string, error) {
 	if err := validateCommitSigningPolicy(policy); err != nil {
 		return "", err

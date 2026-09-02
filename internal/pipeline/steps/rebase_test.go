@@ -156,6 +156,36 @@ func TestRebaseStep_UsesConfiguredPRBaseBranch(t *testing.T) {
 	}
 }
 
+func TestTryRebaseUsesPersistedSigningPolicy(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(dir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "main.txt")
+	gitCmd(t, dir, "commit", "-m", "main")
+	gitCmd(t, dir, "checkout", "feature")
+
+	gitCmd(t, dir, "config", "commit.gpgsign", "true")
+	gitCmd(t, dir, "config", "gpg.program", filepath.Join(t.TempDir(), "missing-signer"))
+	gitCmd(t, dir, "config", "user.signingkey", "test-signing-key")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	policy := "false"
+	sctx.Run.CommitSigningPolicy = &policy
+	conflicts, err := tryRebase(context.Background(), sctx, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("unexpected conflicts: %v", conflicts)
+	}
+	commit := gitCmd(t, dir, "cat-file", "commit", "HEAD")
+	if strings.Contains(commit, "\ngpgsig ") || strings.HasPrefix(commit, "gpgsig ") {
+		t.Fatal("persisted unsigned policy produced a signed rebased commit")
+	}
+}
+
 func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
