@@ -58,6 +58,16 @@ const (
 const (
 	SafetySafeFastForward       = "safe_fast_forward"
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+
+	// SafetyPipelineOwnedRecoverable reports a terminal run whose unpublished
+	// pipeline head still exists and can be anchored and taken back.
+	SafetyPipelineOwnedRecoverable = "blocked_pipeline_owned_recoverable"
+	// SafetyPipelineOwnedHeadLost reports a terminal run whose recorded
+	// pipeline head is provably gone from every object store no-mistakes can
+	// read, while every head the run recorded is already contained in the
+	// operator's branch. There is nothing left to import, so the custody
+	// return is a stamp that moves no file and no ref.
+	SafetyPipelineOwnedHeadLost = "blocked_pipeline_owned_head_lost"
 )
 
 // State is the shared branch synchronization contract rendered by CLI, AXI,
@@ -584,6 +594,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
+	}
+	// A recorded pipeline head that is provably gone can never be verified,
+	// anchored, imported, or adopted, so every path below refuses it forever.
+	// When the branch already contains every head the run recorded, nothing is
+	// left to preserve and holding custody protects no commit: release it with
+	// a stamp that touches no file and no ref.
+	if s.lostPipelineHeadReleasable(ctx, &state, run) {
+		return s.finishRecover(ctx, run, false)
 	}
 	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
@@ -1435,12 +1453,18 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
 		if !s.recoverySourceAvailable(ctx, state, run) {
+			if s.lostPipelineHeadReleasable(ctx, state, run) {
+				state.Safety = SafetyPipelineOwnedHeadLost
+				state.Error = "the run finished " + string(run.Status) + " and its recorded pipeline head " + run.HeadSHA + " no longer exists in the invoking worktree or the local gate; every head this run recorded is already contained in this branch, so returning custody strands nothing and changes no file or ref"
+				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+				return
+			}
 			state.Safety = "blocked_recover_preserved_head_missing"
 			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
 		}
-		state.Safety = "blocked_pipeline_owned_recoverable"
+		state.Safety = SafetyPipelineOwnedRecoverable
 		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
 		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
 		return
@@ -1501,6 +1525,124 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		return true
 	}
 	return preservedContainsLocalWork(ctx, gateDir, local, preserved)
+}
+
+// lostPipelineHeadReleasable reports whether a terminal run's recorded
+// pipeline head is PROVABLY gone rather than merely unreadable, and whether
+// releasing custody at that point can strand no work.
+//
+// It exists because the ordinary recoverable path needs the recorded head to
+// still be somewhere: when a run terminalizes without verified head evidence
+// nothing ever anchors that head, and once the transient commit is collected
+// every recovery path refuses it. The branch then reports
+// blocked_recover_preserved_head_missing with a manual next action forever, a
+// fresh run is refused for the same reason, and the only escape is editing
+// internal state by hand (issue: dogfood run 01M1GE0QM433D9G2A0QDMJFGJH).
+//
+// Release is allowed only on positive proof, and every clause fails closed:
+//   - Absence is read through git.ObjectMissing in BOTH stores no-mistakes
+//     controls, so an unreadable, unconfigured, or absent gate is undetermined
+//     rather than evidence. A malformed object id is never "absent".
+//   - Any surviving run-specific recovery ref, in either store, is
+//     reconciliation material that could still name the head, so it refuses.
+//   - Every head this run is recorded to have received or delivered, plus
+//     whatever the gate still holds for the branch, must already be contained
+//     in the operator's branch. A behind, diverged, or unreadable relation
+//     leaves real commits outside the branch and therefore refuses.
+//
+// The caller stamps custody and moves nothing: there is no commit left to
+// anchor, fast-forward to, or adopt.
+func (s *Service) lostPipelineHeadReleasable(ctx context.Context, state *State, run *db.Run) bool {
+	if state == nil || run == nil || run.CustodyReturnedAt != nil || !terminalRunStatus(run.Status) {
+		return false
+	}
+	preserved := strings.TrimSpace(run.HeadSHA)
+	local := strings.TrimSpace(state.Local.Head)
+	submitted := strings.TrimSpace(ptr(run.SubmittedHeadSHA))
+	if !isObjectID(preserved) || local == "" || submitted == "" || preserved == local {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return false
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return false
+	}
+	stores := []string{s.workDir(), gateDir}
+	for _, dir := range stores {
+		missing, err := git.ObjectMissing(ctx, dir, preserved)
+		if err != nil || !missing {
+			return false
+		}
+	}
+	for _, dir := range stores {
+		for _, ref := range []string{custody.RecoveryRef(run.ID), custody.RecoveryLocalRef(run.ID), custody.RecoveryGateRef(run.ID)} {
+			if _, exists, err := git.ExactRefTarget(ctx, dir, ref); err != nil || exists {
+				return false
+			}
+		}
+	}
+	gateBranch, readable := gateBranchHead(ctx, gateDir, state.Local.Branch)
+	if !readable {
+		return false
+	}
+	contained := []string{submitted, strings.TrimSpace(ptr(run.LastPushedSHA)), gateBranch}
+	for _, head := range contained {
+		if head == "" || head == local {
+			continue
+		}
+		if !objectExists(ctx, s.workDir(), head) || !isAncestor(ctx, s.workDir(), head, local) {
+			return false
+		}
+	}
+	return true
+}
+
+// gateBranchHead reads the gate's exact branch head. A branch the gate does
+// not carry is a readable absence; anything unreadable or not a commit is
+// reported as undetermined so callers fail closed.
+func gateBranchHead(ctx context.Context, gateDir, branch string) (string, bool) {
+	if strings.TrimSpace(branch) == "" {
+		return "", false
+	}
+	ref := "refs/heads/" + branch
+	_, exists, err := git.ExactRefTarget(ctx, gateDir, ref)
+	if err != nil {
+		return "", false
+	}
+	if !exists {
+		return "", true
+	}
+	head, err := git.Run(ctx, gateDir, "rev-parse", ref+"^{commit}")
+	if err != nil || strings.TrimSpace(head) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(head), true
+}
+
+// isObjectID accepts only a full hexadecimal object name. Absence proofs run
+// through `git cat-file --batch-check`, which happily reports any unparsable
+// input as "missing"; a recorded head that is not an object id is corrupt
+// state to reconcile, never proof that a commit is gone.
+func isObjectID(sha string) bool {
+	if len(sha) != 40 && len(sha) != 64 {
+		return false
+	}
+	for _, r := range sha {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// CustodyRecoverable reports the pipeline-owned classifications whose proven
+// next action is the guarded custody return: the preserved head still exists
+// and can be taken back, or it is provably gone and custody is only a stamp.
+func CustodyRecoverable(state State) bool {
+	return state.State == StatePipelineOwned &&
+		(state.Safety == SafetyPipelineOwnedRecoverable || state.Safety == SafetyPipelineOwnedHeadLost)
 }
 
 func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db.Run) bool {

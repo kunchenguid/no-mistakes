@@ -252,3 +252,59 @@ func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
 		t.Fatalf("u acted on an active pipeline_owned state: %#v", m)
 	}
 }
+
+// TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction pins the TUI
+// half of the lost-head release: the affordance is offered, the confirmation
+// says plainly that nothing changes and nothing can be restored, and the
+// shared recovery service is still the only thing that acts.
+func TestLostPipelineHeadStateOffersTheSameCustodyRecoveryAction(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunCancelled}
+	m := NewModel("socket", nil, run)
+	lost := branchsync.State{
+		State: branchsync.StatePipelineOwned, Relation: branchsync.RelationUnknown, Safety: branchsync.SafetyPipelineOwnedHeadLost,
+		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{RunID: "run-1", Status: "cancelled", Phase: "pre_push", CurrentHead: strings.Repeat("d", 40)},
+	}
+	m.branchSync = &lost
+
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"no longer exists", "u recover custody"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("lost-head status missing %q:\n%s", want, view)
+		}
+	}
+
+	recoverCalls := 0
+	m.syncRecover = func() branchsync.State {
+		recoverCalls++
+		recovered := lost
+		recovered.State = branchsync.StateCustodyReturned
+		recovered.Safety = "custody_returned"
+		recovered.Recovered = true
+		recovered.Changed = false
+		return recovered
+	}
+
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || !m.recoverConfirm || recoverCalls != 0 {
+		t.Fatalf("u must open confirmation without acting: confirm=%v calls=%d", m.recoverConfirm, recoverCalls)
+	}
+	plain := stripANSI(m.View())
+	for _, want := range []string{"no longer exists", "cannot be restored", strings.Repeat("d", 40), "u/enter recover"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("lost-head confirmation missing %q:\n%s", want, plain)
+		}
+	}
+
+	nextModel, cmd = m.handleKey(keyMsg("enter"))
+	m = nextModel.(Model)
+	if cmd == nil || recoverCalls != 0 {
+		t.Fatal("recover did not wait for async command")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if recoverCalls != 1 || m.branchSync.State != branchsync.StateCustodyReturned || !m.branchSync.Recovered {
+		t.Fatalf("lost-head recover result = %#v", m.branchSync)
+	}
+}

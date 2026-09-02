@@ -705,3 +705,60 @@ func ShowFile(ctx context.Context, dir, ref, path string) (string, error) {
 	}
 	return out, nil
 }
+
+// ObjectMissing reports whether Git itself classifies sha as absent from the
+// repository's object store.
+//
+// It exists because `git cat-file -e <sha>` cannot tell "this object is gone"
+// apart from "this repository could not be read": both are a non-zero exit.
+// `cat-file --batch-check` instead exits 0 and prints the positive line
+// "<sha> missing", while an unreadable, misconfigured, or non-repository
+// directory fails the command outright. Callers that act on absence - custody
+// release, in particular - must therefore treat a non-nil error as
+// undetermined and never as proof that the object is gone.
+func ObjectMissing(ctx context.Context, dir, sha string) (bool, error) {
+	sha = strings.TrimSpace(sha)
+	if sha == "" {
+		return false, errors.New("git cat-file --batch-check: empty object id")
+	}
+	out, err := runObjectBatchCheck(ctx, dir, sha)
+	if err != nil {
+		return false, err
+	}
+	line := strings.TrimSpace(string(out))
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != sha {
+		return false, fmt.Errorf("git cat-file --batch-check: unrecognized output %q for %s", line, sha)
+	}
+	switch fields[1] {
+	case "missing":
+		return true, nil
+	case "ambiguous", "dangling", "notdir", "loop":
+		return false, fmt.Errorf("git cat-file --batch-check: %s reported %s", sha, fields[1])
+	default:
+		return false, nil
+	}
+}
+
+func runObjectBatchCheck(ctx context.Context, dir, sha string) ([]byte, error) {
+	args := []string{"cat-file", "--batch-check"}
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Stdin = strings.NewReader(sha + "\n")
+	winproc.Harden(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("%w (%v)", ctxErr, err)
+		}
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
