@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.62.0](https://github.com/kunchenguid/no-mistakes/compare/v1.61.0...v1.62.0) (2026-09-02)
+
+
+### Features
+
+* **axi:** add per-run PR base branch via --base-branch ([#861](https://github.com/kunchenguid/no-mistakes/issues/861)) ([e08143f](https://github.com/kunchenguid/no-mistakes/commit/e08143f8407681d922ad50df9bcf14906095dd57))
+* **pipeline:** attach media evidence to GitHub pull requests ([#934](https://github.com/kunchenguid/no-mistakes/issues/934)) ([b262caa](https://github.com/kunchenguid/no-mistakes/commit/b262caa9218d47a4df28e4394cba8c392383d2bb))
+
+
+### Bug Fixes
+
+* **agent:** take the terminal bare JSON object for ACP agents ([#931](https://github.com/kunchenguid/no-mistakes/issues/931)) ([c6ad6ce](https://github.com/kunchenguid/no-mistakes/commit/c6ad6ce784761c1e7e759147e71f5a9a3b97b13c)), closes [#930](https://github.com/kunchenguid/no-mistakes/issues/930)
+* **cli:** make untracked-file guidance safe ([#927](https://github.com/kunchenguid/no-mistakes/issues/927)) ([552c22a](https://github.com/kunchenguid/no-mistakes/commit/552c22adaee2c9d114e47467a03135cfc02ea2c0))
+* **pipeline:** never report a CI approval override as a clean pass ([#923](https://github.com/kunchenguid/no-mistakes/issues/923)) ([76fa092](https://github.com/kunchenguid/no-mistakes/commit/76fa0921a9797b09e120c8b5979c4d0e65f88922))
+
 ## [1.61.0](https://github.com/kunchenguid/no-mistakes/compare/v1.60.3...v1.61.0) (2026-08-31)
 
 
