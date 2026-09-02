@@ -463,6 +463,40 @@ func TestEnsurePrepared_RestoresEmptyUntrackedDirectories(t *testing.T) {
 	}
 }
 
+func TestEnsurePrepared_RestoresNestedInitializedSubmodule(t *testing.T) {
+	dir, baseSHA, headSHA := setupNestedSubmodules(t)
+	inner := filepath.Join(dir, "outer", "inner")
+	innerHead := gitCmd(t, inner, "rev-parse", "HEAD")
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: removesNestedSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare removes nested submodule: %v", err)
+	}
+	if got := gitCmd(t, inner, "rev-parse", "HEAD"); got != innerHead {
+		t.Fatalf("restored nested submodule head = %q, want %q", got, innerHead)
+	}
+}
+
+func TestEnsurePrepared_DeinitializesNestedSubmoduleInitializedByPreparation(t *testing.T) {
+	dir, baseSHA, headSHA := setupNestedSubmodules(t)
+	outer := filepath.Join(dir, "outer")
+	gitCmd(t, outer, "submodule", "deinit", "--force", "inner")
+	innerGit := filepath.Join(outer, "inner", ".git")
+	if _, err := os.Stat(innerGit); !os.IsNotExist(err) {
+		t.Fatalf("nested submodule remained initialized before preparation: %v", err)
+	}
+	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: initializesNestedSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare initializes nested submodule: %v", err)
+	}
+	if _, err := os.Stat(innerGit); !os.IsNotExist(err) {
+		t.Fatalf("preparation left nested submodule initialized: %v", err)
+	}
+}
+
 func TestEnsurePrepared_RestoresIntentToAdd(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "intent.go"), []byte("package intent\n"), 0o644); err != nil {
@@ -629,6 +663,20 @@ func removesSubmodulePreparationCommand() string {
 	return `rm -rf module`
 }
 
+func removesNestedSubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `rmdir /s /q outer\inner`
+	}
+	return `rm -rf outer/inner`
+}
+
+func initializesNestedSubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `git -C outer -c protocol.file.allow=always submodule update --init inner`
+	}
+	return `git -C outer -c protocol.file.allow=always submodule update --init inner`
+}
+
 func failingPreparationCommand() string {
 	if runtime.GOOS == "windows" {
 		return `exit /b 1`
@@ -652,4 +700,41 @@ func newPreparationTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, h
 	gitCmd(t, gateDir, "init", "--bare")
 	sctx.GateDir = gateDir
 	return sctx
+}
+
+func setupNestedSubmodules(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir, baseSHA, _ := setupGitRepo(t)
+	innerRemote := t.TempDir()
+	gitCmd(t, innerRemote, "init", "--bare")
+	inner := t.TempDir()
+	gitCmd(t, inner, "init", "-b", "main")
+	gitCmd(t, inner, "config", "user.name", "test")
+	gitCmd(t, inner, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(inner, "inner.txt"), []byte("inner\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, inner, "add", "inner.txt")
+	gitCmd(t, inner, "commit", "-m", "inner base")
+	gitCmd(t, inner, "remote", "add", "origin", innerRemote)
+	gitCmd(t, inner, "push", "origin", "main")
+
+	outerRemote := t.TempDir()
+	gitCmd(t, outerRemote, "init", "--bare")
+	outer := t.TempDir()
+	gitCmd(t, outer, "init", "-b", "main")
+	gitCmd(t, outer, "config", "user.name", "test")
+	gitCmd(t, outer, "config", "user.email", "test@example.com")
+	gitCmd(t, outer, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", innerRemote, "inner")
+	gitCmd(t, outer, "add", ".gitmodules", "inner")
+	gitCmd(t, outer, "commit", "-m", "add inner")
+	gitCmd(t, outer, "remote", "add", "origin", outerRemote)
+	gitCmd(t, outer, "push", "origin", "main")
+
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", outerRemote, "outer")
+	gitCmd(t, dir, "add", ".gitmodules", "outer")
+	gitCmd(t, dir, "commit", "-m", "add outer")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive")
+	return dir, baseSHA, headSHA
 }
