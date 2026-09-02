@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -136,6 +137,64 @@ func TestEnsurePrepared_RestoresPendingTrackedAndUntrackedChanges(t *testing.T) 
 	}
 }
 
+func TestEnsurePrepared_PreservesConcurrentSharedStash(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ignoreTestDependencies(t, dir)
+	other := filepath.Join(t.TempDir(), "other")
+	gitCmd(t, dir, "worktree", "add", other, "main")
+	t.Cleanup(func() { gitCmd(t, dir, "worktree", "remove", "--force", other) })
+	if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("pending change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: concurrentStashPreparationCommand(other)})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare dependencies: %v", err)
+	}
+	want := strings.TrimSpace(readFile(t, filepath.Join(dir, ".deps", "unrelated-stash")))
+	if got := gitCmd(t, dir, "rev-parse", "refs/stash"); got != want {
+		t.Fatalf("shared stash ref = %q, want unrelated stash %q", got, want)
+	}
+	if got := gitCmd(t, dir, "show", want+":unrelated.txt"); got != "unrelated" {
+		t.Fatalf("unrelated stash contents = %q, want preserved payload", got)
+	}
+}
+
+func TestEnsurePrepared_ResetsRegisteredSubmodule(t *testing.T) {
+	dir, baseSHA, _ := setupGitRepo(t)
+	remote := t.TempDir()
+	gitCmd(t, remote, "init", "--bare")
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "-b", "main")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(seed, "module.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "module.txt")
+	gitCmd(t, seed, "commit", "-m", "module base")
+	gitCmd(t, seed, "remote", "add", "origin", remote)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", remote, "module")
+	gitCmd(t, dir, "add", ".gitmodules", "module")
+	gitCmd(t, dir, "commit", "-m", "add module")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	moduleHead := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD")
+
+	sctx := newTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: registeredSubmodulePreparationCommand()})
+	sctx.Shared = &pipeline.RunShared{}
+	if err := ensurePrepared(sctx, types.StepTest); err != nil {
+		t.Fatalf("prepare dependencies: %v", err)
+	}
+	if got := gitCmd(t, filepath.Join(dir, "module"), "rev-parse", "HEAD"); got != moduleHead {
+		t.Fatalf("submodule head after preparation = %q, want %q", got, moduleHead)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("preparation left submodule mutation in parent worktree: %q", got)
+	}
+}
+
 func TestPushStep_PreparesFormatterWithPendingUntrackedChanges(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -203,4 +262,27 @@ func dependencyFormattingCommand() string {
 		return `if exist .deps\count (echo formatted>>feature.txt) else (exit /b 1)`
 	}
 	return `test -f .deps/count && echo formatted >> feature.txt`
+}
+
+func concurrentStashPreparationCommand(other string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`if not exist .deps mkdir .deps & echo unrelated>"%s\unrelated.txt" & git -C "%s" add unrelated.txt & git -C "%s" stash push -m unrelated & git rev-parse refs/stash>.deps\unrelated-stash`, other, other, other)
+	}
+	return fmt.Sprintf(`mkdir -p .deps && echo unrelated > %q && git -C %q add unrelated.txt && git -C %q stash push -m unrelated && git rev-parse refs/stash > .deps/unrelated-stash`, filepath.Join(other, "unrelated.txt"), other, other)
+}
+
+func registeredSubmodulePreparationCommand() string {
+	if runtime.GOOS == "windows" {
+		return `git -C module config user.name test & git -C module config user.email test@example.com & echo prepared>module\prepared.txt & git -C module add prepared.txt & git -C module commit -m prepared`
+	}
+	return `git -C module config user.name test && git -C module config user.email test@example.com && echo prepared > module/prepared.txt && git -C module add prepared.txt && git -C module commit -m prepared`
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
 }

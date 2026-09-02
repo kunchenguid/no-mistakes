@@ -42,6 +42,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		if err != nil {
 			return err
 		}
+		defer snapshot.remove()
 		head, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 		if err != nil {
 			return fmt.Errorf("resolve head before preparation: %w", err)
@@ -57,7 +58,7 @@ func ensurePrepared(sctx *pipeline.StepContext, logStep types.StepName) error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(sctx.Ctx), prepareCleanupTimeout)
 		defer cancel()
 		cleanupErr := cleanupPreparationChanges(cleanupCtx, sctx.WorkDir, head)
-		restoreErr := snapshot.restore(cleanupCtx, sctx.WorkDir)
+		restoreErr := snapshot.restore(cleanupCtx)
 		if commandErr != nil {
 			commandErr = fmt.Errorf("run prepare command: %w", commandErr)
 		} else if exitCode != 0 {
@@ -96,6 +97,15 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 	if _, err := git.Run(ctx, workDir, "reset", "--hard", originalHead); err != nil {
 		return err
 	}
+	if _, err := git.Run(ctx, workDir, "submodule", "update", "--init", "--recursive", "--force"); err != nil {
+		return err
+	}
+	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git reset --hard"); err != nil {
+		return err
+	}
+	if _, err := git.Run(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", "git clean -ffd"); err != nil {
+		return err
+	}
 	if _, err := git.Run(ctx, workDir, "clean", "-ffd"); err != nil {
 		return err
 	}
@@ -103,39 +113,159 @@ func cleanupPreparationChanges(ctx context.Context, workDir, originalHead string
 }
 
 type preparationSnapshot struct {
-	stash string
+	dir          string
+	repositories []preparationRepositorySnapshot
+}
+
+type preparationRepositorySnapshot struct {
+	workDir       string
+	head          string
+	stagedPatch   string
+	unstagedPatch string
+	untrackedDir  string
 }
 
 func snapshotPreparationState(ctx context.Context, workDir string) (preparationSnapshot, error) {
-	status, err := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all")
+	dir, err := os.MkdirTemp("", "no-mistakes-prepare-")
 	if err != nil {
-		return preparationSnapshot{}, fmt.Errorf("check worktree before preparation: %w", err)
+		return preparationSnapshot{}, fmt.Errorf("create preparation snapshot: %w", err)
 	}
-	if strings.TrimSpace(status) == "" {
-		return preparationSnapshot{}, nil
+	snapshot := preparationSnapshot{dir: dir}
+	if err := snapshot.captureRepository(ctx, workDir, "root"); err != nil {
+		snapshot.remove()
+		return preparationSnapshot{}, err
 	}
-	if _, err := git.Run(ctx, workDir, "stash", "push", "--include-untracked", "--message", "no-mistakes preparation snapshot"); err != nil {
-		return preparationSnapshot{}, fmt.Errorf("snapshot pre-preparation changes: %w", err)
-	}
-	stash, err := git.Run(ctx, workDir, "rev-parse", "--verify", "refs/stash")
+	paths, err := preparationSubmodulePaths(ctx, workDir)
 	if err != nil {
-		return preparationSnapshot{}, fmt.Errorf("resolve preparation snapshot: %w", err)
+		snapshot.remove()
+		return preparationSnapshot{}, err
 	}
-	if _, err := git.Run(ctx, workDir, "stash", "apply", "--index", stash); err != nil {
-		return preparationSnapshot{}, fmt.Errorf("restore pre-preparation changes for prepare command: %w", err)
+	for i, path := range paths {
+		if err := snapshot.captureRepository(ctx, filepath.Join(workDir, path), fmt.Sprintf("submodule-%d", i)); err != nil {
+			snapshot.remove()
+			return preparationSnapshot{}, err
+		}
 	}
-	return preparationSnapshot{stash: stash}, nil
+	return snapshot, nil
 }
 
-func (s preparationSnapshot) restore(ctx context.Context, workDir string) error {
-	if s.stash == "" {
-		return nil
+func preparationSubmodulePaths(ctx context.Context, workDir string) ([]string, error) {
+	out, err := git.RunRaw(ctx, workDir, "submodule", "foreach", "--recursive", "--quiet", `printf '%s\0' "$displaypath"`)
+	if err != nil {
+		return nil, fmt.Errorf("list registered submodules: %w", err)
 	}
-	if _, err := git.Run(ctx, workDir, "stash", "apply", "--index", s.stash); err != nil {
-		return err
+	var paths []string
+	for _, path := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		if path == "" {
+			continue
+		}
+		path, err = preparationRelativePath(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid submodule path: %w", err)
+		}
+		paths = append(paths, path)
 	}
-	if _, err := git.Run(ctx, workDir, "stash", "drop", "stash@{0}"); err != nil {
-		return err
+	return paths, nil
+}
+
+func preparationRelativePath(path string) (string, error) {
+	path = filepath.Clean(path)
+	if filepath.IsAbs(path) || path == "." || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q", path)
+	}
+	return path, nil
+}
+
+func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, name string) error {
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("resolve %s head before preparation: %w", name, err)
+	}
+	dir := filepath.Join(s.dir, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s snapshot directory: %w", name, err)
+	}
+	stagedPatch := filepath.Join(dir, "staged.patch")
+	unstagedPatch := filepath.Join(dir, "unstaged.patch")
+	for _, patch := range []struct {
+		path string
+		args []string
+	}{
+		{stagedPatch, []string{"diff", "--no-ext-diff", "--binary", "--cached"}},
+		{unstagedPatch, []string{"diff", "--no-ext-diff", "--binary"}},
+	} {
+		contents, err := git.RunRaw(ctx, workDir, patch.args...)
+		if err != nil {
+			return fmt.Errorf("snapshot %s changes: %w", name, err)
+		}
+		if err := os.WriteFile(patch.path, contents, 0o600); err != nil {
+			return fmt.Errorf("write %s snapshot: %w", name, err)
+		}
+	}
+	untrackedDir := filepath.Join(dir, "untracked")
+	untracked, err := git.UntrackedFiles(ctx, workDir)
+	if err != nil {
+		return fmt.Errorf("list %s untracked files: %w", name, err)
+	}
+	for _, path := range untracked {
+		path, err = preparationRelativePath(path)
+		if err != nil {
+			return fmt.Errorf("invalid untracked path: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(untrackedDir, path)), 0o700); err != nil {
+			return fmt.Errorf("create snapshot parent for %s: %w", path, err)
+		}
+		if err := copyPath(filepath.Join(workDir, path), filepath.Join(untrackedDir, path)); err != nil {
+			return fmt.Errorf("snapshot untracked %s: %w", path, err)
+		}
+	}
+	s.repositories = append(s.repositories, preparationRepositorySnapshot{
+		workDir: workDir, head: head, stagedPatch: stagedPatch, unstagedPatch: unstagedPatch, untrackedDir: untrackedDir,
+	})
+	return nil
+}
+
+func (s preparationSnapshot) restore(ctx context.Context) error {
+	for _, repository := range s.repositories {
+		if _, err := git.Run(ctx, repository.workDir, "reset", "--hard", repository.head); err != nil {
+			return err
+		}
+		for _, patch := range []struct {
+			path string
+			args []string
+		}{
+			{repository.stagedPatch, []string{"apply", "--index"}},
+			{repository.unstagedPatch, []string{"apply"}},
+		} {
+			contents, err := os.ReadFile(patch.path)
+			if err != nil {
+				return fmt.Errorf("read preparation snapshot: %w", err)
+			}
+			if len(contents) == 0 {
+				continue
+			}
+			if _, err := git.Run(ctx, repository.workDir, append(patch.args, patch.path)...); err != nil {
+				return err
+			}
+		}
+		entries, err := os.ReadDir(repository.untrackedDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read untracked preparation snapshot: %w", err)
+		}
+		for _, entry := range entries {
+			if err := copyPath(filepath.Join(repository.untrackedDir, entry.Name()), filepath.Join(repository.workDir, entry.Name())); err != nil {
+				return fmt.Errorf("restore untracked %s: %w", entry.Name(), err)
+			}
+		}
 	}
 	return nil
+}
+
+func (s preparationSnapshot) remove() {
+	if s.dir != "" {
+		_ = os.RemoveAll(s.dir)
+	}
 }
