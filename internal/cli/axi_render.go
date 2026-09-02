@@ -188,6 +188,13 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 		if s.FindingsJSON != nil {
 			sv.FindingsJSON = *s.FindingsJSON
 		}
+		// Mirror executor.runOverrideReason / RunInfo.CIOverrideReason: the run's
+		// override reason is the first step that recorded one. Without this the
+		// DB-backed status path reads a passed-with-override run as a plain pass,
+		// disagreeing with the live IPC path and outcomeForRun.
+		if rv.CIOverrideReason == "" && s.OverrideReason != nil && *s.OverrideReason != "" {
+			rv.CIOverrideReason = *s.OverrideReason
+		}
 		rv.Steps = append(rv.Steps, sv)
 	}
 	return rv

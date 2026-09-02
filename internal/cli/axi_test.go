@@ -49,6 +49,25 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 	}
 }
 
+// TestRunViewFromDBCarriesCIOverrideReason pins that a completed run whose step
+// recorded an approval override reads as passed-with-override on the DB-backed
+// status path, matching the live IPC path. Regression: runViewFromDB used to
+// drop step OverrideReason, so axi status reported a plain pass for an override.
+func TestRunViewFromDBCarriesCIOverrideReason(t *testing.T) {
+	run := &db.Run{ID: "r1", Branch: "feature/x", HeadSHA: "abcdef1234567890", Status: types.RunCompleted}
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: strptr("live checks still failing: required-check")},
+	}
+	rv := runViewFromDB(run, steps)
+	if rv.CIOverrideReason != "live checks still failing: required-check" {
+		t.Errorf("CIOverrideReason = %q, want the step's override reason", rv.CIOverrideReason)
+	}
+	if got := outcomeForRun(rv); got != "passed-with-override" {
+		t.Errorf("outcomeForRun = %q, want passed-with-override", got)
+	}
+}
+
 func TestFindingsTally(t *testing.T) {
 	rv := runView{Steps: []stepView{
 		{FindingsJSON: findingsJSON(t, []types.Finding{
