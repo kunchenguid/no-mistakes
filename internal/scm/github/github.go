@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -27,6 +28,11 @@ type Host struct {
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
 	forkOwner    string // fork owner for cross-repository PR heads
+	// assetHTTP and assetUploadPrefix override the unofficial user-attachments
+	// upload transport in tests. Production leaves both nil/empty and uses
+	// http.DefaultClient against uploads.github.com (or uploads.<ghec-host>).
+	assetHTTP         *http.Client
+	assetUploadPrefix string
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is

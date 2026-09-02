@@ -30,6 +30,10 @@ Safest local verification sequence after non-trivial changes:
 - `tea actions runs list`'s array order is not documented as newest-first, and a branch can have more than one run sharing the same head SHA (e.g. a manual UI re-run), so `GetChecks`/`FetchFailedCheckLogs` select the run via `mostRecentRun` (highest numeric run ID) rather than trusting list order or index `[0]`.
 - The comments in `internal/scm/gitea/gitea.go` own the full rationale for each trap.
 
+**GitHub user-attachments (`internal/scm/github/attachments.go`)**
+
+- GitHub.com/GHEC image and video evidence is uploaded at PR render time via the unofficial `POST https://uploads.github.com/user-attachments/assets` endpoint gh 2.99.0 uses. The comments in `attachments.go` own the request shape, token-class allowlist, GHES refusal, and size/type rules. Fail closed: any upload error keeps today's PR rendering. Collection and the orphan evidence branch are unchanged. Setting: `test.evidence.attach_media` (default true), OR `store_in_repo` (both links when both apply). Regressions: `internal/scm/github/attachments_test.go`, `internal/pipeline/steps/pr_attach_media_test.go`.
+
 **OpenCode Adapter Failure Reporting (`internal/agent/opencode*.go`)**
 
 - opencode reports a failed turn on `info.error` with an HTTP 200 and no parts, and serializes every named error as `{"name": ..., "data": {...}}` - the payload fields are nested under `data`, never at the top level. Decoding only the flat shape silently blanks the message, and ignoring non-`StructuredOutputError` variants drops the cause entirely so the run reports the undiagnosable `opencode returned no text output`. `opencodeMessageError` owns the wire shape and `opencodeMessageFailure` owns the surfaced error.

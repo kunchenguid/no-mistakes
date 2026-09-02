@@ -78,6 +78,10 @@ type testingSummaryOptions struct {
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
 	evidence *evidenceLinks
+	// attachments maps a local evidence path to a GitHub user-attachments URL
+	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
+	// then keeps today's local-path or commit-pinned link.
+	attachments map[string]string
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -218,6 +222,10 @@ func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.St
 }
 
 func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider) string {
+	return buildPRTestingSummary(steps, rounds, upstreamURL, ref, repoRoot, evidenceRoot, links, provider, nil)
+}
+
+func buildPRTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider, attachments map[string]string) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.flavor = prBodyFlavorFor(provider)
 	opts.compactArtifacts = true
@@ -226,6 +234,7 @@ func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[str
 	opts.repoRoot = repoRoot
 	opts.evidenceRoot = evidenceRoot
 	opts.evidence = links
+	opts.attachments = attachments
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -584,13 +593,23 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	localPath := localArtifactPath(artifact.Path, opts)
 	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
 	caption := artifact.Content
+	attachment := opts.attachmentURL(artifact)
 
-	if target == "" && localPath == "" && caption == "" && !hasFile {
+	if target == "" && localPath == "" && caption == "" && !hasFile && attachment == "" {
 		return ""
 	}
 
-	// No embeddable text: render a link or local-file reference (images, videos, binaries).
+	// No embeddable text: render a link, attachment, or local-file reference
+	// (images, videos, binaries).
 	if caption == "" && !hasFile {
+		if attachment != "" {
+			var b strings.Builder
+			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label))
+			if target != "" {
+				b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
+			}
+			return b.String()
+		}
 		if target != "" {
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
@@ -605,7 +624,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	var inner strings.Builder
 	if target != "" {
 		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
-	} else if !hasFile && localPath != "" {
+	} else if attachment == "" && !hasFile && localPath != "" {
 		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts.flavor))
 		inner.WriteString("\n")
 	}
@@ -614,7 +633,28 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		inner.WriteString("\n\n")
 	}
 	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
-	return foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
+	folded := foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
+	if attachment == "" {
+		return folded
+	}
+	return renderAttachmentMarkdown(artifact, attachment, label) + "\n" + folded
+}
+
+func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) string {
+	if len(opts.attachments) == 0 || artifact.Path == "" {
+		return ""
+	}
+	if url := strings.TrimSpace(opts.attachments[artifact.Path]); url != "" {
+		return url
+	}
+	return strings.TrimSpace(opts.attachments[filepath.Clean(artifact.Path)])
+}
+
+func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string) string {
+	if isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url) {
+		return url + "\n"
+	}
+	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,

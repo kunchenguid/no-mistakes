@@ -18,7 +18,12 @@ import (
 )
 
 // PRStep creates or updates a pull request via the provider CLI or API.
-type PRStep struct{}
+type PRStep struct {
+	// mediaUploader uploads image/video evidence at PR render time. Nil uses
+	// the GitHub host's user-attachments client. Tests inject a stub so they
+	// never talk to live GitHub.
+	mediaUploader userAssetUploader
+}
 
 type prContent struct {
 	Title string `json:"title"`
@@ -260,7 +265,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 	}
 
 	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
-	testingMD = BuildTestingSummaryForPRWithProvider(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider)
+	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD
 }
 

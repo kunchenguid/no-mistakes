@@ -610,7 +610,14 @@ type TestRaw struct {
 // EvidenceRaw is the YAML representation of test-evidence settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvidenceRaw struct {
-	StoreInRepo *bool   `yaml:"store_in_repo"`
+	StoreInRepo *bool `yaml:"store_in_repo"`
+	// AttachMedia uploads image and video evidence to GitHub user-attachments
+	// when the PR body is rendered. It defaults on so default-config PRs stop
+	// citing local disk paths for screenshots; set false to opt out. The
+	// orphan-branch store (store_in_repo) is independent: when both are on,
+	// the PR body carries both the commit-pinned link and the attachment.
+	// Like store_in_repo, this is pushed-readable.
+	AttachMedia *bool   `yaml:"attach_media"`
 	Dir         *string `yaml:"dir"`
 	// Branch selects the orphan evidence branch. It names a git ref the
 	// daemon pushes to with the maintainer's credentials, so it is honored
@@ -642,10 +649,13 @@ type Test struct {
 // run publishes its evidence artifacts to the orphan Branch of the same
 // repository, under Dir, and links them from the pull request body. Evidence
 // never enters the pushed code branch, so it never reaches the default
-// branch's history. Otherwise evidence stays on local disk under LocalRoot,
-// referenced only by local path.
+// branch's history. Otherwise evidence stays on local disk under LocalRoot.
+// AttachMedia (default true) additionally uploads image and video artifacts to
+// GitHub user-attachments at PR render time so remote reviewers can open them
+// without an evidence branch. Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
+	AttachMedia bool
 	Dir         string
 	Branch      string
 	// LocalRoot overrides the app-root default for on-disk evidence; empty
@@ -961,11 +971,14 @@ intent:
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
-# disk under <NM_HOME>/evidence and referenced by local path. Opt in to
-# store_in_repo to publish them to an orphan evidence branch in the same
-# repository and link them from the PR body. The evidence branch shares no
-# history with your code branches, so artifacts never enter the pushed branch or
-# the default branch.
+# disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
+# video artifacts to GitHub user-attachments when the PR is rendered so remote
+# reviewers can open them; text artifacts stay inlined. Opt in to
+# store_in_repo to also publish the full directory to an orphan evidence branch
+# in the same repository and link it from the PR body. The evidence branch
+# shares no history with your code branches, so artifacts never enter the
+# pushed branch or the default branch. When both are on, the PR body carries
+# both the attachment and the commit-pinned link.
 #
 # no-mistakes reaps its own evidence rather than leaving that to an OS temp
 # directory timer: retention ages run directories out (default 14 days) and
@@ -977,6 +990,7 @@ intent:
 # test:
 #   evidence:
 #     store_in_repo: true
+#     attach_media: true
 #     dir: .no-mistakes/evidence
 #     branch: no-mistakes/evidence
 #     local_root: /var/lib/no-mistakes/evidence
@@ -2230,9 +2244,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// test.evidence.branch names the git ref evidence commits are pushed
 		// to with the maintainer's credentials. It is trusted-only so a pushed
 		// branch cannot aim them at another branch of the repository; the rest
-		// of test.evidence stays pushed-readable because it only picks where
-		// artifacts are collected. The publisher independently refuses any
-		// branch without its marker file, so this is defense in depth.
+		// of test.evidence (store_in_repo, attach_media, dir) stays
+		// pushed-readable because it only picks how artifacts are published.
+		// The publisher independently refuses any branch without its marker
+		// file, and the upload client refuses Actions/App installation tokens,
+		// so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
 		// pr.base_branch controls where the contributor's PR lands, so it is
 		// trusted-only unless the repository explicitly opts into pushed
@@ -2316,13 +2332,15 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
-// testDefaults returns the default test-step settings. Evidence publication is
-// opt-in (off by default); when enabled it lands under .no-mistakes/evidence on
-// the default orphan evidence branch.
+// testDefaults returns the default test-step settings. Orphan-branch evidence
+// publication is opt-in (off by default). GitHub image/video attachments at PR
+// render time are on by default so remote reviewers can open screenshots
+// without that branch.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
 			StoreInRepo: false,
+			AttachMedia: true,
 			Dir:         ".no-mistakes/evidence",
 			Branch:      evidence.DefaultBranch,
 			LocalRoot:   "",
@@ -2342,6 +2360,9 @@ func testDefaults() Test {
 func applyTestOverrides(dst *Test, src *TestRaw) {
 	if src.Evidence.StoreInRepo != nil {
 		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
+	}
+	if src.Evidence.AttachMedia != nil {
+		dst.Evidence.AttachMedia = *src.Evidence.AttachMedia
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)

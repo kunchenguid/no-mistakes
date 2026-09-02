@@ -14,6 +14,9 @@ func TestTestEvidenceDefaults(t *testing.T) {
 	if got.Evidence.StoreInRepo {
 		t.Error("default StoreInRepo should be false (opt-in)")
 	}
+	if !got.Evidence.AttachMedia {
+		t.Error("default AttachMedia should be true so default-config PRs upload screenshots")
+	}
 	if got.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("default Dir = %q, want .no-mistakes/evidence", got.Evidence.Dir)
 	}
@@ -37,6 +40,18 @@ func TestTestEvidenceMerge_GlobalEnable(t *testing.T) {
 	}
 	if cfg.Test.Evidence.Branch != evidence.DefaultBranch {
 		t.Errorf("branch = %q, want default %q", cfg.Test.Evidence.Branch, evidence.DefaultBranch)
+	}
+	if !cfg.Test.Evidence.AttachMedia {
+		t.Error("attach_media should default on when unset")
+	}
+}
+
+func TestTestEvidenceMerge_AttachMediaOptOut(t *testing.T) {
+	disabled := false
+	global := &GlobalConfig{Test: TestRaw{Evidence: EvidenceRaw{AttachMedia: &disabled}}}
+	cfg := Merge(global, &RepoConfig{})
+	if cfg.Test.Evidence.AttachMedia {
+		t.Error("explicit attach_media: false should opt out")
 	}
 }
 
