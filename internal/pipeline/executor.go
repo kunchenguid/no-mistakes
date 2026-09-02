@@ -1403,6 +1403,10 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 		runStatus = types.RunCancelled
 	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
+	if !verified {
+		e.preserveRecordedTerminalHead(run)
+	}
+	e.preserveTerminalHeadInGate(run, repo)
 	var dbErr error
 	if verified {
 		dbErr = e.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, errMsg, runStatus, verifiedHead)
@@ -1477,6 +1481,53 @@ func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
 		return "", false
 	}
 	return observed, true
+}
+
+func (e *Executor) preserveRecordedTerminalHead(run *db.Run) bool {
+	if run == nil || strings.TrimSpace(e.workDir) == "" || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	published := ""
+	if run.LastPushedSHA != nil {
+		published = *run.LastPushedSHA
+	}
+	if published == "" && run.SubmittedHeadSHA != nil {
+		published = *run.SubmittedHeadSHA
+	}
+	if run.HeadSHA == published {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := git.Run(ctx, e.workDir, "cat-file", "-e", run.HeadSHA+"^{commit}"); err != nil {
+		return false
+	}
+	if err := custody.PreserveRecoveryHead(ctx, e.workDir, run.ID, run.HeadSHA); err != nil {
+		return false
+	}
+	return true
+}
+
+func (e *Executor) preserveTerminalHeadInGate(run *db.Run, repo *db.Repo) bool {
+	if e == nil || e.paths == nil || run == nil || repo == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	published := ""
+	if run.LastPushedSHA != nil {
+		published = *run.LastPushedSHA
+	}
+	if published == "" && run.SubmittedHeadSHA != nil {
+		published = *run.SubmittedHeadSHA
+	}
+	if run.HeadSHA == published {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := git.Run(ctx, e.workDir, "cat-file", "-e", run.HeadSHA+"^{commit}"); err != nil {
+		return false
+	}
+	return custody.PreserveRecoveryHead(ctx, e.paths.RepoDir(repo.ID), run.ID, run.HeadSHA) == nil
 }
 
 func (e *Executor) preserveUnpublishedTerminalHead(ctx context.Context, run *db.Run, head string) bool {

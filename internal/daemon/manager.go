@@ -159,6 +159,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if !samePath(resolveGitPath(workDir, commonDir), gateDir) {
 		return nil, fmt.Errorf("worktree does not belong to its gate repository")
 	}
+	if run.CommitSigningPolicy != nil {
+		if err := git.SetWorktreeCommitSigningPolicy(ctx, workDir, strings.TrimSpace(*run.CommitSigningPolicy)); err != nil {
+			return nil, err
+		}
+	}
 
 	execSteps := m.steps()
 	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
@@ -788,7 +793,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSourceAndPolicy(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, repo.WorkingPath)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
@@ -962,11 +967,23 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
+	commitPolicy, err := git.LocalCommitSigningPolicy(ctx, repo.WorkingPath)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("capture commit signing policy: %s", err))
+		trackStartFailure("capture_commit_signing_policy")
+		return "", fmt.Errorf("capture commit signing policy: %w", err)
+	}
 	if err := git.CopyLocalCommitSettings(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git commit settings: %s", err))
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git commit settings: %w", err)
 	}
+	if err := m.db.SetRunCommitSigningPolicy(run.ID, commitPolicy); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record commit signing policy: %s", err))
+		trackStartFailure("record_commit_signing_policy")
+		return "", fmt.Errorf("record commit signing policy: %w", err)
+	}
+	run.CommitSigningPolicy = &commitPolicy
 	// Fetch the trusted default branch and resolve it to an exact commit SHA
 	// before any read. Reading the trusted config at this pinned SHA (rather
 	// than the origin/<defaultBranch> remote-tracking ref) is what makes a
