@@ -1366,6 +1366,11 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		LastActivity:   s.LastActivity,
 		AgentPID:       s.AgentPID,
 	}
+	if s.StepName == types.StepDocument {
+		if combined, err := d.HasAgentInvocationPurpose(s.RunID, string(s.StepName), "housekeeping"); err == nil && combined {
+			info.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
+		}
+	}
 	if s.OverrideReason != nil {
 		info.OverrideReason = *s.OverrideReason
 	}

@@ -284,18 +284,26 @@ type RunInfo struct {
 	UpdatedAt int64 `json:"updated_at"`
 }
 
+// WorkScopeDocumentLintHousekeeping identifies the one agent invocation that
+// performs both duties while its wall time is stored on the document step.
+const WorkScopeDocumentLintHousekeeping = "document+lint housekeeping"
+
 // StepResultInfo is the IPC representation of a step result.
 type StepResultInfo struct {
-	ID               string           `json:"id"`
-	RunID            string           `json:"run_id"`
-	StepName         types.StepName   `json:"step_name"`
-	StepOrder        int              `json:"step_order"`
-	Status           types.StepStatus `json:"status"`
-	ExitCode         *int             `json:"exit_code,omitempty"`
-	DurationMS       *int64           `json:"duration_ms,omitempty"`
-	FindingsJSON     *string          `json:"findings_json,omitempty"`
-	ReportedFindings int              `json:"reported_findings,omitempty"`
-	FixedFindings    int              `json:"fixed_findings,omitempty"`
+	ID         string           `json:"id"`
+	RunID      string           `json:"run_id"`
+	StepName   types.StepName   `json:"step_name"`
+	StepOrder  int              `json:"step_order"`
+	Status     types.StepStatus `json:"status"`
+	ExitCode   *int             `json:"exit_code,omitempty"`
+	DurationMS *int64           `json:"duration_ms,omitempty"`
+	// WorkScope names shared work whose wall time is recorded on this logical
+	// step. For example, the document step can own one combined document+lint
+	// housekeeping invocation while lint only records the cached handoff.
+	WorkScope        string  `json:"work_scope,omitempty"`
+	FindingsJSON     *string `json:"findings_json,omitempty"`
+	ReportedFindings int     `json:"reported_findings,omitempty"`
+	FixedFindings    int     `json:"fixed_findings,omitempty"`
 	// FixSummaries holds one entry per fix round the pipeline ran for this
 	// step, in round order: the agent's one-line fix summary, or "" when the
 	// round recorded none. Agent surfaces use it to report applied fixes.
@@ -352,6 +360,7 @@ type Event struct {
 	ReportedFindings *int            `json:"reported_findings,omitempty"`
 	FixedFindings    *int            `json:"fixed_findings,omitempty"`
 	DurationMS       *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
+	WorkScope        string          `json:"work_scope,omitempty"`  // shared work attributed to this step
 	PRURL            *string         `json:"pr_url,omitempty"`      // PR URL for run_updated/run_completed events
 	// StateRev is the daemon-assigned monotonic revision of the run state
 	// this event reflects, or zero for activity. A consumer applies a state

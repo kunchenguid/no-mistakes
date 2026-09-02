@@ -156,6 +156,25 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 	return &inv, nil
 }
 
+// HasAgentInvocationPurpose reports whether a step recorded an invocation with
+// the given purpose. Presentation surfaces use this persisted evidence to
+// identify work shared across logical pipeline steps without changing the
+// pipeline's execution model.
+func (d *DB) HasAgentInvocationPurpose(runID, stepName, purpose string) (bool, error) {
+	var found bool
+	err := d.sql.QueryRow(
+		`SELECT EXISTS(
+			SELECT 1 FROM agent_invocations
+			WHERE run_id = ? AND step_name = ? AND purpose = ?
+		)`,
+		runID, stepName, purpose,
+	).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("check agent invocation purpose: %w", err)
+	}
+	return found, nil
+}
+
 // GetAgentInvocationsByRun returns a run's invocations in execution order.
 func (d *DB) GetAgentInvocationsByRun(runID string) ([]AgentInvocation, error) {
 	rows, err := d.sql.Query(

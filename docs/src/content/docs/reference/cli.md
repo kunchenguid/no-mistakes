@@ -187,6 +187,7 @@ no-mistakes axi status --run <id>
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` or `other_branch_run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
 The field disappears after that run's gate is answered, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible and its log commands retain `--run <id>`.
+When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
@@ -421,6 +422,7 @@ Displays total changes, rescued changes, rescue rate, reported and fixed mistake
 
 Use `--agents` for local, per-purpose agent performance aggregates: duration and the subprocess-vs-model time split, session mode, errors, the token totals (input, output, cache-read, cache-creation, fresh input, reasoning), and the model round-trip and tool-category activity histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
 Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the raw counters (cumulative across a resumed session for codex; per-invocation for pi), tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
+The combined Document/Lint invocation is labeled `housekeeping (document+lint)` and attributed to `document+lint`, making its shared duration and tokens explicit without adding a second agent call.
 Nullable fields an adapter did not report render as `-` (unknown), which is distinct from a recorded `0`; the legacy raw input, output, and cache-read counters remain numeric.
 
 ```sh

@@ -80,7 +80,7 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	if err != nil {
 		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, env.d)
 	annotateRunView(env, &rv)
 	var fields []toon.Field
 	// A run reached by an explicit --run may belong to another branch. Say so
@@ -289,7 +289,7 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 	if err != nil {
 		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
 	}
-	fingerprint := runStateFingerprint(runViewFromDB(run, steps)) + "|log:" + step
+	fingerprint := runStateFingerprint(runViewFromDB(run, steps, env.d)) + "|log:" + step
 
 	path := filepath.Join(env.p.RunLogDir(run.ID), step+".log")
 	data, err := os.ReadFile(path)

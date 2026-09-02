@@ -39,7 +39,7 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusAwaitingApproval, FindingsJSON: strptr(`{"findings":[],"summary":"x"}`)},
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, nil)
 	gate, ok := rv.awaitingStep()
 	if !ok {
 		t.Fatal("expected an awaiting step")
@@ -59,7 +59,7 @@ func TestRunViewFromDBCarriesCIOverrideReason(t *testing.T) {
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: strptr("live checks still failing: required-check")},
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, nil)
 	if rv.CIOverrideReason != "live checks still failing: required-check" {
 		t.Errorf("CIOverrideReason = %q, want the step's override reason", rv.CIOverrideReason)
 	}
@@ -127,6 +127,31 @@ func TestWriteRunObjectShape(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("run object missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunObjectRendersCombinedHousekeepingAttribution(t *testing.T) {
+	rv := runView{
+		ID:      "run-1",
+		Branch:  "feature/x",
+		Status:  string(types.RunRunning),
+		HeadSHA: "abcdef1234567890",
+		Steps: []stepView{{
+			Name:       string(types.StepDocument),
+			Status:     string(types.StepStatusCompleted),
+			DurationMS: 173_000,
+			WorkScope:  ipc.WorkScopeDocumentLintHousekeeping,
+		}},
+	}
+
+	out := axiDoc(runObjectField(rv))
+	for _, want := range []string{
+		"shared_work[1]{attributed_to,scope,duration_ms}:\n",
+		"document,document+lint housekeeping,173000\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("combined housekeeping attribution missing %q in:\n%s", want, out)
 		}
 	}
 }
@@ -250,7 +275,7 @@ func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load steps: %v", err)
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, database)
 	reviewLimit := 9
 	annotateRunView(&axiEnv{
 		d: database,

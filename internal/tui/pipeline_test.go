@@ -50,6 +50,21 @@ func TestStepLabel(t *testing.T) {
 	}
 }
 
+func TestRenderPipelineView_LabelsCombinedHousekeepingDuration(t *testing.T) {
+	run := testRun()
+	run.Steps = []ipc.StepResultInfo{{
+		StepName:   types.StepDocument,
+		Status:     types.StepStatusCompleted,
+		DurationMS: ptr(int64(173_000)),
+		WorkScope:  ipc.WorkScopeDocumentLintHousekeeping,
+	}}
+
+	out := stripANSI(renderPipelineView(run, run.Steps, 80, 0, 40))
+	if !strings.Contains(out, "Document + Lint housekeeping  173.0s") {
+		t.Fatalf("combined housekeeping duration was not explicit:\n%s", out)
+	}
+}
+
 func TestRenderPipelineView_NilRun(t *testing.T) {
 	out := renderPipelineView(nil, nil, 80, 0, 40)
 	if out != "No active run." {

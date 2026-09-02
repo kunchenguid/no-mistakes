@@ -151,6 +151,9 @@ func renderPipelineView(run *ipc.RunInfo, steps []ipc.StepResultInfo, width int,
 		icon := stepStatusIndicator(step.Status, spinnerFrame)
 		style := stepStatusStyle(step.Status)
 		label := stepLabel(step.StepName)
+		if step.WorkScope == ipc.WorkScopeDocumentLintHousekeeping {
+			label = "Document + Lint housekeeping"
+		}
 
 		line := style.Render(icon) + " " + label
 

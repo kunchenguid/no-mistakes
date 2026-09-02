@@ -1617,6 +1617,15 @@ func (e *Executor) emitStepEventWithFindingsAndError(eventType ipc.EventType, ru
 		Status:     &status,
 		DurationMS: durationMS,
 	}
+	// The combined housekeeping invocation is recorded under Document because
+	// that is where it executes. Carry its broader scope on completion so an
+	// attached TUI does not temporarily present the shared wall time as
+	// documentation-only work while waiting for another snapshot.
+	if stepName == types.StepDocument {
+		if combined, err := e.db.HasAgentInvocationPurpose(run.ID, string(stepName), "housekeeping"); err == nil && combined {
+			event.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
+		}
+	}
 	stats := e.findingStatsForStep(run.ID, stepName)
 	if stats.ReportedFindings > 0 || stats.FixedFindings > 0 {
 		reported := stats.ReportedFindings
