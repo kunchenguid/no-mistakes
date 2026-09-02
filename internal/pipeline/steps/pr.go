@@ -96,6 +96,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		if err := assertDiscoveredPRMatchesRun(sctx, existing); err != nil {
+			return nil, err
+		}
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
@@ -142,6 +145,9 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	if actual == requested {
 		return nil
 	}
+	if err := assertDiscoveredPRMatchesRun(sctx, existing); err != nil {
+		return err
+	}
 	retargeter, ok := host.(scm.PRBaseRetargeter)
 	if !ok {
 		if actual == "" {
@@ -159,6 +165,44 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 	}
 	existing.BaseBranch = requested
 	return nil
+}
+
+// assertDiscoveredPRMatchesRun fails closed when the run already owns a PR
+// and the branch-only FindPR hit is a different review object. A run with
+// no persisted identity is first-attach: lookup stays branch-only so a
+// later pr.base_branch change updates the open PR instead of duplicating it.
+func assertDiscoveredPRMatchesRun(sctx *pipeline.StepContext, existing *scm.PR) error {
+	owned := runPRURL(sctx)
+	if owned == "" {
+		return nil
+	}
+	if samePRIdentity(owned, existing) {
+		return nil
+	}
+	return fmt.Errorf("discovered pull request %s does not match this run's persisted pull request %s", describePR(existing), owned)
+}
+
+func runPRURL(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.Run == nil || sctx.Run.PRURL == nil {
+		return ""
+	}
+	return strings.TrimSpace(*sctx.Run.PRURL)
+}
+
+func samePRIdentity(ownedURL string, discovered *scm.PR) bool {
+	ownedURL = strings.TrimRight(strings.TrimSpace(ownedURL), "/")
+	if ownedURL == "" || discovered == nil {
+		return false
+	}
+	discoveredURL := strings.TrimRight(strings.TrimSpace(discovered.URL), "/")
+	if discoveredURL != "" {
+		return strings.EqualFold(ownedURL, discoveredURL)
+	}
+	ownedNum, err := scm.ExtractPRNumber(ownedURL)
+	if err != nil || ownedNum == "" {
+		return false
+	}
+	return discovered.Number != "" && discovered.Number == ownedNum
 }
 
 func describePR(pr *scm.PR) string {

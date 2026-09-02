@@ -163,6 +163,78 @@ func TestPRStep_RepoConfigChangeDoesNotRetargetExistingPR(t *testing.T) {
 	}
 }
 
+func TestRetargetExistingPRIfNeeded_MismatchedIdentityFailsClosed(t *testing.T) {
+	t.Parallel()
+	owned := "https://github.com/test/repo/pull/42"
+	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
+	host := &recordingRetargetHost{}
+	discovered := &scm.PR{
+		Number:     "99",
+		URL:        "https://github.com/test/repo/pull/99",
+		BaseBranch: "develop",
+	}
+
+	err := retargetExistingPRIfNeeded(sctx, host, discovered, "epic/feature")
+	if err == nil {
+		t.Fatal("expected error when discovered PR is not the run's persisted PR")
+	}
+	if host.calls != 0 {
+		t.Fatalf("retargeted %s to %s; a mismatched pull request must not be moved", describePR(host.pr), host.base)
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("error = %v, want identity mismatch", err)
+	}
+}
+
+func TestRetargetExistingPRIfNeeded_MatchingIdentityRetargets(t *testing.T) {
+	t.Parallel()
+	owned := "https://github.com/test/repo/pull/42"
+	sctx := &pipeline.StepContext{Run: &db.Run{PRURL: &owned}, Log: func(string) {}}
+	host := &recordingRetargetHost{}
+	existing := &scm.PR{
+		Number:     "42",
+		URL:        owned,
+		BaseBranch: "develop",
+	}
+
+	if err := retargetExistingPRIfNeeded(sctx, host, existing, "epic/feature"); err != nil {
+		t.Fatal(err)
+	}
+	if host.calls != 1 || host.base != "epic/feature" {
+		t.Fatalf("retargets = %d base %q, want 1 call to epic/feature", host.calls, host.base)
+	}
+}
+
+func TestPRStep_RefusesToRetargetPRThatDoesNotMatchRunIdentity(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/99", "develop")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	runBase := "epic/feature"
+	sctx.Run.PRBaseBranch = &runBase
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected error when FindPR returns a different PR than the run owns")
+	}
+
+	logData, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "--base epic/feature") {
+		t.Fatalf("mismatched PR must not be retargeted, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "pr create") {
+		t.Fatalf("identity mismatch must fail closed, not open a duplicate, got:\n%s", ghLog)
+	}
+}
+
 func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testing.T) {
 	t.Parallel()
 	sctx := &pipeline.StepContext{}
@@ -191,6 +263,22 @@ func TestRetargetExistingPRIfNeeded_ProviderWithoutRetargetFailsClosed(t *testin
 			}
 		})
 	}
+}
+
+// recordingRetargetHost records SetPRBaseBranch calls so identity-mismatch
+// tests can prove the discovered PR was not moved.
+type recordingRetargetHost struct {
+	scm.Host
+	calls int
+	pr    *scm.PR
+	base  string
+}
+
+func (h *recordingRetargetHost) SetPRBaseBranch(_ context.Context, pr *scm.PR, base string) error {
+	h.calls++
+	h.pr = pr
+	h.base = base
+	return nil
 }
 
 // nonRetargetHost is a scm.Host that does not implement PRBaseRetargeter, so
