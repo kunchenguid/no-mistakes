@@ -325,6 +325,36 @@ func TestPRStep_OversizedImagePreservesCommittedPath(t *testing.T) {
 	}
 }
 
+func TestPRStep_UnsupportedImagePreservesCommittedPath(t *testing.T) {
+	t.Parallel()
+	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
+	sctx.Agent = prDraftAgent()
+	image := writeEvidenceFile(t, testEvidenceDir(sctx), "checkout.bmp", []byte("bitmap"))
+	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(image), "")
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	uploader := &stubMediaUploader{t: t}
+
+	content, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature/add-login", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
+	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.bmp"
+	if !strings.Contains(content.Body, wantLink) {
+		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", content.Body)
+	}
+	if strings.Contains(content.Body, "user-attachments") {
+		t.Fatalf("unsupported image must not embed an attachment, got:\n%s", content.Body)
+	}
+	if len(uploader.calls) != 0 {
+		t.Fatalf("unsupported image must not upload, calls=%v", uploader.calls)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "not a supported file type") {
+		t.Fatalf("expected unsupported-type skip reason, got %q", logs)
+	}
+}
+
 func TestPRStep_VideoAttachmentIsBareURL(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
