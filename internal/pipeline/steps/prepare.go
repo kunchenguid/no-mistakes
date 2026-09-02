@@ -211,7 +211,7 @@ func preparationSnapshotParent(ctx context.Context, workDir, gateDir string) (st
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return "", fmt.Errorf("validate preparation gate directory: %w", err)
 	}
-	if rel, err := filepath.Rel(workDir, gateDir); err != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+	if preparationGateInsideWorktree(workDir, gateDir) {
 		return "", fmt.Errorf("preparation gate directory %q must be outside worktree %q", gateDir, workDir)
 	}
 	parent := filepath.Join(gateDir, "no-mistakes-preparation")
@@ -219,6 +219,11 @@ func preparationSnapshotParent(ctx context.Context, workDir, gateDir string) (st
 		return "", fmt.Errorf("create preparation snapshot directory: %w", err)
 	}
 	return parent, nil
+}
+
+func preparationGateInsideWorktree(workDir, gateDir string) bool {
+	rel, err := filepath.Rel(workDir, gateDir)
+	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))
 }
 
 func preparationSubmodules(ctx context.Context, workDir string) ([]preparationSubmodule, error) {
@@ -357,15 +362,8 @@ func (s *preparationSnapshot) captureRepository(ctx context.Context, workDir, na
 		if err := copyPath(filepath.Join(workDir, path), filepath.Join(untrackedDir, path)); err != nil {
 			return fmt.Errorf("snapshot untracked %s: %w", path, err)
 		}
-		for directory := filepath.Dir(path); directory != "."; directory = filepath.Dir(directory) {
-			if _, ok := directories[directory]; ok {
-				continue
-			}
-			info, err := os.Stat(filepath.Join(workDir, directory))
-			if err != nil {
-				return fmt.Errorf("read untracked directory %s: %w", directory, err)
-			}
-			directories[directory] = info.Mode().Perm()
+		if err := captureUntrackedDirectoryAncestors(workDir, filepath.Dir(path), directories); err != nil {
+			return err
 		}
 	}
 	if err := captureEmptyUntrackedDirectories(ctx, workDir, directories); err != nil {
@@ -408,14 +406,24 @@ func captureEmptyUntrackedDirectories(ctx context.Context, workDir string, direc
 			return err
 		}
 		if len(entries) == 0 {
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			directories[rel] = info.Mode().Perm()
+			return captureUntrackedDirectoryAncestors(workDir, rel, directories)
 		}
 		return nil
 	})
+}
+
+func captureUntrackedDirectoryAncestors(workDir, path string, directories map[string]os.FileMode) error {
+	for directory := path; directory != "."; directory = filepath.Dir(directory) {
+		if _, ok := directories[directory]; ok {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(workDir, directory))
+		if err != nil {
+			return fmt.Errorf("read untracked directory %s: %w", directory, err)
+		}
+		directories[directory] = info.Mode().Perm()
+	}
+	return nil
 }
 
 func preparationPathIgnored(ctx context.Context, workDir, path string) (bool, error) {

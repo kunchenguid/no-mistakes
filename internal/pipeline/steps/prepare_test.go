@@ -440,13 +440,21 @@ func TestEnsurePrepared_IgnoresWorktreeTempDirectory(t *testing.T) {
 
 func TestEnsurePrepared_RestoresEmptyUntrackedDirectories(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	empty := filepath.Join(dir, "pending", "nested", "empty")
+	pending := filepath.Join(dir, "pending")
+	nested := filepath.Join(pending, "nested")
+	empty := filepath.Join(nested, "empty")
 	if err := os.MkdirAll(empty, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
-		if err := os.Chmod(empty, 0o750); err != nil {
-			t.Fatal(err)
+		for path, mode := range map[string]os.FileMode{
+			pending: 0o711,
+			nested:  0o700,
+			empty:   0o750,
+		} {
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{Prepare: preparationCommand()})
@@ -454,12 +462,18 @@ func TestEnsurePrepared_RestoresEmptyUntrackedDirectories(t *testing.T) {
 	if err := ensurePrepared(sctx, types.StepTest); err != nil {
 		t.Fatalf("prepare with empty untracked directory: %v", err)
 	}
-	info, err := os.Stat(empty)
-	if err != nil {
-		t.Fatalf("empty untracked directory was not restored: %v", err)
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o750 {
-		t.Fatalf("empty directory mode = %#o, want %#o", info.Mode().Perm(), 0o750)
+	for path, mode := range map[string]os.FileMode{
+		pending: 0o711,
+		nested:  0o700,
+		empty:   0o750,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("untracked directory %q was not restored: %v", path, err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != mode {
+			t.Fatalf("untracked directory %q mode = %#o, want %#o", path, info.Mode().Perm(), mode)
+		}
 	}
 }
 
@@ -549,6 +563,15 @@ func TestPreparationSnapshot_RejectsGateInsideWorktree(t *testing.T) {
 	gitCmd(t, dir, "init", "--bare", "gate")
 	if _, err := snapshotPreparationState(sctx.Ctx, dir, gateDir); err == nil {
 		t.Fatal("snapshot accepted a gate directory inside the worktree")
+	}
+}
+
+func TestPreparationGateInsideWorktree_AcceptsDifferentWindowsVolumes(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("filepath volumes are Windows-specific")
+	}
+	if preparationGateInsideWorktree(`C:\worktree`, `D:\gate`) {
+		t.Fatal("gate directory on another volume was treated as inside the worktree")
 	}
 }
 
