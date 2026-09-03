@@ -94,7 +94,7 @@ func newAxiRunCmd() *cobra.Command {
 			"--base-branch targets an integration branch other than the repository default\n" +
 			"for this run only (for example an epic branch). It overrides pr.base_branch\n" +
 			"in repo config and is persisted on the run for rebase, PR, and CI steps.\n\n" +
-			"--closes <issue> links the PR to an issue (for example, --closes 42 or\n" +
+			"--closes <issue> links a GitHub PR to an issue (for example, --closes 42 or\n" +
 			"--closes owner/repo#42). Repeat it to close multiple issues. The keyword can be customized\n" +
 			"via pr.issue_link_template in .no-mistakes.yaml.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
@@ -126,7 +126,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
-	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue to close when the PR merges; repeat for multiple issues (42 or owner/repo#42)")
+	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "GitHub issue to close when the PR merges; repeat for multiple issues (42 or owner/repo#42)")
 	return cmd
 }
 

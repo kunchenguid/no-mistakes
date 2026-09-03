@@ -529,6 +529,17 @@ func TestVerifyClosingIssuesDoesNotAcceptReferencePrefix(t *testing.T) {
 	}
 }
 
+func TestVerifyClosingIssuesRejectsTemplateThatOmitsRequestedTarget(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		ClosingIssueRefs: []string{"99"},
+		Config:           &config.Config{PR: config.PR{IssueLinkTemplate: "Closes #42"}},
+	}
+	err := verifyClosingIssuesInBody("## Issues\n\nCloses #42", sctx)
+	if err == nil || !strings.Contains(err.Error(), "#99") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing #99", err)
+	}
+}
+
 type closingBodyReader struct {
 	scm.Host
 	body string
@@ -705,6 +716,26 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 	if forgeCtx == nil || forgeCtx.ConfigDir != profileDir {
 		t.Fatalf("fork PR used forge context %#v, want %s", forgeCtx, profileDir)
+	}
+}
+
+func TestPRStep_ClosesFailsClearlyOutsideGitHub(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "--closes currently supports GitHub repositories only") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if api.createCalls != 0 || api.updateCalls != 0 {
+		t.Fatalf("PR mutation calls = create %d, update %d; want none", api.createCalls, api.updateCalls)
 	}
 }
 

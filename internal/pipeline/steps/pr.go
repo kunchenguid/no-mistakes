@@ -88,22 +88,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
-	// Claim the closing issue references from the DB once. The claim both reads the value
-	// and closes the window in which a concurrent `axi run --closes` reattach
-	// could still change it: any such update now fails closed with
-	// db.ErrClosingIssueRefsLocked instead of landing after this sample and leaving
-	// the composed body without the footer the caller was told it would get.
-	closingIssues, err := sctx.DB.ClaimClosingIssueRefsForPRBody(sctx.Run.ID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve closing issue references: %w", err)
-	}
-	sctx.ClosingIssueRefs = closingIssues
-	if len(closingIssues) > 0 {
-		if _, ok := host.(scm.PRContentReader); !ok {
-			return nil, fmt.Errorf("verify closing issues: provider cannot read the current pull request body")
-		}
-	}
-
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {
@@ -121,8 +105,25 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta, then
-	// compose only after existing author-supplied closing lines are captured.
+	// claim the closing issue references immediately before composition. Keeping
+	// PR lookup and existing-body capture outside the claim window lets a reattach
+	// update the structured metadata until composition actually starts. Once
+	// claimed, a concurrent update fails closed instead of landing after this
+	// sample and leaving the composed body without an accepted reference.
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	closingIssues, err := sctx.DB.ClaimClosingIssueRefsForPRBody(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve closing issue references: %w", err)
+	}
+	sctx.ClosingIssueRefs = closingIssues
+	if len(closingIssues) > 0 {
+		if provider != scm.ProviderGitHub {
+			return nil, fmt.Errorf("render closing issues: --closes currently supports GitHub repositories only")
+		}
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil, fmt.Errorf("verify closing issues: GitHub provider cannot read the current pull request body")
+		}
+	}
 	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
@@ -234,7 +235,9 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 			continue
 		}
 		line := renderIssueLinkForRef(sctx, ref)
-		if line == "" || !containsExactLineBlock(body, line) {
+		renderedTargets := closingTargets([]string{line})
+		_, rendersRequestedTarget := renderedTargets[strings.ToLower(ref)]
+		if line == "" || !rendersRequestedTarget || !containsExactLineBlock(body, line) {
 			return fmt.Errorf("verify closing issues: pull request body is missing %s", closingissues.Target(ref))
 		}
 	}

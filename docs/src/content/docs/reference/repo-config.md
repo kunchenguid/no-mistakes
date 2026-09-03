@@ -224,7 +224,7 @@ Choose how each explicit closing issue is rendered in the stable `## Issues` sec
 The footer exists so a tool-authored PR can carry the same tracker link a human contributor would type, for repositories whose CI requires one.
 It is supplementary PR-body text only: it never changes what any gate means or how a PR is judged.
 
-Closing references come from repeatable `no-mistakes axi run --closes <issue>` flags. Each value may be a same-repository number (`--closes 95`) or a cross-repository reference (`--closes owner/repository#95`). Repeated references are deduplicated and rendered in deterministic order. The flag is optional; without it no closing reference is inferred from intent, commits, branches, parent issues, or other prose.
+Closing references come from repeatable `no-mistakes axi run --closes <issue>` flags on GitHub repositories. Each value may be a same-repository number (`--closes 95`) or a cross-repository reference (`--closes owner/repository#95`). Repeated references are deduplicated and rendered in deterministic order. The flag is optional; without it no closing reference is inferred from intent, commits, branches, parent issues, or other prose.
 
 The template is rendered once per issue and receives these fields:
 
@@ -247,7 +247,7 @@ Repositories differ on which keyword they want — `Closes` auto-closes the issu
 
 The Issues section is appended last and budgeted against the forge's PR body size cap. If it cannot fit, it is omitted rather than truncating the body around it; when `--closes` supplied a required reference, the subsequent live-body verification fails the PR step closed. Existing standalone `Closes`, `Fixes`, and `Resolves` lines are preserved when a readable PR body is replaced, including author-supplied cross-repository references.
 
-The references are claimed once when the PR body is composed. A `--closes` passed while reattaching after that point is refused explicitly because it could no longer appear in that PR. Before the PR step completes, no-mistakes reads the live body and verifies every requested reference; an unverifiable or missing reference fails the step closed.
+Immediately before PR-body composition starts, the references are claimed once. A `--closes` passed while reattaching after that point is refused explicitly because it could no longer appear in that PR; updates arriving during PR lookup and existing-body capture are still included. Before the PR step completes, no-mistakes reads the live body and verifies every requested reference; an unverifiable or missing reference fails the step closed. GitHub is currently the only supported provider for `--closes`, because the feature requires a readable live PR body for preservation and verification; using it with another provider fails before PR mutation.
 
 GitHub applies closing keywords only when the PR is merged into the repository's default branch and the referenced issue is eligible for keyword closure. A PR merged into another branch does not automatically close the issue.
 
