@@ -1,8 +1,9 @@
 # Simplification review evaluation fixtures
 
 These are development-only qualitative fixtures for the Review prompt's
-dedicated Simplification section. They are not run in CI and do not claim
-deterministic coverage. Present each unified diff to the existing Review pass
+dedicated Simplification section. Their qualitative agent evaluation is not run
+in CI and does not claim deterministic coverage; regular tests only verify that
+the unified diffs remain applicable. Present each diff to the existing Review pass
 in a temporary repository, together with the intent below as `--intent`, and
 compare the returned findings with the expectation.
 
