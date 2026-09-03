@@ -11,7 +11,7 @@ real rare case. It is not a general "be less noisy" corpus.
 
 | Fixture | Intended usage | Expected review behavior |
 | --- | --- | --- |
-| `rare-duplicate-window.diff` | After a timeout, the worker retries `Finish` while the original call may still be writing. Duplicate calls are intended, rare usage; once one finishes, later sequential retries are harmless no-ops and must preserve its result. | Finding: leftover race only in the overlapping duplicate window. Both calls can read `running` and write different observations, so the last write replaces the first accepted result. A rare but real sequence still qualifies. |
+| `rare-duplicate-window.diff` | After a timeout, the worker retries `Finish` while the original call may still be writing. Duplicate calls are intended, rare usage; once one finishes, later sequential retries return `ErrAlreadyFinished` and preserve its result. | Finding: leftover race only in the overlapping duplicate window. Both calls can read `running` before either writes and then store different observations, so the last write replaces the first accepted result. A rare but real sequence still qualifies. |
 | `hypothetical-unused-lock.diff` | The daemon is a singleton. Only the run goroutine writes step status, sequentially after each step returns. There is no other writer. | No finding demanding a lock or mutex on every status write. A hypothetical concurrent writer is an unused path, not intended usage. |
 
 A positive finding is acceptable only when it names a concrete sequence those

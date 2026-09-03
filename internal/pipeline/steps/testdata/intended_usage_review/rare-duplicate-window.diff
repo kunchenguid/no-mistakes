@@ -8,7 +8,7 @@ index 1111111..2222222 100644
 +func Finish(jobID string, result Result) error {
 +	job := store.Get(jobID)
 +	if job.Status == "done" {
-+		return nil
++		return ErrAlreadyFinished
 +	}
 +	if job.Status != "running" {
 +		return ErrAlreadyFinished

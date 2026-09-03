@@ -498,15 +498,19 @@ func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
 				t.Fatal(err)
 			}
 			gitCmd(t, dir, "init", "-q")
-			// Keep the synthetic LF baseline independent of the runner's global
-			// checkout conversion policy.
+			// Keep both inputs LF-only regardless of the runner's checkout
+			// conversion policy. Git parses context lines from the patch as-is.
 			gitCmd(t, dir, "config", "core.autocrlf", "false")
-
-			fixture, err := filepath.Abs(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
+			fixture, err := os.ReadFile(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			gitCmd(t, dir, "apply", "--check", fixture)
+			fixturePath := filepath.Join(dir, "fixture.diff")
+			fixture = []byte(strings.ReplaceAll(string(fixture), "\r\n", "\n"))
+			if err := os.WriteFile(fixturePath, fixture, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "apply", "--check", fixturePath)
 		})
 	}
 }
