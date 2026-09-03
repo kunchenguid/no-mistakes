@@ -67,6 +67,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	ctx := sctx.Ctx
+	provider := resolvedProvider(sctx)
+	latestRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve closing issue references before PR handling: %w", err)
+	}
+	if len(latestRun.ClosingIssueRefs) > 0 && provider != scm.ProviderGitHub {
+		return nil, fmt.Errorf("render closing issues: --closes currently supports GitHub repositories only")
+	}
 
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {
@@ -77,7 +85,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
-	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
@@ -162,7 +169,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	if created == nil || strings.TrimSpace(created.URL) == "" {
+	if created == nil || strings.TrimSpace(created.URL) == "" && strings.TrimSpace(created.Number) == "" {
+		if len(sctx.ClosingIssueRefs) > 0 {
+			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
+		}
 		return &pipeline.StepOutcome{}, nil
 	}
 	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
@@ -192,8 +202,20 @@ func readExistingClosingLines(ctx context.Context, host scm.Host, pr *scm.PR) ([
 func extractClosingKeywordLines(body string) []string {
 	seen := map[string]struct{}{}
 	var lines []string
-	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		line = strings.TrimSpace(line)
+	fence := ""
+	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if marker := markdownFenceMarker(line); marker != "" {
+			if fence == "" {
+				fence = marker
+			} else if marker == fence {
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+			continue
+		}
 		if !closingKeywordLinePattern.MatchString(line) {
 			continue
 		}
@@ -207,8 +229,19 @@ func extractClosingKeywordLines(body string) []string {
 	return lines
 }
 
+func markdownFenceMarker(line string) string {
+	switch {
+	case strings.HasPrefix(line, "```"):
+		return "```"
+	case strings.HasPrefix(line, "~~~"):
+		return "~~~"
+	default:
+		return ""
+	}
+}
+
 func verifyClosingIssues(ctx context.Context, host scm.Host, pr *scm.PR, sctx *pipeline.StepContext) error {
-	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 {
+	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 && len(sctx.PreservedClosingLines) == 0 {
 		return nil
 	}
 	reader, ok := host.(scm.PRContentReader)
@@ -226,7 +259,16 @@ func verifyClosingIssues(ctx context.Context, host scm.Host, pr *scm.PR, sctx *p
 }
 
 func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
-	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 {
+	if sctx == nil {
+		return nil
+	}
+	for _, line := range sctx.PreservedClosingLines {
+		line = neutralizeAttestationMarkers(line)
+		if !containsExactLineBlock(body, line) {
+			return fmt.Errorf("verify closing issues: pull request body dropped preserved closing line %q", line)
+		}
+	}
+	if len(sctx.ClosingIssueRefs) == 0 {
 		return nil
 	}
 	preservedTargets := closingTargets(extractClosingKeywordLines(body))

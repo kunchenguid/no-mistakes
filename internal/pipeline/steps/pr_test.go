@@ -469,6 +469,23 @@ func TestPRStep_ComposedBodyLocksOutLateClosingIssueRefsUpdate(t *testing.T) {
 	}
 }
 
+func TestPRStep_ClosesFailsWhenCreateReturnsNoVerifiableIdentity(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, _ := fakeGH(t, "")
+	env = append(env, "FAKE_CLI_PR_CREATE_EMPTY=1")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "created pull request identity is unavailable") {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
 func TestPRStep_PreservesAuthorClosingLinesAndAddsMissingRequestedIssues(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -500,6 +517,14 @@ func TestPRStep_PreservesAuthorClosingLinesAndAddsMissingRequestedIssues(t *test
 	}
 	if !strings.Contains(body, "## Issues") {
 		t.Fatalf("updated body has no stable Issues section:\n%s", body)
+	}
+}
+
+func TestExtractClosingKeywordLinesIgnoresCodeExamples(t *testing.T) {
+	body := "Closes #1\n\n```md\nCloses #2\n```\n\n    Fixes #3\n\n- Resolves owner/repo#4\n"
+	got := extractClosingKeywordLines(body)
+	if joined := strings.Join(got, ","); joined != "Closes #1,- Resolves owner/repo#4" {
+		t.Fatalf("extractClosingKeywordLines() = %q", joined)
 	}
 }
 
@@ -557,6 +582,14 @@ func TestVerifyClosingIssuesFailsWhenLiveBodyDroppedARequestedReference(t *testi
 	err := verifyClosingIssues(context.Background(), host, &scm.PR{Number: "1"}, sctx)
 	if err == nil || !strings.Contains(err.Error(), "owner/repo#3") {
 		t.Fatalf("verifyClosingIssues() error = %v", err)
+	}
+}
+
+func TestVerifyClosingIssuesFailsWhenComposedBodyDropsPreservedLine(t *testing.T) {
+	sctx := &pipeline.StepContext{PreservedClosingLines: []string{"Fixes #7"}}
+	err := verifyClosingIssuesInBody("## What Changed\n\n- updated", sctx)
+	if err == nil || !strings.Contains(err.Error(), "Fixes #7") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want preserved-line failure", err)
 	}
 }
 
@@ -765,6 +798,7 @@ func TestPRStep_ClosesFailsClearlyOutsideGitHub(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx.Run.Branch = "refs/heads/main" // Provider rejection must precede the base-branch skip.
 	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"42"}); err != nil {
 		t.Fatal(err)
 	}

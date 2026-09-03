@@ -84,6 +84,28 @@ func TestUpdateRunClosingIssueRefsNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestMergeRunClosingIssueRefsPreservesEarlierValues(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42", "owner/repo#7"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"99", "OWNER/REPO#7"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,99,owner/repo#7" {
+		t.Fatalf("merged closing issue references = %q", refs)
+	}
+}
+
 // The reattach race: an `axi run --closes` update that lands after the PR step
 // has already sampled the closing issue references can no longer reach the composed body,
 // so it must fail closed instead of reporting a write the PR will never show.
@@ -108,6 +130,9 @@ func TestUpdateRunClosingIssueRefsFailsClosedAfterPRBodyClaim(t *testing.T) {
 	err = d.UpdateRunClosingIssueRefs(run.ID, []string{"42"})
 	if !errors.Is(err, ErrClosingIssueRefsLocked) {
 		t.Fatalf("update after claim = %v, want ErrClosingIssueRefsLocked", err)
+	}
+	if err := d.MergeRunClosingIssueRefs(run.ID, []string{"42"}); !errors.Is(err, ErrClosingIssueRefsLocked) {
+		t.Fatalf("merge after claim = %v, want ErrClosingIssueRefsLocked", err)
 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {

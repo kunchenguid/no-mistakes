@@ -798,6 +798,62 @@ func (d *DB) UpdateRunClosingIssueRefs(id string, refs []string) error {
 	}
 }
 
+// MergeRunClosingIssueRefs adds refs to an unclaimed run without dropping
+// values supplied when the run started or by an earlier reattachment.
+func (d *DB) MergeRunClosingIssueRefs(id string, refs []string) error {
+	incoming, err := closingissues.Normalize(refs)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if len(incoming) == 0 {
+		return nil
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	defer tx.Rollback()
+
+	var storedRefs sql.NullString
+	var lockedAt sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT closing_issue_refs, closing_issue_refs_locked_at FROM runs WHERE id = ?`, id,
+	).Scan(&storedRefs, &lockedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("merge run closing issue references: run not found: %s", id)
+		}
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if lockedAt.Valid {
+		return ErrClosingIssueRefsLocked
+	}
+	existing, err := closingissues.Decode(storedRefs.String)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	encoded, err := closingissues.Encode(append(existing, incoming...))
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	res, err := tx.Exec(
+		`UPDATE runs SET closing_issue_refs = ?, updated_at = ? WHERE id = ? AND closing_issue_refs_locked_at IS NULL`,
+		encoded, now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	} else if affected == 0 {
+		return ErrClosingIssueRefsLocked
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	return nil
+}
+
 // ClaimClosingIssueRefsForPRBody returns the run's closing issue references and
 // marks them as consumed by PR body composition in one transaction. After the claim, a
 // concurrent UpdateRunClosingIssueRefs fails with ErrClosingIssueRefsLocked instead of

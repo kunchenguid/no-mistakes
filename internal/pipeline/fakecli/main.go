@@ -162,6 +162,9 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		if os.Getenv("FAKE_CLI_PR_CREATE_EMPTY") == "1" {
+			os.Exit(0)
+		}
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}

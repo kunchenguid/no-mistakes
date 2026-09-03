@@ -1068,7 +1068,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := d.UpdateRunClosingIssueRefs(p.RunID, p.ClosingIssueRefs); err != nil {
+		if err := d.MergeRunClosingIssueRefs(p.RunID, p.ClosingIssueRefs); err != nil {
 			// The PR body already sampled the closing issue references, so this update
 			// could not reach the footer. Report a structured rejection rather
 			// than success for a write that will never be visible.
