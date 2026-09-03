@@ -189,6 +189,10 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
 		t.Error("expected test fix prompt to prefer root-cause fixes over bandaids")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "When a problem can be solved by removing a code path that is not strictly required to satisfy the intent") ||
+		!strings.Contains(ag.calls[0].Prompt, "fix it by removing that path, not by validating, hardening, or documenting it") {
+		t.Error("expected test fix prompt to prefer removing unrequired paths")
+	}
 	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if !strings.Contains(ag.calls[0].Prompt, "remove any transient artifacts your testing created in the working tree") {
 		t.Error("expected test fix prompt to ask the agent to clean up transient testing artifacts before finishing")

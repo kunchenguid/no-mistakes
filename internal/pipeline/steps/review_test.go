@@ -1580,7 +1580,7 @@ func TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 	}
 	fixPrompt := ag.calls[0].Prompt
 	for _, want := range []string{
-		"When a finding can be resolved by removing a code path that is not strictly required to satisfy the intent",
+		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
 		"fix it by removing that path, not by validating, hardening, or documenting it",
 		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
 		// The anti-revert guard is kept, scoped to intent-required code.

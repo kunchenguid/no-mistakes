@@ -1555,8 +1555,8 @@ func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"When the failing check can be fixed by removing a code path that is not strictly required to satisfy the intent",
-		"fix it by removing that path rather than hardening it",
+		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
+		"fix it by removing that path, not by validating, hardening, or documenting it",
 		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
 		"Fix the reported instance narrowly.",
 		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",

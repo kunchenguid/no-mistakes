@@ -65,6 +65,10 @@ func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
 		t.Error("expected lint fix prompt to prefer root-cause fixes over bandaids")
 	}
+	if !strings.Contains(ag.calls[0].Prompt, "When a problem can be solved by removing a code path that is not strictly required to satisfy the intent") ||
+		!strings.Contains(ag.calls[0].Prompt, "fix it by removing that path, not by validating, hardening, or documenting it") {
+		t.Error("expected configured lint fix prompt to prefer removing unrequired paths")
+	}
 	if strings.Contains(ag.calls[0].Prompt, "Make the minimal change needed") {
 		t.Error("expected lint fix prompt not to prefer narrow minimal changes")
 	}
@@ -203,6 +207,10 @@ func TestLintStep_NoConfiguredLint_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 	}
 	if !strings.Contains(ag.calls[0].Prompt, "only unresolved") {
 		t.Error("expected no-config lint prompt to report only unresolved issues")
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "When a problem can be solved by removing a code path that is not strictly required to satisfy the intent") ||
+		!strings.Contains(ag.calls[0].Prompt, "fix it by removing that path, not by validating, hardening, or documenting it") {
+		t.Error("expected no-config lint fix prompt to prefer removing unrequired paths")
 	}
 }
 

@@ -26,7 +26,6 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
 		- Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
-		- When the failing check can be fixed by removing a code path that is not strictly required to satisfy the intent (an extra acceptance or matching branch, a fallback, an alias, or a second definition of something the code already defines once), fix it by removing that path rather than hardening it. Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose.
 		- Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires.
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
@@ -132,7 +131,7 @@ CI logs:
 	}
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
-	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
+	prompt = fixerPrompt(testguidance.LateRepairPrompt(string(s.Name()), prompt))
 
 	sctx.Log("running agent to fix CI issues...")
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{

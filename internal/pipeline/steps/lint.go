@@ -70,7 +70,7 @@ Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
-			Prompt:     prompt,
+			Prompt:     fixerPrompt(prompt),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
 			OnChunk:    sctx.LogChunk,
