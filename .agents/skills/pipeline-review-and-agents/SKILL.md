@@ -33,6 +33,11 @@ metadata:
 - Policy remains repository-owned through project instructions and trusted `review.path_instructions`. Findings require a concrete source-backed reachable operation or disclosure and name the protected resource/field, missing control, and impact; accept equivalent controls and intentionally public data rather than keyword-matching auth machinery. A material policy ambiguity introduced by changed behavior must be `ask-user` and name the missing policy decision; do not report immaterial or pre-existing ambiguity, and retain `auto-fix` for source-proven routine defects.
 - Docs owner: `docs/src/content/docs/reference/pipeline-steps.md`. Prompt regression: `TestReviewStep_AuthorizationPrivacyTracingContract`. Development-only qualitative cases: `internal/pipeline/steps/testdata/authorization_privacy_review/`.
 
+**Intended-Usage Evidence Threshold (`internal/pipeline/steps/review.go`)**
+
+- A review finding needs a concrete sequence that occurs during the change's intended usage. A rare but real sequence those callers actually perform still qualifies. A finding whose only supporting path is a hypothetical unused execution that intended callers, the public API, or documented usage never take does not. This is an evidence threshold, not a general "be less noisy" rewrite.
+- Docs owner: `docs/src/content/docs/reference/pipeline-steps.md`. Prompt regression: `TestReviewStep_IntendedUsageEvidenceContract`. Development-only qualitative cases: `internal/pipeline/steps/testdata/intended_usage_review/`.
+
 **Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
 
 - The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.

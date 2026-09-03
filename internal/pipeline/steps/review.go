@@ -232,6 +232,11 @@ Previous review findings to address:
 	// scope verifier would be exactly the machinery being prevented - and it
 	// runs with the grain of ActionOrDefault, which already fails an
 	// unclassified finding closed to ask-user.
+	//
+	// Findings also require an intended-usage sequence. A rare but real path
+	// those callers actually take still qualifies; a hypothetical unused
+	// execution does not. This is an evidence threshold for what counts as a
+	// finding, not a general instruction to emit fewer of them.
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -254,6 +259,7 @@ Task:
 - Repository instructions own access policy. If changed behavior introduces a concrete material operation or disclosure involving potentially protected resources or user data, and the instructions and source do not establish whether it is allowed, you MUST emit an "ask-user" finding that names the missing policy decision. Do not report immaterial or pre-existing ambiguity, and do not invent access policy. A source-proven routine defect retains the existing "auto-fix" semantics.
 - When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
 - Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
+- Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage, including rare but real sequences those callers actually perform. Do not report a finding whose only supporting path is a hypothetical unused execution that intended callers, the public API, or documented usage never take.
 - Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
 - Do NOT run tests during review. The pipeline has a dedicated test step after review.
 - Analyze for bugs, risks, and code simplification opportunities.

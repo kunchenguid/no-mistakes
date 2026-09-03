@@ -473,6 +473,66 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// Intended-usage evidence is a finding threshold, not a general "be less
+// noisy" rewrite: a rare but real sequence under intended usage still
+// qualifies, while a hypothetical unused path does not. The completeness
+// obligations stay; this pins the emitted contract, not model interpretation.
+func TestReviewStep_IntendedUsageEvidenceContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage",
+		"including rare but real sequences those callers actually perform",
+		"hypothetical unused execution that intended callers, the public API, or documented usage never take",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing intended-usage evidence threshold %q:\n%s", want, prompt)
+		}
+	}
+
+	// Completeness stays: this is not a license to stop early or emit fewer findings.
+	for _, want := range []string{
+		"Do a full review pass before returning",
+		"Do not stop after the first valid finding",
+		"Continue inspecting the rest of the changed code",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt dropped completeness obligation %q:\n%s", want, prompt)
+		}
+	}
+
+	for _, overreach := range []string{
+		"be less noisy",
+		"prefer fewer findings",
+		"reduce the number of findings",
+		"lock on every status write",
+		"parent-channel",
+		"parent channel",
+	} {
+		if strings.Contains(strings.ToLower(prompt), overreach) {
+			t.Errorf("review prompt broadened past the intended-usage criterion with %q:\n%s", overreach, prompt)
+		}
+	}
+}
+
 // Counterexample construction is a general review principle for any new or
 // changed logic, not a bug-fix-only reconstruction. Silently wrong values,
 // labels, and sets are named as risks. The principle stays short and general:
