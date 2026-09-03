@@ -23,6 +23,12 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			if recoverableBranchSync(state) {
 				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
 				footer = "u recover custody"
+			} else if settleableBranchSync(state) {
+				message = "Run ended terminally and its recorded pipeline head can no longer be verified, so there is nothing to recover. Settle custody at your current head to take the branch back."
+				footer = "u settle custody at local head"
+			} else if _, ok := custodyReturnCompletion(state); ok {
+				message = "An earlier custody return applied its Git changes but could not record the custody return. Re-run the same recovery to complete the record."
+				footer = "u complete custody return"
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
@@ -106,6 +112,50 @@ func recoverableBranchSync(state *branchsync.State) bool {
 	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 }
 
+// settleableBranchSync reports whether the state is the SELF-INCONSISTENT
+// terminal custody record whose only exit is the keep-local settlement (#824).
+//
+// It keys on the advertised next action rather than on a safety code, and that
+// is deliberate. A self-inconsistent record reaches the TUI under whichever
+// safety code described how it failed to verify - blocked_recover_preserved_
+// head_missing is only the commonest - so a safety-code list here would drift
+// out of agreement with the branchsync predicate that decides whether the
+// settlement can actually complete. Keying on the action the state machine
+// itself advertises is what makes this exactly the road the CLI offers: the
+// service never names return_custody_keep_local for a record the settlement
+// would only refuse, and the TUI must never offer one it does not.
+func settleableBranchSync(state *branchsync.State) bool {
+	return state != nil && state.State == branchsync.StatePipelineOwned &&
+		state.NextAction != nil && state.NextAction.Code == "return_custody_keep_local"
+}
+
+// custodyReturnCompletion reports the recovery a complete_custody_return state
+// must RE-RUN, and whether this state is one at all. That code is emitted when
+// a recovery's Git side already applied and only the custody record is
+// missing, so the TUI must offer the same command the service advertised -
+// keeping the local head or taking the preserved one - and never the other.
+//
+// It is read off the advertised command rather than from a safety code for the
+// same reason settleableBranchSync keys on the next action: the state machine
+// alone knows which recovery ran. An unrecognized command yields no
+// affordance, so a future command shape fails closed to no key instead of
+// silently running the wrong recovery.
+func custodyReturnCompletion(state *branchsync.State) (keepLocal bool, ok bool) {
+	if state == nil || state.State != branchsync.StatePipelineOwned || state.NextAction == nil {
+		return false, false
+	}
+	if state.NextAction.Code != "complete_custody_return" {
+		return false, false
+	}
+	switch strings.TrimSpace(state.NextAction.Command) {
+	case "no-mistakes axi sync --recover --keep-local":
+		return true, true
+	case "no-mistakes axi sync --recover":
+		return false, true
+	}
+	return false, false
+}
+
 func renderRecoverConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
@@ -119,6 +169,56 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
 	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
+}
+
+// RenderSettleConfirmation is deliberately NOT renderRecoverConfirmation with
+// different words. Recovery takes the preserved pipeline head; settlement
+// keeps the local head and moves the gate to it, abandoning a recorded head
+// that can no longer be verified. The CLI makes that an explicit --keep-local
+// choice, so the TUI has to state the same consequence before asking for it.
+//
+// It is the one exported render here because the cross-surface invariant test
+// that guards that consequence lives in internal/cli - the only package able to
+// see the cobra help and the agent guidance too - and must execute this box
+// rather than restate its wording.
+func RenderSettleConfirmation(state branchsync.State, width int) string {
+	if width < 40 {
+		width = 80
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "The run ended %s and its recorded pipeline head can no longer be verified,\n", state.Pipeline.Status)
+	fmt.Fprintf(&b, "so there is nothing to recover. Settling returns custody at the head you\n")
+	fmt.Fprintf(&b, "already have, and points the gate branch at it where that branch still\n")
+	fmt.Fprintf(&b, "names a different head.\n\n")
+	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
+	fmt.Fprintf(&b, "Kept HEAD:      %s\n", state.Local.Head)
+	fmt.Fprintf(&b, "Recorded HEAD:  %s (unverifiable)\n\n", state.Pipeline.CurrentHead)
+	b.WriteString("Your worktree is never touched. Any still-reachable copy of the recorded head is anchored first, and the settlement refuses rather than proceeding if one exists and cannot be anchored. The gate moves only by compare-and-swap, so a concurrent gate push wins. This is `no-mistakes sync --recover --keep-local`.")
+	return renderBoxWithFooter("Confirm custody settlement at local head", b.String(), width, "u/enter settle  ·  esc cancel")
+}
+
+// renderCompleteConfirmation is deliberately NOT RenderSettleConfirmation with
+// different words. The settlement box tells the operator their recorded head
+// can no longer be verified and asks them to abandon it; this state makes no
+// such claim - the recovery already ran and succeeded on the Git side, and
+// only its bookkeeping is missing. Saying otherwise here would be the exact
+// false claim complete_custody_return was given its own code to avoid.
+func renderCompleteConfirmation(state branchsync.State, width int) string {
+	if width < 40 {
+		width = 80
+	}
+	command := ""
+	if state.NextAction != nil {
+		command = strings.TrimSpace(state.NextAction.Command)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "An earlier custody return applied its Git changes but could not record the\n")
+	fmt.Fprintf(&b, "custody return, so the branch still reads as pipeline-owned. Re-running the\n")
+	fmt.Fprintf(&b, "same recovery completes the record.\n\n")
+	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
+	fmt.Fprintf(&b, "Local HEAD:     %s\n\n", state.Local.Head)
+	b.WriteString("Every Git step it repeats is idempotent once applied, so this finishes the record rather than moving anything again. This is `" + command + "`.")
+	return renderBoxWithFooter("Confirm custody-return completion", b.String(), width, "u/enter complete  \u00b7  esc cancel")
 }
 
 func renderSyncConfirmation(state branchsync.State, width int) string {

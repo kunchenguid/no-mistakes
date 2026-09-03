@@ -377,6 +377,80 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 	return service.InspectCached(ctx)
 }
 
+// terminalRunCustodyHelp names the supported settlement for a branch that an
+// already-terminal run still holds. Cancelling a terminal run is necessarily
+// an idempotent no-op - there is nothing left to cancel - but that no-op used
+// to be the whole answer, leaving the operator with a branch whose only
+// advertised next action was a recovery that always refused (issue #824). The
+// abort response therefore carries whatever settlement the branch's own
+// ownership state names, so every terminal-run abort hands back a command that
+// can complete.
+//
+// Best effort by construction: an `--run <id>` abort may be issued from
+// outside the run's worktree entirely, so any failure to resolve the invoking
+// repo, branch, or ownership simply adds no guidance.
+func terminalRunCustodyHelp(ctx context.Context, p *paths.Paths, runID string) []string {
+	if p == nil {
+		return nil
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	return terminalRunCustodyHelpWithDB(ctx, p, d, runID)
+}
+
+// custodySettlementHelp renders abort help for a branch-ownership next action,
+// but ONLY for the custody-settlement actions an abort response is entitled to
+// prescribe. Abort help exists to name how to settle custody the pipeline
+// still holds (issue #824); a released branch's ordinary next action is
+// run_pipeline, and answering an abort by telling the operator to LAUNCH a
+// fresh run exceeds that scope entirely. The allowlist is deliberate: an
+// unrecognized or pipeline-launching action yields no help rather than being
+// passed through.
+func custodySettlementHelp(action *branchsync.NextAction) []string {
+	if action == nil {
+		return nil
+	}
+	switch action.Code {
+	case "recover_custody", "return_custody_keep_local", "complete_custody_return", "inspect_and_reconcile_manually":
+		return []string{
+			"Run `" + action.Command + "`",
+			branchSyncAgentGuidance,
+		}
+	default:
+		return nil
+	}
+}
+
+func terminalRunCustodyHelpWithDB(ctx context.Context, p *paths.Paths, d *db.DB, runID string) []string {
+	if p == nil || d == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	repo, err := findRepo(d)
+	if err != nil || repo == nil {
+		return nil
+	}
+	service := &branchsync.Service{
+		DB:      d,
+		Repo:    repo,
+		WorkDir: ".",
+		GateDir: p.RepoDir(repo.ID),
+		Paths:   p,
+	}
+	state := service.InspectCached(ctx)
+	// Resolving to this run is not the same as being HELD by it: a released
+	// branch still resolves to its last run, and inspect_and_reconcile_manually
+	// is not custody-specific (classifyRelation emits it for ordinary
+	// divergence with a `git log` command). Both conditions are required, which
+	// is the same gate the bare-abort site applies.
+	if state.Pipeline.RunID != runID || state.State != branchsync.StatePipelineOwned {
+		return nil
+	}
+	return custodySettlementHelp(state.NextAction)
+}
+
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
 	state := inspectAxiBranchSync(ctx, env)
 	switch state.State {
@@ -1012,8 +1086,18 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 			{Key: "aborted", Value: false},
 			{Key: "detail", Value: "no active run (no-op)"},
 		}
-		if state := inspectAxiBranchSync(ctx, env); relevantCachedSyncState(state) {
+		state := inspectAxiBranchSync(ctx, env)
+		if relevantCachedSyncState(state) {
 			fields = append(fields, branchSyncField(state))
+		}
+		// The branch a terminal run still holds must leave with a command that
+		// can settle it, not just the no-op (issue #824) - but only a custody
+		// settlement, never an instruction to launch a fresh pipeline. The
+		// pipeline_owned gate is what makes that true: inspect_and_reconcile_manually
+		// is also emitted for ordinary divergence, where it is git-log advice
+		// rather than a custody settlement and belongs on no abort response.
+		if help := custodySettlementHelp(state.NextAction); len(help) > 0 && state.State == branchsync.StatePipelineOwned {
+			fields = append(fields, toon.Field{Key: "help", Value: help})
 		}
 		emitDoc(cmd, fields...)
 		return nil
@@ -1189,7 +1273,7 @@ func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 		// terminal no-op, the documented unknown-id no-op, and the nonzero
 		// terminal-unconfirmed contract.
 		if strings.Contains(err.Error(), "no active run") {
-			return resolveInactiveAbortTruth(cmd, client, runID)
+			return resolveInactiveAbortTruth(cmd, p, client, runID)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
 	}
@@ -1225,7 +1309,7 @@ func runViewPtrFromIPC(run *ipc.RunInfo) *runView {
 // fabricated), a positively proven unknown id keeps the documented no-op, and
 // a still-nonterminal or unreadable run is the nonzero terminal-unconfirmed
 // contract.
-func resolveInactiveAbortTruth(cmd *cobra.Command, client *ipc.Client, runID string) error {
+func resolveInactiveAbortTruth(cmd *cobra.Command, p *paths.Paths, client *ipc.Client, runID string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), abortStateWaitTimeout)
 	defer cancel()
 	var result ipc.GetRunResult
@@ -1251,12 +1335,16 @@ func resolveInactiveAbortTruth(cmd *cobra.Command, client *ipc.Client, runID str
 		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon returned durable state for run %s instead of the requested run %s", run.ID, runID), nil, true)
 	}
 	if terminalStatus(string(run.Status)) {
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "run", Value: runID},
-			toon.Field{Key: "run_status", Value: string(run.Status)},
-			toon.Field{Key: "detail", Value: "run is already terminal (idempotent no-op)"},
-		)
+		fields := []toon.Field{
+			{Key: "aborted", Value: false},
+			{Key: "run", Value: runID},
+			{Key: "run_status", Value: string(run.Status)},
+			{Key: "detail", Value: "run is already terminal (idempotent no-op)"},
+		}
+		if help := terminalRunCustodyHelp(ctx, p, runID); len(help) > 0 {
+			fields = append(fields, toon.Field{Key: "help", Value: help})
+		}
+		emitDoc(cmd, fields...)
 		return nil
 	}
 	return emitUnconfirmedAbort(cmd, runID, run.Branch, fmt.Sprintf("the daemon reported no active run, but the exact run's durable state is still %s", run.Status), runViewPtrFromIPC(run), true)
@@ -1290,12 +1378,16 @@ func resolveDaemonDownAbortTruth(cmd *cobra.Command, p *paths.Paths, runID strin
 		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the durable record identified run %s instead of the requested run %s", run.ID, runID), nil, false)
 	}
 	if terminalStatus(string(run.Status)) {
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "run", Value: runID},
-			toon.Field{Key: "run_status", Value: string(run.Status)},
-			toon.Field{Key: "detail", Value: "daemon not running; run is already terminal (idempotent no-op)"},
-		)
+		fields := []toon.Field{
+			{Key: "aborted", Value: false},
+			{Key: "run", Value: runID},
+			{Key: "run_status", Value: string(run.Status)},
+			{Key: "detail", Value: "daemon not running; run is already terminal (idempotent no-op)"},
+		}
+		if help := terminalRunCustodyHelpWithDB(cmd.Context(), p, database, runID); len(help) > 0 {
+			fields = append(fields, toon.Field{Key: "help", Value: help})
+		}
+		emitDoc(cmd, fields...)
 		return nil
 	}
 	return emitUnconfirmedAbort(cmd, runID, run.Branch, fmt.Sprintf("the daemon is not running, so cancellation cannot be requested, and the durable run record is still %s", run.Status), nil, false)

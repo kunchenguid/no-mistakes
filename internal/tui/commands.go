@@ -378,6 +378,61 @@ func (m Model) applyRecoverCmd() tea.Cmd {
 	}
 }
 
+// applySettleCmd runs the keep-local settlement. It is reported under its own
+// telemetry action so a settlement is never counted as a recovery: they end
+// the same state but keep opposite heads.
+func (m Model) applySettleCmd() tea.Cmd {
+	settle := m.syncSettle
+	if settle == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := settle()
+		result := "refused"
+		if state.Recovered {
+			result = "applied"
+		}
+		trackTUISyncAttempt("settle", state, result, started)
+		return syncAppliedMsg{state: state}
+	}
+}
+
+// completionSeam picks the recovery a complete_custody_return state must
+// re-run. The two seams are separate on purpose (a settlement must never
+// silently become a plain recovery), so the completion resolves to exactly the
+// one the advertised command names.
+func (m Model) completionSeam(keepLocal bool) func() branchsync.State {
+	if keepLocal {
+		return m.syncSettle
+	}
+	return m.syncRecover
+}
+
+// applyCompleteCmd finishes a custody return whose Git side already applied
+// and whose record is missing. It is reported under its own telemetry action
+// so a completion is never counted as the recovery or settlement it repeats.
+func (m Model) applyCompleteCmd() tea.Cmd {
+	keepLocal, ok := custodyReturnCompletion(m.branchSync)
+	if !ok {
+		return nil
+	}
+	complete := m.completionSeam(keepLocal)
+	if complete == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := complete()
+		result := "refused"
+		if state.Recovered {
+			result = "applied"
+		}
+		trackTUISyncAttempt("complete", state, result, started)
+		return syncAppliedMsg{state: state}
+	}
+}
+
 func (m Model) spinnerTickCmd() tea.Cmd {
 	return tea.Tick(spinnerTickInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{}

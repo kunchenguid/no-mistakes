@@ -51,6 +51,20 @@ var canonicalBranchSyncPhrases = []string{
 	// that it needs no recovery.
 	"user_owned",
 	"before changing the submitted head",
+	// Settlement of a self-inconsistent custody record (issue #824): a record
+	// whose recorded pipeline head cannot be verified - absent from every
+	// object store, or contradicted by the run's own recovery evidence - must
+	// name the keep-local settlement that can actually complete instead of a
+	// recovery that always refuses.
+	"return_custody_keep_local",
+	"no-mistakes axi sync --recover --keep-local",
+	// The retry that completes a custody return whose Git side already applied
+	// and whose record is missing. It needs the same pin as its siblings: the
+	// guidance enumerates permissions with exclusive "only when" clauses, so a
+	// surface that names the code without authorizing its command forbids the
+	// very command the same response prescribes.
+	"complete_custody_return",
+	"only the custody record is missing",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"

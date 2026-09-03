@@ -252,3 +252,278 @@ func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
 		t.Fatalf("u acted on an active pipeline_owned state: %#v", m)
 	}
 }
+
+// TestWedgedCustodyRecordReachesTheSameSettlementExitAsTheCLI is the TUI half
+// of issue #824. A self-inconsistent custody record - terminal run, recorded
+// pipeline head no longer verifiable - carries the settlement next action
+// rather than blocked_pipeline_owned_recoverable, so keying the u affordance on
+// the recoverable safety code alone left the TUI as the one operator surface
+// with no exit at all: the CLI could settle the record and the TUI could only
+// describe it. The exit must be the same one, and it must be an explicit
+// choice, because settling KEEPS the local head instead of taking the
+// preserved one.
+func TestWedgedCustodyRecordReachesTheSameSettlementExitAsTheCLI(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	wedged := branchsync.State{
+		State: branchsync.StatePipelineOwned, Relation: branchsync.RelationUnknown,
+		Safety:     "blocked_recover_preserved_head_missing",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+		NextAction: &branchsync.NextAction{Code: "return_custody_keep_local", Command: "no-mistakes axi sync --recover --keep-local"},
+	}
+	m.branchSync = &wedged
+
+	// The dead end was visible here first: the status line described the block
+	// and offered no key at all.
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"can no longer be verified", "u settle custody at local head"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("wedged status missing %q:\n%s", want, view)
+		}
+	}
+
+	settleCalls := 0
+	recoverCalls := 0
+	m.syncRecover = func() branchsync.State {
+		recoverCalls++
+		t.Error("a wedged record must not take the plain recovery path")
+		return branchsync.State{}
+	}
+	m.syncSettle = func() branchsync.State {
+		settleCalls++
+		settled := wedged
+		settled.State = branchsync.StateCustodyReturned
+		settled.Safety = "custody_returned"
+		settled.Relation = branchsync.RelationEqual
+		settled.Recovered = true
+		settled.NextAction = nil
+		return settled
+	}
+
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || !m.settleConfirm || settleCalls != 0 {
+		t.Fatalf("u must open the settlement confirmation without acting: confirm=%v calls=%d", m.settleConfirm, settleCalls)
+	}
+	if m.recoverConfirm {
+		t.Fatal("wedged record opened the recovery confirmation instead of the settlement one")
+	}
+	// Settling keeps the local head and abandons an unverifiable recorded one,
+	// so the confirmation has to say which head survives before asking.
+	plain := stripANSI(m.View())
+	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter settle", "--keep-local"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("settlement confirmation missing %q:\n%s", want, plain)
+		}
+	}
+
+	// esc must back out without touching anything.
+	escModel, escCmd := m.handleKey(keyMsg("esc"))
+	escaped := escModel.(Model)
+	if escCmd != nil || escaped.settleConfirm || settleCalls != 0 {
+		t.Fatalf("esc did not cancel the settlement cleanly: confirm=%v calls=%d", escaped.settleConfirm, settleCalls)
+	}
+
+	nextModel, cmd = m.handleKey(keyMsg("enter"))
+	m = nextModel.(Model)
+	if cmd == nil || settleCalls != 0 {
+		t.Fatal("settlement did not wait for its async command")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if settleCalls != 1 || recoverCalls != 0 {
+		t.Fatalf("settlement calls=%d recover calls=%d", settleCalls, recoverCalls)
+	}
+	if m.settleConfirm || m.branchSync.State != branchsync.StateCustodyReturned || !m.branchSync.Recovered {
+		t.Fatalf("settlement result = %#v", m.branchSync)
+	}
+	if m.err != nil {
+		t.Fatalf("successful settlement left an error: %v", m.err)
+	}
+}
+
+// TestPipelineOwnedStateWithoutASettlementActionOffersNoSettlement keeps the
+// TUI from inventing an exit the service did not advertise: the branchsync
+// predicate decides where the settlement can actually complete, and a record it
+// sent to manual reconciliation must not be offered a key that would only
+// refuse - which is the #824 shape in reverse.
+func TestPipelineOwnedStateWithoutASettlementActionOffersNoSettlement(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	m.branchSync = &branchsync.State{
+		State: branchsync.StatePipelineOwned, Safety: "blocked_recover_preserved_head_missing",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push"},
+		NextAction: &branchsync.NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"},
+	}
+	m.syncSettle = func() branchsync.State {
+		t.Fatal("settlement must not be reachable for a record sent to manual reconciliation")
+		return branchsync.State{}
+	}
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	if strings.Contains(view, "u settle") {
+		t.Fatalf("unadvertised settlement offered a key:\n%s", view)
+	}
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || m.settleConfirm || m.recoverConfirm || m.syncConfirm {
+		t.Fatalf("u acted on a record with no advertised settlement: %#v", m)
+	}
+}
+
+// TestStampFailureOffersTheCompletionTheServiceAdvertised closes the TUI half
+// of the complete_custody_return gap. That code is emitted when a custody
+// return's Git side already applied and only the database write failed - refs
+// changed, custody unrecorded. settleableBranchSync correctly stopped matching
+// it (its confirmation claims the recorded head is unverifiable, which is false
+// here), but nothing else matched it either, so the TUI rendered the state with
+// no exit at all: the #824 dead end one layer down on the operator surface.
+func TestStampFailureOffersTheCompletionTheServiceAdvertised(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	stamped := branchsync.State{
+		State:      branchsync.StatePipelineOwned,
+		Safety:     "blocked_recover_stamp_failed",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+		NextAction: &branchsync.NextAction{Code: "complete_custody_return", Command: "no-mistakes axi sync --recover --keep-local"},
+	}
+	m.branchSync = &stamped
+
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	if !strings.Contains(view, "u complete custody return") {
+		t.Errorf("stamp-failure status offered no key at all:\n%s", view)
+	}
+	if strings.Contains(view, "can no longer be verified") {
+		t.Errorf("stamp-failure status reused the settlement's unverifiable-head claim:\n%s", view)
+	}
+
+	settleCalls, recoverCalls := 0, 0
+	m.syncRecover = func() branchsync.State {
+		recoverCalls++
+		t.Error("a keep-local completion must not run the plain recovery")
+		return branchsync.State{}
+	}
+	m.syncSettle = func() branchsync.State {
+		settleCalls++
+		done := stamped
+		done.State = branchsync.StateCustodyReturned
+		done.Safety = "custody_returned"
+		done.Recovered = true
+		done.NextAction = nil
+		return done
+	}
+
+	next, cmd := m.handleKey(keyMsg("u"))
+	m = next.(Model)
+	if cmd != nil || !m.completeConfirm || settleCalls != 0 {
+		t.Fatalf("u must open the completion confirmation without acting: confirm=%v calls=%d", m.completeConfirm, settleCalls)
+	}
+	if m.settleConfirm || m.recoverConfirm {
+		t.Fatal("stamp failure opened the settlement or recovery confirmation instead of the completion one")
+	}
+	// The box must describe a retry, never the settlement's abandonment of an
+	// unverifiable recorded head.
+	plain := stripANSI(m.View())
+	for _, want := range []string{"could not record the custody return", "u/enter complete", "no-mistakes axi sync --recover --keep-local"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("completion confirmation missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "can no longer be verified") {
+		t.Errorf("completion confirmation told the operator their recorded head is unverifiable:\n%s", plain)
+	}
+
+	escModel, escCmd := m.handleKey(keyMsg("esc"))
+	escaped := escModel.(Model)
+	if escCmd != nil || escaped.completeConfirm || settleCalls != 0 {
+		t.Fatalf("esc did not cancel the completion cleanly: confirm=%v calls=%d", escaped.completeConfirm, settleCalls)
+	}
+
+	next, cmd = m.handleKey(keyMsg("enter"))
+	m = next.(Model)
+	if cmd == nil || settleCalls != 0 {
+		t.Fatal("completion did not wait for its async command")
+	}
+	applied, _ := m.Update(cmd())
+	m = applied.(Model)
+	if settleCalls != 1 || recoverCalls != 0 {
+		t.Fatalf("completion settle calls=%d recover calls=%d", settleCalls, recoverCalls)
+	}
+	if m.completeConfirm || m.branchSync.State != branchsync.StateCustodyReturned || !m.branchSync.Recovered {
+		t.Fatalf("completion result = %#v", m.branchSync)
+	}
+}
+
+// TestDefaultRecoveryStampFailureCompletesWithThePlainRecovery pins the other
+// half of the same contract: the completion runs the recovery the service
+// NAMED, so a stamp failure after a default `--recover` must not silently
+// become the keep-local settlement, which keeps the opposite head.
+func TestDefaultRecoveryStampFailureCompletesWithThePlainRecovery(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	m.branchSync = &branchsync.State{
+		State:      branchsync.StatePipelineOwned,
+		Safety:     "blocked_recover_stamp_failed",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push"},
+		NextAction: &branchsync.NextAction{Code: "complete_custody_return", Command: "no-mistakes axi sync --recover"},
+	}
+	recoverCalls := 0
+	m.syncRecover = func() branchsync.State {
+		recoverCalls++
+		return branchsync.State{State: branchsync.StateCustodyReturned, Recovered: true}
+	}
+	m.syncSettle = func() branchsync.State {
+		t.Fatal("a default-recovery completion must not run the keep-local settlement")
+		return branchsync.State{}
+	}
+
+	next, _ := m.handleKey(keyMsg("u"))
+	m = next.(Model)
+	if !m.completeConfirm {
+		t.Fatal("default-recovery stamp failure offered no completion")
+	}
+	next, cmd := m.handleKey(keyMsg("enter"))
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("completion produced no command")
+	}
+	m.Update(cmd())
+	if recoverCalls != 1 {
+		t.Fatalf("plain recovery calls = %d, want 1", recoverCalls)
+	}
+}
+
+// TestUnrecognizedCompletionCommandOffersNoKey keeps the completion fail-closed.
+// The TUI resolves which recovery to re-run from the advertised command, so a
+// command shape it does not recognize must yield no affordance rather than
+// guessing - guessing wrong would run the recovery that takes the OTHER head.
+func TestUnrecognizedCompletionCommandOffersNoKey(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	m.branchSync = &branchsync.State{
+		State:      branchsync.StatePipelineOwned,
+		Safety:     "blocked_recover_stamp_failed",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push"},
+		NextAction: &branchsync.NextAction{Code: "complete_custody_return", Command: "no-mistakes axi sync --recover --some-future-mode"},
+	}
+	m.syncRecover = func() branchsync.State {
+		t.Fatal("an unrecognized completion command must not run a recovery")
+		return branchsync.State{}
+	}
+	m.syncSettle = func() branchsync.State {
+		t.Fatal("an unrecognized completion command must not run a settlement")
+		return branchsync.State{}
+	}
+	if view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80)); strings.Contains(view, "u complete") {
+		t.Fatalf("unrecognized completion command offered a key:\n%s", view)
+	}
+	next, cmd := m.handleKey(keyMsg("u"))
+	m = next.(Model)
+	if cmd != nil || m.completeConfirm || m.settleConfirm || m.recoverConfirm {
+		t.Fatalf("u acted on an unrecognized completion command: %#v", m)
+	}
+}

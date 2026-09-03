@@ -145,6 +145,8 @@ Pressing `u` explicitly refreshes the configured upstream or fork target, then o
 Confirm with `u` or Enter, or cancel with Escape.
 The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward or anchored equivalent-diverged advance as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
 When the owning run ended without publishing its pipeline commits, the same box offers `u recover custody` instead: `u` opens a confirmation naming the terminal status, the local head, and the preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
+When the state instead carries `next_action.code: return_custody_keep_local` - the terminal run's recorded pipeline head can no longer be verified, so there is nothing to recover - the box offers `u settle custody at local head`, and its own separate confirmation names the kept local head and the unverifiable recorded head before applying. Settlement keeps your head where recovery takes the preserved one, so the two never share a confirmation; applying routes through the same `--recover --keep-local` settlement documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
+When the state instead carries `next_action.code: complete_custody_return` - an earlier custody return applied its Git changes but could not record the custody return - the box offers `u complete custody return`, and its own confirmation says that the record is what is missing rather than repeating the settlement's claim that the recorded head cannot be verified. Applying re-runs the exact recovery the state names, `--recover` or `--recover --keep-local`, because every Git step it repeats is idempotent once applied; a command shape the TUI does not recognize offers no key at all rather than guessing which head to keep.
 
 ### Footer
 
@@ -194,7 +196,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `?` | Toggle help overlay |
 | `y` | Toggle yolo mode, which auto-resolves paused steps |
 | `r` | Retry a failed fix-review state or diff load; otherwise start a rerun after a failed or cancelled run |
-| `u` | Refresh and confirm local branch synchronization, or confirm custody recovery, when offered |
+| `u` | Refresh and confirm local branch synchronization, or confirm custody recovery, custody settlement at the local head, or completion of an unrecorded custody return, when offered |
 | `q` | Detach from TUI (or quit if run is done) |
 
 In diff view, `n`/`p` jumps the viewport to the file and line of the next/previous finding.

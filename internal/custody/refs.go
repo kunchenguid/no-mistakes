@@ -53,3 +53,13 @@ func RecoveryLocalRef(runID string) string {
 func RecoveryGateRef(runID string) string {
 	return "refs/no-mistakes/recover-gate/" + runID
 }
+
+// RecoveryStrandedRef keeps a terminal run's recorded pipeline head reachable
+// when custody is settled at the operator's kept local head instead of at that
+// head. It is deliberately separate from RecoveryRef: the settlement exists
+// precisely because the run's own recovery evidence is unusable (missing, or
+// naming another commit), so the surviving object needs an anchor that cannot
+// collide with the evidence being preserved for inspection.
+func RecoveryStrandedRef(runID string) string {
+	return "refs/no-mistakes/recover-stranded/" + runID
+}
