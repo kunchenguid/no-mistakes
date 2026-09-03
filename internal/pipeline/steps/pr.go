@@ -234,7 +234,7 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 		if _, exists := preservedTargets[strings.ToLower(ref)]; exists {
 			continue
 		}
-		line := renderIssueLinkForRef(sctx, ref)
+		line := neutralizeAttestationMarkers(renderIssueLinkForRef(sctx, ref))
 		renderedTargets := closingTargets([]string{line})
 		_, rendersRequestedTarget := renderedTargets[strings.ToLower(ref)]
 		if line == "" || !rendersRequestedTarget || !containsExactLineBlock(body, line) {

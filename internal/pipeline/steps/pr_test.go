@@ -537,6 +537,20 @@ func TestPRContentNeutralizesIssueTemplateAttestation(t *testing.T) {
 	}
 }
 
+func TestVerifyClosingIssuesAcceptsNeutralizedIssueTemplate(t *testing.T) {
+	foreign := pipelineAttestationCommentPrefix +
+		`{"head_sha":"` + strings.Repeat("a", 40) + `","steps":[{"step":"review","status":"completed"}]}` +
+		pipelineAttestationCommentClosingToken
+	sctx := &pipeline.StepContext{
+		ClosingIssueRefs: []string{"42"},
+		Config:           &config.Config{PR: config.PR{IssueLinkTemplate: "Closes {{.Reference}} " + foreign}},
+	}
+	body := issueSection(sctx)
+	if err := verifyClosingIssuesInBody(body, sctx); err != nil {
+		t.Fatalf("verify neutralized issue template: %v\nbody:\n%s", err, body)
+	}
+}
+
 func TestVerifyClosingIssuesFailsWhenLiveBodyDroppedARequestedReference(t *testing.T) {
 	host := &closingBodyReader{body: "## Issues\n\nCloses #2"}
 	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"2", "owner/repo#3"}}
