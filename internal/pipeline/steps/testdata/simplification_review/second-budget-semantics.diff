@@ -1,0 +1,14 @@
+diff --git a/proposal/budget.go b/proposal/budget.go
+index 1111111..2222222 100644
+--- a/proposal/budget.go
++++ b/proposal/budget.go
+@@ -1 +1,9 @@
+ package proposal
++
++func budgetFor(t Target, surface Surface) Budget {
++	if t.Kind == KindSkill {
++		description := parseFrontmatter(t.Skill.Text).Description
++		return budgetStatus(countTokens(description), t.Skill.AlwaysLoadedTokens)
++	}
++	return budgetStatus(surface.AlwaysLoadedTokens(), surface.Limit)
++}

@@ -91,6 +91,17 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// symptoms. Remedies that must EXTEND the change instead of correcting it
 	// belong to the human at the review gate, which is what the reviewer's
 	// remedy-scope classification rule below routes them to.
+	//
+	// The removal rule is the complement the anti-revert guard was missing.
+	// That guard told the fixer to fix intentional code forward, and "the
+	// author wrote it on purpose" is true of every unrequired branch, so a
+	// finding inside one was always answered by hardening it (backpass PR #107:
+	// six rounds patched around an any-existing-file acceptance branch that one
+	// deleted line would have closed, and still missed). The guard now protects
+	// only code the intent requires; a path the intent does not strictly
+	// require is fixed by removing it. The intent is the arbiter for both, and
+	// genuine doubt still leaves the code alone and reports the finding
+	// unresolved.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
 		startReviewTimeout()
@@ -113,7 +124,8 @@ Rules:
 - Always start with double checking whether the findings are legitimate.
 - Before changing code, identify whether each finding is a local defect or a symptom of a deeper design, abstraction, validation, ownership, or test-coverage flaw. Prefer the smallest correct root-cause fix within the changed area over patching only the reported line.
 - Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
-- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
+- When a finding can be resolved by removing a code path that is not strictly required to satisfy the intent - an extra acceptance or matching branch, a fallback, an alias, a second definition of something the code already defines once, or handling for an input nobody intends - fix it by removing that path, not by validating, hardening, or documenting it. Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose. Removal is the smallest fix for such a path: hardening it leaves the unrequired path in place for the next review to find another hole in.
+- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit when the intent requires that code. If the original change introduced something the intent requires, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether the intent requires the code, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
 - After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
@@ -237,6 +249,21 @@ Previous review findings to address:
 	// those callers actually take still qualifies; a hypothetical unused
 	// execution does not. This is an evidence threshold for what counts as a
 	// finding, not a general instruction to emit fewer of them.
+	//
+	// The dedicated Simplification section asks a different question from the
+	// defect pass: not "is this component correct" but "does the intent
+	// require this component at all". A reviewed spiral (backpass PR #107)
+	// showed why the defect pass alone cannot catch over-engineering: a
+	// permissive resolver with seven acceptance branches and a second,
+	// skill-only budget semantics each yielded a concrete, intended-usage
+	// defect per round, so every finding cleared the evidence threshold and
+	// every fix hardened the unrequired path instead of removing it, across
+	// thirteen rounds that never converged. The section reports the unrequired
+	// component itself as an ask-user warning whose remedy is removal, and asks
+	// defect findings inside such a component to name removal too, so the
+	// fixer's removal rule has something to act on. It stays ask-user because
+	// whether extra surface is wanted is the author's call; the section
+	// deliberately adds no schema field or second reviewer.
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -263,7 +290,7 @@ Task:
 - Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
 - Do NOT run tests during review. The pipeline has a dedicated test step after review.
 - Analyze for bugs, risks, and code simplification opportunities.
-- "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
+- "Simplification" opportunities in this pass mean reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). They do NOT mean removing features, changing product behavior, or stripping intentional user-facing output; a component the intent does not require is reported through the dedicated Simplification section below, never as an "auto-fix" refactor.
 - Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
 - Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 
@@ -283,6 +310,12 @@ Rules:
   - "source": every source-verifiable finding, including any finding that mixes a source defect with a delivery claim.
   - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
   - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
+
+Simplification (a dedicated pass over what the change introduced, in addition to the findings above):
+- Enumerate every component the change introduced: a new branch, acceptance or matching path, fallback, alias, mode, flag, option, a second definition of a concept the code already defines once, or a parallel copy of a rule. Judge each one against the User intent when one is stated, otherwise against the change's own stated purpose. The stated purpose sets the required scope, not the implementation.
+- For each component that is not strictly required to satisfy that intent, report a finding with severity "warning" and action "ask-user". Name the component, state that no intent requirement needs it or which requirement it exceeds, and recommend removing it as the remedy. Do not recommend hardening, validating, or documenting a component the intent does not require.
+- When a defect you reported above lives inside such a component, say so in that finding and name removal of the component as the smallest honest remedy, instead of prescribing a repair that keeps the component and hardens it.
+- Report each unrequired component once. When a component is required but a strictly narrower form satisfies the intent (for example an exact match where the change accepts several spellings), name the narrower form.
 
 Risk assessment (after listing all findings):
 - Assess source code, source-verifiable criteria, and enforceable external lifecycle requirements normally, while excluding findings scoped "pipeline-owned-delivery" from risk.
