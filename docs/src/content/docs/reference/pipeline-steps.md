@@ -77,7 +77,7 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 
 ## Review
 
-AI code review of your diff. This is probabilistic evidence, not a security or compliance certification, and does not replace repository-owned authorization and privacy tests, static analysis, threat modeling, or human security review.
+AI code review of your diff. This is probabilistic evidence, not a security or compliance certification, and does not replace deterministic repository-owned authorization and privacy tests, static analysis, threat modeling, or human security review.
 
 **Behavior:**
 
