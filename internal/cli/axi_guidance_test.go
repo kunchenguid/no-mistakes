@@ -37,15 +37,18 @@ var canonicalPreserveGateFixPhrases = []string{
 
 var canonicalBranchSyncPhrases = []string{
 	"branch_sync",
+	"next_action.command",
 	"no-mistakes axi sync",
 	"blocked",
 	"reset, stash, merge, rebase, force, or branch replacement",
 	// Guarded custody recovery for a terminal run whose pipeline commits were
-	// never published (v1.38.1 dogfood catch): the action, its next_action
-	// code, and the preservation claim must stay on every guidance surface.
+	// never published: the action, exact ordinary/archive commands, and the
+	// archive's keep-required-head rule stay on every guidance surface.
 	"recover_custody",
 	"no-mistakes axi sync --recover",
-	"preserved in the local gate",
+	"no-mistakes axi sync --recover --keep-local",
+	"bound archive",
+	"required head",
 	// Cancellation releases a run that never changed the submitted head
 	// (v1.44.2 dogfood catch): every surface must name the released state and
 	// that it needs no recovery.

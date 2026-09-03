@@ -125,6 +125,26 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
     ON agent_invocations (run_id, started_at, id);
 
+-- A recovery archive is an append-only provenance snapshot binding one exact
+-- existing archive ref to the terminal run whose later head it preserves.
+-- owner_run_id is the lookup association; run_id is deliberately repeated in
+-- the immutable evidence so malformed or cross-bound records fail closed.
+CREATE TABLE IF NOT EXISTS recovery_archives (
+    id                 TEXT PRIMARY KEY,
+    owner_run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    run_id             TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    required_head_sha  TEXT NOT NULL,
+    preserved_head_sha TEXT NOT NULL,
+    archive_ref        TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    UNIQUE (owner_run_id, archive_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_archives_owner_created_id
+    ON recovery_archives (owner_run_id, created_at, id);
+
 CREATE TABLE IF NOT EXISTS run_agent_sessions (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     role       TEXT NOT NULL,

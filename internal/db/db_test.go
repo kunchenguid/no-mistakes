@@ -75,6 +75,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
+	if err := d.sql.QueryRow("SELECT count(*) FROM recovery_archives").Scan(&count); err != nil {
+		t.Fatalf("recovery_archives table missing: %v", err)
+	}
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
@@ -129,6 +132,10 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
+	}
+	var archiveCount int
+	if err := d.sql.QueryRow("SELECT count(*) FROM recovery_archives").Scan(&archiveCount); err != nil || archiveCount != 0 {
+		t.Fatalf("recovery archive migration = count %d, error %v", archiveCount, err)
 	}
 	// Placement cannot be recovered for a row written before it was recorded,
 	// so it reads back as unknown rather than as a guessed directory; callers

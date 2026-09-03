@@ -146,7 +146,7 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 	human := newSyncCmd()
 	agent := newAxiSyncCmd()
 	for name, content := range map[string]string{"human help": human.Long, "axi help": agent.Long} {
-		for _, want := range []string{"fast-forward", "clean", "push", "equivalent", "reset semantics"} {
+		for _, want := range []string{"fast-forward", "clean", "push", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q: %s", name, want, content)
 			}
@@ -156,7 +156,7 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check"} {
+	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check", "--bind-archive-ref", "branch_sync.recovery"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("CLI reference missing %q", want)
 		}
@@ -347,7 +347,7 @@ func TestAxiStatusCachedBranchSyncDoesNotFetch(t *testing.T) {
 }
 
 type cliRecoverFixture struct {
-	local, gate, submitted, preserved, runID string
+	local, gate, remote, base, submitted, preserved, runID, archiveRef, repoID string
 }
 
 // newCLIRecoverFixture reproduces the stranded custody state end to end for
@@ -428,7 +428,112 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+	return cliRecoverFixture{
+		local: local, gate: gate, remote: remote, base: base, submitted: submitted,
+		preserved: preserved, runID: run.ID, repoID: repo.ID,
+	}
+}
+
+// newCLIDivergentArchiveFixture models a terminal validation whose exact
+// required head remains checked out while a later, genuinely divergent head is
+// durable under both the gate recovery ref and an imported archive ref. The
+// setup uses no reset, force update, or deleted ref.
+func newCLIDivergentArchiveFixture(t *testing.T) cliRecoverFixture {
+	t.Helper()
+	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "-b", "feature/recover")
+	if err := os.WriteFile(filepath.Join(local, "required.txt"), []byte("required reviewed work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "required.txt")
+	cliGit(t, local, "commit", "-m", "required reviewed head 354d610")
+	submitted := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "push", remote, "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gate), "init", "--bare", gate)
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA: submitted, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(remote), Ref: "refs/heads/feature/recover",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := filepath.Join(root, "divergent-pipeline")
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", local, writer)
+	cliGit(t, writer, "config", "user.name", "Pipeline")
+	cliGit(t, writer, "config", "user.email", "pipeline@example.com")
+	cliGit(t, writer, "checkout", "-b", "divergent-later", base)
+	if err := os.WriteFile(filepath.Join(writer, "later.txt"), []byte("divergent later validation work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, writer, "add", "later.txt")
+	cliGit(t, writer, "commit", "-m", "preserved later head 2a972a5")
+	preserved := cliGit(t, writer, "rev-parse", "HEAD")
+	gateRecovery := "refs/no-mistakes/recover/" + run.ID
+	archiveRef := "refs/heads/archive/validation-" + run.ID + "-2a972a5"
+	cliGit(t, writer, "push", gate,
+		preserved+":refs/heads/feature/recover",
+		preserved+":"+gateRecovery,
+	)
+	cliGit(t, local, "fetch", "--no-tags", gate, gateRecovery+":"+archiveRef)
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCancelled, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, local)
+	return cliRecoverFixture{
+		local: local, gate: gate, remote: remote, base: base, submitted: submitted,
+		preserved: preserved, runID: run.ID, archiveRef: archiveRef, repoID: repo.ID,
+	}
+}
+
+func cliRecoveryGitSnapshot(t *testing.T, f cliRecoverFixture) string {
+	t.Helper()
+	return strings.Join([]string{
+		cliGit(t, f.local, "rev-parse", "HEAD"),
+		cliGit(t, f.local, "status", "--porcelain=v1", "--untracked-files=all"),
+		cliGit(t, f.local, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"),
+		cliGit(t, f.gate, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"),
+	}, "\n---\n")
 }
 
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
@@ -494,7 +599,10 @@ func newCLIUnmovedAbortFixture(t *testing.T) cliRecoverFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: submitted, runID: run.ID}
+	return cliRecoverFixture{
+		local: local, gate: gate, remote: remote, base: base, submitted: submitted,
+		preserved: submitted, runID: run.ID, repoID: repo.ID,
+	}
 }
 
 // TestAxiSurfacesReportUserOwnedReleaseAfterUnmovedPrePushAbort walks the
@@ -870,6 +978,9 @@ func TestAxiSyncOlderUnpublishedTargetProvenanceRefusesTakeover(t *testing.T) {
 	}
 }
 
+// This ordinary descendant fixture is the smallest counterfactual to the
+// archive regression: when only the later head's parent changes so it descends
+// from the required head, the established default recovery remains correct.
 func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	out, err := executeCmd("axi", "sync", "--check")
@@ -887,6 +998,11 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stranded check missing %q:\n%s", want, out)
+		}
+	}
+	for _, forbidden := range []string{"source: bound_archive", "command: no-mistakes axi sync --recover --keep-local"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("ordinary preserved-head path unexpectedly contains %q:\n%s", forbidden, out)
 		}
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
@@ -953,13 +1069,190 @@ func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	}
 }
 
+func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testing.T) {
+	f := newCLIDivergentArchiveFixture(t)
+	if _, err := git.Run(context.Background(), f.local, "merge-base", "--is-ancestor", f.submitted, f.preserved); err == nil {
+		t.Fatal("synthetic later head unexpectedly descends from required head")
+	}
+	if _, err := git.Run(context.Background(), f.local, "merge-base", "--is-ancestor", f.preserved, f.submitted); err == nil {
+		t.Fatal("synthetic required head unexpectedly descends from later head")
+	}
+
+	// Initiating trigger: a terminal run recorded a divergent later head.
+	// Masking condition: ordinary take-the-preserved-head eligibility cannot
+	// prove containment. Visible symptom: status calls the readable head
+	// missing and does not offer the safe keep-local recovery. The exact archive
+	// target and gate anchor below are disconfirming evidence for literal object
+	// absence; without a binding they still must not be treated as authority.
+	beforeDetection := cliRecoveryGitSnapshot(t, f)
+	status, err := executeCmd("axi", "status", "--run", f.runID)
+	if err != nil {
+		t.Fatalf("initial status: %v\n%s", err, status)
+	}
+	for _, want := range []string{
+		"relation: diverged",
+		"safety: blocked_recover_preserved_head_missing",
+		"code: inspect_and_reconcile_manually",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("initial status missing %q:\n%s", want, status)
+		}
+	}
+	if strings.Contains(status, "command: no-mistakes axi sync --recover --keep-local") {
+		t.Fatalf("unbound archive was trusted:\n%s", status)
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != beforeDetection {
+		t.Fatal("cached detection changed a branch, ref, or worktree")
+	}
+
+	beforeBind := cliRecoveryGitSnapshot(t, f)
+	bound, err := executeCmd("axi", "sync", "--bind-archive-ref", f.archiveRef)
+	if err != nil {
+		t.Fatalf("bind archive: %v\n%s", err, bound)
+	}
+	for _, want := range []string{
+		"safety: blocked_pipeline_owned_recoverable",
+		"source: bound_archive",
+		"required_head:",
+		f.submitted,
+		"preserved_head:",
+		f.preserved,
+		"archive_ref: " + f.archiveRef,
+		"keep_local: true",
+		"proof: verified",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover --keep-local",
+	} {
+		if !strings.Contains(bound, want) {
+			t.Errorf("bound state missing %q:\n%s", want, bound)
+		}
+	}
+	if strings.Contains(bound, "no-mistakes rerun") {
+		t.Fatalf("archive plan offered a second action instead of exact custody restoration:\n%s", bound)
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != beforeBind {
+		t.Fatal("binding archive evidence changed a branch, ref, or worktree")
+	}
+
+	// The executable surface rechecks the immutable binding on both detection
+	// and recovery. A moved archive refuses, and restoring its exact target
+	// makes the same append-only record usable again.
+	cliGit(t, f.local, "update-ref", f.archiveRef, f.submitted)
+	movedSnapshot := cliRecoveryGitSnapshot(t, f)
+	moved, err := executeCmd("axi", "status", "--run", f.runID)
+	if err != nil {
+		t.Fatalf("moved archive status: %v\n%s", err, moved)
+	}
+	for _, want := range []string{"safety: blocked_recover_archive_moved", "code: inspect_and_reconcile_manually"} {
+		if !strings.Contains(moved, want) {
+			t.Errorf("moved archive status missing %q:\n%s", want, moved)
+		}
+	}
+	movedRecovery, movedErr := executeCmd("axi", "sync", "--recover", "--keep-local")
+	var movedExit *exitError
+	if movedErr == nil || !asExitError(movedErr, &movedExit) || movedExit.code != 1 || !strings.Contains(movedRecovery, "safety: blocked_recover_archive_moved") {
+		t.Fatalf("moved archive recovery should refuse, got %#v\n%s", movedErr, movedRecovery)
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != movedSnapshot {
+		t.Fatal("moved archive detection or recovery refusal changed a branch, ref, or worktree")
+	}
+	cliGit(t, f.local, "update-ref", f.archiveRef, f.preserved)
+
+	beforeWrongAction := cliRecoveryGitSnapshot(t, f)
+	refused, err := executeCmd("axi", "sync", "--recover")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("default recovery should refuse, got %#v\n%s", err, refused)
+	}
+	for _, want := range []string{"safety: blocked_recover_archive_requires_keep_local", "code: recover_custody", "command: no-mistakes axi sync --recover --keep-local"} {
+		if !strings.Contains(refused, want) {
+			t.Errorf("default recovery refusal missing %q:\n%s", want, refused)
+		}
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != beforeWrongAction {
+		t.Fatal("refused default recovery changed a branch, ref, or worktree")
+	}
+
+	gateBefore := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+	recovered, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	if err != nil {
+		t.Fatalf("keep-local archive recovery: %v\n%s", err, recovered)
+	}
+	for _, want := range []string{"recovered: true", "changed: false", "state: synchronized", "relation: equal"} {
+		if !strings.Contains(recovered, want) {
+			t.Errorf("recovered state missing %q:\n%s", want, recovered)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("archive recovery selected %s, want exact required head %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "rev-parse", f.archiveRef); got != f.preserved {
+		t.Fatalf("archive moved to %s, want preserved later head %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover/"+f.runID); got != f.preserved {
+		t.Fatalf("gate recovery ref = %s, want preserved later head %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("gate branch = %s, want exact required head %s", got, f.submitted)
+	}
+	if gateBefore != f.submitted && gateBefore != f.preserved {
+		if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover-gate/"+f.runID); got != gateBefore {
+			t.Fatalf("independent pre-recovery gate head = %s, want %s", got, gateBefore)
+		}
+	}
+}
+
+func TestAxiBindRecoveryArchiveRejectsTagsAndRemoteTrackingRefs(t *testing.T) {
+	f := newCLIDivergentArchiveFixture(t)
+	tagRef := "refs/tags/archive-candidate"
+	remoteRef := "refs/remotes/operator/archive-candidate"
+	cliGit(t, f.local, "update-ref", tagRef, f.preserved)
+	cliGit(t, f.local, "update-ref", remoteRef, f.preserved)
+	before := cliRecoveryGitSnapshot(t, f)
+
+	for _, ref := range []string{tagRef, remoteRef} {
+		out, err := executeCmd("axi", "sync", "--bind-archive-ref", ref)
+		var ee *exitError
+		if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+			t.Fatalf("binding %s should refuse, got %#v\n%s", ref, err, out)
+		}
+		for _, want := range []string{"safety: blocked_recover_archive_malformed", "code: inspect_and_reconcile_manually"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("binding %s missing %q:\n%s", ref, want, out)
+			}
+		}
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != before {
+		t.Fatal("refused archive bindings changed a branch, ref, or worktree")
+	}
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	records, err := database.GetRecoveryArchivesByRun(f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("refused binding recorded %d archive candidates", len(records))
+	}
+}
+
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
 		{"sync", "--check", "--recover"},
 		{"sync", "--keep-local"},
+		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
+		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
+		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError
