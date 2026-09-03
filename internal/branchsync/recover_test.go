@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,61 @@ func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInspectCachedGateOnlyDivergenceDefersRecoveryWithoutGateMutation(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "operator rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "operator rescope")
+	diverged := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.gate, "fetch", f.local, diverged)
+	if !objectExists(f.ctx, f.gate, diverged) {
+		t.Fatal("test setup did not make the local diverged head available in the gate")
+	}
+
+	before := bareGitObjectFiles(t, f.gate)
+	state := f.service.InspectCached(f.ctx)
+	after := bareGitObjectFiles(t, f.gate)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("cached inspection wrote objects into the local gate")
+	}
+	if state.State != StatePipelineOwned || state.Safety != "blocked_recover_explicit_verification_required" {
+		t.Fatalf("state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("next action = %#v", state.NextAction)
+	}
+}
+
+func bareGitObjectFiles(t *testing.T, bareRepo string) map[string][]byte {
+	t.Helper()
+	objects := filepath.Join(bareRepo, "objects")
+	files := make(map[string][]byte)
+	err := filepath.WalkDir(objects, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(objects, path)
+		if err != nil {
+			return err
+		}
+		files[rel] = contents
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot gate objects: %v", err)
+	}
+	return files
 }
 
 // TestActivePrePushRunStaysBlockedWithoutRecovery pins the other half of the

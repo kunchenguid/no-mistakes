@@ -255,9 +255,10 @@ func displayTarget(raw string) string {
 	return safeurl.Redact(raw)
 }
 
-// InspectCached reads local Git, persisted provenance, and read-only gate
-// ancestry evidence without fetching or mutating refs, the index, or the
-// worktree.
+// InspectCached reads local Git and persisted provenance without fetching or
+// mutating the Git object database, refs, index, or worktree. Semantic
+// equivalence of diverged histories is intentionally deferred to Refresh,
+// whose explicit operation may construct a temporary merge tree.
 func (s *Service) InspectCached(ctx context.Context) State {
 	state, _, _ := s.inspect(ctx)
 	return state
@@ -1206,14 +1207,13 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 			state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 			return
 		default:
-			if equivalentDivergence(ctx, s.workDir(), state.Local.Head, pushed, base) {
+			// Equivalence uses `git merge-tree --write-tree`, which can add an
+			// object even though no ref or worktree changes. A cached inspection
+			// promises no local mutation, so reserve that proof for Refresh.
+			if live && equivalentDivergence(ctx, s.workDir(), state.Local.Head, pushed, base) {
 				state.State = StateDiverged
 				state.Relation = RelationDiverged
-				if live {
-					state.Safety = SafetySafeEquivalentAdvance
-				} else {
-					state.Safety = "refresh_required"
-				}
+				state.Safety = SafetySafeEquivalentAdvance
 				state.NextAction = &NextAction{Code: "sync", Command: "no-mistakes axi sync"}
 				state.Error = ""
 				return
@@ -1434,38 +1434,53 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		if !s.recoverySourceAvailable(ctx, state, run) {
+		switch s.recoverySourceState(ctx, state, run) {
+		case recoverySourceAvailable:
+			state.Safety = "blocked_pipeline_owned_recoverable"
+			state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
+			state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+			return
+		case recoverySourceExplicitVerification:
+			state.Safety = "blocked_recover_explicit_verification_required"
+			state.Error = "the recorded pipeline and local heads are available for gate comparison but have diverged; cached inspection did not perform the semantic merge required to prove custody recovery, so run explicit recovery or reconcile manually"
+			state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+			return
+		default:
 			state.Safety = "blocked_recover_preserved_head_missing"
 			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
 		}
-		state.Safety = "blocked_pipeline_owned_recoverable"
-		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
-		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
-		return
 	}
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 }
 
-func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
+type recoverySourceState uint8
+
+const (
+	recoverySourceUnavailable recoverySourceState = iota
+	recoverySourceAvailable
+	recoverySourceExplicitVerification
+)
+
+func (s *Service) recoverySourceState(ctx context.Context, state *State, run *db.Run) recoverySourceState {
 	if state == nil || run == nil || strings.TrimSpace(run.HeadSHA) == "" {
-		return false
+		return recoverySourceUnavailable
 	}
 	localAnchor := custody.RecoveryRef(run.ID)
 	_, localAnchorExists, err := git.ExactRefTarget(ctx, s.workDir(), localAnchor)
 	if err != nil {
-		return false
+		return recoverySourceUnavailable
 	}
 	if localAnchorExists {
 		anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}")
 		if err != nil || anchored != run.HeadSHA {
-			return false
+			return recoverySourceUnavailable
 		}
 	} else if target, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", localAnchor); err == nil && target != "" {
-		return false
+		return recoverySourceUnavailable
 	}
 	local := state.Local.Head
 	preserved := run.HeadSHA
@@ -1473,34 +1488,43 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	if localEligible {
 		localPreRecovery := custody.RecoveryLocalRef(run.ID)
 		if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localPreRecovery+"^{commit}"); err == nil && anchored != preserved && local == preserved && !state.Local.Clean {
-			return false
+			return recoverySourceUnavailable
 		}
 	}
 
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
-		return localEligible
+		if localEligible {
+			return recoverySourceAvailable
+		}
+		return recoverySourceUnavailable
 	}
 	if _, err := os.Stat(gateDir); err != nil {
-		return localEligible
+		if localEligible {
+			return recoverySourceAvailable
+		}
+		return recoverySourceUnavailable
 	}
 	compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 	if err != nil || !compatible {
-		return false
+		return recoverySourceUnavailable
 	}
 	if localEligible {
-		return true
+		return recoverySourceAvailable
 	}
 	if !objectExists(ctx, gateDir, run.HeadSHA) {
-		return false
+		return recoverySourceUnavailable
 	}
 	if !state.Local.Clean || !objectExists(ctx, gateDir, local) {
-		return false
+		return recoverySourceUnavailable
 	}
 	if isAncestor(ctx, gateDir, local, preserved) {
-		return true
+		return recoverySourceAvailable
 	}
-	return preservedContainsLocalWork(ctx, gateDir, local, preserved)
+	// Proving gate-only divergence uses merge-tree --write-tree, which creates
+	// a Git object. Cached inspection must not mutate either repository, so the
+	// explicit Recover operation owns this proof and any resulting write.
+	return recoverySourceExplicitVerification
 }
 
 func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db.Run) bool {

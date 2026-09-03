@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,54 @@ func TestInspectCachedBehindPerformsNoFetchOrMutation(t *testing.T) {
 	if _, err := gitpkg.Run(f.ctx, f.local, "show-ref", "--verify", "refs/no-mistakes/sync/"+f.run.ID); err == nil {
 		t.Fatal("cached inspection created a private fetch ref")
 	}
+}
+
+func TestInspectCachedDivergedDoesNotWriteGitObjects(t *testing.T) {
+	t.Parallel()
+
+	f := newSyncFixture(t)
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "pipeline doc", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+	})
+	mustRun(t, f.local, "fetch", f.remote, "refs/heads/feature/sync:refs/remotes/origin/feature/sync")
+
+	before := gitObjectFiles(t, f.local)
+	state := f.service.InspectCached(f.ctx)
+	after := gitObjectFiles(t, f.local)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" {
+		t.Fatalf("state = %#v", state)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("cached inspection wrote Git objects: before=%v after=%v", before, after)
+	}
+}
+
+func gitObjectFiles(t *testing.T, repoDir string) map[string]string {
+	t.Helper()
+	objects := filepath.Join(repoDir, ".git", "objects")
+	files := make(map[string]string)
+	err := filepath.WalkDir(objects, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(objects, path)
+		if err != nil {
+			return err
+		}
+		files[rel] = string(contents)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot Git objects: %v", err)
+	}
+	return files
 }
 
 func TestApplyCleanStrictBehindFastForwardsExactBoundHead(t *testing.T) {

@@ -35,7 +35,7 @@ no-mistakes init --worktree-root ~/work/my-repo-runs
 
 | Flag              | Type     | Default | Description                                                                                      |
 | ----------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                  |
+| `--fork-url`      | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin`                    |
 | `--worktree-root` | `string` | (none)  | Directory to create this repository's run worktrees in; prints the `worktree_roots` entry to add |
 
 Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
@@ -207,11 +207,11 @@ no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
 ```
 
-| Flag           | Type   | Default | Description                                                                  |
-| -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
-| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
+| Flag           | Type   | Default | Description                                                                                                                                     |
+| -------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                                                                                   |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree                                                                       |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -227,7 +227,7 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned`. Status offers `next_action.code: recover_custody` only when recovery can establish the same eligibility it will enforce: an equal or ahead local head proves the source locally and can create the local anchor when the gate is unavailable, but any existing gate recovery ref must still match the recorded head; importing a missing preserved head requires an exact run-specific gate anchor (or legacy commit evidence that can be anchored), a clean worktree, and either local ancestry or the content-preservation proof described below. The eligible state reports `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and the exact `submitted_head`/`current_head`/`relation` ownership facts.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned`. Status offers `next_action.code: recover_custody` only with verified source evidence: an equal or ahead local head proves the source locally and can create the local anchor when the gate is unavailable, but any existing gate recovery ref must still match the recorded head; importing a missing preserved head requires an exact run-specific gate anchor (or legacy commit evidence that can be anchored), a clean worktree, and local ancestry. A clean non-ancestral local head whose comparison requires the gate reports `safety: blocked_recover_explicit_verification_required`: cached status deliberately defers the write-capable content-preservation proof to explicit `--recover`. The ordinary eligible state reports `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and the exact `submitted_head`/`current_head`/`relation` ownership facts.
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
 Without positive evidence that the submitted head stayed unchanged, custody is not guessed away. Missing or conflicting evidence, and import cases with a dirty worktree or genuinely divergent history, require manual reconciliation instead of advertising a recovery that will refuse.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
@@ -348,9 +348,9 @@ cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
 an active run; do not use it to bypass a gate.
 
-| Flag | Type | Default | Description |
-| ---- | ---- | ------- | ----------- |
-| `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| Flag       | Type     | Default | Description                                                    |
+| ---------- | -------- | ------- | -------------------------------------------------------------- |
+| `--intent` | `string` | (none)  | Explicit intent overriding inherited intent or fresh inference |
 
 ## no-mistakes sync
 
@@ -364,12 +364,12 @@ no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
 ```
 
-| Flag           | Type   | Default | Description                                                     |
-| -------------- | ------ | ------- | --------------------------------------------------------------- |
-| `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
-| `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
+| Flag           | Type   | Default | Description                                                                                                                                     |
+| -------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`                                                                                         |
+| `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt                                                                         |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree                                                                       |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
@@ -377,7 +377,7 @@ The command uses the same service and safety contract as `no-mistakes axi sync`,
 
 ## no-mistakes status
 
-Show repo, daemon, active run, and relevant cached local-branch synchronization status.
+Show repo, daemon, active run, and cached local-branch synchronization status.
 
 ```sh
 no-mistakes status
@@ -389,6 +389,16 @@ Displays:
 - Gate path
 - Daemon status (running/stopped, PID)
 - Active run details: ID, branch, status, head SHA, start time
+- Cached local repository state: branch, short `HEAD`, cleanliness, and the
+  locally recorded synchronization guidance
+
+The cached local-state line is always present once a repository is registered.
+It is local evidence only: its Git inspection does not fetch or query a Git
+remote, and it does not claim that the remote branch is currently fresh. That
+inspection does not mutate either the invoking repository or local gate Git
+object database, refs, index, or worktree; a Git-status failure is labelled as unavailable rather than as
+confirmed dirtiness. `status` may still record its normal local command
+telemetry separately.
 
 ## no-mistakes runs
 

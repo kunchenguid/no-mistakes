@@ -61,10 +61,10 @@ func newStatusCmd() *cobra.Command {
 				if err != nil {
 					return "", "", fmt.Errorf("check active run: %w", err)
 				}
-				fingerprint := statusFingerprint(repo.ID, daemonState, activeRun)
-				if syncState := (&branchsync.Service{DB: d, Repo: repo, WorkDir: "."}).InspectCached(cmd.Context()); relevantCachedSyncState(syncState) {
-					fmt.Fprintf(w, "\n  %s  %s\n", sDim.Render("local branch:"), humanSyncSummary(syncState))
-				}
+				syncState := (&branchsync.Service{DB: d, Repo: repo, WorkDir: "."}).InspectCached(cmd.Context())
+				cachedSummary := cachedBranchSummary(syncState)
+				fingerprint := statusFingerprint(repo.ID, daemonState, activeRun, cachedSummary)
+				fmt.Fprintf(w, "\n  %s  %s\n", sDim.Render("local state:"), cachedSummary)
 				if activeRun != nil {
 					fmt.Fprintln(w)
 					fmt.Fprintf(w, "  %s\n", sCyan.Render("Active run"))
@@ -85,11 +85,36 @@ func newStatusCmd() *cobra.Command {
 	}
 }
 
-func statusFingerprint(repoID, daemonState string, activeRun *db.Run) string {
+func statusFingerprint(repoID, daemonState string, activeRun *db.Run, cachedSummary string) string {
+	base := repoID + "|" + daemonState + "|" + cachedSummary
 	if activeRun == nil {
-		return repoID + "|" + daemonState + "|idle"
+		return base + "|idle"
 	}
-	return fmt.Sprintf("%s|%s|%s:%s:%s:%s", repoID, daemonState, activeRun.ID, activeRun.Branch, activeRun.Status, activeRun.HeadSHA)
+	return fmt.Sprintf("%s|%s:%s:%s:%s", base, activeRun.ID, activeRun.Branch, activeRun.Status, activeRun.HeadSHA)
+}
+
+func cachedBranchSummary(state branchsync.State) string {
+	summary := humanSyncSummary(state)
+	if state.Local.Branch == "" || state.Local.Head == "" {
+		return "cached: unavailable (" + summary + ")"
+	}
+
+	head := state.Local.Head[:minLen(len(state.Local.Head), 8)]
+	if state.Local.Reason == "status_unavailable" {
+		if state.State == branchsync.StateDirty {
+			summary = "local branch status is unavailable"
+		}
+		return fmt.Sprintf("cached: %s %s (cleanliness unavailable: run `git status`; %s)", state.Local.Branch, head, summary)
+	}
+	cleanliness := "clean"
+	if !state.Local.Clean {
+		cleanliness = "dirty"
+		if state.Local.Reason != "" {
+			cleanliness += ": " + state.Local.Reason
+		}
+	}
+
+	return fmt.Sprintf("cached: %s %s (%s; %s)", state.Local.Branch, head, cleanliness, summary)
 }
 
 func minLen(a, b int) int {
