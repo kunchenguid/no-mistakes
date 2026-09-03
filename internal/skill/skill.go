@@ -240,6 +240,7 @@ If it reports ` + "`next_action.code`" + ` is ` + "`continue_active_run`" + `, t
 When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, a terminal run left unpublished pipeline commits preserved in the local gate: run ` + "`no-mistakes axi sync --recover`" + ` to return custody and take the preserved head, or ` + "`no-mistakes rerun`" + ` to resume validating it instead.
 Recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under ` + "`refs/no-mistakes/recover-local/<run>`" + `.
 That proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+When ` + "`next_action.code`" + ` is ` + "`adopt_published`" + `, a custody-returned branch was rebased after its gate lane stopped moving: run ` + "`no-mistakes axi sync --adopt-published`" + `. It verifies the configured push target already has the exact rebased local head, preserves the old lane head, and updates only that stale gate lane. If the target differs or changes during verification, it refuses without replacing the lane.
 A ` + "`branch_sync.state`" + ` of ` + "`user_owned`" + ` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated ` + "`--recover`" + ` there is a harmless no-op.
 A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; ` + "`--keep-local`" + ` keeps your current head while the preserved commits stay anchored under ` + "`refs/no-mistakes/recover/<run>`" + `.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
@@ -310,6 +311,7 @@ no-mistakes axi status        # full detail plus cached branch_sync when relevan
 no-mistakes axi sync --check  # freshly verify an offered synchronization plan
 no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
+no-mistakes axi sync --adopt-published  # adopt an exactly published rebased head into its stale gate lane
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)

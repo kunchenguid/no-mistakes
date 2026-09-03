@@ -46,6 +46,9 @@ var canonicalBranchSyncPhrases = []string{
 	"recover_custody",
 	"no-mistakes axi sync --recover",
 	"preserved in the local gate",
+	"adopt_published",
+	"no-mistakes axi sync --adopt-published",
+	"configured push target",
 	// Cancellation releases a run that never changed the submitted head
 	// (v1.44.2 dogfood catch): every surface must name the released state and
 	// that it needs no recovery.

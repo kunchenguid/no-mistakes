@@ -347,7 +347,7 @@ func TestAxiStatusCachedBranchSyncDoesNotFetch(t *testing.T) {
 }
 
 type cliRecoverFixture struct {
-	local, gate, submitted, preserved, runID string
+	local, remote, gate, submitted, preserved, runID string
 }
 
 // newCLIRecoverFixture reproduces the stranded custody state end to end for
@@ -371,6 +371,8 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	cliGit(t, local, "add", "file.txt")
 	cliGit(t, local, "commit", "-m", "base")
 	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "remote", "add", "origin", remote)
+	cliGit(t, local, "push", "-u", "origin", "main")
 	cliGit(t, local, "checkout", "-b", "feature/recover")
 	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("feature\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -428,7 +430,7 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+	return cliRecoverFixture{local: local, remote: remote, gate: gate, submitted: submitted, preserved: preserved, runID: run.ID}
 }
 
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
@@ -918,6 +920,115 @@ func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	}
 }
 
+// rebaseReturnedCustodyBranch recreates the reported lane-staleness shape: a
+// recovered branch is published, rebased onto a newer main, given a follow-up
+// commit, then force-with-lease pushed to the actual target. The gate still
+// holds the pre-rebase head because no pipeline run has yet seen the rewrite.
+func rebaseReturnedCustodyBranch(t *testing.T, f cliRecoverFixture, publishRebase bool) string {
+	t.Helper()
+	if out, err := executeCmd("axi", "sync", "--recover"); err != nil {
+		t.Fatalf("return custody: %v\n%s", err, out)
+	}
+	cliGit(t, f.local, "push", "-u", "origin", "HEAD:refs/heads/feature/recover")
+
+	cliGit(t, f.local, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(f.local, "upstream.txt"), []byte("newer main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "upstream.txt")
+	cliGit(t, f.local, "commit", "-m", "advance main")
+	cliGit(t, f.local, "push", "origin", "main")
+
+	cliGit(t, f.local, "checkout", "feature/recover")
+	cliGit(t, f.local, "rebase", "main")
+	if err := os.WriteFile(filepath.Join(f.local, "follow-up.txt"), []byte("post-rebase follow-up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "follow-up.txt")
+	cliGit(t, f.local, "commit", "-m", "post-rebase follow-up")
+	rebased := cliGit(t, f.local, "rev-parse", "HEAD")
+	if publishRebase {
+		cliGit(t, f.local, "push", "--force-with-lease=refs/heads/feature/recover:"+f.preserved, "origin", "HEAD:refs/heads/feature/recover")
+	}
+	return rebased
+}
+
+// TestAxiSyncAdoptPublishedRebasedLane reproduces the observed ordinary Git
+// failure before it tests the supported recovery. `axi run` uses the same
+// unforced HEAD-to-gate push, so this non-fast-forward is the failure that
+// previously stopped it before a run could be created.
+func TestAxiSyncAdoptPublishedRebasedLane(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	rebased := rebaseReturnedCustodyBranch(t, f, true)
+	cliGit(t, f.local, "push", f.gate, f.preserved+":refs/heads/feature/sibling")
+	sibling := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sibling")
+
+	if err := git.Push(context.Background(), f.local, f.gate, "refs/heads/feature/recover", "", false); err == nil {
+		t.Fatal("unforced push to the stale gate unexpectedly succeeded")
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("rejected gate push moved lane to %s, want pre-rebase %s", got, f.preserved)
+	}
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	for _, want := range []string{
+		"state: custody_returned",
+		"relation: diverged",
+		"code: adopt_published",
+		"command: no-mistakes axi sync --adopt-published",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("rebased status missing %q:\n%s", want, status)
+		}
+	}
+
+	out, err := executeCmd("axi", "sync", "--adopt-published")
+	if err != nil {
+		t.Fatalf("adopt published rebased head: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: custody_returned", "safety: gate_ready", "changed: true", "code: run_pipeline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("adoption output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != rebased {
+		t.Fatalf("gate lane = %s, want published rebased head %s", got, rebased)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sibling"); got != sibling {
+		t.Fatalf("adoption changed sibling lane to %s, want %s", got, sibling)
+	}
+	// The exact no-op push lets axi run take its existing rerun path instead of
+	// failing before the daemon observes the lane.
+	if err := git.Push(context.Background(), f.local, f.gate, "refs/heads/feature/recover", "", false); err != nil {
+		t.Fatalf("gate push after adoption: %v", err)
+	}
+}
+
+func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	rebased := rebaseReturnedCustodyBranch(t, f, false)
+
+	out, err := executeCmd("axi", "sync", "--adopt-published")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("unpublished rebase recovery should refuse, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"safety: blocked_published_head_mismatch", "no files or gate refs were changed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unpublished rebase refusal missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != rebased {
+		t.Fatalf("refused recovery moved local branch to %s, want %s", got, rebased)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("refused recovery moved gate lane to %s, want %s", got, f.preserved)
+	}
+}
+
 func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	if err := os.WriteFile(filepath.Join(f.local, "rescope.txt"), []byte("rescope\n"), 0o644); err != nil {
@@ -957,8 +1068,12 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
 		{"sync", "--check", "--recover"},
+		{"sync", "--check", "--adopt-published"},
+		{"sync", "--recover", "--adopt-published"},
 		{"sync", "--keep-local"},
 		{"axi", "sync", "--check", "--recover"},
+		{"axi", "sync", "--check", "--adopt-published"},
+		{"axi", "sync", "--recover", "--adopt-published"},
 		{"axi", "sync", "--keep-local"},
 	} {
 		out, err := executeCmd(args...)
