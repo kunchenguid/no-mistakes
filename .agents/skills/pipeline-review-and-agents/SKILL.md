@@ -27,6 +27,12 @@ metadata:
 - Missing git objects warn and continue, never block. Clear the range only after a completed review whose approved head equals or is a descendant of `to_sha`; parked, failed, skipped, and aborted reviews must not clear it. Rebase remaps the persisted SHAs onto the rewritten head so the next review can still bind.
 - Regressions: `internal/pipeline/uncertified_test.go`, `TestCommitAgentFixes_PersistsUncertifiedRangeForReview`, `TestCommitAgentFixes_LintDoesNotPersistUncertifiedRange`, `TestCommitAgentFixes_DocumentDoesNotPersistUncertifiedRange`, `TestFixRoundProvenanceClause_EmitsForUncertifiedRangeWhenNotFixing`, `TestUncertifiedRange_PersistsThenFeedsNextInitialReview`, `TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten`.
 
+**Authorization and Privacy Tracing (`internal/pipeline/steps/review.go`)**
+
+- Authorization/privacy is a conditional obligation inside the existing Review pass, never a separate turn, gate, finding type, status, certification, or default-cost surface. For changed behavior involving potentially protected resources or user data, trace identity, the earliest shared authorization boundary and alternate callers, ownership/role/tenant scope, public serialization, secondary disclosures, and fail-open or stale-context paths.
+- Policy remains repository-owned through project instructions and trusted `review.path_instructions`. Findings require a concrete source-backed reachable operation or disclosure and name the protected resource/field, missing control, and impact; accept equivalent controls and intentionally public data rather than keyword-matching auth machinery. Missing material policy may be `ask-user`; source-proven routine defects retain `auto-fix` semantics.
+- Docs owner: `docs/src/content/docs/reference/pipeline-steps.md`. Prompt regression: `TestReviewStep_AuthorizationPrivacyTracingContract`. Development-only qualitative cases: `internal/pipeline/steps/testdata/authorization_privacy_review/`.
+
 **Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
 
 - The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.

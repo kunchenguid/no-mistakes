@@ -524,6 +524,53 @@ func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
 	}
 }
 
+// Authorization and privacy are one conditional obligation in the existing
+// review pass. The emitted prompt must require concrete cross-boundary evidence,
+// preserve repository ownership of access policy, accept equivalent controls
+// and intentionally public data, and route material policy ambiguity through the
+// existing ask-user action rather than inventing a rule.
+func TestReviewStep_AuthorizationPrivacyTracingContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected the existing single review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"potentially protected resources or user data",
+		"where identity is established and whether unauthenticated execution remains reachable",
+		"earliest shared boundary used by every caller",
+		"ownership, role, tenant, organization, and administrative scope",
+		"public responses and serialization",
+		"search projections, caches, logs, telemetry, error details, exports, and generated artifacts",
+		"fail-open defaults, missing-context behavior, preview or bypass paths, and stale authorization assumptions",
+		"source-backed evidence of a concrete reachable operation or disclosure path",
+		"protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure",
+		"do not invent access policy",
+		`"ask-user" finding that names the missing policy decision`,
+		"equivalent controls and intentionally public data",
+		"middleware, an authorization call, or an auth-related test is absent by name",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing authorization/privacy contract %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // The rereview that certifies a fix round examines code the pipeline itself
 // authored, moments earlier, to the previous review turn's prescription. The
 // prompt must reframe that code as unreviewed new work under the same

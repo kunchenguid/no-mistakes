@@ -215,8 +215,16 @@ Previous review findings to address:
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
-	// The action vocabulary below classifies by remedy as well as by topic: a
-	// finding whose smallest honest remedy would extend the change (durable
+	// The authorization/privacy obligation below specializes the existing
+	// concrete-state trace only when changed behavior crosses a potentially
+	// protected resource or user-data boundary. The repository still owns access
+	// policy through project instructions and trusted path instructions; the
+	// generic prompt owns only the tracing method and source-evidence threshold.
+	// Material policy ambiguity uses the existing ask-user action, while a
+	// source-proven routine defect retains the existing auto-fix semantics.
+	//
+	// The action vocabulary below also classifies by remedy as well as by topic:
+	// a finding whose smallest honest remedy would extend the change (durable
 	// state, a schema change, background/retry/persistence machinery, a new
 	// subsystem) parks at the existing ask-user gate even when the defect reads
 	// as mechanical, because the authorization needed is for the remedy, not the
@@ -241,6 +249,9 @@ Task:
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
 - For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
 - For any new or changed logic, construct at least one concrete input or state and trace it through the code, looking for a case that produces a wrong result without erroring.
+- When changed behavior reads, writes, returns, indexes, caches, logs, or otherwise processes potentially protected resources or user data, trace a concrete operation or disclosure across the relevant boundaries. Check where identity is established and whether unauthenticated execution remains reachable; whether authorization is enforced at the earliest shared boundary used by every caller; ownership, role, tenant, organization, and administrative scope including alternate call paths; public responses and serialization of private fields, PII, drafts, internal metadata, or reviewer/admin-only data; secondary disclosure through search projections, caches, logs, telemetry, error details, exports, and generated artifacts; and fail-open defaults, missing-context behavior, preview or bypass paths, and stale authorization assumptions.
+- Report an authorization or privacy finding only with source-backed evidence of a concrete reachable operation or disclosure path. Identify the protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure. Do not infer a finding merely because middleware, an authorization call, or an auth-related test is absent by name; accept equivalent controls and intentionally public data when the source proves them.
+- Repository instructions own access policy. If they and the source do not establish whether access is allowed, do not invent access policy. A material ambiguity introduced by the change may be an "ask-user" finding that names the missing policy decision; a source-proven routine defect retains the existing "auto-fix" semantics.
 - When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
 - Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
 - Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.

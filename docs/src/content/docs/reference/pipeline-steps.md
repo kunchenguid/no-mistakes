@@ -77,7 +77,7 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 
 ## Review
 
-AI code review of your diff.
+AI code review of your diff. This is probabilistic evidence, not a security or compliance certification, and does not replace repository-owned authorization and privacy tests, static analysis, threat modeling, or human security review.
 
 **Behavior:**
 
@@ -93,6 +93,9 @@ AI code review of your diff.
 - Removes any returned finding whose sole claim is that one of those same-run delivery outcomes is not present yet, while keeping findings about pre-existing or external pull requests, third-party artifacts, and lifecycle state that the current run does not own
 - Keeps the later Push, PR, and CI steps responsible for strictly validating their own outcomes after review completes
 - For any new or changed logic, constructs at least one concrete input or state and traces it, looking for a case that produces a wrong result without erroring; a computation that returns a wrong value, label, or set without failing is in scope
+- When changed behavior processes potentially protected resources or user data, traces identity and unauthenticated reachability, authorization at the earliest shared boundary used by every caller, ownership/role/tenant/organization/admin scope and alternate call paths, public serialization, secondary disclosures through projections, caches, logs, telemetry, errors, exports, or generated artifacts, and fail-open, missing-context, preview/bypass, or stale-authorization behavior
+- Reports an authorization or privacy finding only from a concrete source-backed operation or disclosure path, naming the protected resource or field, missing control, and unauthorized impact; equivalent controls and intentionally public data are accepted, and the absence of middleware, a specifically named authorization call, or an auth-related test is not evidence by itself
+- Leaves access policy to repository project instructions and trusted [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) rather than inventing it; a material ambiguity introduced by the change may use the existing `ask-user` action and a source-proven routine defect retains the existing `auto-fix` semantics
 - For changes that claim a durable bug fix, reconstructs the concrete failing sequence and required invariant, inspects relevant sibling paths and shared state transitions, and reports an inadequate fix only when source evidence proves the same authorized failure remains reachable; the recommendation targets the earliest supported shared boundary
 - Does not treat code shape or duplication alone as evidence of a systemic defect, demand speculative redesign, block explicitly authorized short-term containment merely because a later durable fix is possible, expand the user's scope, or promote optional improvements into blockers
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)

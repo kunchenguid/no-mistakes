@@ -1,0 +1,21 @@
+diff --git a/account/http.go b/account/http.go
+index 1111111..2222222 100644
+--- a/account/http.go
++++ b/account/http.go
+@@ -2,0 +2,3 @@ package account
++func ChangeEmail(r *http.Request) error {
++	return service.UpdateEmail(CurrentUser(r.Context()), r.PathValue("userID"), r.FormValue("email"))
++}
+diff --git a/account/service.go b/account/service.go
+index 3333333..4444444 100644
+--- a/account/service.go
++++ b/account/service.go
+@@ -1 +1,8 @@
+ package account
++
++func (s *Service) UpdateEmail(actor User, targetID, email string) error {
++	if actor.ID != targetID && !actor.Admin {
++		return ErrForbidden
++	}
++	return s.store.UpdateEmail(targetID, email)
++}
