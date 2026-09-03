@@ -521,6 +521,14 @@ func TestVerifyClosingIssuesFailsWhenLiveBodyDroppedARequestedReference(t *testi
 	}
 }
 
+func TestVerifyClosingIssuesDoesNotAcceptReferencePrefix(t *testing.T) {
+	sctx := &pipeline.StepContext{ClosingIssueRefs: []string{"1"}}
+	err := verifyClosingIssuesInBody("## Issues\n\nCloses #10", sctx)
+	if err == nil || !strings.Contains(err.Error(), "#1") {
+		t.Fatalf("verifyClosingIssuesInBody() error = %v, want missing #1", err)
+	}
+}
+
 type closingBodyReader struct {
 	scm.Host
 	body string

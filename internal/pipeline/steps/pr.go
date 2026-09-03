@@ -234,11 +234,20 @@ func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
 			continue
 		}
 		line := renderIssueLinkForRef(sctx, ref)
-		if line == "" || !strings.Contains(body, line) {
+		if line == "" || !containsExactLineBlock(body, line) {
 			return fmt.Errorf("verify closing issues: pull request body is missing %s", closingissues.Target(ref))
 		}
 	}
 	return nil
+}
+
+func containsExactLineBlock(body, block string) bool {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	block = strings.TrimSpace(strings.ReplaceAll(block, "\r\n", "\n"))
+	if block == "" {
+		return false
+	}
+	return strings.Contains("\n"+body+"\n", "\n"+block+"\n")
 }
 
 // retargetExistingPRIfNeeded moves an already-open PR onto a per-run

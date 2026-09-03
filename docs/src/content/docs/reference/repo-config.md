@@ -245,7 +245,7 @@ pr:
 When `--closes` is supplied but no template is configured, the built-in `{{.Keyword}} {{.Reference}}` renders `Closes #95` or `Closes owner/repository#95`.
 Repositories differ on which keyword they want — `Closes` auto-closes the issue on merge, `Refs` only cross-links it — so that choice stays the repository's rather than the tool's.
 
-The Issues section is appended last and budgeted against the forge's PR body size cap. If it cannot fit, it is omitted and the omission is logged rather than truncating the body around it. Existing standalone `Closes`, `Fixes`, and `Resolves` lines are preserved when a readable PR body is replaced, including author-supplied cross-repository references.
+The Issues section is appended last and budgeted against the forge's PR body size cap. If it cannot fit, it is omitted rather than truncating the body around it; when `--closes` supplied a required reference, the subsequent live-body verification fails the PR step closed. Existing standalone `Closes`, `Fixes`, and `Resolves` lines are preserved when a readable PR body is replaced, including author-supplied cross-repository references.
 
 The references are claimed once when the PR body is composed. A `--closes` passed while reattaching after that point is refused explicitly because it could no longer appear in that PR. Before the PR step completes, no-mistakes reads the live body and verifies every requested reference; an unverifiable or missing reference fails the step closed.
 
