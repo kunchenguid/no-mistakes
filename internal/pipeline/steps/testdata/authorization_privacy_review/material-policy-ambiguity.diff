@@ -1,0 +1,17 @@
+diff --git a/billing/http.go b/billing/http.go
+index 1111111..2222222 100644
+--- a/billing/http.go
++++ b/billing/http.go
+@@ -1 +1,12 @@
+ package billing
++
++func GetInvoice(w http.ResponseWriter, r *http.Request) {
++	invoiceID := r.PathValue("invoiceID")
++	invoice, err := store.InvoiceByID(r.Context(), invoiceID)
++	if err != nil {
++		http.Error(w, "not found", http.StatusNotFound)
++		return
++	}
++	w.Header().Set("Content-Type", "application/json")
++	_ = json.NewEncoder(w).Encode(invoice)
++}
