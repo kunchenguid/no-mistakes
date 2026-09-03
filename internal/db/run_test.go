@@ -563,6 +563,44 @@ func TestVerifiedHeadAndTerminalStatusPersistAtomically(t *testing.T) {
 	}
 }
 
+func TestVerifyTerminalRunHeadRewriteUsesRecordedReviewCAS(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/terminal-rewrite-cas", "https://example.com/terminal-rewrite-cas", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "recorded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := d.VerifyTerminalRunHeadRewrite(run.ID, types.RunFailed, "recorded", "live"); err != nil || updated {
+		t.Fatalf("mismatched review CAS = %t, %v", updated, err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.HeadSHA != "recorded" || got.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("failed CAS changed run = %#v, %v", got, err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "recorded"); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := d.VerifyTerminalRunHeadRewrite(run.ID, types.RunFailed, "recorded", "live"); err != nil || !updated {
+		t.Fatalf("matching review CAS = %t, %v", updated, err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil || got.HeadSHA != "live" || got.TerminalHeadVerifiedAt == nil {
+		t.Fatalf("successful CAS did not verify live head = %#v, %v", got, err)
+	}
+}
+
 func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")

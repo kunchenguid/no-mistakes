@@ -12,7 +12,9 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -470,6 +472,103 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 		t.Fatalf("fresh pipeline did not start cleanly after recovery:\n%s", freshOut)
 	}
 	t.Logf("end-user fresh-run result after custody return:\n%s", freshOut)
+}
+
+func TestAxiTerminalEqualTreeRecoveryJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	h.CommitChange("init-terminal-equal-tree", "seed.txt", "seed\n", "seed terminal recovery")
+	initWorktree := h.AddWorktree("init-terminal-equal-tree")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	branch := "feature/terminal-equal-tree"
+	submitted := h.CommitChange(branch, "feature.txt", "operator work\n", "operator work")
+	operator := h.AddWorktree(branch)
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	if out, err := h.runGit(context.Background(), operator, "push", gateDir, "HEAD:refs/heads/"+branch); err != nil {
+		t.Fatalf("seed gate branch: %v\n%s", err, out)
+	}
+	mainBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", submitted+"^")
+	if err != nil {
+		t.Fatalf("gate base: %v\n%s", err, mainBytes)
+	}
+	if err := os.WriteFile(filepath.Join(operator, "feature.txt"), []byte("pipeline reviewed replacement\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "commit", "-am", "recorded reviewed pipeline result"); gitErr != nil {
+		t.Fatalf("record reviewed result: %v\n%s", gitErr, out)
+	}
+	recorded := strings.TrimSpace(h.WorktreeRefSHA(branch))
+	if out, gitErr := h.runGit(context.Background(), gateDir, "fetch", operator, recorded+":refs/no-mistakes/test-recorded"); gitErr != nil {
+		t.Fatalf("import recorded result: %v\n%s", gitErr, out)
+	}
+	treeBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", recorded+"^{tree}")
+	if err != nil {
+		t.Fatalf("recorded tree: %v\n%s", err, treeBytes)
+	}
+	liveBytes, err := h.runGit(context.Background(), gateDir, "-c", "user.name=No Mistakes E2E", "-c", "user.email=e2e@example.com", "commit-tree", strings.TrimSpace(string(treeBytes)), "-p", strings.TrimSpace(string(mainBytes)), "-m", "live equal-tree rewrite")
+	if err != nil {
+		t.Fatalf("commit live rewrite: %v\n%s", err, liveBytes)
+	}
+	live := strings.TrimSpace(string(liveBytes))
+	if out, gitErr := h.runGit(context.Background(), gateDir, "update-ref", "refs/heads/"+branch, live, submitted); gitErr != nil {
+		t.Fatalf("install live gate rewrite: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "reset", "--hard", submitted); gitErr != nil {
+		t.Fatalf("restore submitted operator head: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), gateDir, "merge-tree", "--write-tree", "--merge-base", strings.TrimSpace(string(mainBytes)), live, submitted); gitErr == nil {
+		t.Fatalf("fixture did not reproduce direct live/local merge conflict: %s", out)
+	}
+	if out, gitErr := h.runGit(context.Background(), gateDir, "update-ref", "-d", "refs/no-mistakes/test-recorded"); gitErr != nil {
+		t.Fatalf("remove fixture ref: %v\n%s", gitErr, out)
+	}
+
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.GetRepo(h.repoID())
+	if err != nil || repo == nil {
+		database.Close()
+		t.Fatalf("registered repo = %#v, err %v", repo, err)
+	}
+	run, err := database.InsertRun(repo.ID, branch, submitted, strings.TrimSpace(string(mainBytes)))
+	if err == nil {
+		err = database.UpdateRunHeadSHA(run.ID, recorded)
+	}
+	if err == nil {
+		err = database.UpdateRunReviewApprovedHeadSHA(run.ID, recorded)
+	}
+	if err == nil {
+		err = database.UpdateRunErrorStatus(run.ID, "terminal worker lost", types.RunFailed)
+	}
+	if closeErr := database.Close(); err != nil || closeErr != nil {
+		t.Fatalf("record terminal run: %v, close %v", err, closeErr)
+	}
+
+	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("public equal-tree recovery: %v\n%s", err, recoverOut)
+	}
+	for _, want := range []string{"recovered: true", "changed: true", "state: custody_returned"} {
+		if !strings.Contains(recoverOut, want) {
+			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
+		}
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA(branch)); got != live {
+		t.Fatalf("operator HEAD = %s, want live gate head %s", got, live)
+	}
+	for _, ref := range []string{"refs/no-mistakes/recover/" + run.ID, "refs/no-mistakes/recover-local/" + run.ID} {
+		if out, gitErr := h.runGit(context.Background(), operator, "rev-parse", ref); gitErr != nil {
+			t.Fatalf("missing recovery ref %s: %v\n%s", ref, gitErr, out)
+		}
+	}
+	second, err := h.RunInDir(operator, "axi", "sync", "--recover")
+	if err != nil || !strings.Contains(second, "recovered: true") || !strings.Contains(second, "changed: false") {
+		t.Fatalf("idempotent public recovery: %v\n%s", err, second)
+	}
 }
 
 // rebaseCustodyScenario differs from branchSyncScenario in exactly one way that

@@ -676,6 +676,16 @@ func (d *DB) UpdateRunStatusWithVerifiedHead(id string, status types.RunStatus, 
 	return nil
 }
 
+func (d *DB) VerifyTerminalRunHeadRewrite(id string, status types.RunStatus, recordedHead, liveHead string) (bool, error) {
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, push_active = 0, terminal_head_verified_at = ?, updated_at = ? WHERE id = ? AND status = ? AND head_sha = ? AND review_approved_head_sha = ? AND terminal_head_verified_at IS NULL AND custody_returned_at IS NULL`, liveHead, ts, ts, id, status, recordedHead, recordedHead)
+	if err != nil {
+		return false, fmt.Errorf("verify terminal run head rewrite: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	return updated == 1, err
+}
+
 // RecordRunTerminalHeadEvidence records a managed worktree head that was
 // verified immediately before crash recovery makes the run terminal. The
 // subsequent stale-run status transition deliberately preserves this stamp.
