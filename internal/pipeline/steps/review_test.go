@@ -473,6 +473,41 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// The qualitative corpus is an executable unified-diff contract, so each
+// fixture must remain consumable by the documented git-based evaluation flow.
+func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		file     string
+		baseline string
+	}{
+		{name: "rare duplicate window", file: "jobs/finish.go", baseline: "package jobs\n"},
+		{name: "hypothetical unused lock", file: "run/status.go", baseline: "package run\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.baseline), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "init", "-q")
+
+			fixture, err := filepath.Abs(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "apply", "--check", fixture)
+		})
+	}
+}
+
 // Intended-usage evidence is a finding threshold, not a general "be less
 // noisy" rewrite: a rare but real sequence under intended usage still
 // qualifies, while a hypothetical unused path does not. The completeness
