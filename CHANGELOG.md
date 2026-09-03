@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.64.0](https://github.com/kunchenguid/no-mistakes/compare/v1.63.0...v1.64.0) (2026-09-03)
+
+
+### Features
+
+* **pipeline:** add simplification-first review and repair guidance ([#950](https://github.com/kunchenguid/no-mistakes/issues/950)) ([72ffc59](https://github.com/kunchenguid/no-mistakes/commit/72ffc59bf30fc2d2ee85627d1180323bba40aad7))
+
 ## [1.63.0](https://github.com/kunchenguid/no-mistakes/compare/v1.62.0...v1.63.0) (2026-09-03)
 
 
