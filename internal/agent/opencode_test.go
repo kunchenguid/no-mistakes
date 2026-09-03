@@ -525,7 +525,8 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *testing.T) {
 	var sessions atomic.Int32
 	var eventStreams atomic.Int32
-	var nativeFormatSeen atomic.Bool
+	var nativeNestedFormatSeen atomic.Bool
+	var nativeRootFormatSeen atomic.Bool
 	var fallbackFormatSeen atomic.Bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -546,8 +547,11 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode native request: %v", err)
 			}
-			_, hasFormat := body["format"]
-			nativeFormatSeen.Store(hasFormat)
+			_, hasRootFormat := body["format"]
+			nativeRootFormatSeen.Store(hasRootFormat)
+			info, _ := body["info"].(map[string]any)
+			_, hasNestedFormat := info["format"]
+			nativeNestedFormatSeen.Store(hasNestedFormat)
 			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"Thinking may not be enabled when tool_choice forces tool use."}}}}`)
 
 		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
@@ -591,8 +595,11 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	if got := string(result.Output); got != `{"summary":"all good"}` {
 		t.Fatalf("output = %s", got)
 	}
-	if !nativeFormatSeen.Load() {
-		t.Error("first request did not use native json_schema format")
+	if !nativeNestedFormatSeen.Load() {
+		t.Error("first request did not nest native json_schema format in info")
+	}
+	if nativeRootFormatSeen.Load() {
+		t.Error("first request unexpectedly used root json_schema format")
 	}
 	if fallbackFormatSeen.Load() {
 		t.Error("fallback request unexpectedly used native json_schema format")
@@ -606,7 +613,7 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	if fallbackEvents != 1 {
 		t.Fatalf("fallback lifecycle events = %d, want one fresh prompt-only attempt boundary", fallbackEvents)
 	}
-	t.Logf("native format=%v; fallback format=%v; validated output=%s", nativeFormatSeen.Load(), fallbackFormatSeen.Load(), result.Output)
+	t.Logf("native nested format=%v; native root format=%v; fallback format=%v; validated output=%s", nativeNestedFormatSeen.Load(), nativeRootFormatSeen.Load(), fallbackFormatSeen.Load(), result.Output)
 }
 
 func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testing.T) {
