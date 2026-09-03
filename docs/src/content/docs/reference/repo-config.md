@@ -218,7 +218,7 @@ Choose how each explicit closing issue is rendered in the stable `## Issues` sec
 | | |
 | --- | --- |
 | Type | `string` (Go `text/template`) |
-| Default | Empty. With no `--closes` value, no Issues section is added |
+| Default | Empty. Without `--closes`, no new or inferred closing reference is added; existing standalone closing-keyword lines are preserved during GitHub PR refreshes |
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 The footer exists so a tool-authored PR can carry the same tracker link a human contributor would type, for repositories whose CI requires one.
