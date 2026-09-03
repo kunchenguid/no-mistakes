@@ -1491,7 +1491,7 @@ func issueSection(sctx *pipeline.StepContext) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return "## Issues\n\n" + strings.Join(lines, "\n")
+	return neutralizeAttestationMarkers("## Issues\n\n" + strings.Join(lines, "\n"))
 }
 
 // issueLinkFooterBytes returns the byte cost of the stable Issues section plus

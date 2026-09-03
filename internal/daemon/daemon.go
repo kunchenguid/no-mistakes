@@ -1060,7 +1060,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
 
-	srv.Handle(ipc.MethodUpdateRunClosingIssueRefs, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodUpdateRunClosingIssueRefs, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.UpdateRunClosingIssueRefsParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
