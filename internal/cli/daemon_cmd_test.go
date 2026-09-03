@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -121,23 +122,20 @@ func TestPRBaseBranchPushOptionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestIssueNumberPushOptionRoundTrip(t *testing.T) {
-	opt := formatIssueNumberPushOption(" 42 ")
-	if opt == "" {
-		t.Fatal("formatIssueNumberPushOption returned empty for a non-empty issue")
-	}
-	got, err := parseIssueNumberPushOptions([]string{"ci.skip", opt})
+func TestClosingIssueRefsPushOptionsRoundTrip(t *testing.T) {
+	options := formatClosingIssueRefsPushOptions([]string{"42", "owner/repo#9"})
+	got, err := parseClosingIssueRefsPushOptions(append([]string{"ci.skip"}, options...))
 	if err != nil {
-		t.Fatalf("parseIssueNumberPushOptions() error = %v", err)
+		t.Fatalf("parseClosingIssueRefsPushOptions() error = %v", err)
 	}
-	if got != "42" {
-		t.Fatalf("parseIssueNumberPushOptions() = %q, want 42", got)
+	if refs := strings.Join(got, ","); refs != "42,owner/repo#9" {
+		t.Fatalf("parseClosingIssueRefsPushOptions() = %q, want both references", refs)
 	}
 }
 
-func TestParseIssueNumberPushOptionsRejectsInvalidValue(t *testing.T) {
-	_, err := parseIssueNumberPushOptions([]string{"no-mistakes.issue_number=42 Fixes #99"})
+func TestParseClosingIssueRefsPushOptionsRejectsInvalidValue(t *testing.T) {
+	_, err := parseClosingIssueRefsPushOptions([]string{"no-mistakes.closes=42 Fixes #99"})
 	if err == nil {
-		t.Fatal("expected invalid issue number push option to fail")
+		t.Fatal("expected invalid closing issue references push option to fail")
 	}
 }

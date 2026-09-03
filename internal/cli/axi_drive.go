@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/closingissues"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -77,7 +78,7 @@ func newAxiRunCmd() *cobra.Command {
 	var skipValue string
 	var intent string
 	var baseBranch string
-	var closesIssue string
+	var closesIssues []string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -93,8 +94,8 @@ func newAxiRunCmd() *cobra.Command {
 			"--base-branch targets an integration branch other than the repository default\n" +
 			"for this run only (for example an epic branch). It overrides pr.base_branch\n" +
 			"in repo config and is persisted on the run for rebase, PR, and CI steps.\n\n" +
-			"--closes <number> links the PR to an issue (e.g. --closes 42 renders\n" +
-			"Closes #42 at the bottom of the PR body). The keyword can be customized\n" +
+			"--closes <issue> links the PR to an issue (for example, --closes 42 or\n" +
+			"--closes owner/repo#42). Repeat it to close multiple issues. The keyword can be customized\n" +
 			"via pr.issue_link_template in .no-mistakes.yaml.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
@@ -110,14 +111,14 @@ func newAxiRunCmd() *cobra.Command {
 				"has_intent":      strings.TrimSpace(intent) != "",
 				"has_skip":        strings.TrimSpace(skipValue) != "",
 				"has_base_branch": strings.TrimSpace(baseBranch) != "",
-				"has_closes":      strings.TrimSpace(closesIssue) != "",
+				"has_closes":      len(closesIssues) > 0,
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent, baseBranch, closesIssue)
+				return runAxiRun(cmd, autoYes, skipSteps, intent, baseBranch, closesIssues)
 			})
 		},
 	}
@@ -125,15 +126,15 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
-	cmd.Flags().StringVar(&closesIssue, "closes", "", "issue number to link in the PR body (e.g. --closes 42)")
+	cmd.Flags().StringArrayVar(&closesIssues, "closes", nil, "issue to close when the PR merges; repeat for multiple issues (42 or owner/repo#42)")
 	return cmd
 }
 
-func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch, closesIssue string) error {
+func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, closesIssues []string) error {
 	ctx := cmd.Context()
-	closesIssue, err := normalizeIssueNumber(closesIssue)
+	closesIssues, err := normalizeClosingIssueRefs(closesIssues)
 	if err != nil {
-		return emitError(cmd, 2, err.Error(), "Use a single positive issue number, e.g. --closes 42.")
+		return emitError(cmd, 2, err.Error(), "Use a positive issue number or owner/repository-qualified reference, e.g. --closes 42 --closes owner/repo#99.")
 	}
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -192,20 +193,20 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, closesIssue)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, closesIssues)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
 			}
 			return emitError(cmd, 1, err.Error())
 		}
-	} else if strings.TrimSpace(closesIssue) != "" {
-		// Reattaching to an active run: forward the issue number so the PR
+	} else if len(closesIssues) > 0 {
+		// Reattaching to an active run: forward the closing issue references so the PR
 		// step can render the footer even when triggerRun was not called.
-		if err := forwardIssueNumberToActiveRun(env.client, runID, closesIssue); err != nil {
+		if err := forwardClosingIssueRefsToActiveRun(env.client, runID, closesIssues); err != nil {
 			// A run whose PR body is already composed can never pick this up,
 			// so retrying is the wrong advice; say what to do instead.
-			if errors.Is(err, errIssueNumberPRBodyComposed) {
+			if errors.Is(err, errClosingIssueRefsPRBodyComposed) {
 				return emitError(cmd, 1, err.Error(),
 					"The issue link was NOT added. Add it to the PR description by hand, or pass --closes when starting a fresh run.")
 			}
@@ -221,54 +222,45 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	return renderDriveResult(cmd, run, ciReady)
 }
 
-func normalizeIssueNumber(issueNumber string) (string, error) {
-	issueNumber = strings.TrimSpace(issueNumber)
-	if issueNumber == "" {
-		return "", nil
+func normalizeClosingIssueRefs(values []string) ([]string, error) {
+	refs, err := closingissues.Normalize(values)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --closes: %w", err)
 	}
-	if issueNumber[0] == '0' {
-		return "", fmt.Errorf("invalid --closes %q: issue number must be a positive decimal number", issueNumber)
-	}
-	for _, r := range issueNumber {
-		if r > unicode.MaxASCII || !unicode.IsDigit(r) {
-			return "", fmt.Errorf("invalid --closes %q: issue number must be a positive decimal number", issueNumber)
-		}
-	}
-	return issueNumber, nil
+	return refs, nil
 }
 
-type issueNumberUpdateClient interface {
+type closingIssueRefsUpdateClient interface {
 	Call(method string, params interface{}, result interface{}) error
 }
 
-func forwardIssueNumberToActiveRun(client issueNumberUpdateClient, runID, issueNumber string) error {
-	issueNumber = strings.TrimSpace(issueNumber)
-	if issueNumber == "" {
+func forwardClosingIssueRefsToActiveRun(client closingIssueRefsUpdateClient, runID string, refs []string) error {
+	if len(refs) == 0 {
 		return nil
 	}
 	if client == nil {
-		return errors.New("forward issue number to active run: daemon client unavailable")
+		return errors.New("forward closing issue references to active run: daemon client unavailable")
 	}
-	var result ipc.UpdateRunIssueNumberResult
-	if err := client.Call(ipc.MethodUpdateRunIssueNumber, &ipc.UpdateRunIssueNumberParams{
-		RunID:       runID,
-		IssueNumber: issueNumber,
+	var result ipc.UpdateRunClosingIssueRefsResult
+	if err := client.Call(ipc.MethodUpdateRunClosingIssueRefs, &ipc.UpdateRunClosingIssueRefsParams{
+		RunID:            runID,
+		ClosingIssueRefs: refs,
 	}, &result); err != nil {
-		return fmt.Errorf("forward issue number to active run: %w", err)
+		return fmt.Errorf("forward closing issue references to active run: %w", err)
 	}
 	if !result.OK {
-		if result.Reason == ipc.IssueNumberRejectedPRBodyComposed {
-			return errIssueNumberPRBodyComposed
+		if result.Reason == ipc.ClosingIssueRefsRejectedPRBodyComposed {
+			return errClosingIssueRefsPRBodyComposed
 		}
-		return errors.New("forward issue number to active run: daemon rejected update")
+		return errors.New("forward closing issue references to active run: daemon rejected update")
 	}
 	return nil
 }
 
-// errIssueNumberPRBodyComposed reports that the run's PR body was already
+// errClosingIssueRefsPRBodyComposed reports that the run's PR body was already
 // composed, so --closes could not reach its footer. Retrying cannot help.
-var errIssueNumberPRBodyComposed = errors.New(
-	"forward issue number to active run: the PR body was already composed, so --closes could not be applied")
+var errClosingIssueRefsPRBodyComposed = errors.New(
+	"forward closing issue references to active run: the PR body was already composed, so --closes could not be applied")
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
 	if runID != "" {
@@ -474,7 +466,7 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch, closesIssue string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, closesIssues []string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
@@ -482,9 +474,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if opt := formatPRBaseBranchPushOption(baseBranch); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	if opt := formatIssueNumberPushOption(closesIssue); opt != "" {
-		pushOptions = append(pushOptions, opt)
-	}
+	pushOptions = append(pushOptions, formatClosingIssueRefsPushOptions(closesIssues)...)
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
 	if err != nil {
 		// An active run can still be found below. Without a baseline, however,
@@ -514,7 +504,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch, closesIssue), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch, closesIssues), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -598,8 +588,8 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch, closesIssue string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch, IssueNumber: closesIssue}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string, closesIssues []string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch, ClosingIssueRefs: closesIssues}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

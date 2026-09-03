@@ -110,7 +110,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			issueNumber, err := parseIssueNumberPushOptions(pushOptions)
+			closingIssues, err := parseClosingIssueRefsPushOptions(pushOptions)
 			if err != nil {
 				return err
 			}
@@ -132,14 +132,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:         gatePath,
-				Ref:          ref,
-				Old:          oldSHA,
-				New:          newSHA,
-				SkipSteps:    skipSteps,
-				Intent:       intent,
-				PRBaseBranch: prBaseBranch,
-				IssueNumber:  issueNumber,
+				Gate:             gatePath,
+				Ref:              ref,
+				Old:              oldSHA,
+				New:              newSHA,
+				SkipSteps:        skipSteps,
+				Intent:           intent,
+				PRBaseBranch:     prBaseBranch,
+				ClosingIssueRefs: closingIssues,
 			}, &result)
 		},
 	}
@@ -261,39 +261,33 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 	return branch, nil
 }
 
-// issueNumberPushOptionPrefix carries an issue number through a git push.
-const issueNumberPushOptionPrefix = "no-mistakes.issue_number="
+// closingIssuePushOptionPrefix carries one closing issue reference through a git push.
+// Repeating the option preserves the repeatable --closes CLI contract.
+const closingIssuePushOptionPrefix = "no-mistakes.closes="
 
-// formatIssueNumberPushOption encodes the issue number as a push option, or
-// returns "" when there is no issue number to carry.
-func formatIssueNumberPushOption(issueNumber string) string {
-	if strings.TrimSpace(issueNumber) == "" {
-		return ""
+func formatClosingIssueRefsPushOptions(refs []string) []string {
+	options := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		options = append(options, closingIssuePushOptionPrefix+ref)
 	}
-	return issueNumberPushOptionPrefix + strings.TrimSpace(issueNumber)
+	return options
 }
 
-// parseIssueNumberPushOptions extracts and validates the issue number push
-// option, if any. The last occurrence wins. Only positive decimal integers
-// are accepted; invalid values fail the notify-push command instead of being
-// silently dropped.
-func parseIssueNumberPushOptions(options []string) (string, error) {
-	issueNumber := ""
+// parseClosingIssueRefsPushOptions extracts all closing issue push options and
+// applies the same validation, deduplication, and ordering as the public CLI.
+func parseClosingIssueRefsPushOptions(options []string) ([]string, error) {
+	var values []string
 	for _, option := range options {
-		value, ok := strings.CutPrefix(option, issueNumberPushOptionPrefix)
+		value, ok := strings.CutPrefix(option, closingIssuePushOptionPrefix)
 		if !ok {
 			continue
 		}
-		validated, err := normalizeIssueNumber(strings.TrimSpace(value))
-		if err != nil {
-			return "", err
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("invalid closing issue push option: value is required")
 		}
-		if validated == "" {
-			return "", fmt.Errorf("invalid issue number push option: value is required")
-		}
-		issueNumber = validated
+		values = append(values, value)
 	}
-	return issueNumber, nil
+	return normalizeClosingIssueRefs(values)
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

@@ -3,6 +3,7 @@ package db
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -63,7 +64,7 @@ func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	}
 }
 
-func TestUpdateRunIssueNumberNormalizesAndPersists(t *testing.T) {
+func TestUpdateRunClosingIssueRefsNormalizesAndPersists(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
@@ -71,22 +72,22 @@ func TestUpdateRunIssueNumberNormalizesAndPersists(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	if err := d.UpdateRunIssueNumber(run.ID, " 42 "); err != nil {
-		t.Fatalf("update issue number: %v", err)
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{" 42 ", "owner/repo#7", "42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if got.IssueNumber == nil || *got.IssueNumber != "42" {
-		t.Fatalf("issue number = %#v, want 42", got.IssueNumber)
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#7" {
+		t.Fatalf("closing issue references = %q, want canonical deduplicated refs", refs)
 	}
 }
 
 // The reattach race: an `axi run --closes` update that lands after the PR step
-// has already sampled the issue number can no longer reach the composed body,
+// has already sampled the closing issue references can no longer reach the composed body,
 // so it must fail closed instead of reporting a write the PR will never show.
-func TestUpdateRunIssueNumberFailsClosedAfterPRBodyClaim(t *testing.T) {
+func TestUpdateRunClosingIssueRefsFailsClosedAfterPRBodyClaim(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
@@ -95,32 +96,32 @@ func TestUpdateRunIssueNumberFailsClosedAfterPRBodyClaim(t *testing.T) {
 	}
 
 	// The PR step composes the body, claiming whatever was set at that moment.
-	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 	if err != nil {
-		t.Fatalf("claim issue number: %v", err)
+		t.Fatalf("claim closing issue references: %v", err)
 	}
-	if claimed != "" {
+	if len(claimed) != 0 {
 		t.Fatalf("claimed = %q, want empty", claimed)
 	}
 
 	// The reattach update arrives too late.
-	err = d.UpdateRunIssueNumber(run.ID, "42")
-	if !errors.Is(err, ErrIssueNumberLocked) {
-		t.Fatalf("update after claim = %v, want ErrIssueNumberLocked", err)
+	err = d.UpdateRunClosingIssueRefs(run.ID, []string{"42"})
+	if !errors.Is(err, ErrClosingIssueRefsLocked) {
+		t.Fatalf("update after claim = %v, want ErrClosingIssueRefsLocked", err)
 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if got.IssueNumber != nil {
-		t.Fatalf("issue number = %#v, want nil: a refused update must not persist", got.IssueNumber)
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("closing issue references = %#v, want empty: a refused update must not persist", got.ClosingIssueRefs)
 	}
 }
 
 // A database created before the claim column gains it on reopen, and its
 // pre-existing runs read back as unclaimed so a run that was already in flight
-// during an upgrade can still receive its issue number.
-func TestOpenMigratesIssueNumberLockedAtColumn(t *testing.T) {
+// during an upgrade can still receive its closing issue references.
+func TestOpenMigratesClosingIssueRefsLockedAtColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	d, err := Open(path)
 	if err != nil {
@@ -135,7 +136,7 @@ func TestOpenMigratesIssueNumberLockedAtColumn(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 	// Simulate a pre-claim database.
-	if _, err := d.sql.Exec(`ALTER TABLE runs DROP COLUMN issue_number_locked_at`); err != nil {
+	if _, err := d.sql.Exec(`ALTER TABLE runs DROP COLUMN closing_issue_refs_locked_at`); err != nil {
 		t.Fatalf("drop column: %v", err)
 	}
 	if err := d.Close(); err != nil {
@@ -152,24 +153,24 @@ func TestOpenMigratesIssueNumberLockedAtColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after migration: %v", err)
 	}
-	if got.IssueNumberLockedAt != nil {
-		t.Fatalf("migrated run = %#v, want unclaimed", got.IssueNumberLockedAt)
+	if got.ClosingIssueRefsLockedAt != nil {
+		t.Fatalf("migrated run = %#v, want unclaimed", got.ClosingIssueRefsLockedAt)
 	}
-	// An in-flight run from before the upgrade still accepts its issue number.
-	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
+	// An in-flight run from before the upgrade still accepts its closing issue references.
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
 		t.Fatalf("update after migration: %v", err)
 	}
-	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 	if err != nil {
 		t.Fatalf("claim after migration: %v", err)
 	}
-	if claimed != "42" {
+	if strings.Join(claimed, ",") != "42" {
 		t.Fatalf("claimed = %q, want 42", claimed)
 	}
 }
 
 // An update that wins the race must still apply, and the claim must observe it.
-func TestClaimIssueNumberForPRBodyObservesEarlierUpdate(t *testing.T) {
+func TestClaimClosingIssueRefsForPRBodyObservesEarlierUpdate(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
@@ -177,47 +178,47 @@ func TestClaimIssueNumberForPRBodyObservesEarlierUpdate(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
-		t.Fatalf("update issue number: %v", err)
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
 	}
-	claimed, err := d.ClaimIssueNumberForPRBody(run.ID)
+	claimed, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 	if err != nil {
-		t.Fatalf("claim issue number: %v", err)
+		t.Fatalf("claim closing issue references: %v", err)
 	}
-	if claimed != "42" {
+	if strings.Join(claimed, ",") != "42" {
 		t.Fatalf("claimed = %q, want 42", claimed)
 	}
 }
 
 // The claim is idempotent: a PR step that runs again (resume, or updating an
 // existing PR) recomposes from the value it already claimed.
-func TestClaimIssueNumberForPRBodyIsIdempotent(t *testing.T) {
+func TestClaimClosingIssueRefsForPRBodyIsIdempotent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
-		t.Fatalf("update issue number: %v", err)
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("update closing issue references: %v", err)
 	}
 
-	first, err := d.ClaimIssueNumberForPRBody(run.ID)
+	first, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	second, err := d.ClaimIssueNumberForPRBody(run.ID)
+	second, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
-	if first != "42" || second != "42" {
+	if strings.Join(first, ",") != "42" || strings.Join(second, ",") != "42" {
 		t.Fatalf("claims = %q/%q, want 42/42", first, second)
 	}
 }
 
 // Exactly one of N concurrent reattach updates racing a claim may report
 // success, and the composed body must carry whatever the claim returned.
-func TestUpdateRunIssueNumberConcurrentWithClaimNeverReportsAPhantomWrite(t *testing.T) {
+func TestUpdateRunClosingIssueRefsConcurrentWithClaimNeverReportsAPhantomWrite(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
@@ -228,14 +229,14 @@ func TestUpdateRunIssueNumberConcurrentWithClaimNeverReportsAPhantomWrite(t *tes
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	accepted := 0
-	claimed := ""
+	var claimed []string
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		got, err := d.ClaimIssueNumberForPRBody(run.ID)
+		got, err := d.ClaimClosingIssueRefsForPRBody(run.ID)
 		if err != nil {
-			t.Errorf("claim issue number: %v", err)
+			t.Errorf("claim closing issue references: %v", err)
 			return
 		}
 		mu.Lock()
@@ -244,15 +245,15 @@ func TestUpdateRunIssueNumberConcurrentWithClaimNeverReportsAPhantomWrite(t *tes
 	}()
 	go func() {
 		defer wg.Done()
-		switch err := d.UpdateRunIssueNumber(run.ID, "42"); {
+		switch err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); {
 		case err == nil:
 			mu.Lock()
 			accepted++
 			mu.Unlock()
-		case errors.Is(err, ErrIssueNumberLocked):
+		case errors.Is(err, ErrClosingIssueRefsLocked):
 			// Correctly refused: it lost the race to the claim.
 		default:
-			t.Errorf("update issue number: %v", err)
+			t.Errorf("update closing issue references: %v", err)
 		}
 	}()
 	wg.Wait()
@@ -260,38 +261,38 @@ func TestUpdateRunIssueNumberConcurrentWithClaimNeverReportsAPhantomWrite(t *tes
 	mu.Lock()
 	defer mu.Unlock()
 	// The invariant: a reported success must be visible to the PR body.
-	if accepted == 1 && claimed != "42" {
+	if accepted == 1 && strings.Join(claimed, ",") != "42" {
 		t.Fatalf("update reported success but claim saw %q: the PR body would omit the footer", claimed)
 	}
-	if accepted == 0 && claimed != "" {
+	if accepted == 0 && len(claimed) != 0 {
 		t.Fatalf("update was refused but claim saw %q", claimed)
 	}
 }
 
-func TestUpdateRunIssueNumberClearsBlankValue(t *testing.T) {
+func TestUpdateRunClosingIssueRefsClearsBlankValue(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
-	if err := d.UpdateRunIssueNumber(run.ID, "42"); err != nil {
-		t.Fatalf("set issue number: %v", err)
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42"}); err != nil {
+		t.Fatalf("set closing issue references: %v", err)
 	}
 
-	if err := d.UpdateRunIssueNumber(run.ID, "  "); err != nil {
-		t.Fatalf("clear issue number: %v", err)
+	if err := d.UpdateRunClosingIssueRefs(run.ID, nil); err != nil {
+		t.Fatalf("clear closing issue references: %v", err)
 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if got.IssueNumber != nil {
-		t.Fatalf("issue number = %#v, want nil", got.IssueNumber)
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("closing issue references = %#v, want empty", got.ClosingIssueRefs)
 	}
 }
 
-func TestUpdateRunIssueNumberRejectsNonDecimalInput(t *testing.T) {
+func TestUpdateRunClosingIssueRefsRejectsNonDecimalInput(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
@@ -299,15 +300,15 @@ func TestUpdateRunIssueNumberRejectsNonDecimalInput(t *testing.T) {
 		t.Fatalf("insert run: %v", err)
 	}
 
-	if err := d.UpdateRunIssueNumber(run.ID, "42 Fixes #99"); err == nil {
-		t.Fatal("expected malformed issue number to fail")
+	if err := d.UpdateRunClosingIssueRefs(run.ID, []string{"42 Fixes #99"}); err == nil {
+		t.Fatal("expected malformed closing issue references to fail")
 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
-	if got.IssueNumber != nil {
-		t.Fatalf("invalid issue number was persisted: %#v", got.IssueNumber)
+	if len(got.ClosingIssueRefs) != 0 {
+		t.Fatalf("invalid closing issue references were persisted: %#v", got.ClosingIssueRefs)
 	}
 }
 

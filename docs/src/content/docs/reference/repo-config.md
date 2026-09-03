@@ -213,41 +213,43 @@ An empty value is valid and means "fall back to the forge default branch"; a non
 
 ### pr.issue_link_template
 
-Choose how a linked tracker issue is rendered in the footer of the PR body.
+Choose how each explicit closing issue is rendered in the stable `## Issues` section of the PR body.
 
 | | |
 | --- | --- |
 | Type | `string` (Go `text/template`) |
-| Default | Empty. With no issue number supplied, no footer is added at all |
+| Default | Empty. With no `--closes` value, no Issues section is added |
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 The footer exists so a tool-authored PR can carry the same tracker link a human contributor would type, for repositories whose CI requires one.
 It is supplementary PR-body text only: it never changes what any gate means or how a PR is judged.
 
-The issue number comes from `no-mistakes axi run --closes <number>`.
-The flag is optional, and without it the PR body is unchanged.
+Closing references come from repeatable `no-mistakes axi run --closes <issue>` flags. Each value may be a same-repository number (`--closes 95`) or a cross-repository reference (`--closes owner/repository#95`). Repeated references are deduplicated and rendered in deterministic order. The flag is optional; without it no closing reference is inferred from intent, commits, branches, parent issues, or other prose.
 
-The template receives two fields:
+The template is rendered once per issue and receives these fields:
 
 | Field | Value |
 | --- | --- |
-| `{{.Issue}}` | The issue number, without a leading `#` |
+| `{{.Issue}}` | The decimal issue number, without a leading `#` |
+| `{{.Owner}}` | The owner for a qualified reference, otherwise empty |
+| `{{.Repository}}` | The repository for a qualified reference, otherwise empty |
+| `{{.Reference}}` | `#95` or `owner/repository#95`, ready to follow a keyword |
 | `{{.Keyword}}` | The linking keyword, currently always `Closes` |
 
 ```yaml
 pr:
   # GitLab-style, and does not auto-close the issue:
-  issue_link_template: "Refs #{{.Issue}}"
+  issue_link_template: "Refs {{.Reference}}"
 ```
 
-When `--closes` is supplied but no template is configured, the built-in `Closes #{{.Issue}}` is used.
+When `--closes` is supplied but no template is configured, the built-in `{{.Keyword}} {{.Reference}}` renders `Closes #95` or `Closes owner/repository#95`.
 Repositories differ on which keyword they want — `Closes` auto-closes the issue on merge, `Refs` only cross-links it — so that choice stays the repository's rather than the tool's.
 
-The footer is appended last and is budgeted against the forge's PR body size cap.
-If the rendered footer cannot fit within the cap, it is omitted and the omission is logged, rather than truncating the body around it.
+The Issues section is appended last and budgeted against the forge's PR body size cap. If it cannot fit, it is omitted and the omission is logged rather than truncating the body around it. Existing standalone `Closes`, `Fixes`, and `Resolves` lines are preserved when a readable PR body is replaced, including author-supplied cross-repository references.
 
-The issue number is read once, when the PR body is composed.
-A `--closes` passed while reattaching to a run whose body was already composed is refused with an explicit error rather than being silently accepted, because it could no longer appear in that PR.
+The references are claimed once when the PR body is composed. A `--closes` passed while reattaching after that point is refused explicitly because it could no longer appear in that PR. Before the PR step completes, no-mistakes reads the live body and verifies every requested reference; an unverifiable or missing reference fails the step closed.
+
+GitHub applies closing keywords only when the PR is merged into the repository's default branch and the referenced issue is eligible for keyword closure. A PR merged into another branch does not automatically close the issue.
 
 ### commands.test
 

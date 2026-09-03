@@ -327,6 +327,23 @@ func TestEffectiveRepoConfig_PRBaseBranchTrustedOnly(t *testing.T) {
 	}
 }
 
+func TestEffectiveRepoConfig_IssueLinkTemplateTrustedOnly(t *testing.T) {
+	pushedTemplate := "Refs {{.Reference}}"
+	trustedTemplate := "Fixes {{.Reference}}"
+	pushed := &RepoConfig{PR: PRRaw{IssueLinkTemplate: &pushedTemplate}}
+	trusted := &RepoConfig{PR: PRRaw{IssueLinkTemplate: &trustedTemplate}}
+
+	got := EffectiveRepoConfig(pushed, trusted, false)
+	if got.PR.IssueLinkTemplate == nil || *got.PR.IssueLinkTemplate != trustedTemplate {
+		t.Fatalf("PR.IssueLinkTemplate = %#v, want trusted template", got.PR.IssueLinkTemplate)
+	}
+
+	got = EffectiveRepoConfig(pushed, trusted, true)
+	if got.PR.IssueLinkTemplate == nil || *got.PR.IssueLinkTemplate != pushedTemplate {
+		t.Fatalf("PR.IssueLinkTemplate = %#v, want pushed template under opt-in", got.PR.IssueLinkTemplate)
+	}
+}
+
 func TestEffectiveRepoConfig_PRBaseBranchOptInUsesPushedValue(t *testing.T) {
 	pushed := &RepoConfig{PR: PRRaw{BaseBranch: "develop"}}
 	trusted := &RepoConfig{AllowRepoCommands: true}

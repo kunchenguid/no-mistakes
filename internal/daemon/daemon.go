@@ -1060,24 +1060,24 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
 
-	srv.Handle(ipc.MethodUpdateRunIssueNumber, func(_ context.Context, params json.RawMessage) (interface{}, error) {
-		var p ipc.UpdateRunIssueNumberParams
+	srv.Handle(ipc.MethodUpdateRunClosingIssueRefs, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.UpdateRunClosingIssueRefsParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := d.UpdateRunIssueNumber(p.RunID, p.IssueNumber); err != nil {
-			// The PR body already sampled the issue number, so this update
+		if err := d.UpdateRunClosingIssueRefs(p.RunID, p.ClosingIssueRefs); err != nil {
+			// The PR body already sampled the closing issue references, so this update
 			// could not reach the footer. Report a structured rejection rather
 			// than success for a write that will never be visible.
-			if errors.Is(err, db.ErrIssueNumberLocked) {
-				return &ipc.UpdateRunIssueNumberResult{
+			if errors.Is(err, db.ErrClosingIssueRefsLocked) {
+				return &ipc.UpdateRunClosingIssueRefsResult{
 					OK:     false,
-					Reason: ipc.IssueNumberRejectedPRBodyComposed,
+					Reason: ipc.ClosingIssueRefsRejectedPRBodyComposed,
 				}, nil
 			}
-			return nil, fmt.Errorf("update issue number: %w", err)
+			return nil, fmt.Errorf("update closing issue references: %w", err)
 		}
-		return &ipc.UpdateRunIssueNumberResult{OK: true}, nil
+		return &ipc.UpdateRunClosingIssueRefsResult{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodGetRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -1214,7 +1214,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.IssueNumber)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.ClosingIssueRefs)
 		if err != nil {
 			return nil, err
 		}

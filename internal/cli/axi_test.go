@@ -576,8 +576,22 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 	}
 }
 
+func TestAxiRunClosesFlagIsRepeatable(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "owner/repo#2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cmd.Flags().GetStringArray("closes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes values = %q", refs)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop", "42")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop", []string{"42", "owner/repo#9"})
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
@@ -587,34 +601,34 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	if params.PRBaseBranch != "develop" {
 		t.Fatalf("PRBaseBranch = %q, want develop", params.PRBaseBranch)
 	}
-	if params.IssueNumber != "42" {
-		t.Fatalf("IssueNumber = %q, want 42", params.IssueNumber)
+	if got := strings.Join(params.ClosingIssueRefs, ","); got != "42,owner/repo#9" {
+		t.Fatalf("ClosingIssueRefs = %q, want 42,owner/repo#9", got)
 	}
 }
 
-func TestForwardIssueNumberToActiveRunRequiresUpdateSuccess(t *testing.T) {
-	client := &scriptedIssueNumberUpdateClient{err: errors.New("database unavailable")}
+func TestForwardClosingIssueRefsToActiveRunRequiresUpdateSuccess(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{err: errors.New("database unavailable")}
 
-	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42", "owner/repo#9"})
 	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
 		t.Fatalf("forward error = %v, want daemon update failure", err)
 	}
-	if client.method != ipc.MethodUpdateRunIssueNumber {
-		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunIssueNumber)
+	if client.method != ipc.MethodUpdateRunClosingIssueRefs {
+		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunClosingIssueRefs)
 	}
-	params, ok := client.params.(*ipc.UpdateRunIssueNumberParams)
+	params, ok := client.params.(*ipc.UpdateRunClosingIssueRefsParams)
 	if !ok {
-		t.Fatalf("params type = %T, want *ipc.UpdateRunIssueNumberParams", client.params)
+		t.Fatalf("params type = %T, want *ipc.UpdateRunClosingIssueRefsParams", client.params)
 	}
-	if params.RunID != "run-1" || params.IssueNumber != "42" {
-		t.Fatalf("params = %#v, want run-1/42", params)
+	if params.RunID != "run-1" || strings.Join(params.ClosingIssueRefs, ",") != "42,owner/repo#9" {
+		t.Fatalf("params = %#v, want run-1 with both references", params)
 	}
 }
 
-func TestForwardIssueNumberToActiveRunSkipsEmptyIssue(t *testing.T) {
-	client := &scriptedIssueNumberUpdateClient{}
+func TestForwardClosingIssueRefsToActiveRunSkipsEmptyIssue(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{}
 
-	if err := forwardIssueNumberToActiveRun(client, "run-1", "  "); err != nil {
+	if err := forwardClosingIssueRefsToActiveRun(client, "run-1", nil); err != nil {
 		t.Fatalf("empty issue should not update: %v", err)
 	}
 	if client.method != "" {
@@ -625,14 +639,14 @@ func TestForwardIssueNumberToActiveRunSkipsEmptyIssue(t *testing.T) {
 // A rejection because the PR body was already composed is distinguishable from
 // a transport failure, so the caller can say "not applied, edit the PR" instead
 // of advising a retry that can never succeed.
-func TestForwardIssueNumberToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
-	client := &scriptedIssueNumberUpdateClient{
-		reject: ipc.IssueNumberRejectedPRBodyComposed,
+func TestForwardClosingIssueRefsToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{
+		reject: ipc.ClosingIssueRefsRejectedPRBodyComposed,
 	}
 
-	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
-	if !errors.Is(err, errIssueNumberPRBodyComposed) {
-		t.Fatalf("forward error = %v, want errIssueNumberPRBodyComposed", err)
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if !errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("forward error = %v, want errClosingIssueRefsPRBodyComposed", err)
 	}
 	if !strings.Contains(err.Error(), "could not be applied") {
 		t.Fatalf("error %q should state the link was not applied", err.Error())
@@ -641,19 +655,19 @@ func TestForwardIssueNumberToActiveRunReportsPRBodyAlreadyComposed(t *testing.T)
 
 // A rejection with no recognized reason must stay an error rather than passing
 // as success, so an unknown refusal never reports a link that was not added.
-func TestForwardIssueNumberToActiveRunRejectsUnknownReason(t *testing.T) {
-	client := &scriptedIssueNumberUpdateClient{reject: "some_future_reason"}
+func TestForwardClosingIssueRefsToActiveRunRejectsUnknownReason(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{reject: "some_future_reason"}
 
-	err := forwardIssueNumberToActiveRun(client, "run-1", "42")
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
 	if err == nil {
 		t.Fatal("unknown rejection reason reported success")
 	}
-	if errors.Is(err, errIssueNumberPRBodyComposed) {
+	if errors.Is(err, errClosingIssueRefsPRBodyComposed) {
 		t.Fatalf("unknown reason misreported as the composed-body case: %v", err)
 	}
 }
 
-type scriptedIssueNumberUpdateClient struct {
+type scriptedClosingIssueRefsUpdateClient struct {
 	method string
 	params interface{}
 	err    error
@@ -661,13 +675,13 @@ type scriptedIssueNumberUpdateClient struct {
 	reject string
 }
 
-func (s *scriptedIssueNumberUpdateClient) Call(method string, params interface{}, result interface{}) error {
+func (s *scriptedClosingIssueRefsUpdateClient) Call(method string, params interface{}, result interface{}) error {
 	s.method = method
 	s.params = params
 	if s.err != nil {
 		return s.err
 	}
-	if out, ok := result.(*ipc.UpdateRunIssueNumberResult); ok {
+	if out, ok := result.(*ipc.UpdateRunClosingIssueRefsResult); ok {
 		if s.reject != "" {
 			out.OK = false
 			out.Reason = s.reject
@@ -1100,7 +1114,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal", "", ""); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", "", nil); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

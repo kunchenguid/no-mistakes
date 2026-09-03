@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"text/template"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/closingissues"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -85,22 +88,20 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
-	// Claim the issue number from the DB once. The claim both reads the value
+	// Claim the closing issue references from the DB once. The claim both reads the value
 	// and closes the window in which a concurrent `axi run --closes` reattach
 	// could still change it: any such update now fails closed with
-	// db.ErrIssueNumberLocked instead of landing after this sample and leaving
+	// db.ErrClosingIssueRefsLocked instead of landing after this sample and leaving
 	// the composed body without the footer the caller was told it would get.
-	issueNumber, err := sctx.DB.ClaimIssueNumberForPRBody(sctx.Run.ID)
+	closingIssues, err := sctx.DB.ClaimClosingIssueRefsForPRBody(sctx.Run.ID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve issue number: %w", err)
+		return nil, fmt.Errorf("resolve closing issue references: %w", err)
 	}
-	sctx.IssueNumber = issueNumber
-
-	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
-	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
-	if err != nil {
-		return nil, err
+	sctx.ClosingIssueRefs = closingIssues
+	if len(closingIssues) > 0 {
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil, fmt.Errorf("verify closing issues: provider cannot read the current pull request body")
+		}
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
@@ -113,14 +114,38 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
+		sctx.PreservedClosingLines, err = readExistingClosingLines(ctx, host, existing)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Resolve the branch base so PR summaries cover the full branch delta, then
+	// compose only after existing author-supplied closing lines are captured.
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
+		return nil, err
+	}
+
+	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
+			if len(sctx.ClosingIssueRefs) > 0 {
+				return nil, fmt.Errorf("update pull request with closing issues: %w", err)
+			}
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
+		}
+		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
+			return nil, err
 		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
@@ -139,11 +164,81 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		return &pipeline.StepOutcome{}, nil
 	}
+	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
+		return nil, err
+	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+var closingKeywordLinePattern = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+(?:#[1-9][0-9]*|[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*)(?:\s*,\s*(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+(?:#[1-9][0-9]*|[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*))*\s*$`)
+
+func readExistingClosingLines(ctx context.Context, host scm.Host, pr *scm.PR) ([]string, error) {
+	reader, ok := host.(scm.PRContentReader)
+	if !ok {
+		return nil, nil
+	}
+	content, err := reader.GetPRContent(ctx, pr)
+	if err != nil {
+		return nil, fmt.Errorf("read existing pull request before preserving closing references: %w", err)
+	}
+	return extractClosingKeywordLines(content.Body), nil
+}
+
+func extractClosingKeywordLines(body string) []string {
+	seen := map[string]struct{}{}
+	var lines []string
+	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if !closingKeywordLinePattern.MatchString(line) {
+			continue
+		}
+		key := strings.ToLower(line)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func verifyClosingIssues(ctx context.Context, host scm.Host, pr *scm.PR, sctx *pipeline.StepContext) error {
+	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 {
+		return nil
+	}
+	reader, ok := host.(scm.PRContentReader)
+	if !ok {
+		return fmt.Errorf("verify closing issues: provider cannot read the current pull request body")
+	}
+	if pr == nil {
+		return fmt.Errorf("verify closing issues: pull request identity is unavailable")
+	}
+	content, err := reader.GetPRContent(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("verify closing issues: %w", err)
+	}
+	return verifyClosingIssuesInBody(content.Body, sctx)
+}
+
+func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
+	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 {
+		return nil
+	}
+	preservedTargets := closingTargets(extractClosingKeywordLines(body))
+	for _, ref := range sctx.ClosingIssueRefs {
+		if _, exists := preservedTargets[strings.ToLower(ref)]; exists {
+			continue
+		}
+		line := renderIssueLinkForRef(sctx, ref)
+		if line == "" || !strings.Contains(body, line) {
+			return fmt.Errorf("verify closing issues: pull request body is missing %s", closingissues.Target(ref))
+		}
+	}
+	return nil
 }
 
 // retargetExistingPRIfNeeded moves an already-open PR onto a per-run
@@ -1282,7 +1377,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
 		return true
 	default:
 		return false
@@ -1309,62 +1404,92 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-// issueLinkData is the template data for rendering an issue link footer.
+// issueLinkData is the template data for one closing issue reference.
 type issueLinkData struct {
-	Issue   string
-	Keyword string
+	Issue      string
+	Owner      string
+	Repository string
+	Reference  string
+	Keyword    string
 }
 
-// renderIssueLink renders the issue link template with the issue number and
-// keyword, returning the rendered line or "" when no template or issue number
-// is available. The keyword defaults to "Closes" when the template uses
-// {{.Keyword}} but no keyword is explicitly provided.
-func renderIssueLink(templateStr, issueNumber, keyword string) string {
+// renderIssueLink renders one configured issue-link line. Issue remains the
+// decimal number for compatibility; Reference is #N or owner/repository#N.
+func renderIssueLink(templateStr, ref, keyword string) string {
 	templateStr = strings.TrimSpace(templateStr)
-	issueNumber = strings.TrimSpace(issueNumber)
-	if templateStr == "" || issueNumber == "" {
+	ref = strings.TrimSpace(ref)
+	if templateStr == "" || ref == "" {
 		return ""
 	}
 	if keyword == "" {
 		keyword = "Closes"
 	}
+	owner, repository, issue, reference := closingissues.Parts(ref)
 	tmpl, err := template.New("issue_link").Parse(templateStr)
 	if err != nil {
 		slog.Warn("failed to parse issue_link_template", "template", templateStr, "error", err)
 		return ""
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, issueLinkData{Issue: issueNumber, Keyword: keyword}); err != nil {
+	data := issueLinkData{Issue: issue, Owner: owner, Repository: repository, Reference: reference, Keyword: keyword}
+	if err := tmpl.Execute(&buf, data); err != nil {
 		slog.Warn("failed to render issue_link_template", "template", templateStr, "error", err)
 		return ""
 	}
-	rendered := strings.TrimSpace(buf.String())
-	if rendered == "" {
-		return ""
-	}
-	return rendered
+	return strings.TrimSpace(buf.String())
 }
 
-// issueLinkFooterBytes returns the byte cost of the rendered issue link footer
-// plus its preceding separator, or 0 when no footer will be appended. This
-// lets body-budget calculations reserve space before sections are assembled.
-func issueLinkFooterBytes(sctx *pipeline.StepContext) int {
-	if sctx == nil || sctx.IssueNumber == "" {
-		return 0
-	}
-	issueNumber := sctx.IssueNumber
+func renderIssueLinkForRef(sctx *pipeline.StepContext, ref string) string {
 	templateStr := ""
-	if sctx.Config != nil {
+	if sctx != nil && sctx.Config != nil {
 		templateStr = sctx.Config.PR.IssueLinkTemplate
 	}
-	if templateStr == "" {
-		templateStr = "Closes #{{.Issue}}"
+	if strings.TrimSpace(templateStr) == "" {
+		templateStr = config.DefaultIssueLinkTemplate
 	}
-	link := renderIssueLink(templateStr, issueNumber, "Closes")
-	if link == "" {
+	return renderIssueLink(templateStr, ref, "Closes")
+}
+
+var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*|#[1-9][0-9]*)`)
+
+func closingTargets(lines []string) map[string]struct{} {
+	targets := map[string]struct{}{}
+	for _, line := range lines {
+		for _, target := range closingReferencePattern.FindAllString(line, -1) {
+			targets[strings.ToLower(strings.TrimPrefix(target, "#"))] = struct{}{}
+		}
+	}
+	return targets
+}
+
+func issueSection(sctx *pipeline.StepContext) string {
+	if sctx == nil {
+		return ""
+	}
+	lines := append([]string(nil), sctx.PreservedClosingLines...)
+	present := closingTargets(lines)
+	for _, ref := range sctx.ClosingIssueRefs {
+		if _, exists := present[strings.ToLower(ref)]; exists {
+			continue
+		}
+		if line := renderIssueLinkForRef(sctx, ref); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "## Issues\n\n" + strings.Join(lines, "\n")
+}
+
+// issueLinkFooterBytes returns the byte cost of the stable Issues section plus
+// its preceding separator, or 0 when no section will be appended.
+func issueLinkFooterBytes(sctx *pipeline.StepContext) int {
+	section := issueSection(sctx)
+	if section == "" {
 		return 0
 	}
-	return scm.PRBodyLen("\n\n" + link)
+	return scm.PRBodyLen("\n\n" + section)
 }
 
 func bodyLimitReservingIssueLink(bodyLimit int, sctx *pipeline.StepContext) int {
@@ -1378,41 +1503,23 @@ func bodyLimitReservingIssueLink(bodyLimit int, sctx *pipeline.StepContext) int 
 	return bodyLimit - footerBudget
 }
 
-// appendIssueLink appends a rendered issue link footer to the PR body. The
-// issue number comes from the run record, the template from the repo config,
-// and the keyword defaults to "Closes" when only --closes was provided.
 func appendIssueLink(body string, sctx *pipeline.StepContext) string {
 	return appendIssueLinkWithinLimit(body, sctx, 0)
 }
 
 func appendIssueLinkWithinLimit(body string, sctx *pipeline.StepContext, bodyLimit int) string {
-	if sctx == nil || sctx.IssueNumber == "" {
+	section := issueSection(sctx)
+	if section == "" {
 		return body
 	}
-	issueNumber := sctx.IssueNumber
-	templateStr := ""
-	if sctx.Config != nil {
-		templateStr = sctx.Config.PR.IssueLinkTemplate
+	result := section
+	if strings.TrimSpace(body) != "" {
+		result = body + "\n\n" + section
 	}
-	if templateStr == "" {
-		templateStr = "Closes #{{.Issue}}"
-	}
-	link := renderIssueLink(templateStr, issueNumber, "Closes")
-	if link == "" {
-		return body
-	}
-	if strings.TrimSpace(body) == "" {
-		if bodyLimit <= 0 || scm.PRBodyLen(link) <= bodyLimit {
-			return link
-		}
-		slog.Warn("omitting issue link footer because it exceeds PR body limit", "limit", bodyLimit, "footer_len", scm.PRBodyLen(link))
-		return body
-	}
-	result := body + "\n\n" + link
 	if bodyLimit <= 0 || scm.PRBodyLen(result) <= bodyLimit {
 		return result
 	}
-	slog.Warn("omitting issue link footer because it exceeds PR body limit", "limit", bodyLimit, "body_len", scm.PRBodyLen(body), "footer_len", scm.PRBodyLen("\n\n"+link))
+	slog.Warn("omitting issues section because it exceeds PR body limit", "limit", bodyLimit, "body_len", scm.PRBodyLen(body), "section_len", scm.PRBodyLen(section))
 	return body
 }
 
