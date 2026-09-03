@@ -561,7 +561,8 @@ func TestReviewStep_AuthorizationPrivacyTracingContract(t *testing.T) {
 		"source-backed evidence of a concrete reachable operation or disclosure path",
 		"protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure",
 		"do not invent access policy",
-		`"ask-user" finding that names the missing policy decision`,
+		`you MUST emit an "ask-user" finding that names the missing policy decision`,
+		"Do not report immaterial or pre-existing ambiguity",
 		"equivalent controls and intentionally public data",
 		"middleware, an authorization call, or an auth-related test is absent by name",
 	} {
