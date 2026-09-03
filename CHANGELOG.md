@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.65.0](https://github.com/kunchenguid/no-mistakes/compare/v1.64.0...v1.65.0) (2026-09-03)
+
+
+### Features
+
+* **scm:** add draft pull request configuration ([#389](https://github.com/kunchenguid/no-mistakes/issues/389)) ([2c84e5c](https://github.com/kunchenguid/no-mistakes/commit/2c84e5c04ed5776ae902c72cc141fecb95106d17))
+
+
+### Bug Fixes
+
+* **agent:** nest OpenCode schema format under info ([#949](https://github.com/kunchenguid/no-mistakes/issues/949)) ([b5a2817](https://github.com/kunchenguid/no-mistakes/commit/b5a281758fc2f0a275031cb6be2273b8e67b826f))
+
 ## [1.64.0](https://github.com/kunchenguid/no-mistakes/compare/v1.63.0...v1.64.0) (2026-09-03)
 
 
