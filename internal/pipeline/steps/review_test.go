@@ -498,6 +498,9 @@ func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
 				t.Fatal(err)
 			}
 			gitCmd(t, dir, "init", "-q")
+			// Keep the synthetic LF baseline independent of the runner's global
+			// checkout conversion policy.
+			gitCmd(t, dir, "config", "core.autocrlf", "false")
 
 			fixture, err := filepath.Abs(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
 			if err != nil {
