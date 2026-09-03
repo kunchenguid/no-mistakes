@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.63.0](https://github.com/kunchenguid/no-mistakes/compare/v1.62.0...v1.63.0) (2026-09-03)
+
+
+### Features
+
+* **pipeline:** add authorization and privacy tracing to review ([#946](https://github.com/kunchenguid/no-mistakes/issues/946)) ([961fbfb](https://github.com/kunchenguid/no-mistakes/commit/961fbfb699f968a290351e7977afd78b48f01694))
+
+
+### Bug Fixes
+
+* **cli:** clarify combined document and lint housekeeping attribution ([#941](https://github.com/kunchenguid/no-mistakes/issues/941)) ([19e5db9](https://github.com/kunchenguid/no-mistakes/commit/19e5db95951f013cd096267a572ce675c05add25))
+* **pipeline:** require intended-usage evidence for review findings ([#948](https://github.com/kunchenguid/no-mistakes/issues/948)) ([f9415ab](https://github.com/kunchenguid/no-mistakes/commit/f9415ab1db06a739961e09ed18256e0bd7378806))
+
 ## [1.62.0](https://github.com/kunchenguid/no-mistakes/compare/v1.61.0...v1.62.0) (2026-09-02)
 
 
