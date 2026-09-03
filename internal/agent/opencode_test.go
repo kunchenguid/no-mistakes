@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 )
 
 func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
@@ -527,6 +529,7 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	var eventStreams atomic.Int32
 	var nativeNestedFormatSeen atomic.Bool
 	var nativeRootFormatSeen atomic.Bool
+	var nativeProfileAndRetriesSeen atomic.Bool
 	var fallbackFormatSeen atomic.Bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -550,8 +553,15 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 			_, hasRootFormat := body["format"]
 			nativeRootFormatSeen.Store(hasRootFormat)
 			info, _ := body["info"].(map[string]any)
-			_, hasNestedFormat := info["format"]
+			format, hasNestedFormat := info["format"].(map[string]any)
 			nativeNestedFormatSeen.Store(hasNestedFormat)
+			model, _ := body["model"].(map[string]any)
+			nativeProfileAndRetriesSeen.Store(
+				model["providerID"] == "openai" &&
+					model["modelID"] == "gpt-5" &&
+					body["variant"] == "high" &&
+					format["retryCount"] == float64(2),
+			)
 			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"Thinking may not be enabled when tool_choice forces tool use."}}}}`)
 
 		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
@@ -575,6 +585,10 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	a := &opencodeAgent{
 		bin:    "opencode",
 		server: &managedServer{port: mustParsePort(server.URL)},
+		profile: agentcfg.Profile{
+			Model:  "openai/gpt-5",
+			Effort: agentcfg.EffortHigh,
+		},
 	}
 	var chunks []string
 	var fallbackEvents int
@@ -601,6 +615,9 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	if nativeRootFormatSeen.Load() {
 		t.Error("first request unexpectedly used root json_schema format")
 	}
+	if !nativeProfileAndRetriesSeen.Load() {
+		t.Error("first request did not preserve model, variant, and retryCount")
+	}
 	if fallbackFormatSeen.Load() {
 		t.Error("fallback request unexpectedly used native json_schema format")
 	}
@@ -613,7 +630,7 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	if fallbackEvents != 1 {
 		t.Fatalf("fallback lifecycle events = %d, want one fresh prompt-only attempt boundary", fallbackEvents)
 	}
-	t.Logf("native nested format=%v; native root format=%v; fallback format=%v; validated output=%s", nativeNestedFormatSeen.Load(), nativeRootFormatSeen.Load(), fallbackFormatSeen.Load(), result.Output)
+	t.Logf("native nested format=%v; native root format=%v; model/variant/retryCount preserved=%v; fallback format=%v; validated output=%s", nativeNestedFormatSeen.Load(), nativeRootFormatSeen.Load(), nativeProfileAndRetriesSeen.Load(), fallbackFormatSeen.Load(), result.Output)
 }
 
 func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testing.T) {
