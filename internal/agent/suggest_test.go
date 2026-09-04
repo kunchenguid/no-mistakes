@@ -145,6 +145,22 @@ func TestSuggestBranchNameAgentError(t *testing.T) {
 	}
 }
 
+func TestSanitizeCommitSubject_OperatorAddress(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ input, want string }{
+		{"fix(cli): Captain, prevent stale wakes", "fix(cli): prevent stale wakes"},
+		{"Captain: fix stale wakes", "fix: fix stale wakes"},
+		{"fix(game): preserve captain selection", "fix(game): preserve captain selection"},
+		{"test(game): preserve `Captain: ready` fixture", "test(game): preserve `Captain: ready` fixture"},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := sanitizeCommitSubject(tt.input); got != tt.want {
+				t.Errorf("subject = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSuggestCommitMessage(t *testing.T) {
 	ag := &stubAgent{result: &Result{
 		Output: json.RawMessage(`{"subject":"feat(cli): add onboarding wizard"}`),
