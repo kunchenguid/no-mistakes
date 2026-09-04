@@ -277,6 +277,9 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
 		}
+		if state.Safety == "blocked_recover_preserved_head_missing" {
+			return "run ended without a recoverable preserved head; recover custody with `no-mistakes sync --recover --keep-local` to keep the current local head"
+		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
 		return "custody returned; the branch is yours - start a fresh run when ready"

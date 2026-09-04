@@ -23,6 +23,8 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 			if recoverableBranchSync(state) {
 				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
 				footer = "u recover custody"
+			} else if state.NextAction != nil && state.NextAction.Code == "recover_custody" {
+				message = "Run ended without a recoverable preserved head. Keep the current local head to return custody."
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
