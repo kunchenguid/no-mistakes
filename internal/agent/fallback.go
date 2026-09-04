@@ -86,6 +86,9 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 	}
 	var lastErr error
 	for i, current := range candidates {
+		if cause := context.Cause(ctx); cause != nil {
+			return nil, cause
+		}
 		currentOpts := opts
 		if currentOpts.Session != nil && currentOpts.Session.ID == "" && !SupportsSessionResume(current) {
 			currentOpts.Session = nil
@@ -103,6 +106,15 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return result, nil
 		}
 		lastErr = err
+		// A fallback is another attempt inside this invocation's existing
+		// bounded context, not a fresh timeout policy. Once that context has
+		// expired or been cancelled, the next candidate cannot start
+		// meaningfully. Preserve the current adapter's report for the caller's
+		// timeout diagnostic, but do not announce or instrument an attempt that
+		// will inherit an already-dead context.
+		if context.Cause(ctx) != nil {
+			return nil, err
+		}
 		if i == len(candidates)-1 || !isAgentUnavailableError(err) {
 			return nil, err
 		}
