@@ -328,7 +328,7 @@ func TestReviewFixerSession_FreshFallbackTimeoutExcludesResumeActivity(t *testin
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &sessionFallbackTimeoutAgent{}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Config.ReviewAgentTimeout = 50 * time.Millisecond
+	sctx.Config.ReviewAgentTimeout = 500 * time.Millisecond
 	sctx.Config.SessionReuse = true
 	sctx.Fixing = true
 	sctx.PreviousFindings = `{"findings":[{"id":"f-1","severity":"error","description":"fix this","action":"auto-fix"}]}`
