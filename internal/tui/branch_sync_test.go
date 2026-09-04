@@ -161,6 +161,22 @@ func TestSyncConfirmationEscapeNeverApplies(t *testing.T) {
 	}
 }
 
+func TestMissingPreservedHeadStatusShowsKeepLocalRecoveryCommand(t *testing.T) {
+	state := branchsync.State{
+		State:  branchsync.StatePipelineOwned,
+		Safety: "blocked_recover_preserved_head_missing",
+		NextAction: &branchsync.NextAction{
+			Code:    "recover_custody",
+			Command: "no-mistakes axi sync --recover --keep-local",
+		},
+	}
+
+	view := stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "no-mistakes axi sync --recover --keep-local") {
+		t.Fatalf("missing-head status did not show its recovery command:\n%s", view)
+	}
+}
+
 // TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService covers
 // the TUI half of the guarded custody recovery: a terminal pre-push
 // pipeline_owned state renders the recovery offer, `u` opens an explicit

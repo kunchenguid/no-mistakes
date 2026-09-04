@@ -529,6 +529,80 @@ func cliRecoveryGitSnapshot(t *testing.T, f cliRecoverFixture) string {
 	}, "\n---\n")
 }
 
+// newCLIMissingPreservedHeadFixture reproduces the wedged custody state from
+// a cancelled pre-push run whose recorded pipeline heads were then rebuilt
+// out of the operator worktree: the run still holds the branch, but the
+// preserved SHA is not a valid local or gate object.
+func newCLIMissingPreservedHeadFixture(t *testing.T, extraStranded int) cliRecoverFixture {
+	t.Helper()
+	f := newCLIRecoverFixture(t)
+	if err := os.WriteFile(filepath.Join(f.local, "rebuild.txt"), []byte("rebuilt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "rebuild.txt")
+	cliGit(t, f.local, "commit", "-m", "rebuild branch head")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	run, err := database.GetRun(f.runID)
+	if err != nil || run == nil {
+		t.Fatalf("load stranded run: %#v, %v", run, err)
+	}
+	missing := strings.Repeat("f", 40)
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCancelled, missing); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < extraStranded; i++ {
+		extra, err := database.InsertRun(run.RepoID, "feature/recover", f.submitted, run.BaseSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		extraMissing := strings.Repeat(fmt.Sprintf("%x", i+10), 40)[:40]
+		if err := database.UpdateRunStatusWithVerifiedHead(extra.ID, types.RunFailed, extraMissing); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+func cliRecoverRunCustodyStamps(t *testing.T, runID string) (stamped, total int) {
+	t.Helper()
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	seed, err := database.GetRun(runID)
+	if err != nil || seed == nil {
+		t.Fatalf("load seed run: %#v, %v", seed, err)
+	}
+	runs, err := database.GetRunsByRepo(seed.RepoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range runs {
+		if run.Branch != seed.Branch {
+			continue
+		}
+		total++
+		if run.CustodyReturnedAt != nil {
+			stamped++
+		}
+	}
+	return stamped, total
+}
+
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
 // switches away from the pipeline: the gate holds the submitted branch, the
 // run is terminal with head_sha still equal to submitted_head_sha, and no push
@@ -1288,6 +1362,117 @@ func TestSyncServicesRejectInvalidGlobalRemoteTimeout(t *testing.T) {
 	if !strings.Contains(err.Error(), "branch_sync_remote_timeout") || !strings.Contains(err.Error(), "duration must be positive") {
 		t.Fatalf("branchsync.OpenCurrent error = %v", err)
 	}
+}
+
+func TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing(t *testing.T) {
+	newCLIMissingPreservedHeadFixture(t, 0)
+	localHead := cliGit(t, ".", "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "status")
+	var ee *exitError
+	if err != nil && (!asExitError(err, &ee) || ee.code != 1) {
+		t.Fatalf("axi status: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"state: pipeline_owned",
+		"safety: blocked_recover_preserved_head_missing",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover --keep-local",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing-head status missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "code: inspect_and_reconcile_manually") {
+		t.Fatalf("missing-head status still offered the status dead-end:\n%s", out)
+	}
+
+	check, err := executeCmd("axi", "sync", "--check")
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("missing-head check should exit 1, got %#v\n%s", err, check)
+	}
+	if !strings.Contains(check, "command: no-mistakes axi sync --recover --keep-local") {
+		t.Fatalf("missing-head check did not offer keep-local:\n%s", check)
+	}
+
+	refused, err := executeCmd("axi", "sync", "--recover")
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("plain recover should still refuse a missing preserved head, got %#v\n%s", err, refused)
+	}
+	if !strings.Contains(refused, "blocked_recover_preserved_head_missing") {
+		t.Fatalf("plain recover safety:\n%s", refused)
+	}
+	if got := cliGit(t, ".", "rev-parse", "HEAD"); got != localHead {
+		t.Fatal("plain recover moved the rebuilt local head")
+	}
+	t.Logf("axi status before recovery:\n%s\naxi sync --check before recovery:\n%s\nplain recovery refusal:\n%s", out, check, refused)
+}
+
+func TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMissing(t *testing.T) {
+	f := newCLIMissingPreservedHeadFixture(t, 0)
+	localHead := cliGit(t, f.local, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	if err != nil {
+		t.Fatalf("keep-local recover: %v\n%s", err, out)
+	}
+	for _, want := range []string{"recovered: true", "state: custody_returned"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("keep-local output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != localHead {
+		t.Fatal("keep-local moved the rebuilt local head")
+	}
+	stamped, total := cliRecoverRunCustodyStamps(t, f.runID)
+	if total != 1 || stamped != 1 {
+		t.Fatalf("custody stamps = %d/%d, want 1/1", stamped, total)
+	}
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("post-recover axi status: %v\n%s", err, status)
+	}
+	if !strings.Contains(status, "state: custody_returned") || !strings.Contains(status, "no-mistakes axi run --intent") {
+		t.Fatalf("post-recover status should unblock axi run:\n%s", status)
+	}
+	check, err := executeCmd("axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("post-recover check should exit 0: %v\n%s", err, check)
+	}
+	if !strings.Contains(check, "state: custody_returned") {
+		t.Fatalf("post-recover check:\n%s", check)
+	}
+	t.Logf("keep-local recovery:\n%s\naxi status after recovery:\n%s\naxi sync --check after recovery:\n%s", out, status, check)
+}
+
+func TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns(t *testing.T) {
+	f := newCLIMissingPreservedHeadFixture(t, 2)
+	localHead := cliGit(t, f.local, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	if err != nil {
+		t.Fatalf("stacked keep-local recover: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "recovered: true") || !strings.Contains(out, "state: custody_returned") {
+		t.Fatalf("stacked keep-local output:\n%s", out)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != localHead {
+		t.Fatal("stacked keep-local moved the rebuilt local head")
+	}
+	stamped, total := cliRecoverRunCustodyStamps(t, f.runID)
+	if total != 3 || stamped != 3 {
+		t.Fatalf("stacked custody stamps = %d/%d, want 3/3", stamped, total)
+	}
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("stacked post-recover status: %v\n%s", err, status)
+	}
+	if strings.Contains(status, "state: pipeline_owned") || strings.Contains(status, "blocked_recover_preserved_head_missing") {
+		t.Fatalf("stacked keep-local left a stranded run:\n%s", status)
+	}
+	t.Logf("stacked keep-local recovery (%d/%d custody stamps):\n%s\naxi status after recovery:\n%s", stamped, total, out, status)
 }
 
 func TestHumanSyncRecoverRequiresConfirmationOutsideTTY(t *testing.T) {
