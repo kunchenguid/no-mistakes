@@ -14,6 +14,7 @@ import (
 func newRerunCmd() *cobra.Command {
 	var intent string
 	var baseBranch string
+	var requirePonytail bool
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
@@ -54,7 +55,7 @@ func newRerunCmd() *cobra.Command {
 				defer client.Close()
 
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, RequirePonytail: requirePonytail}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -65,5 +66,6 @@ func newRerunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch for the PR for this rerun only (overrides inherited per-run base branch)")
+	cmd.Flags().BoolVar(&requirePonytail, "require-ponytail", false, "require Ponytail full for this and later inherited reruns")
 	return cmd
 }

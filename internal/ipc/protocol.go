@@ -74,6 +74,9 @@ type PushReceivedParams struct {
 	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
 	Intent       string           `json:"intent,omitempty"`
 	PRBaseBranch string           `json:"pr_base_branch,omitempty"`
+	// RequirePonytail opts this run into the fail-closed Ponytail full
+	// handoff before every pipeline agent invocation.
+	RequirePonytail bool `json:"require_ponytail,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -126,12 +129,13 @@ type GetActiveRunParams struct {
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.
 type RerunParams struct {
-	RepoID        string           `json:"repo_id"`
-	Branch        string           `json:"branch"`
-	PreviousRunID string           `json:"previous_run_id,omitempty"`
-	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
-	Intent        string           `json:"intent,omitempty"`
-	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	RepoID          string           `json:"repo_id"`
+	Branch          string           `json:"branch"`
+	PreviousRunID   string           `json:"previous_run_id,omitempty"`
+	SkipSteps       []types.StepName `json:"skip_steps,omitempty"`
+	Intent          string           `json:"intent,omitempty"`
+	PRBaseBranch    string           `json:"pr_base_branch,omitempty"`
+	RequirePonytail bool             `json:"require_ponytail,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -257,6 +261,7 @@ type RunInfo struct {
 	Error            *string         `json:"error,omitempty"`
 	CIReady          bool            `json:"ci_ready,omitempty"`
 	CIReadyNoCI      bool            `json:"ci_ready_no_ci,omitempty"`
+	PonytailRequired bool            `json:"ponytail_required,omitempty"`
 	// PRBaseBranch is the per-run PR target override, if the operator set
 	// --base-branch when starting this run.
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`

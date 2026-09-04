@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS runs (
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
+    ponytail_required       INTEGER NOT NULL DEFAULT 0,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -237,6 +238,9 @@ var migrationStatements = []string{
 	// version and embedded build SHA used by the running binary.
 	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,
 	`ALTER TABLE runs ADD COLUMN no_mistakes_build_sha TEXT`,
+	// Per-run opt-in for the fail-closed Ponytail handoff. Persisted so daemon
+	// restart and rerun recovery cannot silently drop the caller's requirement.
+	`ALTER TABLE runs ADD COLUMN ponytail_required INTEGER NOT NULL DEFAULT 0`,
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,

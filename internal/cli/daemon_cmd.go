@@ -110,6 +110,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			requirePonytail, err := parsePonytailPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -128,13 +132,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:         gatePath,
-				Ref:          ref,
-				Old:          oldSHA,
-				New:          newSHA,
-				SkipSteps:    skipSteps,
-				Intent:       intent,
-				PRBaseBranch: prBaseBranch,
+				Gate:            gatePath,
+				Ref:             ref,
+				Old:             oldSHA,
+				New:             newSHA,
+				SkipSteps:       skipSteps,
+				Intent:          intent,
+				PRBaseBranch:    prBaseBranch,
+				RequirePonytail: requirePonytail,
 			}, &result)
 		},
 	}
@@ -202,6 +207,8 @@ const intentPushOptionPrefix = "no-mistakes.intent="
 // prBaseBranchPushOptionPrefix carries a per-run PR base branch through a git push.
 const prBaseBranchPushOptionPrefix = "no-mistakes.pr-base-branch="
 
+const ponytailPushOptionPrefix = "no-mistakes.ponytail="
+
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
 func formatIntentPushOption(intent string) string {
@@ -254,6 +261,28 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 		branch = value
 	}
 	return branch, nil
+}
+
+func formatPonytailPushOption(required bool) string {
+	if !required {
+		return ""
+	}
+	return ponytailPushOptionPrefix + "full"
+}
+
+func parsePonytailPushOptions(options []string) (bool, error) {
+	required := false
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, ponytailPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if value != "full" {
+			return false, fmt.Errorf("ponytail push option must be %q, got %q", "full", value)
+		}
+		required = true
+	}
+	return required, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

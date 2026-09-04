@@ -125,11 +125,12 @@ func TestResponseError(t *testing.T) {
 
 func TestPushReceivedParams(t *testing.T) {
 	params := PushReceivedParams{
-		Gate:      "/path/to/gate.git",
-		Ref:       "refs/heads/main",
-		Old:       "aaa",
-		New:       "bbb",
-		SkipSteps: []types.StepName{types.StepTest, types.StepLint},
+		Gate:            "/path/to/gate.git",
+		Ref:             "refs/heads/main",
+		Old:             "aaa",
+		New:             "bbb",
+		SkipSteps:       []types.StepName{types.StepTest, types.StepLint},
+		RequirePonytail: true,
 	}
 	data, _ := json.Marshal(params)
 	var got PushReceivedParams
@@ -141,6 +142,9 @@ func TestPushReceivedParams(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.SkipSteps, params.SkipSteps) {
 		t.Errorf("skip_steps = %+v, want %+v", got.SkipSteps, params.SkipSteps)
+	}
+	if !got.RequirePonytail {
+		t.Error("require_ponytail was lost in the IPC round trip")
 	}
 }
 

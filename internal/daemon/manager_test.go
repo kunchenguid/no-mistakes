@@ -636,6 +636,46 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestRerunInheritsRequiredPonytailHandoff(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "ponytail-rerun-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("ponytail-rerun-repo"), Ref: "refs/heads/main",
+		Old: strings.Repeat("0", 40), New: headSHA, RequirePonytail: true,
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	firstRun := waitForRunTerminalState(t, d, first.RunID)
+	if !firstRun.PonytailRequired {
+		t.Fatal("push-triggered run dropped RequirePonytail")
+	}
+
+	var second ipc.RerunResult
+	if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID: "ponytail-rerun-repo", Branch: "main", PreviousRunID: first.RunID,
+	}, &second); err != nil {
+		t.Fatal(err)
+	}
+	secondRun := waitForRunTerminalState(t, d, second.RunID)
+	if !secondRun.PonytailRequired {
+		t.Fatal("rerun downgraded the inherited Ponytail requirement")
+	}
+	if info := runToInfo(d, secondRun, nil); !info.PonytailRequired {
+		t.Fatal("run IPC omitted the durable Ponytail requirement")
+	}
+}
+
 func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
@@ -669,7 +709,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		Summary: "newer unrelated requirements",
 		Source:  db.RunIntentSourceAgent,
 		Score:   1,
-	}, "")
+	}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

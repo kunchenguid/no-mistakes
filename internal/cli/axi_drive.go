@@ -77,6 +77,7 @@ func newAxiRunCmd() *cobra.Command {
 	var skipValue string
 	var intent string
 	var baseBranch string
+	var requirePonytail bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -102,17 +103,18 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
-				"auto_yes":        autoYes,
-				"has_intent":      strings.TrimSpace(intent) != "",
-				"has_skip":        strings.TrimSpace(skipValue) != "",
-				"has_base_branch": strings.TrimSpace(baseBranch) != "",
+				"auto_yes":         autoYes,
+				"has_intent":       strings.TrimSpace(intent) != "",
+				"has_skip":         strings.TrimSpace(skipValue) != "",
+				"has_base_branch":  strings.TrimSpace(baseBranch) != "",
+				"require_ponytail": requirePonytail,
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent, baseBranch)
+				return runAxiRun(cmd, autoYes, skipSteps, intent, baseBranch, requirePonytail)
 			})
 		},
 	}
@@ -120,10 +122,11 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
+	cmd.Flags().BoolVar(&requirePonytail, "require-ponytail", false, "require a fail-closed Ponytail full handoff for every pipeline agent invocation")
 	return cmd
 }
 
-func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string) error {
+func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string, requirePonytail bool) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -157,6 +160,10 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return emitError(cmd, 2, err.Error(),
 				"Omit --base-branch to reattach, or abort the active run before starting a new one")
 		}
+		if err := conflictingActiveRunPonytail(active, requirePonytail); err != nil {
+			return emitError(cmd, 2, err.Error(),
+				"Abort it only if you intend to replace the run, then start a new run with --require-ponytail")
+		}
 		runID = active.ID
 	}
 	if runID == "" {
@@ -182,7 +189,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch, requirePonytail)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -235,6 +242,13 @@ func conflictingActiveRunPRBaseBranch(run *ipc.RunInfo, requested string) error 
 		return fmt.Errorf("active run %s is already in progress without --base-branch %s", run.ID, requested)
 	}
 	return fmt.Errorf("active run %s is already targeting %s, not %s", run.ID, stored, requested)
+}
+
+func conflictingActiveRunPonytail(run *ipc.RunInfo, required bool) error {
+	if !required || run == nil || run.PonytailRequired {
+		return nil
+	}
+	return fmt.Errorf("active run %s was not started with --require-ponytail", run.ID)
 }
 
 // activeRunID returns the ID of a non-terminal run for branch and head, or "" if none.
@@ -402,12 +416,15 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string, requirePonytail bool) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	if opt := formatPRBaseBranchPushOption(baseBranch); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	if opt := formatPonytailPushOption(requirePonytail); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
@@ -439,7 +456,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, baseBranch, requirePonytail), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -523,8 +540,8 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, baseBranch string, requirePonytail bool) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, PRBaseBranch: baseBranch, RequirePonytail: requirePonytail}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

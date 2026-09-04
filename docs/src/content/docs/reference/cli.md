@@ -101,14 +101,16 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
+no-mistakes axi run --require-ponytail --intent "the user's goal"
 ```
 
-| Flag            | Type     | Default | Description                                                                                          |
-| --------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `--intent`      | `string` | (none)  | What the user set out to accomplish; required to start a new run                                     |
-| `-y`, `--yes`   | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                                            |
-| `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
-| `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| Flag                 | Type     | Default | Description                                                                                                            |
+| -------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `--intent`           | `string` | (none)  | What the user set out to accomplish; required to start a new run                                                       |
+| `-y`, `--yes`        | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                                                              |
+| `--skip`             | `string` | (none)  | Comma-separated pipeline steps to skip                                                                                 |
+| `--base-branch`      | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--require-ponytail` | `bool`   | `false` | Require a fail-closed Ponytail full handoff before each pipeline agent invocation                                      |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
@@ -117,6 +119,15 @@ When starting a new run, `axi run` refuses the default branch and uncommitted wo
 Reattaching to an in-flight run does not require `--intent`.
 `--base-branch` is persisted on the run so rebase, PR, and CI honor it after resume.
 Reattaching with a `--base-branch` that differs from the active run's stored target is refused rather than silently discarded; omit the flag to reattach, or abort the active run first.
+`--require-ponytail` is an opt-in, per-run contract. Before an enabled run gives any project task to a pipeline agent, no-mistakes sends the authoritative `no-mistakes.ponytail-handoff.v1` full operating context with a fresh challenge and requires an exact structured acknowledgment. A missing agent, activation error, or invalid acknowledgment fails the step before project work with a sanitized actionable error. The durable requirement survives daemon recovery and is inherited by reruns; a rerun cannot downgrade it. Machine-readable run output reports `ponytail: required`.
+
+Firstmate's `ponytail-dev-flow-p1` caller contract is exactly:
+
+```sh
+no-mistakes axi run --require-ponytail --intent "$captain_intent"
+```
+
+Keep the user's actual goal in `--intent`. Do not add Ponytail instructions there, inspect Ponytail installation files, or parse agent/plugin prose. If the same branch already has an active run that was not started with Ponytail required, this command refuses to attach; finish or deliberately abort that run before starting the required run.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
@@ -339,6 +350,7 @@ Rerun the pipeline for the current branch.
 ```sh
 no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
+no-mistakes rerun --require-ponytail
 ```
 
 Starts a new pipeline run from the current gate branch, except when the latest
@@ -357,9 +369,10 @@ cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
 an active run; do not use it to bypass a gate.
 
-| Flag | Type | Default | Description |
-| ---- | ---- | ------- | ----------- |
-| `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
+| Flag                 | Type     | Default | Description                                                         |
+| -------------------- | -------- | ------- | ------------------------------------------------------------------- |
+| `--intent`           | `string` | (none)  | Explicit intent overriding inherited intent or fresh inference      |
+| `--require-ponytail` | `bool`   | `false` | Require Ponytail full for this run; prior requirements are inherited |
 
 ## no-mistakes sync
 

@@ -102,13 +102,14 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	ID          string
-	Branch      string
-	Status      string
-	HeadSHA     string
-	PRURL       string
-	CIReady     bool
-	CIReadyNoCI bool
+	ID               string
+	Branch           string
+	Status           string
+	HeadSHA          string
+	PRURL            string
+	CIReady          bool
+	CIReadyNoCI      bool
+	PonytailRequired bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -129,6 +130,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		HeadSHA:            r.HeadSHA,
 		CIReady:            r.CIReady,
 		CIReadyNoCI:        r.CIReadyNoCI,
+		PonytailRequired:   r.PonytailRequired,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CIOverrideReason:   r.CIOverrideReason,
 	}
@@ -170,6 +172,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
+		PonytailRequired:   r.PonytailRequired,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
@@ -445,6 +448,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	// while genuinely parked (non-nil marker on a non-terminal run).
 	if rv.AwaitingAgentSince != nil && !terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
+	}
+	if rv.PonytailRequired {
+		fields = append(fields, toon.Field{Key: "ponytail", Value: "required"})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	if rv.PRURL != "" {

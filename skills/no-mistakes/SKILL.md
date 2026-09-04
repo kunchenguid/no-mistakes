@@ -32,7 +32,8 @@ return control to the outer executor. Safe inspection remains available through
 
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching `axi run`
-flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
+flags yourself - for example, "skip the lint step" becomes `--skip=lint` and
+"require Ponytail" becomes `--require-ponytail`. Run
 `no-mistakes axi run --help` to see the available flags.
 
 ## Two ways to invoke
@@ -144,6 +145,9 @@ Run the pipeline and decide on its findings as they come up:
    ```sh
    no-mistakes axi run --intent "<what the user set out to accomplish>"
    ```
+   Add `--require-ponytail` when the user requires the pipeline's fail-closed
+   Ponytail full handoff. Keep Ponytail instructions out of `--intent`; the flag
+   is the machine-readable contract and required reruns inherit it.
    `axi run` and every `axi respond` block synchronously - the review, test,
    and CI steps can each take **several minutes**, so a single call may not
    return for a while. That is normal; allow a long timeout and do not cancel
