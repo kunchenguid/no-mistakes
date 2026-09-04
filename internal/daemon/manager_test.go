@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -48,6 +50,54 @@ func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *te
 	defer claude.Close()
 	if err := validateRecoveredSessionProviders(database, run.ID, claude); err == nil || !strings.Contains(err.Error(), `session provider "codex" is no longer configured`) {
 		t.Fatalf("validate recovered fixer provider error = %v", err)
+	}
+}
+
+// TestRecoveredRunRetainsOriginalReviewFixAgentAfterConfigChange reproduces the
+// parked-run recovery path: a run auto-fixed Review findings with codex and
+// persisted that fixer session, then the operator switched review_fix_agent to
+// pi before the daemon restarted. Recovery must rebuild the run's original codex
+// fixer (per-run stability), not the new pi selection, so the stored session
+// still validates instead of failing an otherwise-recoverable run.
+func TestRecoveredRunRetainsOriginalReviewFixAgentAfterConfigChange(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/tmp/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleFixer), "codex", "fixer-session"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The current global config selects a different review fixer than the run
+	// started with.
+	cfg := &config.Config{
+		Agent:           types.AgentClaude,
+		ReviewFixAgent:  types.AgentPi,
+		ReviewFixAgents: []types.AgentName{types.AgentPi},
+		SessionReuse:    true,
+	}
+	if err := pinRecoveredReviewFixAgent(database, cfg, run.ID); err != nil {
+		t.Fatalf("pin recovered review fixer: %v", err)
+	}
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatalf("newPipelineAgent = %v", err)
+	}
+	defer ag.Close()
+	if got := agent.AgentForReviewFix(ag).Name(); got != string(types.AgentCodex) {
+		t.Fatalf("recovered Review fixer = %q, want codex (the run's original selection)", got)
+	}
+	if err := validateRecoveredSessionProviders(database, run.ID, ag); err != nil {
+		t.Fatalf("recovered fixer session must validate against the retained provider: %v", err)
 	}
 }
 
