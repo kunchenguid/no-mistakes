@@ -45,6 +45,16 @@ func TestReviewStep_UnrunAnalyzerDoesNotApprove(t *testing.T) {
 			result: &agent.Result{Output: json.RawMessage(`{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
 			want:   "review analyzer findings missing findings array",
 		},
+		{
+			name:   "blank risk rationale",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":" \t","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer findings missing risk assessment",
+		},
+		{
+			name:   "unknown finding severity",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"critical","description":"unhandled error","action":"auto-fix"}],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer finding 0 missing severity",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -122,24 +122,31 @@ func TestTestStep_IncompleteStructuredOutputFails(t *testing.T) {
 
 func TestTestStep_EmptyEvidenceFails(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			// Present but empty: field-presence checks alone accept this
-			// payload, which is how Test passed without inspectable
-			// evidence (issue #703).
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":[],"testing_summary":"  ","artifacts":[]}`)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	for _, tc := range []struct {
+		name   string
+		output json.RawMessage
+	}{
+		{name: "empty array", output: json.RawMessage(`{"findings":[],"summary":"","tested":[],"testing_summary":"  ","artifacts":[]}`)},
+		{name: "whitespace entries", output: json.RawMessage(`{"findings":[],"summary":"","tested":[" \t"],"testing_summary":"tests passed","artifacts":[]}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: tc.output}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
-	outcome, err := (&TestStep{}).Execute(sctx)
-	if err == nil || !strings.Contains(err.Error(), "empty tested array") {
-		t.Fatalf("Execute() error = %v, want empty tested array rejected", err)
-	}
-	if outcome != nil {
-		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+			outcome, err := (&TestStep{}).Execute(sctx)
+			if err == nil || !strings.Contains(err.Error(), "empty tested array") {
+				t.Fatalf("Execute() error = %v, want empty tested array rejected", err)
+			}
+			if outcome != nil {
+				t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+			}
+		})
 	}
 }
 

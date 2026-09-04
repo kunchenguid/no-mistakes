@@ -76,6 +76,16 @@ func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
 	if len(*payload.Tested) == 0 {
 		return fmt.Errorf("empty tested array")
 	}
+	hasTestedEvidence := false
+	for _, tested := range *payload.Tested {
+		if strings.TrimSpace(tested) != "" {
+			hasTestedEvidence = true
+			break
+		}
+	}
+	if !hasTestedEvidence {
+		return fmt.Errorf("empty tested array")
+	}
 	if payload.TestingSummary == nil {
 		return fmt.Errorf("missing testing summary")
 	}

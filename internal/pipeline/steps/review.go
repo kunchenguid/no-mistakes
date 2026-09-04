@@ -377,8 +377,14 @@ Risk assessment (after listing all findings):
 	if err := json.Unmarshal(result.Output, &findings); err != nil {
 		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
 	}
-	if findings.RiskLevel == "" || findings.RiskRationale == "" || findings.RiskScope == "" {
+	if strings.TrimSpace(findings.RiskLevel) == "" || strings.TrimSpace(findings.RiskRationale) == "" || findings.RiskScope == "" {
 		return nil, errors.New("review analyzer findings missing risk assessment")
+	}
+	for i := range findings.Items {
+		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
+			return nil, fmt.Errorf("review analyzer finding %d missing severity", i)
+		}
+		findings.Items[i].Severity = types.NormalizeFindingSeverity(findings.Items[i].Severity)
 	}
 
 	// Phase ownership boundary: drop findings that only claim later pipeline-
