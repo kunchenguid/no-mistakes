@@ -10,6 +10,8 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 
 agent: auto
 
+review_fix_agent: pi
+
 acpx_path: acpx
 
 forgejo_axi_path: forgejo-axi
@@ -29,6 +31,9 @@ agent_path_override:
 agent_config:
   codex:
     model: gpt-5.4
+    effort: low
+  pi:
+    model: openai-codex/gpt-5.6-sol
     effort: low
 
 agent_args_override:
@@ -114,7 +119,7 @@ providers:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+Default agent for all pipeline duties and setup-wizard suggestions. It is also the Review-fixer fallback when [`review_fix_agent`](#review_fix_agent) is unset. Can be overridden per-repo.
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -142,6 +147,37 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
+
+### review_fix_agent
+
+Optional agent used only to remediate findings from the Review step. It accepts the same single-agent and ordered-fallback-list forms as [`agent`](#agent), with the same availability checks, `auto` resolution, deduplication, and process-unavailable fallback behavior.
+
+|         |                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------- |
+| Type    | `string` or `string[]`                                                                      |
+| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Default | Unset (use the effective `agent`)                                                           |
+
+This override is narrowly scoped: initial Review and every rereview still use `agent`, as do Test, Document, Lint, Rebase, PR, and CI work. Only the turn that fixes Review findings uses `review_fix_agent`. Its durable fixer session, when enabled, is also created for this agent.
+
+`review_fix_agent` is global-only. A repository's `.no-mistakes.yaml` cannot select the credentialed process used for fixes. A trusted repository-level `agent` override still controls ordinary pipeline duties; when `review_fix_agent` is set globally it remains the Review fixer, and when it is absent the fixer follows that effective repository agent. Global edits are read while setting up a run, so an executor already running keeps the selection it started with.
+
+Binary paths, raw arguments, model, and effort continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override), [`agent_args_override`](#agent_args_override), and [`agent_config`](#agent_config). There is no second profile system.
+
+For example, this keeps an existing `acp:omp` reviewer profile configured in OMP for Vertex AI, Claude Opus 4.8, and xhigh reasoning, while routing only Review remediation to Pi with OpenAI GPT-5.6 Sol at low reasoning:
+
+```yaml
+# OMP owns the Vertex/Claude reviewer profile and its xhigh reasoning setting.
+agent: acp:omp
+review_fix_agent: pi
+
+agent_config:
+  pi:
+    model: openai-codex/gpt-5.6-sol
+    effort: low
+```
+
+ACP exposes model selection but not reasoning effort through `acpx`, so the OMP target retains ownership of its existing Vertex model and xhigh setting. no-mistakes owns the role selection and maps the Pi fixer profile to `--model openai-codex/gpt-5.6-sol --thinking low`.
 
 ### acpx_path
 
@@ -210,7 +246,7 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
+Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
 
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
@@ -598,7 +634,7 @@ How many times the CI step may re-run a single provider-attributed check before 
 This covers cancellations on supported providers and, when the value is positive, opts GitHub into detecting jobs that failed before any repository step ran.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `int` |
 | Default | `0` |
 | Range | `0` to `5`; values outside it are clamped |
@@ -618,7 +654,7 @@ The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_
 The operator-level fallback for [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), whose per-repository reference owns the repair-delivery semantics, safety rationale, and trust boundary.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -761,7 +797,7 @@ These are operator settings for this machine's local disk, so they are global-on
 Open pull requests created on GitHub as drafts (`gh pr create --draft`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -773,7 +809,7 @@ This is a global default. Per-repo config can override it via `providers.github.
 Open merge requests created on GitLab as drafts (`glab mr create --draft`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -785,7 +821,7 @@ This is a global default. Per-repo config can override it via `providers.gitlab.
 Open pull requests created on Bitbucket Cloud as drafts (`"draft": true` in the create-PR API request).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -797,7 +833,7 @@ This is a global default. Per-repo config can override it via `providers.bitbuck
 Open pull requests created on Azure DevOps as drafts (`az repos pr create --draft true`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
