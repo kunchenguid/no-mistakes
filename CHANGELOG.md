@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.65.2](https://github.com/kunchenguid/no-mistakes/compare/v1.65.1...v1.65.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **branchsync:** recover custody from bound archives ([#954](https://github.com/kunchenguid/no-mistakes/issues/954)) ([e2f575a](https://github.com/kunchenguid/no-mistakes/commit/e2f575aded870cc92e58b56fd5414ab9b4cb3c2b))
+* **pipeline:** fail closed on invalid analyzer output ([#955](https://github.com/kunchenguid/no-mistakes/issues/955)) ([911452b](https://github.com/kunchenguid/no-mistakes/commit/911452b00f942f80238e3c6cc35b8c185146cae8))
+
 ## [1.65.1](https://github.com/kunchenguid/no-mistakes/compare/v1.65.0...v1.65.1) (2026-09-04)
 
 
