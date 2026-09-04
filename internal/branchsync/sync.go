@@ -611,17 +611,17 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
 		}
-		if gateHead != run.HeadSHA {
-			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
-			}
-			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
-			}
-			run.HeadSHA = gateHead
-			state.Pipeline.CurrentHead = gateHead
-			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
+		if gateHead != run.HeadSHA && !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
 		}
+		if err := s.DB.UpdateRunStatusWithVerifiedHead(run.ID, run.Status, gateHead); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+		}
+		run.HeadSHA = gateHead
+		verifiedAt := time.Now().Unix()
+		run.TerminalHeadVerifiedAt = &verifiedAt
+		state.Pipeline.CurrentHead = gateHead
+		state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 	}
 
 	wd := s.workDir()
