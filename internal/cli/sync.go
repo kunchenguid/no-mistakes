@@ -29,12 +29,13 @@ func newSyncCmd() *cobra.Command {
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
 			"--check performs the fresh proof without applying it.\n" +
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
-			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
-			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
-			"carry every local change. Unproven divergence refuses. A run cancelled before\n" +
-			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
-			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"pipeline commits: it anchors an available preserved head, then either\n" +
+			"fast-forwards a clean behind worktree or adopts a diverged preserved head only\n" +
+			"when proven to carry every local change. Unproven divergence refuses. A run\n" +
+			"cancelled before the pipeline changed anything releases the branch by itself\n" +
+			"(user_owned) and makes --recover a no-op. --recover --keep-local keeps the\n" +
+			"current local head and never touches the worktree; available preserved commits\n" +
+			"stay anchored, while genuinely missing preserved commits are discarded.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -55,7 +56,7 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	return cmd
 }
 
@@ -88,7 +89,7 @@ func newAxiSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	return cmd
 }
 
@@ -206,14 +207,19 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	if !yes && state.State != branchsync.StateUserOwned {
 		printHumanSyncState(cmd, state)
 		if !syncInteractive() {
-			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this recovery. Re-run with `no-mistakes sync --recover --yes`.")
+			retry := "no-mistakes sync --recover --yes"
+			if keepLocal {
+				retry = "no-mistakes sync --recover --keep-local --yes"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this recovery. Re-run with `%s`.\n", retry)
 			result = "refused"
 			return &exitError{code: 1}
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 		if keepLocal {
-			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the preserved pipeline commits and moving the")
-			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring available preserved pipeline commits, discarding")
+			fmt.Fprintln(cmd.OutOrStdout(), "  genuinely missing ones, and moving the local gate branch to your current head;")
+			fmt.Fprintln(cmd.OutOrStdout(), "  the worktree is never touched.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
 			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
