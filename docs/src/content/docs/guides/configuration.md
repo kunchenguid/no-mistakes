@@ -10,7 +10,7 @@ with sensible defaults for everything else.
 The goal is not to make you configure a mini CI system. The default path should
 work. Config exists for the parts that genuinely vary by machine or repo:
 
-- which agent or ordered fallback list you prefer
+- which agent or ordered fallback list you prefer, including an optional Review-fixer override
 - which test or lint commands are the canonical ones for this repo
 - which extra review rules apply to which paths
 - where test evidence artifacts should be stored
@@ -54,9 +54,9 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## Precedence
 
-- Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `ci`, `commit`, `intent`, and the repository-scoped `test.evidence` fields overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them). Local evidence location and retention are machine-wide and remain global-only; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns the exact boundary.
+- Repo config overrides global config field by field: repo `agent` replaces the global `agent` (including a full ordered fallback list), while `auto_fix`, `ci`, `commit`, `intent`, and the repository-scoped `test.evidence` fields overlay individual fields and fall through to the global default for anything unset (`intent.disabled_readers` adds to the globally disabled readers instead of replacing them). The global-only `review_fix_agent` independently selects only the Review remediation agent; when unset, it follows the effective `agent`. Local evidence location and retention are machine-wide and remain global-only; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) owns the exact boundary.
 - Repo `providers` fields override the matching global fields. The [Global Config Reference](/no-mistakes/reference/global-config/#providersgithubdraft_pull_requests) and [Repo Config Reference](/no-mistakes/reference/repo-config/#providersgithubdraft_pull_requests) own the supported providers, defaults, and behavior.
-- `agent_path_override`, `agent_config`, `agent_args_override`, `acpx_path`, `acp_registry_overrides`, `ci_timeout`, `daemon_connect_timeout`, `branch_sync_remote_timeout`, `gate_reconcile_interval`, `gate_reconcile_timeout`, `step_quiet_warning`, `agent_timeout`, `review_agent_timeout`, `test_agent_timeout`, `log_level`, and `session_reuse` are global-only fields.
+- `review_fix_agent`, `agent_path_override`, `agent_config`, `agent_args_override`, `acpx_path`, `acp_registry_overrides`, `ci_timeout`, `daemon_connect_timeout`, `branch_sync_remote_timeout`, `gate_reconcile_interval`, `gate_reconcile_timeout`, `step_quiet_warning`, `agent_timeout`, `review_agent_timeout`, `test_agent_timeout`, `log_level`, and `session_reuse` are global-only fields.
 - `commands`, `ignore_patterns`, `document.instructions`, `review.path_instructions`, `allow_repo_commands`, and `disable_project_settings` are repo-only fields. By default, `commands` and `agent` are read from the trusted default branch; a trusted `allow_repo_commands: true` opt-in instead honors their pushed-branch values. The other gate-control fields, including `review.path_instructions` and the repo `ci` overlay, always come from the trusted default branch. See the [Repo Config Reference](/no-mistakes/reference/repo-config/) security note.
 - no-mistakes reloads global config while setting up each run, so edits made before starting a run apply to it. For repeatable profiles (for example fast versus deep Codex settings), use separately initialized `NM_HOME` roots; `NM_HOME` moves all no-mistakes state, not just config.
 

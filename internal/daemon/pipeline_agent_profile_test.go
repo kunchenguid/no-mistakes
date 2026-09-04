@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -41,6 +42,28 @@ func TestNewPipelineAgent_ProfileIsPerAgent(t *testing.T) {
 	_ = ag.Close()
 }
 
+func TestNewPipelineAgent_SelectsConfiguredReviewFixAgent(t *testing.T) {
+	cfg := &config.Config{
+		Agent:          types.AgentClaude,
+		ReviewFixAgent: types.AgentPi,
+		AgentConfig: map[string]agentcfg.Profile{
+			"claude": {Model: "opus", Effort: agentcfg.EffortXHigh},
+			"pi":     {Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+		},
+	}
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatalf("newPipelineAgent = %v", err)
+	}
+	defer ag.Close()
+	if ag.Name() != string(types.AgentClaude) {
+		t.Fatalf("ordinary pipeline agent = %q, want claude", ag.Name())
+	}
+	if got := agent.AgentForReviewFix(ag).Name(); got != string(types.AgentPi) {
+		t.Fatalf("Review fixer = %q, want pi", got)
+	}
+}
+
 // TestNewPipelineAgent_NoProfileIsUnchanged is the backwards-compatibility
 // floor at the daemon: a configuration that predates agent_config builds every
 // agent exactly as before.
@@ -52,6 +75,9 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("newPipelineAgent = %v", err)
+	}
+	if agent.AgentForReviewFix(ag) != ag {
+		t.Fatal("a config without review_fix_agent must keep the existing agent as its fixer")
 	}
 	_ = ag.Close()
 }
