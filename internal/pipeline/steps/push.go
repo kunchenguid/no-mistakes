@@ -31,11 +31,18 @@ func PreflightPush(sctx *pipeline.StepContext, headSHA string) error {
 		return fmt.Errorf("push preflight: inspect configured destination: %w", err)
 	}
 
-	args := []string{"push", "--dry-run", pushURL}
-	if remoteSHA != "" && remoteSHA != headSHA {
-		args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, remoteSHA))
+	probeSHA := headSHA
+	if remoteSHA != "" {
+		// Preflight is about destination access, not branch integration. Rebase
+		// owns an advanced or divergent remote branch later in the pipeline, so
+		// probe the existing tip as a no-op instead of force-testing the stale
+		// incoming head against branch policy.
+		if _, err := stepGitRun(sctx, "fetch", "--no-tags", pushURL, remoteSHA); err != nil {
+			return fmt.Errorf("push preflight: fetch configured destination tip: %w", err)
+		}
+		probeSHA = remoteSHA
 	}
-	args = append(args, headSHA+":"+ref)
+	args := []string{"push", "--dry-run", pushURL, probeSHA + ":" + ref}
 	if _, err := stepGitRun(sctx, args...); err != nil {
 		target := "upstream"
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {

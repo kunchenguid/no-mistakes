@@ -44,6 +44,33 @@ func TestPreflightPushChecksDestinationWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestPreflightPushDoesNotForceTestStaleHeadBeforeRebase(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, upstream, "config", "receive.denyNonFastForwards", "true")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "remote-ahead.txt"), []byte("ahead\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "remote-ahead.txt")
+	gitCmd(t, dir, "commit", "-m", "advance remote")
+	remoteHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "HEAD:feature")
+	gitCmd(t, dir, "reset", "--hard", headSHA)
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	if err := PreflightPush(sctx, headSHA); err != nil {
+		t.Fatalf("preflight rejected a branch that Rebase can update: %v", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != remoteHead {
+		t.Fatalf("preflight changed remote head from %s to %s", remoteHead, got)
+	}
+}
+
 // TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit reproduces
 // the end-user incident at the real push boundary. Review approved R, then an
 // out-of-band reset replaced HEAD with divergent D and no pipeline-owned commit
