@@ -961,6 +961,51 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestRecoverKeepLocalIgnoresSupersededUnpublishedRuns(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	binding := db.PushBinding{HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover"}
+	if err := f.db.UpdateRunPushBinding(f.run.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	pushed, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(pushed.ID, types.RunCompleted, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	binding.HeadSHA = f.preserved
+	if err := f.db.UpdateRunPushBinding(pushed.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	missing, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(missing.ID, types.RunFailed, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != missing.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
+		t.Fatalf("missing-head state after superseded run = %#v", state)
+	}
+	kept := f.service.Recover(f.ctx, true)
+	if !kept.Recovered {
+		t.Fatalf("missing-head recovery after superseded run = %#v", kept)
+	}
+	old, err := f.db.GetRun(f.run.ID)
+	if err != nil || old == nil || old.CustodyReturnedAt != nil {
+		t.Fatalf("superseded run custody = %#v, %v", old, err)
+	}
+	latest, err := f.db.GetRun(missing.ID)
+	if err != nil || latest == nil || latest.CustodyReturnedAt == nil {
+		t.Fatalf("missing run custody = %#v, %v", latest, err)
+	}
+}
+
 func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -1057,6 +1102,30 @@ func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
 				t.Fatal("stale gate evidence stamped custody")
 			}
 		})
+	}
+}
+
+func TestRecoverKeepLocalRefusesDanglingIndependentGateHead(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+	tree := mustRun(t, f.gate, "rev-parse", f.preserved+"^{tree}")
+	dangling := mustRun(t, f.gate, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit-tree", tree, "-p", f.preserved, "-m", "independent")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", dangling)
+	if err := os.Remove(filepath.Join(f.gate, "objects", dangling[:2], dangling[2:])); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("recovery with dangling independent gate head = %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != dangling {
+		t.Fatalf("gate head = %s, want dangling head %s", got, dangling)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dangling independent gate head stamped custody")
 	}
 }
 
@@ -1552,6 +1621,27 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("racing recover stamped custody")
+	}
+}
+
+func TestRecoverKeepLocalRevalidatesLocalHeadBeforeStamping(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	f.service.beforeGateReset = func() {
+		mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.base, f.submitted)
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recovery after local head change = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("changed local head stamped custody")
 	}
 }
 

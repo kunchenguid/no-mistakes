@@ -750,7 +750,10 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		s.beforeGateReset()
 	}
 	if gateHead != state.Local.Head {
-		if gateHead != "" && gateHead != run.HeadSHA && objectExists(ctx, s.GateDir, gateHead) {
+		if gateHead != "" && gateHead != run.HeadSHA {
+			if !objectExists(ctx, s.GateDir, gateHead) {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head is unavailable and cannot be preserved; no files or branch refs were changed")
+			}
 			gateAnchor := custody.RecoveryGateRef(run.ID)
 			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
 			if err != nil || (exists && existing != gateHead) {
@@ -793,6 +796,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
 		}
 	}
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	head, headErr := git.HeadSHA(ctx, s.workDir())
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or head changed while custody was being returned; custody was not recorded")
+	}
 	if _, err := os.Stat(s.GateDir); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "the local gate became unavailable while custody was being returned; custody was not recorded")
 	}
@@ -805,8 +813,8 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 
 // recoverKeepLocalAtCurrentHead returns custody at the current local head
 // without requiring a preserved pipeline object. --keep-local is the
-// operator's explicit discard of unpublished pipeline commits, so a missing
-// or dangling gate branch must not block it.
+// operator's explicit discard of unpublished pipeline commits, so an absent
+// gate branch does not block it.
 func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run, state State, runIDs []string) State {
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
@@ -1550,8 +1558,18 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 	var runIDs []string
 	selectedEligible := false
 	allEligible := true
+	var newerPushed *db.Run
 	for _, candidate := range runs {
-		if candidate.Branch != state.Local.Branch || !terminalRunStatus(candidate.Status) || !unpublishedPipelineHead(candidate) {
+		if candidate.Branch != state.Local.Branch {
+			continue
+		}
+		if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, state.Local.Branch) {
+			continue
+		}
+		if newerPushed == nil && exactPushedBinding(s.Repo, candidate, state.Local.Branch) {
+			newerPushed = candidate
+		}
+		if !terminalRunStatus(candidate.Status) || !unpublishedPipelineHead(candidate) {
 			continue
 		}
 		eligible := candidate.TerminalHeadVerifiedAt != nil && strings.TrimSpace(candidate.HeadSHA) != "" && !objectExists(ctx, s.workDir(), candidate.HeadSHA) && !objectExists(ctx, gateDir, candidate.HeadSHA)
