@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -94,7 +95,9 @@ func (c Commit) RenderFixMessage(step types.StepName, summary string) (string, e
 	if err := validateFixMessageTemplate(tmpl); err != nil {
 		return "", err
 	}
-	data := fixMessageData{Step: step, Summary: summary}
+	// Sanitize only the generated summary; literal template text belongs to
+	// the repository/operator. All auto-fix paths, including CI, render here.
+	data := fixMessageData{Step: step, Summary: publicprose.Text(summary)}
 	predictedBytes, err := predictFixMessageBytes(tmpl, data)
 	if err != nil {
 		return "", err

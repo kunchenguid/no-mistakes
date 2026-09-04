@@ -13,6 +13,37 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, input, want string }{
+		{"subject", "fix: Captain: restore reclamation", "fix: restore reclamation"},
+		{"risk", "✅ Low: cApTaIn, the change is bounded", "✅ Low: the change is bounded"},
+		{"finding", "- ⚠️ Captain, guard stale wakes", "- ⚠️ guard stale wakes"},
+		{"sentences", "Tests passed. Captain, checks are complete.", "Tests passed. checks are complete."},
+		{"domain", "The captain, crew and ship remain unchanged.", "The captain, crew and ship remain unchanged."},
+		{"quoted", `Keep "Captain, ready" and 'Captain: ready' dialogue.`, `Keep "Captain, ready" and 'Captain: ready' dialogue.`},
+		{"curly quotes", "Keep “Captain, ready” and ‘Captain: ready’ dialogue.", "Keep “Captain, ready” and ‘Captain: ready’ dialogue."},
+		{"escaped quotes", "Keep &#34;Captain, ready&#34; dialogue.", "Keep &#34;Captain, ready&#34; dialogue."},
+		{"inline code", "Captain, keep ``Captain: `ready` `` intact", "keep ``Captain: `ready` `` intact"},
+		{"fenced code", "````diff\n+Captain: fixture\n```\nCaptain, still code\n````\nCaptain, done", "````diff\n+Captain: fixture\n```\nCaptain, still code\n````\ndone"},
+		{"tilde fence", "~~~text\nCaptain, fixture\n~~~\nCaptain, done", "~~~text\nCaptain, fixture\n~~~\ndone"},
+		{"unclosed fence", "```text\nCaptain, fixture", "```text\nCaptain, fixture"},
+		{"blockquote", "> Captain, quoted\nCaptain, continued quote\n\nCaptain, done", "> Captain, quoted\nCaptain, continued quote\n\ndone"},
+		{"indented code", "    Captain: fixture\n\nCaptain, done", "    Captain: fixture\n\ndone"},
+		{"html code", "<pre><code>Captain: fixture\nCaptain, code</code></pre>\nCaptain, done", "<pre><code>Captain: fixture\nCaptain, code</code></pre>\ndone"},
+		{"html attribute", `<a title="Captain: fixture">link</a>`, `<a title="Captain: fixture">link</a>`},
+		{"html prose", "<details>\n<summary>Captain, fix summary</summary>\n\nCaptain, fixed\n</details>", "<details>\n<summary>fix summary</summary>\n\nfixed\n</details>"},
+		{"comment", "<!-- Captain: recorded -->\nCaptain, done", "<!-- Captain: recorded -->\ndone"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := redactPRContent(prContent{Body: tt.input}).Body
+			if got != tt.want {
+				t.Errorf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRStep_OperatorAddress(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
@@ -41,9 +72,9 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 					t.Fatal(err)
 				}
 				insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{
-					TestingSummary: "Captain, ran focused tests",
+					TestingSummary: "Captain, ran focused tests\nCaptain, checked the final diff",
 					Tested:         []string{"echo 'Captain: evidence'"},
-					Artifacts:      []types.TestArtifact{{Kind: "command-output", Label: "captain fixture", Content: "Captain: recorded output"}},
+					Artifacts:      []types.TestArtifact{{Kind: "command-output", Label: "Captain, captured fixture", URL: "https://example.com/fixture.txt", Content: "Captain: recorded output"}},
 				}), "")
 				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, provider, 0)
 				if err != nil {
@@ -59,7 +90,7 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 						}
 					}
 				}
-				for _, leak := range []string{"Captain, preserve", "Captain, guard", "Captain, the", "Captain: prevent", "Captain, ran"} {
+				for _, leak := range []string{"Captain, preserve", "Captain, guard", "Captain, the", "Captain: prevent", "Captain, ran", "Captain, checked", "Captain, captured"} {
 					if strings.Contains(content.Body, leak) {
 						t.Errorf("public prose leaked %q:\n%s", leak, content.Body)
 					}

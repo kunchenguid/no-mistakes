@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -301,13 +302,12 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	return redactPRContent(content), nil
 }
 
-// redactPRContent removes the operator's home directory from the content about
-// to be published. It runs after every length cap has been applied, which is
-// safe because safepath's placeholder is never longer than the path it
-// replaces, so a redacted body can only be shorter than the clamped one.
+// redactPRContent removes home paths and known operator address from public
+// prose. Address removal preserves quotes/code; home-path redaction covers
+// all content. Both only shorten text, so the preceding length caps still hold.
 func redactPRContent(content prContent) prContent {
-	content.Title = safepath.RedactText(content.Title)
-	content.Body = safepath.RedactText(content.Body)
+	content.Title = safepath.RedactText(publicprose.Text(content.Title))
+	content.Body = safepath.RedactText(publicprose.Text(content.Body))
 	return content
 }
 

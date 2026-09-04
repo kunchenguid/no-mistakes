@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -515,7 +516,10 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 }
 
 func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
-	clean := sanitizePromptMultilineText(summary)
+	// Multiline summaries may be wrapped as code below. Clean generated prose
+	// before that distinction is lost; tested commands and artifact bytes keep
+	// their separate, verbatim rendering paths.
+	clean := publicprose.Text(sanitizePromptMultilineText(summary))
 	if clean == "" {
 		return ""
 	}
@@ -534,7 +538,7 @@ func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
 }
 
 func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) string {
-	label := sanitizePromptText(artifact.Label)
+	label := publicprose.Text(sanitizePromptText(artifact.Label))
 	if label == "" {
 		return ""
 	}
