@@ -81,11 +81,11 @@ Previous lint findings to address:
 		}
 
 		var findings Findings
-		if result.Output != nil {
-			if err := json.Unmarshal(result.Output, &findings); err != nil {
-				sctx.Log("could not parse structured output, using text response")
-				findings = Findings{Summary: result.Text}
-			}
+		if result.Output == nil {
+			return nil, errors.New("lint analyzer returned no structured findings")
+		}
+		if err := unmarshalRequiredFindings(result.Output, &findings, false); err != nil {
+			return nil, fmt.Errorf("validate lint analyzer findings: %w", err)
 		}
 		summary, err := extractCommitSummary(result)
 		if err != nil {

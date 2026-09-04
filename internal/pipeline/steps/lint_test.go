@@ -145,6 +145,26 @@ func TestLintStep_NoConfiguredLint_CommitsAgentFixesWithoutApproval(t *testing.T
 	}
 }
 
+func TestLintStep_MalformedStructuredOutputFails(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{not json`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "lint analyzer") {
+		t.Fatalf("Execute() error = %v, want malformed lint analyzer output", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+}
+
 func TestLintStep_NoConfiguredLint_RejectsOversizedSummaryWithoutStaging(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

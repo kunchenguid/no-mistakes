@@ -161,7 +161,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		summary := fallbackDocumentSummary(result.Text)
 		sctx.Log("missing structured output, requiring approval")
 		return documentApprovalOutcome(summary), nil
-	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
+	} else if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
 		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
 		sctx.Log("could not parse structured output, requiring approval")
 		return documentApprovalOutcome(summary), nil
@@ -366,38 +366,4 @@ func extractDocumentSummary(raw []byte, fallback string) string {
 		return payload.Summary
 	}
 	return fallback
-}
-
-func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
-	parsed, err := types.ParseFindingsJSON(string(raw))
-	if err != nil {
-		return err
-	}
-	var payload struct {
-		Summary  *string            `json:"summary"`
-		Findings *[]json.RawMessage `json:"findings"`
-		Items    *[]json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
-	}
-	if payload.Findings == nil && payload.Items == nil {
-		return fmt.Errorf("missing findings array")
-	}
-	if payload.Summary == nil || strings.TrimSpace(*payload.Summary) == "" {
-		return fmt.Errorf("missing summary")
-	}
-	for i, item := range parsed.Items {
-		if strings.TrimSpace(item.Severity) == "" {
-			return fmt.Errorf("finding %d missing severity", i)
-		}
-		if strings.TrimSpace(item.Description) == "" {
-			return fmt.Errorf("finding %d missing description", i)
-		}
-		if strings.TrimSpace(item.Action) == "" {
-			return fmt.Errorf("finding %d missing action", i)
-		}
-	}
-	*findings = parsed
-	return nil
 }

@@ -80,6 +80,26 @@ func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 	}
 }
 
+func TestTestStep_NoStructuredOutputFails(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Text: "tests unavailable"}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "test analyzer") {
+		t.Fatalf("Execute() error = %v, want missing test analyzer output", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+}
+
 func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
