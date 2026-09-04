@@ -1803,7 +1803,7 @@ func (proof recoverySourceProof) apply(state State) State {
 	state.State = StatePipelineOwned
 	state.Safety = proof.safety
 	if state.Safety == "" {
-		state.Safety = "blocked_recover_preserved_head_missing"
+		state.Safety = "blocked_recover_manual_reconciliation"
 	}
 	state.Error = proof.err
 	if state.Error == "" {
@@ -1964,8 +1964,8 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		return archiveProof
 	}
 	return unavailableRecoverySource(
-		"blocked_recover_preserved_head_missing",
-		"the run finished "+string(run.Status)+" but its recorded pipeline head is not available through an eligible ordinary or bound-archive recovery source; inspect and reconcile the recorded and live heads manually; no files or refs were changed",
+		"blocked_recover_manual_reconciliation",
+		"the run finished "+string(run.Status)+" but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually",
 	)
 }
 

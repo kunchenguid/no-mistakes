@@ -1147,10 +1147,11 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 
 	// Initiating trigger: a terminal run recorded a divergent later head.
 	// Masking condition: ordinary take-the-preserved-head eligibility cannot
-	// prove containment. Visible symptom: status calls the readable head
-	// missing and does not offer the safe keep-local recovery. The exact archive
-	// target and gate anchor below are disconfirming evidence for literal object
-	// absence; without a binding they still must not be treated as authority.
+	// prove containment. Visible symptom: status asks for manual reconciliation
+	// and does not offer keep-local. blocked_recover_preserved_head_missing is
+	// reserved for a verified head that is truly absent (#958); the archive
+	// target and gate anchor below are disconfirming evidence for that, and
+	// without a binding they still must not be treated as authority.
 	beforeDetection := cliRecoveryGitSnapshot(t, f)
 	status, err := executeCmd("axi", "status", "--run", f.runID)
 	if err != nil {
@@ -1158,7 +1159,7 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 	}
 	for _, want := range []string{
 		"relation: diverged",
-		"safety: blocked_recover_preserved_head_missing",
+		"safety: blocked_recover_manual_reconciliation",
 		"code: inspect_and_reconcile_manually",
 	} {
 		if !strings.Contains(status, want) {
