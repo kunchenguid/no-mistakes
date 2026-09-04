@@ -1003,6 +1003,38 @@ func TestRecoverKeepLocalReleasesMixedEvidenceStack(t *testing.T) {
 	}
 }
 
+func TestRecoverKeepLocalReleasesStackWhenOlderHeadIsMissing(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	newest, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newest.ID, types.RunFailed, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
+		t.Fatalf("older missing-head stack state = %#v", state)
+	}
+	kept := f.service.Recover(f.ctx, true)
+	if !kept.Recovered {
+		t.Fatalf("older missing-head stack recovery = %#v", kept)
+	}
+	for _, id := range []string{f.run.ID, newest.ID} {
+		run, err := f.db.GetRun(id)
+		if err != nil || run == nil || run.CustodyReturnedAt == nil {
+			t.Fatalf("run %s custody = %#v, %v", id, run, err)
+		}
+	}
+}
+
 func TestRecoverKeepLocalPreservesHeadRestoredAfterPreflight(t *testing.T) {
 	t.Parallel()
 
@@ -1239,7 +1271,7 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T
 	assertManualReconciliationOffer(t, state)
 
 	kept := f.service.Recover(f.ctx, true)
-	if kept.Recovered || kept.Safety != "blocked_recover_anchor_mismatch" {
+	if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("keep-local with conflicting anchor = %#v", kept)
 	}
 	if f.custodyReturned() {

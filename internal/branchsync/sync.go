@@ -591,11 +591,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
 	if keepLocal {
-		runIDs, candidateHeads, selectedEligible, allEligible := s.missingHeadKeepLocalRuns(ctx, &state, run)
-		if selectedEligible && !allEligible {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_manual_reconciliation", "an older stranded run has unverified or conflicting recovery evidence; reconcile it before returning branch custody")
+		runIDs, candidateHeads, anyMissing, allEligible := s.missingHeadKeepLocalRuns(ctx, &state, run)
+		if anyMissing && !allEligible {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_manual_reconciliation", "a stranded run has unverified or conflicting recovery evidence; reconcile it before returning branch custody")
 		}
-		if selectedEligible {
+		if anyMissing {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, runIDs, candidateHeads)
 		}
 	}
@@ -1554,13 +1554,20 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		if !s.recoverySourceAvailable(ctx, state, run) {
-			if _, _, selectedEligible, allEligible := s.missingHeadKeepLocalRuns(ctx, state, run); selectedEligible && allEligible {
+		_, _, anyMissing, allEligible := s.missingHeadKeepLocalRuns(ctx, state, run)
+		if anyMissing {
+			if allEligible {
 				state.Safety = "blocked_recover_preserved_head_missing"
-				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
+				state.Error = "a stranded run's recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
 				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
 				return
 			}
+			state.Safety = "blocked_recover_manual_reconciliation"
+			state.Error = "a stranded run has missing, unverified, or conflicting recovery evidence; inspect and reconcile the recorded and live heads manually"
+			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+			return
+		}
+		if !s.recoverySourceAvailable(ctx, state, run) {
 			state.Safety = "blocked_recover_manual_reconciliation"
 			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
 			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
@@ -1597,7 +1604,7 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 	}
 	var runIDs []string
 	var candidateHeads []string
-	selectedEligible := false
+	anyMissing := false
 	allEligible := true
 	var newerPushed *db.Run
 	for _, candidate := range runs {
@@ -1623,9 +1630,7 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 			compatible, err := recoveryAnchorCompatible(ctx, gateDir, candidate.ID, candidate.HeadSHA)
 			eligible = err == nil && compatible
 		}
-		if candidate.ID == run.ID {
-			selectedEligible = eligible && missing
-		}
+		anyMissing = anyMissing || missing
 		allEligible = allEligible && eligible
 		runIDs = append(runIDs, candidate.ID)
 		candidateHeads = append(candidateHeads, candidate.HeadSHA)
@@ -1646,7 +1651,7 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 			}
 		}
 	}
-	return runIDs, candidateHeads, selectedEligible, allEligible
+	return runIDs, candidateHeads, anyMissing, allEligible
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
