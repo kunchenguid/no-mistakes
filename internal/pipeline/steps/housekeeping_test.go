@@ -254,7 +254,7 @@ func TestLintStep_RunsOwnPassWithoutCombinedResult(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntrusted(t *testing.T) {
+func TestDocumentStep_CombinedRetryDropsPriorLintResultWhenOutputIsUntrusted(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -277,8 +277,12 @@ func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntruste
 	}
 
 	sctx.Fixing = true
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
+	outcome, err := step.Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "document analyzer returned no structured findings") {
+		t.Fatalf("Execute() error = %v, want untrusted analyzer output to fail", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
 	}
 	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
 		t.Fatal("untrusted combined rerun must not leave the prior lint result available")

@@ -1436,35 +1436,19 @@ func assertDocumentMissingFindingsRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-missing-findings", "document-missing-findings.txt", "document missing findings\n", "add document missing findings")
 	h.PushToGate("document-missing-findings")
-	run := waitForStepStatus(t, h, "document-missing-findings", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-findings", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-findings run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-findings run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing findings fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing findings fallback: %v", err)
-	}
-	if findings.Summary != "docs status unavailable" {
-		t.Fatalf("document missing findings summary = %q, want docs status unavailable", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "docs status unavailable" {
-		t.Fatalf("fallback documentation finding description = %q, want docs status unavailable", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-findings", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-findings run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: missing findings array") {
+		t.Fatalf("document step error = %q, want missing findings array", deref(documentStep.Error))
 	}
 }
 
@@ -1472,35 +1456,19 @@ func assertDocumentMalformedFindingRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-malformed-finding", "document-malformed-finding.txt", "document malformed finding\n", "add document malformed finding")
 	h.PushToGate("document-malformed-finding")
-	run := waitForStepStatus(t, h, "document-malformed-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-malformed-finding", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-malformed-finding run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-malformed-finding run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document malformed finding fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document malformed finding fallback: %v", err)
-	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("document malformed finding summary = %q, want README needs updating", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "README needs updating" {
-		t.Fatalf("fallback documentation finding description = %q, want README needs updating", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-malformed-finding", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-malformed-finding run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: finding 0 missing action") {
+		t.Fatalf("document step error = %q, want missing finding action", deref(documentStep.Error))
 	}
 }
 
@@ -1540,35 +1508,19 @@ func assertDocumentMissingSummaryRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-missing-summary", "document-missing-summary.txt", "document missing summary\n", "add document missing summary")
 	h.PushToGate("document-missing-summary")
-	run := waitForStepStatus(t, h, "document-missing-summary", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-summary", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-summary run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-summary run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing summary fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing summary fallback: %v", err)
-	}
-	if findings.Summary != "agent returned no structured output" {
-		t.Fatalf("document missing summary fallback summary = %q, want agent returned no structured output", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected missing-summary fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "agent returned no structured output" {
-		t.Fatalf("missing-summary fallback description = %q, want agent returned no structured output", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-summary", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-summary run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: missing summary") {
+		t.Fatalf("document step error = %q, want missing summary", deref(documentStep.Error))
 	}
 }
 
