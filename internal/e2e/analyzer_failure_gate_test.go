@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,18 @@ import (
 func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "analyzer-failure-gate.yaml")
 	content := `actions:
+  - match: "Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.\n\nContext:\n- branch: analyzer-lint-malformed-output"
+    text: "lint unavailable"
+    structured_raw: '{"summary":123}'
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: analyzer-lint-malformed-output"
+    text: "tests passed"
+    structured:
+      findings: []
+      summary: "targeted test passed"
+      tested:
+        - "fakeagent: targeted test"
+      testing_summary: "targeted validation passed"
+      artifacts: []
   - match: "branch: analyzer-review-null-findings"
     text: "review unavailable"
     structured_raw: '{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}'
@@ -38,6 +51,10 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 	}
 
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: scenario})
+	h.CommitChange("main", ".no-mistakes.yaml", "ignore_patterns:\n  - '*.generated.go'\n", "ignore generated test fixture")
+	if out, err := h.runGit(context.Background(), h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push trusted test config: %v\n%s", err, out)
+	}
 	if out, err := h.Run("init"); err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
@@ -59,6 +76,12 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 			step:       types.StepTest,
 			stepError:  "validate test analyzer findings",
 			changePath: "test.txt",
+		},
+		{
+			branch:     "analyzer-lint-malformed-output",
+			step:       types.StepLint,
+			stepError:  "validate lint analyzer findings",
+			changePath: "lint.generated.go",
 		},
 	} {
 		t.Run(string(tc.step), func(t *testing.T) {
