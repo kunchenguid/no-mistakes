@@ -1,0 +1,301 @@
+=== RUN   TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing
+    sync_test.go:1122: axi status before recovery:
+        run:
+          id: "01M1NGG60NGMFT02RAJ75VDFP3"
+          branch: feature/recover
+          status: cancelled
+          head: ffffffff
+          findings: none
+          steps[0]:
+        branch_sync:
+          state: pipeline_owned
+          changed: false
+          local:
+            branch: feature/recover
+            head: 8055c342235fb18bb6a8f1822721f51e0ce2ac69
+            clean: true
+          pipeline:
+            run: "01M1NGG60NGMFT02RAJ75VDFP3"
+            status: cancelled
+            phase: pre_push
+            submitted_head: b963fefa24ae1301143059cd35e0c529412c78b3
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing1881697203/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: blocked_recover_preserved_head_missing
+          pr_state: none
+          note: "a stranded run's recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
+          next_action:
+            code: recover_custody
+            command: no-mistakes axi sync --recover --keep-local
+        outcome: cancelled
+        
+        axi sync --check before recovery:
+        branch_sync:
+          state: pipeline_owned
+          changed: false
+          local:
+            branch: feature/recover
+            head: 8055c342235fb18bb6a8f1822721f51e0ce2ac69
+            clean: true
+          pipeline:
+            run: "01M1NGG60NGMFT02RAJ75VDFP3"
+            status: cancelled
+            phase: pre_push
+            submitted_head: b963fefa24ae1301143059cd35e0c529412c78b3
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing1881697203/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: blocked_recover_preserved_head_missing
+          pr_state: none
+          note: "a stranded run's recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
+          next_action:
+            code: recover_custody
+            command: no-mistakes axi sync --recover --keep-local
+        error: "a stranded run's recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
+        help[1]: Run `no-mistakes axi sync --recover --keep-local`
+        
+        plain recovery refusal:
+        branch_sync:
+          state: pipeline_owned
+          changed: false
+          local:
+            branch: feature/recover
+            head: 8055c342235fb18bb6a8f1822721f51e0ce2ac69
+            clean: true
+          pipeline:
+            run: "01M1NGG60NGMFT02RAJ75VDFP3"
+            status: cancelled
+            phase: pre_push
+            submitted_head: b963fefa24ae1301143059cd35e0c529412c78b3
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing1881697203/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: blocked_recover_preserved_head_missing
+          pr_state: none
+          note: the recorded pipeline head ffffffffffffffffffffffffffffffffffffffff is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed
+        error: the recorded pipeline head ffffffffffffffffffffffffffffffffffffffff is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed
+--- PASS: TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing (1.29s)
+=== RUN   TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMissing
+    sync_test.go:1160: keep-local recovery:
+        branch_sync:
+          state: custody_returned
+          changed: false
+          recovered: true
+          local:
+            branch: feature/recover
+            head: 889b741ebba6ca7dcee4407d94b4f853e6346823
+            clean: true
+          pipeline:
+            run: "01M1NGG79DV38N8H8G9K1N1NH6"
+            status: cancelled
+            phase: ""
+            submitted_head: 62585053ecc8871f9e01b9aa44b31d518dd282ef
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMiss1948632628/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: custody_returned
+          pr_state: none
+          next_action:
+            code: run_pipeline
+            command: "no-mistakes axi run --intent \"<what the user set out to accomplish>\""
+        help[1]: "Run `no-mistakes axi run --intent \"<what the user set out to accomplish>\"`"
+        
+        axi status after recovery:
+        run:
+          id: "01M1NGG79DV38N8H8G9K1N1NH6"
+          branch: feature/recover
+          status: cancelled
+          head: ffffffff
+          findings: none
+          steps[0]:
+        branch_sync:
+          state: custody_returned
+          changed: false
+          local:
+            branch: feature/recover
+            head: 889b741ebba6ca7dcee4407d94b4f853e6346823
+            clean: true
+          pipeline:
+            run: "01M1NGG79DV38N8H8G9K1N1NH6"
+            status: cancelled
+            phase: ""
+            submitted_head: 62585053ecc8871f9e01b9aa44b31d518dd282ef
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMiss1948632628/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: custody_returned
+          pr_state: none
+          next_action:
+            code: run_pipeline
+            command: "no-mistakes axi run --intent \"<what the user set out to accomplish>\""
+        outcome: cancelled
+        
+        axi sync --check after recovery:
+        branch_sync:
+          state: custody_returned
+          changed: false
+          local:
+            branch: feature/recover
+            head: 889b741ebba6ca7dcee4407d94b4f853e6346823
+            clean: true
+          pipeline:
+            run: "01M1NGG79DV38N8H8G9K1N1NH6"
+            status: cancelled
+            phase: ""
+            submitted_head: 62585053ecc8871f9e01b9aa44b31d518dd282ef
+            current_head: ffffffffffffffffffffffffffffffffffffffff
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMiss1948632628/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: custody_returned
+          pr_state: none
+          next_action:
+            code: run_pipeline
+            command: "no-mistakes axi run --intent \"<what the user set out to accomplish>\""
+        help[1]: "Run `no-mistakes axi run --intent \"<what the user set out to accomplish>\"`"
+--- PASS: TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMissing (1.67s)
+=== RUN   TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns
+    sync_test.go:1189: stacked keep-local recovery (3/3 custody stamps):
+        branch_sync:
+          state: custody_returned
+          changed: false
+          recovered: true
+          local:
+            branch: feature/recover
+            head: bd1dfb2425b46199878fd760d31d557a96d7b44d
+            clean: true
+          pipeline:
+            run: "01M1NGG90FM5ZDGK7DXZ1Y41R6"
+            status: failed
+            phase: ""
+            submitted_head: bc4fbd9d11cb003aa22586b26732f81ef1d6bb1b
+            current_head: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns587136491/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: custody_returned
+          pr_state: none
+          next_action:
+            code: run_pipeline
+            command: "no-mistakes axi run --intent \"<what the user set out to accomplish>\""
+        help[1]: "Run `no-mistakes axi run --intent \"<what the user set out to accomplish>\"`"
+        
+        axi status after recovery:
+        run:
+          id: "01M1NGG90FM5ZDGK7DXZ1Y41R6"
+          branch: feature/recover
+          status: failed
+          head: bbbbbbbb
+          findings: none
+          steps[0]:
+        branch_sync:
+          state: custody_returned
+          changed: false
+          local:
+            branch: feature/recover
+            head: bd1dfb2425b46199878fd760d31d557a96d7b44d
+            clean: true
+          pipeline:
+            run: "01M1NGG90FM5ZDGK7DXZ1Y41R6"
+            status: failed
+            phase: ""
+            submitted_head: bc4fbd9d11cb003aa22586b26732f81ef1d6bb1b
+            current_head: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+            pushed_head: ""
+            pushed_at: 0
+            push_generation: 0
+          target:
+            kind: ""
+            remote: origin
+            url: /var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns587136491/002/remote.git
+            ref: ""
+          remote:
+            observed_head: ""
+            freshness: pipeline_push
+            observed_at: 0
+          relation: unknown
+          safety: custody_returned
+          pr_state: none
+          next_action:
+            code: run_pipeline
+            command: "no-mistakes axi run --intent \"<what the user set out to accomplish>\""
+        outcome: failed
+--- PASS: TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns (2.06s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/cli	5.351s
