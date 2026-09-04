@@ -142,7 +142,7 @@ func newReversionRefusal(evidence []reversionEvidence) *decisionReversionError {
 		}
 		for _, line := range lines {
 			clamped := clampEvidenceLine(line)
-			if clamped != strings.TrimSpace(line) {
+			if clamped != line {
 				refusal.truncated = true
 			}
 			bounded.Lines = append(bounded.Lines, clamped)
@@ -495,8 +495,13 @@ func distinctiveLine(line string) bool {
 
 // clampEvidenceLine bounds one quoted line, cutting on a rune boundary so the
 // evidence never renders as a broken character.
+//
+// It deliberately does NOT trim the line. Tidier output is not worth the cost:
+// two base lines differing only in leading or trailing whitespace would render
+// identically, and because the rendered refusal IS the authorisation identity,
+// a round restoring one would be treated as the round that restored the other.
+// Any normalisation here reopens the display/identity gap by another name.
 func clampEvidenceLine(line string) string {
-	line = strings.TrimSpace(line)
 	if len(line) <= maxReversionEvidenceWidth {
 		return line
 	}

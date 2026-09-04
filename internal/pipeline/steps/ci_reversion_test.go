@@ -800,3 +800,43 @@ func TestReinstatedBaseLines_UniquenessIsTheEvidenceThreshold(t *testing.T) {
 		t.Fatalf("reinstatedBaseLines = %v, want the unique base line", got)
 	}
 }
+
+// TestReversionEvidenceKeepsWhitespaceOutOfTheIdentityCollapse guards the
+// invariant that the rendered refusal IS the authorisation identity. Trimming a
+// quoted line for tidiness makes two distinct base lines render identically, and
+// a round restoring one would then be admitted as the round that restored the
+// other - the display/identity gap under another name.
+func TestReversionEvidenceKeepsWhitespaceOutOfTheIdentityCollapse(t *testing.T) {
+	t.Parallel()
+	tabbed := newReversionRefusal([]reversionEvidence{{
+		Path: "config.go", Kind: reversionReinstatedText, Lines: []string{"\tenableLegacyPath()"},
+	}})
+	spaced := newReversionRefusal([]reversionEvidence{{
+		Path: "config.go", Kind: reversionReinstatedText, Lines: []string{"    enableLegacyPath()"},
+	}})
+	trailing := newReversionRefusal([]reversionEvidence{{
+		Path: "config.go", Kind: reversionReinstatedText, Lines: []string{"\tenableLegacyPath() "},
+	}})
+
+	if tabbed.authorizes(spaced) || spaced.authorizes(tabbed) {
+		t.Error("lines differing only in leading whitespace must not share an authorisation")
+	}
+	if tabbed.authorizes(trailing) {
+		t.Error("lines differing only in trailing whitespace must not share an authorisation")
+	}
+	if !tabbed.authorizes(newReversionRefusal([]reversionEvidence{{
+		Path: "config.go", Kind: reversionReinstatedText, Lines: []string{"\tenableLegacyPath()"},
+	}})) {
+		t.Error("the identical line must still authorise")
+	}
+
+	// A line long enough to clamp is truncated evidence, so it authorises
+	// nothing rather than standing in for every line sharing its prefix.
+	long := strings.Repeat("x", maxReversionEvidenceWidth+50)
+	clamped := newReversionRefusal([]reversionEvidence{{
+		Path: "config.go", Kind: reversionReinstatedText, Lines: []string{long},
+	}})
+	if !clamped.truncated || clamped.authorizes(clamped) {
+		t.Error("a clamped line must mark the refusal truncated and authorise nothing")
+	}
+}
