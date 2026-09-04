@@ -231,22 +231,33 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool,
 	// rather than beside the commit is what covers a fix agent that committed
 	// its own work: both paths below are measured from the same pre-repair head.
 	//
-	// It is skipped when sctx.Fixing is set. That flag means a person answered
-	// this step's gate with a fix selection, which is the deliberate, recorded
-	// decision the guard exists to ask for; re-parking it would leave no way
-	// forward at all. This is the opposite of the ci.decision_checks policy in
-	// ci.go, which a gate answer must NOT dissolve: that one is the maintainer's
-	// standing declaration about which checks a fix round may touch, made on the
-	// trusted default branch, while this one is a question about one concrete
-	// repair the answerer can see in full.
-	if !sctx.Fixing {
-		evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
-		if detectErr != nil {
-			return false, &decisionReversionError{reason: detectErr.Error()}
+	// The guard runs on EVERY round, including one a person asked for. A fix
+	// response does not commit the repair they read: it launches a fresh agent
+	// turn on the retained worktree, which is free to produce something else
+	// entirely, so skipping the guard there would wave an uninspected reversion
+	// through under an authorisation given for a different one. Instead the
+	// refusal they were shown is remembered, and a later round is allowed only
+	// while its evidence stays within it - see decisionReversionError.authorizes.
+	//
+	// This is the opposite of the ci.decision_checks policy in ci.go, which no
+	// gate answer dissolves at all: that one is the maintainer's standing
+	// declaration about which checks a fix round may touch, made on the trusted
+	// default branch, while this one is a question about one concrete repair the
+	// answerer can see in full.
+	evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+	var refusal *decisionReversionError
+	switch {
+	case detectErr != nil:
+		refusal = &decisionReversionError{reason: detectErr.Error()}
+	case len(evidence) > 0:
+		refusal = &decisionReversionError{evidence: evidence}
+	}
+	if refusal != nil {
+		if !sctx.Fixing || !s.authorizedRefusal.authorizes(refusal) {
+			s.authorizedRefusal = refusal
+			return false, refusal
 		}
-		if len(evidence) > 0 {
-			return false, &decisionReversionError{evidence: evidence}
-		}
+		sctx.Log("committing a repair whose reversion of branch work was explicitly authorised at the gate")
 	}
 
 	status, err := stepGitRun(sctx, "status", "--porcelain")

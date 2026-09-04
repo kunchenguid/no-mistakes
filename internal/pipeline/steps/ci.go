@@ -41,7 +41,12 @@ type CIStep struct {
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
 	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
+	// authorizedRefusal is the last decision-reversion refusal shown at a gate.
+	// A fix response authorises that refusal and nothing wider; it is per
+	// process, so a daemon restart simply re-parks rather than inheriting an
+	// authorisation nobody in this process ever saw given.
+	authorizedRefusal    *decisionReversionError
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default

@@ -115,6 +115,42 @@ func (e *decisionReversionError) Error() string {
 	return b.String()
 }
 
+// authorizes reports whether a person's fix response to the receiver also
+// covers a later refusal.
+//
+// A nil receiver authorises nothing: without a refusal a person actually read,
+// there is no decision to honour. An unevaluable guard is authorised by an
+// unevaluable guard, because the same missing evidence will keep it unevaluable
+// and re-parking would leave no way forward. Otherwise every piece of the later
+// refusal's evidence must already appear in what was shown, so a replacement
+// turn that undoes less stays authorised while one that undoes anything else
+// parks with its own evidence.
+func (e *decisionReversionError) authorizes(later *decisionReversionError) bool {
+	if e == nil || later == nil {
+		return false
+	}
+	if later.reason != "" {
+		return e.reason != ""
+	}
+	shown := make(map[string]struct{}, len(e.evidence))
+	for _, ev := range e.evidence {
+		shown[ev.identity()] = struct{}{}
+	}
+	for _, ev := range later.evidence {
+		if _, ok := shown[ev.identity()]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// identity is one piece of evidence's stable key. Detection is deterministic -
+// paths sorted, lines sorted and capped - so the same reversion always produces
+// the same key and a different one never does.
+func (ev reversionEvidence) identity() string {
+	return ev.Path + "\x00" + string(ev.Kind) + "\x00" + strings.Join(ev.Lines, "\n")
+}
+
 // detectDecisionReversion compares the repair's proposed state - the run
 // worktree - against the head the branch had before the fix round started.
 //
@@ -461,8 +497,9 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 		"The CI auto-fix round proposed a repair for %s whose effect is to undo work this branch deliberately did, so it was not committed. %s "+
 			"A red check can mean a decision is outstanding rather than that something is broken, and undoing the decision is invisible in the branch's own diff, "+
 			"so this is refused rather than committed. The proposed changes are still in the run worktree at %s, uncommitted and unpushed. "+
-			"Approve or skip to leave the branch as it is, resolve the check outside the pipeline, or - if undoing that work really is what you want - "+
-			"respond with a fix selection to authorise the same round deliberately.",
+			"Approve or skip to leave the branch as it is, or resolve the check outside the pipeline. "+
+			"If undoing that work really is what you want, a fix response authorises exactly what is listed above: it runs another repair round, "+
+			"and anything that round would undo beyond this list parks again with its own evidence.",
 		issueDesc, reversionDetail(reversion), sctx.WorkDir)
 
 	findings := Findings{

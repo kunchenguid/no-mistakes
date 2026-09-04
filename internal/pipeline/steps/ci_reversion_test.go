@@ -318,86 +318,92 @@ func TestCIRepair_RefusesToDeleteAFileTheBranchAdded(t *testing.T) {
 	}
 }
 
-// TestCIRepair_HonoursAnExplicitUserFixDecision proves the escape hatch: once a
-// person has seen the evidence and answered the gate with a fix selection, the
-// same repair is authorised rather than parked again.
-func TestCIRepair_HonoursAnExplicitUserFixDecision(t *testing.T) {
+// TestCIRepair_AuthorisedFixCommitsTheReversionThePersonSaw is the escape
+// hatch: once a person has seen the evidence and answered the gate with a fix
+// selection, the same reversion is authorised rather than parked again.
+func TestCIRepair_AuthorisedFixCommitsTheReversionThePersonSaw(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := reviewedWorkflowPinRepo(t)
 	applyOccurrence3Repair(t, dir)
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
-	sctx.Fixing = true
-
 	step := &CIStep{}
+	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+		t.Fatal("the first round must refuse and show the evidence")
+	}
+
+	// The person answers that gate with a fix selection.
+	sctx.Fixing = true
 	changed, err := step.commitRepair(sctx, "restore workflow pin")
 	if err != nil {
-		t.Fatalf("an explicitly requested fix round was still refused: %v", err)
+		t.Fatalf("the authorised reversion was still refused: %v", err)
 	}
 	if !changed {
-		t.Fatal("an explicitly requested fix round should commit")
+		t.Fatal("an authorised reversion should commit")
 	}
 }
 
-// TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule pins the
-// advisory half of the fix: occurrence 1's CI repair reversed an ask-user
-// decision that had been recorded minutes earlier in the same run, and this was
-// the one step prompt that never carried the round history.
-func TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule(t *testing.T) {
+// TestCIRepair_FixResponseDoesNotAuthoriseADifferentReversion closes the gap
+// between what the gate describes and what a fix response actually does. That
+// response does not commit the repair the person read: it launches a FRESH
+// agent turn on the retained worktree, which is free to produce something else
+// entirely. Skipping the guard for that turn would let an uninspected reversion
+// through under an authorisation given for a different one, so the guard still
+// runs and only the evidence the person actually saw is waved past.
+func TestCIRepair_FixResponseDoesNotAuthoriseADifferentReversion(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := branchRepo(t,
-		map[string]string{"main.go": "package main\n\nfunc main() {}\n"},
-		map[string]string{"main.go": "package main\n\nfunc main() { run() }\n"},
-	)
+	dir, baseSHA, headSHA := reviewedWorkflowPinRepo(t)
+	applyOccurrence3Repair(t, dir)
 
-	var prompts []string
-	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		prompts = append(prompts, opts.Prompt)
-		return &agent.Result{}, nil
-	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.Branch = "refs/heads/feature"
-
+	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	host := &recordingDecisionHost{}
-	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, []string{"build"}, false); err != nil {
-		t.Fatalf("autoFixCI: %v", err)
+	shown, err := step.commitRepair(sctx, "restore workflow pin")
+	if err == nil {
+		t.Fatalf("the first round must refuse (changed=%v)", shown)
 	}
-	if len(prompts) != 1 {
-		t.Fatalf("agent invocations = %d, want 1", len(prompts))
+
+	// The person authorises what they read. The replacement agent turn then
+	// also deletes the reviewed workflow itself - which nobody approved.
+	sctx.Fixing = true
+	if err := os.Remove(filepath.Join(dir, ".github", "workflows", "wiki-drift-monitor.yml")); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(prompts[0], "Never repair a check by undoing work this branch deliberately did") {
-		t.Errorf("CI fix prompt carries no non-reversion rule:\n%s", prompts[0])
+
+	changed, err := step.commitRepair(sctx, "restore workflow pin")
+	var reversion *decisionReversionError
+	if !errors.As(err, &reversion) {
+		t.Fatalf("commitRepair error = %v (changed=%v), want a refusal: the fix response authorised a different repair", err, changed)
+	}
+	if !strings.Contains(reversion.Error(), "wiki-drift-monitor.yml") {
+		t.Errorf("refusal does not name the newly reverted file: %s", reversion.Error())
+	}
+	if head := gitCmd(t, dir, "rev-parse", "HEAD"); head != headSHA {
+		t.Fatal("a refused repair must leave the branch head untouched")
 	}
 }
 
-// recordingDecisionHost is the minimum scm.Host the fix round needs: it
-// advertises no optional capability, so no provider call is made.
-type recordingDecisionHost struct{}
+// TestCIRepair_AuthorisedFixStillCommitsALesserReversion keeps the escape hatch
+// usable: a replacement turn that undoes less than the person authorised is
+// within that authorisation and must not park again.
+func TestCIRepair_AuthorisedFixStillCommitsALesserReversion(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := reviewedWorkflowPinRepo(t)
+	applyOccurrence3Repair(t, dir)
 
-func (h *recordingDecisionHost) Provider() scm.Provider          { return scm.ProviderGitHub }
-func (h *recordingDecisionHost) Available(context.Context) error { return nil }
-func (h *recordingDecisionHost) Capabilities() scm.Capabilities  { return scm.Capabilities{} }
-func (h *recordingDecisionHost) FindPR(context.Context, string, string) (*scm.PR, error) {
-	return nil, scm.ErrUnsupported
-}
-func (h *recordingDecisionHost) CreatePR(context.Context, string, string, scm.PRContent) (*scm.PR, error) {
-	return nil, scm.ErrUnsupported
-}
-func (h *recordingDecisionHost) UpdatePR(context.Context, *scm.PR, scm.PRContent) (*scm.PR, error) {
-	return nil, scm.ErrUnsupported
-}
-func (h *recordingDecisionHost) GetPRState(context.Context, *scm.PR) (scm.PRState, error) {
-	return scm.PRStateOpen, nil
-}
-func (h *recordingDecisionHost) GetChecks(context.Context, *scm.PR) ([]scm.Check, error) {
-	return nil, scm.ErrUnsupported
-}
-func (h *recordingDecisionHost) GetMergeableState(context.Context, *scm.PR) (scm.MergeableState, error) {
-	return scm.MergeableUnknown, scm.ErrUnsupported
-}
-func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, string, string, []string) (string, error) {
-	return "", scm.ErrUnsupported
+	sctx := repairContext(t, dir, baseSHA, headSHA)
+	step := &CIStep{}
+	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+		t.Fatal("the first round must refuse and show the evidence")
+	}
+
+	// The replacement turn restores SKILL.md, leaving only the store reverted.
+	sctx.Fixing = true
+	mustWrite(t, filepath.Join(dir, "SKILL.md"), skillMD([]string{
+		"build", "deploy", "lint", "release", "test", "wiki-sync", "wiki-drift-monitor",
+	}))
+	if _, err := step.commitRepair(sctx, "restore workflow pin"); err != nil {
+		t.Fatalf("a lesser reversion within the authorisation was refused: %v", err)
+	}
 }
 
 // TestCIRepair_UnevaluableGuardFailsClosed pins the safety direction: silent
@@ -528,4 +534,65 @@ func TestCIRepair_RestoredFileIsDetectedThroughACheckoutFilter(t *testing.T) {
 	if !strings.Contains(reversion.Error(), "policy.txt") {
 		t.Errorf("refusal does not name policy.txt: %s", reversion.Error())
 	}
+}
+
+// TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule pins the
+// advisory half of the fix: occurrence 1's CI repair reversed an ask-user
+// decision that had been recorded minutes earlier in the same run, and this was
+// the one step prompt that never carried the round history.
+func TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := branchRepo(t,
+		map[string]string{"main.go": "package main\n\nfunc main() {}\n"},
+		map[string]string{"main.go": "package main\n\nfunc main() { run() }\n"},
+	)
+
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		return &agent.Result{}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+
+	step := &CIStep{}
+	host := &recordingDecisionHost{}
+	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, []string{"build"}, false); err != nil {
+		t.Fatalf("autoFixCI: %v", err)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("agent invocations = %d, want 1", len(prompts))
+	}
+	if !strings.Contains(prompts[0], "Never repair a check by undoing work this branch deliberately did") {
+		t.Errorf("CI fix prompt carries no non-reversion rule:\n%s", prompts[0])
+	}
+}
+
+// recordingDecisionHost is the minimum scm.Host the fix round needs: it
+// advertises no optional capability, so no provider call is made.
+type recordingDecisionHost struct{}
+
+func (h *recordingDecisionHost) Provider() scm.Provider          { return scm.ProviderGitHub }
+func (h *recordingDecisionHost) Available(context.Context) error { return nil }
+func (h *recordingDecisionHost) Capabilities() scm.Capabilities  { return scm.Capabilities{} }
+func (h *recordingDecisionHost) FindPR(context.Context, string, string) (*scm.PR, error) {
+	return nil, scm.ErrUnsupported
+}
+func (h *recordingDecisionHost) CreatePR(context.Context, string, string, scm.PRContent) (*scm.PR, error) {
+	return nil, scm.ErrUnsupported
+}
+func (h *recordingDecisionHost) UpdatePR(context.Context, *scm.PR, scm.PRContent) (*scm.PR, error) {
+	return nil, scm.ErrUnsupported
+}
+func (h *recordingDecisionHost) GetPRState(context.Context, *scm.PR) (scm.PRState, error) {
+	return scm.PRStateOpen, nil
+}
+func (h *recordingDecisionHost) GetChecks(context.Context, *scm.PR) ([]scm.Check, error) {
+	return nil, scm.ErrUnsupported
+}
+func (h *recordingDecisionHost) GetMergeableState(context.Context, *scm.PR) (scm.MergeableState, error) {
+	return scm.MergeableUnknown, scm.ErrUnsupported
+}
+func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, string, string, []string) (string, error) {
+	return "", scm.ErrUnsupported
 }
