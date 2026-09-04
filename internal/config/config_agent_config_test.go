@@ -189,6 +189,9 @@ func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
 	if cfg.AgentConfig != nil {
 		t.Fatalf("default config activates agent_config: %#v", cfg.AgentConfig)
 	}
+	if !strings.Contains(defaultConfigYAML, "# review_fix_agent:") {
+		t.Fatal("default config.yaml does not document review_fix_agent")
+	}
 	if !strings.Contains(defaultConfigYAML, "# agent_config:") {
 		t.Fatal("default config.yaml does not document agent_config")
 	}
