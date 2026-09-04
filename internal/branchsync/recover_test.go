@@ -933,23 +933,33 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	missing := strings.Repeat("f", 40)
-	if err := f.db.UpdateRunHeadSHA(f.run.ID, missing); err != nil {
+	tree := mustRun(t, f.gate, "rev-parse", f.preserved+"^{tree}")
+	olderHead := mustRun(t, f.gate, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit-tree", tree, "-p", f.preserved, "-m", "older missing head")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", olderHead)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, olderHead); err != nil {
 		t.Fatal(err)
 	}
-	older, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err := os.Remove(filepath.Join(f.gate, "objects", olderHead[:2], olderHead[2:])); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	newest, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.UpdateRunStatusWithVerifiedHead(older.ID, types.RunFailed, strings.Repeat("e", 40)); err != nil {
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newest.ID, types.RunFailed, strings.Repeat("f", 40)); err != nil {
 		t.Fatal(err)
 	}
 
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
+		t.Fatalf("stacked missing-head state = %#v", state)
+	}
 	kept := f.service.Recover(f.ctx, true)
 	if !kept.Recovered {
 		t.Fatalf("stacked keep-local recover = %#v", kept)
 	}
-	for _, id := range []string{f.run.ID, older.ID} {
+	for _, id := range []string{f.run.ID, newest.ID} {
 		run, err := f.db.GetRun(id)
 		if err != nil || run == nil || run.CustodyReturnedAt == nil {
 			t.Fatalf("run %s custody = %#v, %v", id, run, err)

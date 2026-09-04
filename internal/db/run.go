@@ -435,10 +435,26 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 // idempotent: the first timestamp wins so the record keeps the original
 // recovery moment.
 func (d *DB) SetRunCustodyReturned(id string) error {
-	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id)
+	return d.SetRunsCustodyReturned([]string{id})
+}
+
+func (d *DB) SetRunsCustodyReturned(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := d.sql.Begin()
 	if err != nil {
-		return fmt.Errorf("set run custody returned: %w", err)
+		return fmt.Errorf("set runs custody returned: begin: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	for _, id := range ids {
+		if _, err := tx.Exec(`UPDATE runs SET custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id); err != nil {
+			return fmt.Errorf("set runs custody returned: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set runs custody returned: commit: %w", err)
 	}
 	return nil
 }
