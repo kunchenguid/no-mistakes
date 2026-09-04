@@ -460,6 +460,32 @@ func TestClaudeAgent_FinalizeResult_ValidatesStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestClaudeAgent_RunRejectsStructuredOutputThatViolatesSchema(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "invalid-schema")
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.Run(context.Background(), RunOpts{
+		Prompt: "review this change",
+		CWD:    t.TempDir(),
+		JSONSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"findings":{"type":"array"},
+				"risk_level":{"type":"string"},
+				"risk_rationale":{"type":"string"},
+				"risk_scope":{"type":"string"}
+			},
+			"required":["findings","risk_level","risk_rationale","risk_scope"]
+		}`),
+	})
+	if err == nil {
+		t.Fatal("expected Claude to reject incomplete review output")
+	}
+	if !strings.Contains(err.Error(), "structured output") {
+		t.Fatalf("Run() error = %v, want structured-output validation failure", err)
+	}
+}
+
 func TestClaudeAgent_FinalizeResult_ErrorSubtypeNotRetryable(t *testing.T) {
 	_, err := finalizeClaudeResult(&claudeResult{Subtype: "error", IsError: true}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
 	if err == nil {
@@ -722,14 +748,21 @@ func TestClaudeStdinHelper(t *testing.T) {
 		}
 		emitClaudeHelperResult()
 		return
+	case "invalid-schema":
+		emitClaudeHelperResultWithOutput(`{"findings":[]}`)
+		return
 	default:
 		os.Exit(5)
 	}
 }
 
 func emitClaudeHelperResult() {
+	emitClaudeHelperResultWithOutput(`{"ok":true}`)
+}
+
+func emitClaudeHelperResultWithOutput(output string) {
 	_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}`+"\n")
-	_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":{"ok":true}}`+"\n")
+	_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":`+output+`}`+"\n")
 }
 
 func argsAfterDoubleDash(args []string) []string {

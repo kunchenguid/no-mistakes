@@ -222,7 +222,7 @@ All agents implement the same interface. Each invocation receives:
 
 Each invocation returns:
 
-- **Output** - structured JSON output; native structured responses are returned as-is, while text-parsed fallbacks are validated before return and may use `null` for optional fields
+- **Output** - structured JSON output; when `JSONSchema` is requested, native and text-parsed responses are validated against it before return. Text-parsed fallbacks may use `null` for optional fields.
 - **Text** - raw text output
 - **Usage** - token counts (input, output, cache read, cache creation)
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
