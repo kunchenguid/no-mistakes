@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 )
 
 // branchNameRules and commitSubjectRules are shared between the single-purpose
@@ -248,5 +249,5 @@ func sanitizeCommitSubject(raw string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	return conventional.TightenTitle(s)
+	return conventional.TightenTitle(publicprose.Text(s))
 }

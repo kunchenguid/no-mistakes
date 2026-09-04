@@ -367,7 +367,7 @@ Final diff paths and statuses:
 			content.Body = neutralizeAttestationMarkers(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
-				content.Title = conventional.TightenTitle(content.Title)
+				content.Title = conventional.TightenTitle(publicprose.Text(content.Title))
 				if content.Title != originalTitle {
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}

@@ -44,6 +44,22 @@ func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
 	}
 }
 
+func TestPRStep_OperatorAddressBeforeTitleInference(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "pr", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"title":"Captain: fix stale wakes","body":"## What Changed\n\n- guard stale wakes"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Title != "fix: fix stale wakes" {
+		t.Errorf("title = %q", content.Title)
+	}
+}
+
 func TestPRStep_OperatorAddress(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
