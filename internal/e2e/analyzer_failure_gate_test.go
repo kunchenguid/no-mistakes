@@ -60,10 +60,10 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		branch      string
-		step        types.StepName
-		stepError   string
-		changePath  string
+		branch     string
+		step       types.StepName
+		stepError  string
+		changePath string
 	}{
 		{
 			branch:     "analyzer-review-null-findings",
