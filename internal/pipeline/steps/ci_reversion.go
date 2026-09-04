@@ -168,6 +168,16 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 	if err != nil {
 		return nil, err
 	}
+	// "Is this file back to its pre-branch content?" is asked of git rather than
+	// answered by comparing the worktree's bytes to the blob's. Git applies the
+	// same checkout and clean filters to both sides, so the answer holds where a
+	// filter is configured - on a Windows daemon with core.autocrlf, a byte
+	// comparison would find every text file different from its blob and the
+	// signal would silently never fire.
+	differsFromBase, err := worktreePathsDifferingFromBase(sctx, baseSHA, repaired)
+	if err != nil {
+		return nil, err
+	}
 
 	var evidence []reversionEvidence
 	for _, path := range repaired {
@@ -177,9 +187,13 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 			// undoing branch work in it.
 			continue
 		}
+		if !differsFromBase[path] {
+			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionRestoredFile})
+			continue
+		}
 		if !change.comparable() {
 			// A submodule pointer or any other non-blob entry has no text to
-			// compare. Nothing here can prove a reversion either way.
+			// line up. Nothing here can prove a reinstatement either way.
 			continue
 		}
 		base, err := blobContent(sctx, change.baseBlob)
@@ -190,13 +204,9 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 		if err != nil {
 			return nil, err
 		}
-		post, postExists, err := worktreeFileContent(sctx.WorkDir, path)
+		post, _, err := worktreeFileContent(sctx.WorkDir, path)
 		if err != nil {
 			return nil, err
-		}
-		if change.baseExists() == postExists && base == post {
-			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionRestoredFile})
-			continue
 		}
 		if lines := reinstatedBaseLines(base, pre, post); len(lines) > 0 {
 			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: lines})
@@ -219,8 +229,6 @@ type branchChange struct {
 }
 
 const gitAbsentMode = "000000"
-
-func (c branchChange) baseExists() bool { return c.baseMode != gitAbsentMode }
 
 // comparable reports whether both sides are ordinary files or symlinks, the only
 // entries with content to line up. Git spells those 100644, 100755 and 120000; a
@@ -264,6 +272,29 @@ func branchChangedFiles(sctx *pipeline.StepContext, baseSHA, preHeadSHA string) 
 		changes[path] = branchChange{baseMode: parts[0], headMode: parts[1], baseBlob: parts[2], headBlob: parts[3]}
 	}
 	return changes, nil
+}
+
+// worktreePathsDifferingFromBase reports which of the given paths the working
+// tree still differs from base on. A candidate absent from the result is back to
+// its pre-branch content, deletion and creation included, because git decides
+// that rather than a byte comparison. --name-only always exits 0, so a genuine
+// git failure is still an error rather than a silent "no differences".
+func worktreePathsDifferingFromBase(sctx *pipeline.StepContext, baseSHA string, paths []string) (map[string]bool, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	args := append([]string{"diff", "--name-only", "-z", baseSHA, "--"}, paths...)
+	raw, err := stepGitRunRaw(sctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("compare the repair against the branch's base: %w", err)
+	}
+	differing := make(map[string]bool, len(paths))
+	for _, path := range strings.Split(raw, "\x00") {
+		if path != "" {
+			differing[path] = true
+		}
+	}
+	return differing, nil
 }
 
 // blobContent reads a blob by id. An all-zero id is git's spelling of "this side

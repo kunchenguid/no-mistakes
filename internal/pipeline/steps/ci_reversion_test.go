@@ -502,3 +502,30 @@ func TestCIRepair_RefusesAReversionTheFixAgentCommittedItself(t *testing.T) {
 		t.Errorf("refusal does not name the reverted store: %s", reversion.Error())
 	}
 }
+
+// TestCIRepair_RestoredFileIsDetectedThroughACheckoutFilter is the Windows case,
+// made portable. With core.autocrlf a text file's worktree bytes never equal its
+// blob's, so a byte comparison would report every file as changed and the
+// restored-file signal would silently never fire on a Windows daemon. Git is
+// asked instead, and it applies the same filter to both sides.
+func TestCIRepair_RestoredFileIsDetectedThroughACheckoutFilter(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := branchRepo(t,
+		map[string]string{"policy.txt": "alpha\nbravo\ncharlie\n"},
+		map[string]string{"policy.txt": "alpha\nbravo\ncharlie\ndelta\n"},
+	)
+	gitCmd(t, dir, "config", "core.autocrlf", "true")
+	// The repair reverts the branch's line, and writes the file the way a
+	// CRLF checkout would leave it.
+	mustWrite(t, filepath.Join(dir, "policy.txt"), "alpha\r\nbravo\r\ncharlie\r\n")
+
+	step := &CIStep{}
+	_, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "revert the policy line")
+	var reversion *decisionReversionError
+	if !errors.As(err, &reversion) {
+		t.Fatalf("commitRepair error = %v, want a decision-reversion refusal despite the checkout filter", err)
+	}
+	if !strings.Contains(reversion.Error(), "policy.txt") {
+		t.Errorf("refusal does not name policy.txt: %s", reversion.Error())
+	}
+}
