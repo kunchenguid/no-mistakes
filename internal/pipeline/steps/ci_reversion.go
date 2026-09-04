@@ -119,18 +119,19 @@ func (e *decisionReversionError) Error() string {
 // covers a later refusal.
 //
 // A nil receiver authorises nothing: without a refusal a person actually read,
-// there is no decision to honour. An unevaluable guard is authorised by an
-// unevaluable guard, because the same missing evidence will keep it unevaluable
-// and re-parking would leave no way forward. Otherwise every piece of the later
-// refusal's evidence must already appear in what was shown, so a replacement
-// turn that undoes less stays authorised while one that undoes anything else
-// parks with its own evidence.
+// there is no decision to honour. An unevaluable guard is authorised only by the
+// SAME reason - the missing evidence a person chose to proceed without will keep
+// the guard unevaluable, so that case has to be able to move forward, but a
+// replacement turn that breaks the guard some other way is new information they
+// have not seen. Otherwise every piece of the later refusal's evidence must
+// already appear in what was shown, so a replacement turn that undoes less stays
+// authorised while one that undoes anything else parks with its own evidence.
 func (e *decisionReversionError) authorizes(later *decisionReversionError) bool {
 	if e == nil || later == nil {
 		return false
 	}
-	if later.reason != "" {
-		return e.reason != ""
+	if later.reason != "" || e.reason != "" {
+		return e.reason == later.reason
 	}
 	shown := make(map[string]struct{}, len(e.evidence))
 	for _, ev := range e.evidence {

@@ -596,3 +596,37 @@ func (h *recordingDecisionHost) GetMergeableState(context.Context, *scm.PR) (scm
 func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, string, string, []string) (string, error) {
 	return "", scm.ErrUnsupported
 }
+
+// TestDecisionReversionAuthorization covers what one fix response does and does
+// not cover. Each case is a refusal a person read, followed by the refusal a
+// replacement agent turn produced.
+func TestDecisionReversionAuthorization(t *testing.T) {
+	t.Parallel()
+	store := reversionEvidence{Path: "store", Kind: reversionRestoredFile}
+	skill := reversionEvidence{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: []string{"count: six"}}
+	skillOtherLine := reversionEvidence{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: []string{"count: five"}}
+
+	cases := []struct {
+		name  string
+		shown *decisionReversionError
+		later *decisionReversionError
+		want  bool
+	}{
+		{"nothing was shown", nil, &decisionReversionError{evidence: []reversionEvidence{store}}, false},
+		{"the same reversion", &decisionReversionError{evidence: []reversionEvidence{store, skill}}, &decisionReversionError{evidence: []reversionEvidence{store, skill}}, true},
+		{"a lesser reversion", &decisionReversionError{evidence: []reversionEvidence{store, skill}}, &decisionReversionError{evidence: []reversionEvidence{store}}, true},
+		{"an additional file", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{evidence: []reversionEvidence{store, skill}}, false},
+		{"the same file, different lines", &decisionReversionError{evidence: []reversionEvidence{skill}}, &decisionReversionError{evidence: []reversionEvidence{skillOtherLine}}, false},
+		{"the same unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "no base commit"}, true},
+		{"a different unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "read blob: exit status 128"}, false},
+		{"evidence does not authorise an unevaluable guard", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{reason: "no base commit"}, false},
+		{"an unevaluable guard does not authorise evidence", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{evidence: []reversionEvidence{store}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.shown.authorizes(tc.later); got != tc.want {
+				t.Fatalf("authorizes = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
