@@ -84,7 +84,7 @@ Previous lint findings to address:
 		if result.Output == nil {
 			return nil, errors.New("lint analyzer returned no structured findings")
 		}
-		if err := unmarshalRequiredFindings(result.Output, &findings, false); err != nil {
+		if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
 			return nil, fmt.Errorf("validate lint analyzer findings: %w", err)
 		}
 		summary, err := extractCommitSummary(result)

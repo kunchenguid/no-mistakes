@@ -40,6 +40,11 @@ func TestReviewStep_UnrunAnalyzerDoesNotApprove(t *testing.T) {
 			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)},
 			want:   "review analyzer findings missing risk assessment",
 		},
+		{
+			name:   "null findings array",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer findings missing findings array",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

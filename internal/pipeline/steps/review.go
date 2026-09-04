@@ -365,6 +365,15 @@ Risk assessment (after listing all findings):
 	if result.Output == nil {
 		return nil, errors.New("review analyzer returned no structured findings")
 	}
+	var payload struct {
+		Findings *[]json.RawMessage `json:"findings"`
+	}
+	if err := json.Unmarshal(result.Output, &payload); err != nil {
+		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
+	}
+	if payload.Findings == nil {
+		return nil, errors.New("review analyzer findings missing findings array")
+	}
 	if err := json.Unmarshal(result.Output, &findings); err != nil {
 		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
 	}
