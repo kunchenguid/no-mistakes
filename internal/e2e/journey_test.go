@@ -394,10 +394,13 @@ func cleanReviewScenario(t *testing.T) string {
         - severity: warning
           description: "README missing new CLI flag"
       summary: "README needs updating"
-  - match: "branch: document-missing-findings"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-missing-findings"
     text: "documentation missing findings field"
     structured:
       summary: "docs status unavailable"
+      risk_level: low
+      risk_rationale: "documentation status only"
+      risk_scope: source-or-external
   - match: "branch: document-info"
     text: "documentation info finding"
     structured:
@@ -411,6 +414,7 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "README needs updating"
       risk_level: low
       risk_rationale: "documentation-only follow-up"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
@@ -430,6 +434,7 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      risk_scope: source-or-external
   - match: "branch: agent-edits"
     text: "agent edited a file"
     edits:
@@ -531,9 +536,11 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -1678,22 +1685,18 @@ func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	h.CommitChange("test-malformed-structured-output", "test-malformed-structured-output.txt", "test malformed structured output\n", "add test malformed structured output")
 	h.PushToGate("test-malformed-structured-output")
 	run := h.WaitForRun("test-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("test-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("test-malformed-structured-output run status=%s error=%v, want failed: malformed analyzer output must not pass the Test step", run.Status, deref(run.Error))
 	}
 	testStep, ok := findStep(run.Steps, types.StepTest)
 	if !ok {
 		t.Fatal("expected test step in test-malformed-structured-output run")
 	}
-	if testStep.FindingsJSON == nil {
-		t.Fatal("expected malformed test structured output fallback to record findings JSON")
+	if testStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected test step to fail on malformed analyzer output, got %s", testStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed test output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "tests found some issues") {
-		t.Fatalf("malformed test output fallback summary = %q, want tests found some issues", findings.Summary)
+	if testStep.Error == nil || !strings.Contains(*testStep.Error, "validate test analyzer findings") {
+		t.Fatalf("expected test step error to name the analyzer output contract, got %q", deref(testStep.Error))
 	}
 }
 
@@ -1702,22 +1705,18 @@ func assertLintMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.generated.go", "lint malformed structured output\n", "add lint malformed structured output")
 	h.PushToGate("lint-malformed-structured-output")
 	run := h.WaitForRun("lint-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("lint-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("lint-malformed-structured-output run status=%s error=%v, want failed: malformed analyzer output must not pass the Lint step", run.Status, deref(run.Error))
 	}
 	lintStep, ok := findStep(run.Steps, types.StepLint)
 	if !ok {
 		t.Fatal("expected lint step in lint-malformed-structured-output run")
 	}
-	if lintStep.FindingsJSON == nil {
-		t.Fatal("expected malformed lint structured output fallback to record findings JSON")
+	if lintStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected lint step to fail on malformed analyzer output, got %s", lintStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*lintStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed lint output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "lint found some issues") {
-		t.Fatalf("malformed lint output fallback summary = %q, want lint found some issues", findings.Summary)
+	if lintStep.Error == nil || !strings.Contains(*lintStep.Error, "validate lint analyzer findings") {
+		t.Fatalf("expected lint step error to name the analyzer output contract, got %q", deref(lintStep.Error))
 	}
 }
 

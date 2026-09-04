@@ -154,11 +154,6 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 	if len(schema) > 0 && result.StructuredOutput == nil {
 		return nil, errNoStructuredOutput
 	}
-	if len(schema) > 0 {
-		if err := validateStructuredOutput(result.StructuredOutput, schema); err != nil {
-			return nil, fmt.Errorf("claude structured output: %w", err)
-		}
-	}
 
 	return &Result{
 		Output:                result.StructuredOutput,

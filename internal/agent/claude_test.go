@@ -428,7 +428,12 @@ func TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput(t *testin
 	}
 }
 
-func TestClaudeAgent_FinalizeResult_ValidatesStructuredOutput(t *testing.T) {
+func TestClaudeAgent_FinalizeResult_PassesIncompleteStructuredOutputToStep(t *testing.T) {
+	// Schema validation lives in the pipeline steps, which own their own
+	// output contracts (issue #703); the adapter only fails closed when a
+	// requested schema came back with no structured output at all. An
+	// incomplete-but-present payload must therefore pass through here so
+	// the step's fail-closed path, not a subprocess retry, handles it.
 	tests := []struct {
 		name   string
 		output json.RawMessage
@@ -444,45 +449,17 @@ func TestClaudeAgent_FinalizeResult_ValidatesStructuredOutput(t *testing.T) {
 			output: json.RawMessage(`{"findings":[],"summary":""}`),
 			schema: json.RawMessage(`{"type":"object","properties":{"findings":{"type":"array"},"summary":{"type":"string"},"tested":{"type":"array"},"testing_summary":{"type":"string"},"artifacts":{"type":"array"}},"required":["findings","summary","tested","testing_summary","artifacts"]}`),
 		},
-		{
-			name:   "null",
-			output: json.RawMessage(`null`),
-			schema: json.RawMessage(`{"type":"object"}`),
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", StructuredOutput: tt.output}, tt.schema, TokenUsage{})
-			if err == nil {
-				t.Fatal("expected schema validation error")
+			result, err := finalizeClaudeResult(&claudeResult{Subtype: "success", StructuredOutput: tt.output}, tt.schema, TokenUsage{})
+			if err != nil {
+				t.Fatalf("adapter must pass incomplete structured output to the step layer: %v", err)
+			}
+			if string(result.Output) != string(tt.output) {
+				t.Fatalf("structured output was altered: %s", result.Output)
 			}
 		})
-	}
-}
-
-func TestClaudeAgent_RunRejectsStructuredOutputThatViolatesSchema(t *testing.T) {
-	t.Setenv("NM_CLAUDE_STDIN_HELPER", "invalid-schema")
-	a := newClaudeStdinHelperAgent(t)
-
-	_, err := a.Run(context.Background(), RunOpts{
-		Prompt: "review this change",
-		CWD:    t.TempDir(),
-		JSONSchema: json.RawMessage(`{
-			"type":"object",
-			"properties":{
-				"findings":{"type":"array"},
-				"risk_level":{"type":"string"},
-				"risk_rationale":{"type":"string"},
-				"risk_scope":{"type":"string"}
-			},
-			"required":["findings","risk_level","risk_rationale","risk_scope"]
-		}`),
-	})
-	if err == nil {
-		t.Fatal("expected Claude to reject incomplete review output")
-	}
-	if !strings.Contains(err.Error(), "structured output") {
-		t.Fatalf("Run() error = %v, want structured-output validation failure", err)
 	}
 }
 
@@ -748,21 +725,14 @@ func TestClaudeStdinHelper(t *testing.T) {
 		}
 		emitClaudeHelperResult()
 		return
-	case "invalid-schema":
-		emitClaudeHelperResultWithOutput(`{"findings":[]}`)
-		return
 	default:
 		os.Exit(5)
 	}
 }
 
 func emitClaudeHelperResult() {
-	emitClaudeHelperResultWithOutput(`{"ok":true}`)
-}
-
-func emitClaudeHelperResultWithOutput(output string) {
 	_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}`+"\n")
-	_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":`+output+`}`+"\n")
+	_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":{"ok":true}}`+"\n")
 }
 
 func argsAfterDoubleDash(args []string) []string {

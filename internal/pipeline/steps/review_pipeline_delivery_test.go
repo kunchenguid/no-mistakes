@@ -115,9 +115,10 @@ func TestReviewStep_KeepsExternalPRLifecycleFinding(t *testing.T) {
 					Description: external,
 					ReviewScope: types.FindingReviewScopeExternalDelivery,
 				}},
-				Summary:   "external PR requirement violated",
-				RiskLevel: "high",
-				RiskScope: types.FindingsRiskScopeSourceOrExternal,
+				Summary:       "external PR requirement violated",
+				RiskLevel:     "high",
+				RiskRationale: "external lifecycle requirement",
+				RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
@@ -169,7 +170,10 @@ func TestReviewStep_StripsOnlyDeferredAmongMixedFindings(t *testing.T) {
 						ReviewScope: types.FindingReviewScopeSource,
 					},
 				},
-				Summary: "2 issues",
+				Summary:       "2 issues",
+				RiskLevel:     "high",
+				RiskRationale: "mixed findings",
+				RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil

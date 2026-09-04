@@ -357,13 +357,19 @@ Risk assessment (after listing all findings):
 		return nil, reviewAgentError(ctx, timeout, "agent review", err)
 	}
 
-	// Parse structured findings
+	// Parse structured findings. A review that produced no structured output,
+	// or one whose risk assessment is absent, cannot certify the head: an
+	// unrun or unreadable analyzer must not read as an approving review
+	// (issue #703), so fail closed instead of approving on empty findings.
 	var findings Findings
-	if result.Output != nil {
-		if err := json.Unmarshal(result.Output, &findings); err != nil {
-			sctx.Log("could not parse structured output, using text response")
-			findings = Findings{Summary: result.Text}
-		}
+	if result.Output == nil {
+		return nil, errors.New("review analyzer returned no structured findings")
+	}
+	if err := json.Unmarshal(result.Output, &findings); err != nil {
+		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
+	}
+	if findings.RiskLevel == "" || findings.RiskRationale == "" || findings.RiskScope == "" {
+		return nil, errors.New("review analyzer findings missing risk assessment")
 	}
 
 	// Phase ownership boundary: drop findings that only claim later pipeline-

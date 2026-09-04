@@ -23,11 +23,12 @@ func unmarshalRequiredFindings(raw []byte, findings *Findings, requireNonEmptySu
 	var payload struct {
 		Summary  *string            `json:"summary"`
 		Findings *[]json.RawMessage `json:"findings"`
+		Items    *[]json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
-	if payload.Findings == nil {
+	if payload.Findings == nil && payload.Items == nil {
 		return fmt.Errorf("missing findings array")
 	}
 	if payload.Summary == nil {
@@ -72,8 +73,14 @@ func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
 	if payload.Tested == nil {
 		return fmt.Errorf("missing tested array")
 	}
+	if len(*payload.Tested) == 0 {
+		return fmt.Errorf("empty tested array")
+	}
 	if payload.TestingSummary == nil {
 		return fmt.Errorf("missing testing summary")
+	}
+	if strings.TrimSpace(*payload.TestingSummary) == "" {
+		return fmt.Errorf("empty testing summary")
 	}
 	if payload.Artifacts == nil {
 		return fmt.Errorf("missing artifacts array")

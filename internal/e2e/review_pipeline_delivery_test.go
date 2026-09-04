@@ -47,9 +47,11 @@ func writePipelineOwnedPRScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: open PR A"
       body: "## Summary\nOpen PR A unmerged"
 `
@@ -82,9 +84,11 @@ func writeExternalPRScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: change"
       body: "## Summary\nchange"
 `
