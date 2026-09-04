@@ -171,6 +171,16 @@ func assertKeepLocalRecoveryOffer(t *testing.T, state State) {
 	}
 }
 
+func assertManualReconciliationOffer(t *testing.T, state State) {
+	t.Helper()
+	if state.Safety != "blocked_recover_manual_reconciliation" {
+		t.Fatalf("want manual-reconciliation safety, got %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" || state.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("want manual reconciliation guidance, got %#v", state.NextAction)
+	}
+}
+
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
 // for the stranded state itself (dogfood run 01KXN8YJ6DWF8XPP582DWQC3HV): a
 // terminal run at the pre_push phase must not be a dead end. The state stays
@@ -407,7 +417,7 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	inspected := f.service.InspectCached(f.ctx)
-	assertKeepLocalRecoveryOffer(t, inspected)
+	assertManualReconciliationOffer(t, inspected)
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
 		t.Fatalf("recover dirty = %#v", state)
@@ -437,7 +447,7 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
 	divergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
 	inspected := f.service.InspectCached(f.ctx)
-	assertKeepLocalRecoveryOffer(t, inspected)
+	assertManualReconciliationOffer(t, inspected)
 
 	refused := f.service.Recover(f.ctx, false)
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
@@ -561,7 +571,7 @@ func TestRecoverReachableHeadRejectsConflictingGateAnchor(t *testing.T) {
 	mustRun(t, f.local, "reset", "--hard", f.preserved)
 
 	inspected := f.service.InspectCached(f.ctx)
-	assertKeepLocalRecoveryOffer(t, inspected)
+	assertManualReconciliationOffer(t, inspected)
 
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Changed || state.Safety != "blocked_recover_anchor_mismatch" {
@@ -606,7 +616,7 @@ func TestRecoverRejectsSymbolicGateAnchorWithoutOverwritingIt(t *testing.T) {
 	mustRun(t, f.local, "reset", "--hard", f.preserved)
 
 	inspected := f.service.InspectCached(f.ctx)
-	assertKeepLocalRecoveryOffer(t, inspected)
+	assertManualReconciliationOffer(t, inspected)
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Safety != "blocked_recover_anchor_mismatch" {
 		t.Fatalf("recover with symbolic anchor = %#v", state)
@@ -908,10 +918,7 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.db.UpdateRunHeadSHA(older.ID, strings.Repeat("e", 40)); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.db.UpdateRunStatus(older.ID, types.RunFailed); err != nil {
+	if err := f.db.UpdateRunStatusWithVerifiedHead(older.ID, types.RunFailed, strings.Repeat("e", 40)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -935,22 +942,18 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	// The recorded preserved commit remains available in the gate, but the
-	// run-specific evidence points elsewhere. Status must not advertise a
-	// plain recover that would take that head; --keep-local is the explicit
-	// discard path.
 	mustRun(t, f.local, "fetch", f.gate, f.preserved)
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
 
 	state := f.service.InspectCached(f.ctx)
-	if state.Safety != "blocked_recover_preserved_head_missing" {
-		t.Fatalf("conflicting-anchor safety = %q, want blocked_recover_preserved_head_missing: %#v", state.Safety, state)
+	assertManualReconciliationOffer(t, state)
+
+	kept := f.service.Recover(f.ctx, true)
+	if kept.Recovered || kept.Safety != "blocked_recover_anchor_mismatch" {
+		t.Fatalf("keep-local with conflicting anchor = %#v", kept)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
-		t.Fatalf("conflicting-anchor next action = %#v", state.NextAction)
-	}
-	if state.NextAction.Command == "no-mistakes axi sync --recover" {
-		t.Fatal("conflicting terminal anchor advertised taking the preserved head")
+	if f.custodyReturned() {
+		t.Fatal("keep-local stamped custody despite conflicting evidence")
 	}
 }
 
@@ -965,9 +968,7 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorIsNotACommit(t *testin
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), blob)
 
 	state := f.service.InspectCached(f.ctx)
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
-		t.Fatalf("non-commit-anchor next action = %#v", state.NextAction)
-	}
+	assertManualReconciliationOffer(t, state)
 	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != blob {
 		t.Fatalf("status inspection changed conflicting anchor: got %s, want %s", got, blob)
 	}
@@ -981,12 +982,7 @@ func TestInspectDoesNotAdvertiseRecoveryFromLooseObjectWithoutUsableGate(t *test
 	f.service.GateDir = filepath.Join(t.TempDir(), "missing-gate.git")
 
 	state := f.service.InspectCached(f.ctx)
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
-		t.Fatalf("loose-object-only next action = %#v", state.NextAction)
-	}
-	if state.NextAction.Command == "no-mistakes axi sync --recover" {
-		t.Fatal("a locally present object advertised taking the preserved head even though the behind branch still requires gate evidence")
-	}
+	assertManualReconciliationOffer(t, state)
 }
 
 func TestRecoverDoesNotOverwriteConflictingCheckoutAnchor(t *testing.T) {

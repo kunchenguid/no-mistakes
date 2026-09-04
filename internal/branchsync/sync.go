@@ -555,12 +555,11 @@ func (s *Service) Apply(ctx context.Context) State {
 //     concurrent gate push wins and recovery refuses. An independently moved
 //     gate head is pinned first so that CAS never discards it.
 //   - Anything unverifiable (missing recorded head, missing gate where required,
-//     failed anchor write or fetch, changed assumptions) refuses with a reason
-//     unless --keep-local is set: that flag is the operator's explicit choice
-//     to keep the current local head and discard unpublished pipeline commits,
-//     so a missing or unimportable preserved head must not block it. Plain
-//     --recover without --keep-local still refuses rather than moving a branch
-//     that cannot anchor a real preserved head.
+//     failed anchor write or fetch, changed assumptions) refuses with a reason.
+//     The sole exception is an actually missing preserved head with --keep-local:
+//     that flag explicitly discards the unavailable pipeline commits. Plain
+//     --recover still refuses rather than moving a branch that cannot anchor a
+//     real preserved head.
 //
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
@@ -591,7 +590,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
-	if run.TerminalHeadVerifiedAt == nil && !keepLocal {
+	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
@@ -625,6 +624,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		gateAvailable = statErr == nil
 	}
 
+	if compatible, err := recoveryAnchorCompatible(ctx, wd, run.ID, preserved); err != nil || !compatible {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
+	}
+
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		if keepLocal {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
@@ -636,12 +639,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
 		if blocked, ok := s.anchorReachablePreserved(ctx, state, run.ID, preserved); !ok {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blocked)
+			return blocked
 		}
 		if gateAvailable {
 			compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, preserved)
 			if err != nil || !compatible {
-				return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed"))
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref in the local gate conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 			}
 		}
 		if keepLocal {
@@ -651,7 +654,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if !gateAvailable {
-		if keepLocal {
+		if keepLocal && s.preservedHeadMissing(ctx, run) {
 			return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
 		}
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be imported; no files or refs were changed")
@@ -660,24 +663,27 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	gateAnchorAvailable := false
 	gateAnchorTarget, gateAnchorExists, targetErr := git.ExactRefTarget(ctx, gateDir, gateAnchor)
 	if targetErr != nil {
-		return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed"))
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the run recovery ref could not be inspected; inspect the recorded and live heads before returning custody; no files or refs were changed")
 	}
 	if gateAnchorExists {
 		gateAnchored, err := git.Run(ctx, gateDir, "rev-parse", gateAnchor+"^{commit}")
 		if err != nil {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved)))
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at non-commit object %s instead of the recorded pipeline head %s; inspect both objects before returning custody; no files or refs were changed", gateAnchorTarget, preserved))
 		}
 		if gateAnchored != preserved {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved)))
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", fmt.Sprintf("the run recovery ref points at %s instead of the recorded pipeline head %s; inspect both heads before returning custody; no files or refs were changed", gateAnchored, preserved))
 		}
 		gateAnchorAvailable = true
 	}
 	if !gateAnchorAvailable {
 		if !objectExists(ctx, gateDir, preserved) {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved)))
+			if keepLocal {
+				return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
+			}
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserved_head_missing", fmt.Sprintf("the recorded pipeline head %s is missing from the local gate; inspect the recorded and live heads before returning custody; no files or refs were changed", preserved))
 		}
 		if err := custody.PreserveRecoveryHead(ctx, gateDir, run.ID, preserved); err != nil {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed"))
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the recorded pipeline head exists but could not be anchored in the local gate; no files or worktree refs were changed")
 		}
 	}
 
@@ -687,10 +693,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !anchored {
 		if fetchErr := git.FetchRemoteRef(ctx, wd, gateDir, gateAnchor, preserved); fetchErr != nil {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed"))
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if preserveErr := custody.PreserveRecoveryAnchor(ctx, wd, anchorRef, preserved); preserveErr != nil {
-			return s.keepLocalOrBlocked(ctx, keepLocal, run, state, blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed"))
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_mismatch", "the invoking worktree recovery ref conflicts with the recorded pipeline head; inspect both objects before returning custody; no files or refs were changed")
 		}
 	}
 
@@ -788,13 +794,6 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		}
 	}
 	return s.finishKeepLocalRecover(ctx, state)
-}
-
-func (s *Service) keepLocalOrBlocked(ctx context.Context, keepLocal bool, run *db.Run, state, blocked State) State {
-	if keepLocal {
-		return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
-	}
-	return blocked
 }
 
 // recoverKeepLocalAtCurrentHead returns custody at the current local head
@@ -1512,9 +1511,15 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
 		if !s.recoverySourceAvailable(ctx, state, run) {
-			state.Safety = "blocked_recover_preserved_head_missing"
-			state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
-			state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
+			if s.preservedHeadMissing(ctx, run) {
+				state.Safety = "blocked_recover_preserved_head_missing"
+				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
+				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
+				return
+			}
+			state.Safety = "blocked_recover_manual_reconciliation"
+			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
+			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
 		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
@@ -1525,6 +1530,23 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+}
+
+func (s *Service) preservedHeadMissing(ctx context.Context, run *db.Run) bool {
+	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	if objectExists(ctx, s.workDir(), run.HeadSHA) {
+		return false
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return true
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return true
+	}
+	return !objectExists(ctx, gateDir, run.HeadSHA)
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
