@@ -218,7 +218,7 @@ Rules:
 		if result.Output == nil {
 			return nil, errors.New("test analyzer returned no structured findings")
 		}
-		if err := unmarshalRequiredFindings(result.Output, &findings, false); err != nil {
+		if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
 			return nil, fmt.Errorf("validate test analyzer findings: %w", err)
 		}
 		if len(tested) > 0 {

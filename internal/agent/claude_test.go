@@ -428,6 +428,38 @@ func TestClaudeAgent_FinalizeResult_WithSchemaRequiresStructuredOutput(t *testin
 	}
 }
 
+func TestClaudeAgent_FinalizeResult_ValidatesStructuredOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output json.RawMessage
+		schema json.RawMessage
+	}{
+		{
+			name:   "review risk fields",
+			output: json.RawMessage(`{"findings":[]}`),
+			schema: json.RawMessage(`{"type":"object","properties":{"findings":{"type":"array"},"risk_level":{"type":"string"},"risk_rationale":{"type":"string"},"risk_scope":{"type":"string"}},"required":["findings","risk_level","risk_rationale","risk_scope"]}`),
+		},
+		{
+			name:   "test evidence fields",
+			output: json.RawMessage(`{"findings":[],"summary":""}`),
+			schema: json.RawMessage(`{"type":"object","properties":{"findings":{"type":"array"},"summary":{"type":"string"},"tested":{"type":"array"},"testing_summary":{"type":"string"},"artifacts":{"type":"array"}},"required":["findings","summary","tested","testing_summary","artifacts"]}`),
+		},
+		{
+			name:   "null",
+			output: json.RawMessage(`null`),
+			schema: json.RawMessage(`{"type":"object"}`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := finalizeClaudeResult(&claudeResult{Subtype: "success", StructuredOutput: tt.output}, tt.schema, TokenUsage{})
+			if err == nil {
+				t.Fatal("expected schema validation error")
+			}
+		})
+	}
+}
+
 func TestClaudeAgent_FinalizeResult_ErrorSubtypeNotRetryable(t *testing.T) {
 	_, err := finalizeClaudeResult(&claudeResult{Subtype: "error", IsError: true}, json.RawMessage(`{"type":"object"}`), TokenUsage{})
 	if err == nil {

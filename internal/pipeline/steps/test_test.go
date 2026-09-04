@@ -23,7 +23,7 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 		name: "hanging-evidence-agent",
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			<-ctx.Done()
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -64,7 +64,7 @@ func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			_, sawDeadline = ctx.Deadline()
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -94,6 +94,26 @@ func TestTestStep_NoStructuredOutputFails(t *testing.T) {
 	outcome, err := (&TestStep{}).Execute(sctx)
 	if err == nil || !strings.Contains(err.Error(), "test analyzer") {
 		t.Fatalf("Execute() error = %v, want missing test analyzer output", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+}
+
+func TestTestStep_IncompleteStructuredOutputFails(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":""}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "missing tested array") {
+		t.Fatalf("Execute() error = %v, want missing test evidence fields", err)
 	}
 	if outcome != nil {
 		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
@@ -344,7 +364,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
@@ -422,7 +442,7 @@ func TestTestStep_EvidenceDirectoryIsAlwaysOutsideTheWorktree(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -450,7 +470,7 @@ func TestTestStep_PublishedEvidenceGuidanceNamesTheEvidenceBranch(t *testing.T) 
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -483,7 +503,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["go test ./internal/cli -run TestDoctor -count=1"],"testing_summary":"targeted check passed"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["go test ./internal/cli -run TestDoctor -count=1"],"testing_summary":"targeted check passed","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -615,7 +635,7 @@ func TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"no targeted test can prove the intent","action":"ask-user"}],"summary":"missing evidence","tested":["manual review of changed packages"],"testing_summary":"could not produce targeted evidence"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"no targeted test can prove the intent","action":"ask-user"}],"summary":"missing evidence","tested":["manual review of changed packages"],"testing_summary":"could not produce targeted evidence","artifacts":[]}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
