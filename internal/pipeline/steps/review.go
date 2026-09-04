@@ -377,8 +377,20 @@ Risk assessment (after listing all findings):
 	if err := json.Unmarshal(result.Output, &findings); err != nil {
 		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
 	}
-	if strings.TrimSpace(findings.RiskLevel) == "" || strings.TrimSpace(findings.RiskRationale) == "" || findings.RiskScope == "" {
+	findings.RiskLevel = strings.TrimSpace(findings.RiskLevel)
+	findings.RiskScope = strings.TrimSpace(findings.RiskScope)
+	if findings.RiskLevel == "" || strings.TrimSpace(findings.RiskRationale) == "" || findings.RiskScope == "" {
 		return nil, errors.New("review analyzer findings missing risk assessment")
+	}
+	switch findings.RiskLevel {
+	case "low", "medium", "high":
+	default:
+		return nil, errors.New("review analyzer findings invalid risk level")
+	}
+	switch findings.RiskScope {
+	case types.FindingsRiskScopeSourceOrExternal, types.FindingsRiskScopePipelineOwnedDelivery:
+	default:
+		return nil, errors.New("review analyzer findings invalid risk scope")
 	}
 	for i := range findings.Items {
 		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
