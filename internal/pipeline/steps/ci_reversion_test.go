@@ -772,3 +772,31 @@ func TestCIRepair_AuthorisationIsSpentOnUse(t *testing.T) {
 		t.Errorf("refusal does not name the newly reverted file: %s", reversion.Error())
 	}
 }
+
+// TestReinstatedBaseLines_UniquenessIsTheEvidenceThreshold pins the deliberate
+// limit of what this guard reports, in both directions.
+//
+// A repair that writes back only content the pre-branch file also contains
+// elsewhere has proved nothing about a decision, so it produces no evidence -
+// which means it is also absent from what a fix response authorises. Those two
+// have to agree: reporting such lines would fire on ordinary repairs until the
+// guard was turned off, and identifying by them without showing them is exactly
+// the display/authorisation split this design removed.
+func TestReinstatedBaseLines_UniquenessIsTheEvidenceThreshold(t *testing.T) {
+	t.Parallel()
+	base := "func a() {\n\treturn nil\n}\n\nfunc b() {\n\treturn nil\n}\n\nfunc uniqueHelper() {}\n"
+	branchRemovedBoth := "func a() {\n}\n\nfunc b() {\n}\n"
+
+	// Only repeated content comes back: no evidence, in either round.
+	onlyRepeated := "func a() {\n\treturn nil\n}\n\nfunc b() {\n}\n"
+	if got := reinstatedBaseLines(base, branchRemovedBoth, onlyRepeated); len(got) != 0 {
+		t.Fatalf("reinstatedBaseLines = %v, want none for content repeated in the base file", got)
+	}
+
+	// Add a line the base file carries exactly once and it becomes evidence.
+	withUnique := onlyRepeated + "\nfunc uniqueHelper() {}\n"
+	got := reinstatedBaseLines(base, branchRemovedBoth, withUnique)
+	if len(got) != 1 || got[0] != "func uniqueHelper() {}" {
+		t.Fatalf("reinstatedBaseLines = %v, want the unique base line", got)
+	}
+}

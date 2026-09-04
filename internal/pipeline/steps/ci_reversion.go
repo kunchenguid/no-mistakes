@@ -206,6 +206,19 @@ func plural(n int, noun string) string {
 // identical reason - the missing evidence someone chose to proceed without keeps
 // the guard unevaluable, so that case has to be able to move forward, while a
 // replacement turn that breaks the guard some other way is new information.
+//
+// What is authorised is the REVERSION, not the repair. The replacement turn
+// writes other content too, and always could; that content is not waved through
+// with it, because a committed repair clears the review approval and restarts
+// validation from Review, so everything the turn wrote is reviewed on its
+// merits. This guard exists only for the one thing that pass cannot see - work
+// the branch itself undid, which leaves base..head looking untouched.
+//
+// Content below the evidence threshold (see reinstatedBaseLines) is therefore
+// deliberately absent from the identity as well as from the display. Putting it
+// in one but not the other is precisely the split this rule removed: a person
+// cannot authorise what a refusal never showed them, and a refusal that showed
+// it would fire on every ordinary repair and be turned off.
 func (e *decisionReversionError) authorizes(later *decisionReversionError) bool {
 	if e == nil || later == nil {
 		return false
@@ -424,6 +437,13 @@ func blobContent(sctx *pipeline.StepContext, blob string) (string, error) {
 // reinstatedBaseLines returns the lines that exist exactly once in the
 // pre-branch file, that the branch removed entirely, and that the proposed
 // repair puts back.
+//
+// Uniqueness is the evidence threshold, not an oversight. A repair that writes
+// back a `}` or a `return nil` the base file also contains elsewhere has proved
+// nothing about a decision, and reporting it would fire on ordinary repairs
+// until the guard was disabled. The threshold applies identically to the round a
+// person reads and to the round that follows it, and everything under it is
+// still reviewed on its merits by the revalidation a committed repair triggers.
 func reinstatedBaseLines(base, pre, post string) []string {
 	baseCounts := lineCounts(base)
 	if len(baseCounts) == 0 {
@@ -567,8 +587,9 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 			"A red check can mean a decision is outstanding rather than that something is broken, and undoing the decision is invisible in the branch's own diff, "+
 			"so this is refused rather than committed. The proposed changes are still in the run worktree at %s, uncommitted and unpushed. "+
 			"Approve or skip to leave the branch as it is, or resolve the check outside the pipeline. "+
-			"If undoing that work really is what you want, a fix response authorises exactly what is listed above and nothing else: it runs another repair round, "+
-			"and a round that would undo anything different parks again with its own evidence.%s",
+			"If undoing that work really is what you want, a fix response authorises exactly the reversion listed above and nothing else: it runs another repair round, "+
+			"and a round that would undo anything different parks again with its own evidence. "+
+			"What that round writes beyond this reversion is not waved through with it - a committed repair restarts validation from Review, so the rest is reviewed on its merits.%s",
 		issueDesc, reversionDetail(reversion), sctx.WorkDir, truncatedAuthorizationNote(reversion))
 
 	findings := Findings{
