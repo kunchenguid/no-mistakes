@@ -86,17 +86,20 @@ const (
 // reversionEvidence is one file's proof that the proposed repair undoes work the
 // branch deliberately did.
 //
-// Lines is a display sample and Digest covers the COMPLETE set it was sampled
-// from. Keeping those apart is load-bearing: the sample exists to fit in a
-// finding a person reads, and an identity built from it would make two refusals
-// that differ only past the cap look identical - which is exactly how an
-// authorisation for one reversion would come to cover a wider one.
+// Lines is a display sample; LineKeys identifies the COMPLETE set it was sampled
+// from, one key per restored line. Keeping those apart is load-bearing: the
+// sample exists to fit in a finding a person reads, and an identity built from
+// it would make two refusals that differ only past the cap look identical -
+// which is exactly how an authorisation for one reversion would come to cover a
+// wider one. Per-line keys rather than one digest over the set so that a
+// replacement round reinstating only SOME of the authorised lines is still
+// within what was authorised, matching how whole files behave.
 type reversionEvidence struct {
-	Path   string
-	Kind   reversionKind
-	Lines  []string
-	Total  int
-	Digest string
+	Path     string
+	Kind     reversionKind
+	Lines    []string
+	Total    int
+	LineKeys []string
 }
 
 // decisionReversionError refuses a CI repair. It carries either per-file
@@ -179,23 +182,43 @@ func (e *decisionReversionError) authorizes(later *decisionReversionError) bool 
 	if later.reason != "" || e.reason != "" {
 		return e.reason == later.reason
 	}
-	shown := make(map[string]struct{}, len(e.evidence))
+	shown := make(map[string]reversionEvidence, len(e.evidence))
 	for _, ev := range e.evidence {
-		shown[ev.identity()] = struct{}{}
+		shown[ev.subject()] = ev
 	}
 	for _, ev := range later.evidence {
-		if _, ok := shown[ev.identity()]; !ok {
+		authorized, ok := shown[ev.subject()]
+		if !ok || !authorized.covers(ev) {
 			return false
 		}
 	}
 	return true
 }
 
-// identity is one piece of evidence's stable key, taken from the complete
-// finding rather than from the sample shown, so two refusals that differ only in
-// what the display cap hid never compare equal.
-func (ev reversionEvidence) identity() string {
-	return ev.Path + "\x00" + string(ev.Kind) + "\x00" + ev.Digest
+// subject is what a piece of evidence is about: this file, undone this way.
+func (ev reversionEvidence) subject() string {
+	return ev.Path + "\x00" + string(ev.Kind)
+}
+
+// covers reports whether this evidence, as authorised, accounts for a later
+// finding about the same subject. A restored file is all-or-nothing. For
+// reinstated text every line the later finding restores must be one that was
+// already authorised, so undoing less stays authorised and undoing anything new
+// - including a line the display cap hid - does not.
+func (ev reversionEvidence) covers(later reversionEvidence) bool {
+	if len(later.LineKeys) == 0 {
+		return true
+	}
+	authorized := make(map[string]struct{}, len(ev.LineKeys))
+	for _, key := range ev.LineKeys {
+		authorized[key] = struct{}{}
+	}
+	for _, key := range later.LineKeys {
+		if _, ok := authorized[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // detectDecisionReversion compares the repair's proposed state - the run
@@ -292,8 +315,8 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 			return nil, err
 		}
 		if lines := reinstatedBaseLines(base, pre, post); len(lines) > 0 {
-			sample, total, digest := sampleAndDigest(lines)
-			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest})
+			sample, total, keys := sampleAndKeys(lines)
+			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys})
 		}
 	}
 	// Deliberately NOT truncated to the display cap: the full set is the
@@ -418,16 +441,17 @@ func reinstatedBaseLines(base, pre, post string) []string {
 	return restored
 }
 
-// sampleAndDigest splits a complete finding into what a person is shown and what
-// identifies it. The digest covers every line, so a later refusal that restores
-// more than the sample can hold is still a different refusal.
-func sampleAndDigest(lines []string) (sample []string, total int, digest string) {
-	sum := sha256.New()
+// sampleAndKeys splits a complete finding into what a person is shown and what
+// identifies it. Every line gets a key, so a later refusal restoring a line the
+// sample could not hold is still a different refusal; the keys are hashes rather
+// than the lines themselves so a refusal costs a fixed amount per line instead
+// of holding a copy of the reverted content.
+func sampleAndKeys(lines []string) (sample []string, total int, keys []string) {
+	keys = make([]string, 0, len(lines))
 	for _, line := range lines {
-		sum.Write([]byte(line))
-		sum.Write([]byte{0})
+		sum := sha256.Sum256([]byte(line))
+		keys = append(keys, hex.EncodeToString(sum[:]))
 	}
-	digest = hex.EncodeToString(sum.Sum(nil))
 
 	total = len(lines)
 	sample = lines
@@ -438,7 +462,7 @@ func sampleAndDigest(lines []string) (sample []string, total int, digest string)
 	for i, line := range sample {
 		clamped[i] = clampEvidenceLine(line)
 	}
-	return clamped, total, digest
+	return clamped, total, keys
 }
 
 func lineCounts(content string) map[string]int {

@@ -604,8 +604,8 @@ func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, s
 func TestDecisionReversionAuthorization(t *testing.T) {
 	t.Parallel()
 	reinstated := func(path string, lines ...string) reversionEvidence {
-		sample, total, digest := sampleAndDigest(lines)
-		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest}
+		sample, total, keys := sampleAndKeys(lines)
+		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys}
 	}
 	store := reversionEvidence{Path: "store", Kind: reversionRestoredFile}
 	skill := reinstated("SKILL.md", "count: six")
@@ -682,9 +682,9 @@ func TestDecisionReversionRefusalDisclosesEverythingItAuthorises(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		lines = append(lines, fmt.Sprintf("restored line %02d", i))
 	}
-	sample, total, digest := sampleAndDigest(lines)
+	sample, total, keys := sampleAndKeys(lines)
 	refusal := &decisionReversionError{evidence: []reversionEvidence{{
-		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest,
+		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys,
 	}}}
 
 	report := refusal.Error()
@@ -703,11 +703,76 @@ func TestDecisionReversionRefusalDisclosesEverythingItAuthorises(t *testing.T) {
 	}
 
 	// One omitted line reads as a line, not lines.
-	sample1, total1, digest1 := sampleAndDigest(append(append([]string{}, lines[:maxReversionEvidenceLines]...), "one more"))
+	sample1, total1, keys1 := sampleAndKeys(append(append([]string{}, lines[:maxReversionEvidenceLines]...), "one more"))
 	single := &decisionReversionError{evidence: []reversionEvidence{{
-		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample1, Total: total1, Digest: digest1,
+		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample1, Total: total1, LineKeys: keys1,
 	}}}
 	if !strings.Contains(single.Error(), "and 1 more line") {
 		t.Fatalf("single omitted line not disclosed: %s", single.Error())
+	}
+}
+
+// TestCIRepair_AuthorisationIsSpentOnUse stops one gate answer becoming a
+// standing permission. A CI repair restarts validation from Review and this step
+// runs again, so without spending the authorisation a later fix response - for
+// some unrelated failure, at a gate that never showed this reversion - would
+// commit it unseen.
+func TestCIRepair_AuthorisationIsSpentOnUse(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := reviewedWorkflowPinRepo(t)
+	applyOccurrence3Repair(t, dir)
+
+	sctx := repairContext(t, dir, baseSHA, headSHA)
+	step := &CIStep{}
+	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+		t.Fatal("the first round must refuse")
+	}
+	sctx.Fixing = true
+	if _, err := step.commitRepair(sctx, "restore workflow pin"); err != nil {
+		t.Fatalf("the authorised round was refused: %v", err)
+	}
+	if step.authorizedRefusal != nil {
+		t.Fatal("the authorisation must be spent once it has admitted a commit")
+	}
+
+	// A later round in the same step, still under a fix response, undoes more
+	// branch work: it deletes the reviewed workflow the branch added, which the
+	// earlier gate never showed. It must be presented rather than inherited.
+	if err := os.Remove(filepath.Join(dir, ".github", "workflows", "wiki-drift-monitor.yml")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := step.commitRepair(sctx, "another repair")
+	var reversion *decisionReversionError
+	if !errors.As(err, &reversion) {
+		t.Fatalf("commitRepair error = %v, want a fresh refusal rather than an inherited authorisation", err)
+	}
+	if !strings.Contains(reversion.Error(), "wiki-drift-monitor.yml") {
+		t.Errorf("refusal does not name the newly reverted file: %s", reversion.Error())
+	}
+}
+
+// TestDecisionReversionAuthorizationCoversFewerLinesInTheSameFile keeps the
+// escape hatch consistent between the file and line dimensions: undoing less
+// than was authorised is within the authorisation either way.
+func TestDecisionReversionAuthorizationCoversFewerLinesInTheSameFile(t *testing.T) {
+	t.Parallel()
+	build := func(lines ...string) *decisionReversionError {
+		sample, total, keys := sampleAndKeys(lines)
+		return &decisionReversionError{evidence: []reversionEvidence{{
+			Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys,
+		}}}
+	}
+	shown := build("alpha", "bravo", "charlie")
+	if !shown.authorizes(build("alpha")) {
+		t.Error("a replacement round reinstating fewer authorised lines must stay authorised")
+	}
+	if !shown.authorizes(build("alpha", "charlie")) {
+		t.Error("a subset of the authorised lines must stay authorised")
+	}
+	if shown.authorizes(build("alpha", "delta")) {
+		t.Error("a line that was never authorised must park")
+	}
+	if shown.authorizes(build("alpha", "bravo", "charlie", "delta")) {
+		t.Error("an additional line must park")
 	}
 }
