@@ -1760,7 +1760,17 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 		}
 		source := s.recoverySourceAvailable(ctx, state, run)
 		if !source.available {
-			*state = source.apply(*state)
+			// A claimed archive owns its fail-closed proof codes. Ordinary
+			// discovery failures stay #958's inspect-and-reconcile offer so a
+			// dirty, diverged, unverified, or conflicting gate is never
+			// advertised as a missing-head keep-local or archive recovery.
+			if source.archiveClaimed {
+				*state = source.apply(*state)
+				return
+			}
+			state.Safety = "blocked_recover_manual_reconciliation"
+			state.Error = "the run finished " + string(run.Status) + " but its preserved recovery evidence cannot be used safely; inspect and reconcile the recorded and live heads manually"
+			state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
 			return
 		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
