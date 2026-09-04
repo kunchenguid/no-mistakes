@@ -1,8 +1,6 @@
 package steps
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,22 +82,26 @@ const (
 )
 
 // reversionEvidence is one file's proof that the proposed repair undoes work the
-// branch deliberately did.
-//
-// Lines is a display sample; LineKeys identifies the COMPLETE set it was sampled
-// from, one key per restored line. Keeping those apart is load-bearing: the
-// sample exists to fit in a finding a person reads, and an identity built from
-// it would make two refusals that differ only past the cap look identical -
-// which is exactly how an authorisation for one reversion would come to cover a
-// wider one. Per-line keys rather than one digest over the set so that a
-// replacement round reinstating only SOME of the authorised lines is still
-// within what was authorised, matching how whole files behave.
+// branch deliberately did. Lines carries the reinstated content, bounded for
+// display by boundForDisplay - which is also what a refusal may authorise, so
+// the two can never drift apart.
 type reversionEvidence struct {
-	Path     string
-	Kind     reversionKind
-	Lines    []string
-	Total    int
-	LineKeys []string
+	Path        string
+	Kind        reversionKind
+	Lines       []string
+	elidedLines int
+}
+
+func (ev reversionEvidence) equal(other reversionEvidence) bool {
+	if ev.Path != other.Path || ev.Kind != other.Kind || len(ev.Lines) != len(other.Lines) {
+		return false
+	}
+	for i := range ev.Lines {
+		if ev.Lines[i] != other.Lines[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // decisionReversionError refuses a CI repair. It carries either per-file
@@ -110,16 +112,53 @@ type reversionEvidence struct {
 type decisionReversionError struct {
 	evidence []reversionEvidence
 	reason   string
+	// truncated records that the finding was larger than a refusal can honestly
+	// show. Such a refusal can be read, but never authorised: see authorizes.
+	truncated   bool
+	elidedFiles int
+}
+
+// newReversionRefusal bounds a complete finding down to what a refusal shows,
+// and marks it truncated when anything had to be left out.
+//
+// Bounding here, once, is what keeps the displayed refusal and the authorisable
+// refusal the same object. Every earlier shape of this code kept a fuller
+// finding behind the displayed one, and every one of them had the same defect in
+// a different place: a person authorising content the refusal only summarised.
+func newReversionRefusal(evidence []reversionEvidence) *decisionReversionError {
+	refusal := &decisionReversionError{}
+	if len(evidence) > maxReversionEvidenceFiles {
+		refusal.elidedFiles = len(evidence) - maxReversionEvidenceFiles
+		evidence = evidence[:maxReversionEvidenceFiles]
+		refusal.truncated = true
+	}
+	for _, ev := range evidence {
+		bounded := reversionEvidence{Path: ev.Path, Kind: ev.Kind}
+		lines := ev.Lines
+		if len(lines) > maxReversionEvidenceLines {
+			bounded.elidedLines = len(lines) - maxReversionEvidenceLines
+			lines = lines[:maxReversionEvidenceLines]
+			refusal.truncated = true
+		}
+		for _, line := range lines {
+			clamped := clampEvidenceLine(line)
+			if clamped != strings.TrimSpace(line) {
+				refusal.truncated = true
+			}
+			bounded.Lines = append(bounded.Lines, clamped)
+		}
+		refusal.evidence = append(refusal.evidence, bounded)
+	}
+	return refusal
 }
 
 func (e *decisionReversionError) Error() string {
 	if e.reason != "" {
 		return "CI repair refused: the decision-reversion guard could not be evaluated: " + e.reason
 	}
-	shown, elided := boundEvidence(e.evidence)
 	var b strings.Builder
 	b.WriteString("CI repair refused: it undoes work this branch deliberately did")
-	for _, ev := range shown {
+	for _, ev := range e.evidence {
 		b.WriteString("\n- ")
 		b.WriteString(ev.Path)
 		b.WriteString(": ")
@@ -128,33 +167,14 @@ func (e *decisionReversionError) Error() string {
 			b.WriteString("\n    + ")
 			b.WriteString(line)
 		}
-		if omitted := ev.omittedLines(); omitted > 0 {
-			b.WriteString(fmt.Sprintf("\n    + and %d more %s", omitted, plural(omitted, "line")))
+		if ev.elidedLines > 0 {
+			b.WriteString(fmt.Sprintf("\n    + and %d more %s", ev.elidedLines, plural(ev.elidedLines, "line")))
 		}
 	}
-	if elided > 0 {
-		b.WriteString(fmt.Sprintf("\n- and %d more %s", elided, plural(elided, "file")))
+	if e.elidedFiles > 0 {
+		b.WriteString(fmt.Sprintf("\n- and %d more %s", e.elidedFiles, plural(e.elidedFiles, "file")))
 	}
 	return b.String()
-}
-
-// boundEvidence limits what a refusal renders. It is presentation only: the
-// refusal keeps the complete set, which is what authorizes compares, so a person
-// is always told when more was found than is listed.
-func boundEvidence(evidence []reversionEvidence) (shown []reversionEvidence, elided int) {
-	if len(evidence) <= maxReversionEvidenceFiles {
-		return evidence, 0
-	}
-	return evidence[:maxReversionEvidenceFiles], len(evidence) - maxReversionEvidenceFiles
-}
-
-// omittedLines reports how much of this file's finding the display cap hid. A
-// person authorises the whole finding, so a partial list has to say it is one.
-func (ev reversionEvidence) omittedLines() int {
-	if ev.Total <= len(ev.Lines) {
-		return 0
-	}
-	return ev.Total - len(ev.Lines)
 }
 
 func plural(n int, noun string) string {
@@ -164,17 +184,28 @@ func plural(n int, noun string) string {
 	return noun + "s"
 }
 
-// authorizes reports whether a person's fix response to the receiver also
-// covers a later refusal.
+// authorizes reports whether a person's fix response to the receiver also covers
+// a later refusal.
+//
+// The rule is deliberately one line of meaning: a refusal authorises exactly
+// what it showed, and nothing else. That is the only rule under which the gate's
+// promise - "you are deciding on this" - is literally true.
+//
+// It rejects a truncated refusal outright. A finding too large to display in
+// full cannot be authorised from a summary of it, and the alternative -
+// authorising against a complete set held behind the display - is how a person
+// comes to approve files and lines they were shown only as a count.
+//
+// It also rejects a NARROWER later refusal, which costs one extra gate on a rare
+// path. Every attempt here to be accommodating about "less than you approved"
+// grew a way for something new to ride along with it; showing the person what
+// actually happened is worth more than saving them a keystroke.
 //
 // A nil receiver authorises nothing: without a refusal a person actually read,
 // there is no decision to honour. An unevaluable guard is authorised only by the
-// SAME reason - the missing evidence a person chose to proceed without will keep
-// the guard unevaluable, so that case has to be able to move forward, but a
-// replacement turn that breaks the guard some other way is new information they
-// have not seen. Otherwise every piece of the later refusal's evidence must
-// already appear in what was shown, so a replacement turn that undoes less stays
-// authorised while one that undoes anything else parks with its own evidence.
+// identical reason - the missing evidence someone chose to proceed without keeps
+// the guard unevaluable, so that case has to be able to move forward, while a
+// replacement turn that breaks the guard some other way is new information.
 func (e *decisionReversionError) authorizes(later *decisionReversionError) bool {
 	if e == nil || later == nil {
 		return false
@@ -182,39 +213,14 @@ func (e *decisionReversionError) authorizes(later *decisionReversionError) bool 
 	if later.reason != "" || e.reason != "" {
 		return e.reason == later.reason
 	}
-	shown := make(map[string]reversionEvidence, len(e.evidence))
-	for _, ev := range e.evidence {
-		shown[ev.subject()] = ev
+	if e.truncated || later.truncated {
+		return false
 	}
-	for _, ev := range later.evidence {
-		authorized, ok := shown[ev.subject()]
-		if !ok || !authorized.covers(ev) {
-			return false
-		}
+	if len(e.evidence) != len(later.evidence) {
+		return false
 	}
-	return true
-}
-
-// subject is what a piece of evidence is about: this file, undone this way.
-func (ev reversionEvidence) subject() string {
-	return ev.Path + "\x00" + string(ev.Kind)
-}
-
-// covers reports whether this evidence, as authorised, accounts for a later
-// finding about the same subject. A restored file is all-or-nothing. For
-// reinstated text every line the later finding restores must be one that was
-// already authorised, so undoing less stays authorised and undoing anything new
-// - including a line the display cap hid - does not.
-func (ev reversionEvidence) covers(later reversionEvidence) bool {
-	if len(later.LineKeys) == 0 {
-		return true
-	}
-	authorized := make(map[string]struct{}, len(ev.LineKeys))
-	for _, key := range ev.LineKeys {
-		authorized[key] = struct{}{}
-	}
-	for _, key := range later.LineKeys {
-		if _, ok := authorized[key]; !ok {
+	for i := range e.evidence {
+		if !e.evidence[i].equal(later.evidence[i]) {
 			return false
 		}
 	}
@@ -315,8 +321,7 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 			return nil, err
 		}
 		if lines := reinstatedBaseLines(base, pre, post); len(lines) > 0 {
-			sample, total, keys := sampleAndKeys(lines)
-			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys})
+			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: lines})
 		}
 	}
 	// Deliberately NOT truncated to the display cap: the full set is the
@@ -441,30 +446,6 @@ func reinstatedBaseLines(base, pre, post string) []string {
 	return restored
 }
 
-// sampleAndKeys splits a complete finding into what a person is shown and what
-// identifies it. Every line gets a key, so a later refusal restoring a line the
-// sample could not hold is still a different refusal; the keys are hashes rather
-// than the lines themselves so a refusal costs a fixed amount per line instead
-// of holding a copy of the reverted content.
-func sampleAndKeys(lines []string) (sample []string, total int, keys []string) {
-	keys = make([]string, 0, len(lines))
-	for _, line := range lines {
-		sum := sha256.Sum256([]byte(line))
-		keys = append(keys, hex.EncodeToString(sum[:]))
-	}
-
-	total = len(lines)
-	sample = lines
-	if len(sample) > maxReversionEvidenceLines {
-		sample = sample[:maxReversionEvidenceLines]
-	}
-	clamped := make([]string, len(sample))
-	for i, line := range sample {
-		clamped[i] = clampEvidenceLine(line)
-	}
-	return clamped, total, keys
-}
-
 func lineCounts(content string) map[string]int {
 	if content == "" {
 		return nil
@@ -586,9 +567,9 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 			"A red check can mean a decision is outstanding rather than that something is broken, and undoing the decision is invisible in the branch's own diff, "+
 			"so this is refused rather than committed. The proposed changes are still in the run worktree at %s, uncommitted and unpushed. "+
 			"Approve or skip to leave the branch as it is, or resolve the check outside the pipeline. "+
-			"If undoing that work really is what you want, a fix response authorises exactly what is listed above: it runs another repair round, "+
-			"and anything that round would undo beyond this list parks again with its own evidence.",
-		issueDesc, reversionDetail(reversion), sctx.WorkDir)
+			"If undoing that work really is what you want, a fix response authorises exactly what is listed above and nothing else: it runs another repair round, "+
+			"and a round that would undo anything different parks again with its own evidence.%s",
+		issueDesc, reversionDetail(reversion), sctx.WorkDir, truncatedAuthorizationNote(reversion))
 
 	findings := Findings{
 		Summary: "CI auto-fix round would undo the branch's own work",
@@ -605,25 +586,35 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 	}
 }
 
+// truncatedAuthorizationNote says so when a finding was too large to list in
+// full. Such a refusal cannot be authorised at the gate, because a fix response
+// would otherwise approve the part it never showed.
+func truncatedAuthorizationNote(reversion *decisionReversionError) string {
+	if !reversion.truncated {
+		return ""
+	}
+	return " This finding is too large to list in full, so it cannot be authorised here at all: a fix response would approve the part above that is only summarised. " +
+		"Narrow the repair, or resolve the check outside the pipeline."
+}
+
 func reversionDetail(reversion *decisionReversionError) string {
 	if reversion.reason != "" {
 		return "The guard that proves this could not be evaluated (" + reversion.reason + "), so the repair fails closed."
 	}
-	shown, elided := boundEvidence(reversion.evidence)
 	var parts []string
-	for _, ev := range shown {
+	for _, ev := range reversion.evidence {
 		part := ev.Path + " would be " + string(ev.Kind)
 		if len(ev.Lines) > 0 {
 			part += " (for example: " + strings.Join(ev.Lines, " / ")
-			if omitted := ev.omittedLines(); omitted > 0 {
-				part += fmt.Sprintf(", and %d more %s", omitted, plural(omitted, "line"))
+			if ev.elidedLines > 0 {
+				part += fmt.Sprintf(", and %d more %s", ev.elidedLines, plural(ev.elidedLines, "line"))
 			}
 			part += ")"
 		}
 		parts = append(parts, part)
 	}
-	if elided > 0 {
-		parts = append(parts, fmt.Sprintf("and %d more %s", elided, plural(elided, "file")))
+	if reversion.elidedFiles > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more %s", reversion.elidedFiles, plural(reversion.elidedFiles, "file")))
 	}
 	return "Evidence: " + strings.Join(parts, "; ") + "."
 }

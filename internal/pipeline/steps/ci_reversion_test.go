@@ -383,10 +383,13 @@ func TestCIRepair_FixResponseDoesNotAuthoriseADifferentReversion(t *testing.T) {
 	}
 }
 
-// TestCIRepair_AuthorisedFixStillCommitsALesserReversion keeps the escape hatch
-// usable: a replacement turn that undoes less than the person authorised is
-// within that authorisation and must not park again.
-func TestCIRepair_AuthorisedFixStillCommitsALesserReversion(t *testing.T) {
+// TestCIRepair_NarrowerReplacementRoundIsShownAgain records the deliberate cost
+// of the exact-match rule. A replacement round that undoes LESS than was
+// authorised still parks, because the person approved one specific repair and
+// this is a different one. It costs an extra gate on a rare path, and every
+// attempt to be accommodating here grew a way for something new to ride along
+// with the narrowing.
+func TestCIRepair_NarrowerReplacementRoundIsShownAgain(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := reviewedWorkflowPinRepo(t)
 	applyOccurrence3Repair(t, dir)
@@ -402,8 +405,17 @@ func TestCIRepair_AuthorisedFixStillCommitsALesserReversion(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "SKILL.md"), skillMD([]string{
 		"build", "deploy", "lint", "release", "test", "wiki-sync", "wiki-drift-monitor",
 	}))
+	_, err := step.commitRepair(sctx, "restore workflow pin")
+	var reversion *decisionReversionError
+	if !errors.As(err, &reversion) {
+		t.Fatalf("commitRepair error = %v, want the narrowed repair shown as its own refusal", err)
+	}
+	if strings.Contains(reversion.Error(), "SKILL.md") {
+		t.Errorf("the refusal should now cover only the store: %s", reversion.Error())
+	}
+	// Answering that gate commits it: the person is deciding on what they read.
 	if _, err := step.commitRepair(sctx, "restore workflow pin"); err != nil {
-		t.Fatalf("a lesser reversion within the authorisation was refused: %v", err)
+		t.Fatalf("the freshly authorised repair was refused: %v", err)
 	}
 }
 
@@ -603,15 +615,17 @@ func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, s
 // replacement agent turn produced.
 func TestDecisionReversionAuthorization(t *testing.T) {
 	t.Parallel()
+	refusal := func(evidence ...reversionEvidence) *decisionReversionError {
+		return newReversionRefusal(evidence)
+	}
 	reinstated := func(path string, lines ...string) reversionEvidence {
-		sample, total, keys := sampleAndKeys(lines)
-		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys}
+		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: lines}
 	}
 	store := reversionEvidence{Path: "store", Kind: reversionRestoredFile}
 	skill := reinstated("SKILL.md", "count: six")
 	skillOtherLine := reinstated("SKILL.md", "count: five")
-	// The display cap hides everything past the fifth line, so these two render
-	// identically. They must not be treated as the same finding.
+	// Past the display cap these two would render identically, and a refusal
+	// that cannot show everything authorises nothing at all.
 	skillManyLines := reinstated("SKILL.md", "a", "b", "c", "d", "e", "f")
 	skillSameSample := reinstated("SKILL.md", "a", "b", "c", "d", "e")
 
@@ -621,16 +635,17 @@ func TestDecisionReversionAuthorization(t *testing.T) {
 		later *decisionReversionError
 		want  bool
 	}{
-		{"nothing was shown", nil, &decisionReversionError{evidence: []reversionEvidence{store}}, false},
-		{"the same reversion", &decisionReversionError{evidence: []reversionEvidence{store, skill}}, &decisionReversionError{evidence: []reversionEvidence{store, skill}}, true},
-		{"a lesser reversion", &decisionReversionError{evidence: []reversionEvidence{store, skill}}, &decisionReversionError{evidence: []reversionEvidence{store}}, true},
-		{"an additional file", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{evidence: []reversionEvidence{store, skill}}, false},
-		{"the same file, different lines", &decisionReversionError{evidence: []reversionEvidence{skill}}, &decisionReversionError{evidence: []reversionEvidence{skillOtherLine}}, false},
-		{"more lines than the display cap shows", &decisionReversionError{evidence: []reversionEvidence{skillSameSample}}, &decisionReversionError{evidence: []reversionEvidence{skillManyLines}}, false},
+		{"nothing was shown", nil, refusal(store), false},
+		{"the same reversion", refusal(store, skill), refusal(store, skill), true},
+		{"a narrower reversion is shown again, not inherited", refusal(store, skill), refusal(store), false},
+		{"an additional file", refusal(store), refusal(store, skill), false},
+		{"the same file, different lines", refusal(skill), refusal(skillOtherLine), false},
+		{"a finding too large to display authorises nothing", refusal(skillSameSample), refusal(skillManyLines), false},
+		{"a truncated refusal cannot authorise itself", refusal(skillManyLines), refusal(skillManyLines), false},
 		{"the same unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "no base commit"}, true},
 		{"a different unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "read blob: exit status 128"}, false},
-		{"evidence does not authorise an unevaluable guard", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{reason: "no base commit"}, false},
-		{"an unevaluable guard does not authorise evidence", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{evidence: []reversionEvidence{store}}, false},
+		{"evidence does not authorise an unevaluable guard", refusal(store), &decisionReversionError{reason: "no base commit"}, false},
+		{"an unevaluable guard does not authorise evidence", &decisionReversionError{reason: "no base commit"}, refusal(store), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -642,10 +657,11 @@ func TestDecisionReversionAuthorization(t *testing.T) {
 }
 
 // TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap is the specific
-// trap: the refusal a person reads is capped, and if that capped artefact were
-// also the authorisation identity, a replacement round could keep the twenty
-// files shown and add a twenty-first that sorts after them, which would render
-// identically and commit a reversion nobody saw.
+// trap that shaped the current rule. The refusal a person reads is capped, so if
+// authorisation were checked against a fuller finding held behind it, a
+// replacement round could keep the twenty files shown and add a twenty-first
+// that sorts after them - rendering the same and committing a reversion nobody
+// saw. A refusal that could not show everything now authorises nothing.
 func TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap(t *testing.T) {
 	t.Parallel()
 	var shownEvidence []reversionEvidence
@@ -654,61 +670,67 @@ func TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap(t *testing.T)
 			Path: fmt.Sprintf("a-file-%02d.txt", i), Kind: reversionRestoredFile,
 		})
 	}
-	shown := &decisionReversionError{evidence: shownEvidence}
-	later := &decisionReversionError{evidence: append(append([]reversionEvidence{}, shownEvidence...),
-		reversionEvidence{Path: "z-added-after-the-cap.txt", Kind: reversionRestoredFile})}
+	shown := newReversionRefusal(shownEvidence)
+	later := newReversionRefusal(append(append([]reversionEvidence{}, shownEvidence...),
+		reversionEvidence{Path: "z-added-after-the-cap.txt", Kind: reversionRestoredFile}))
 
-	if shown.Error() != later.Error()[:len(shown.Error())] && !strings.Contains(later.Error(), "and 1 more file") {
-		t.Fatalf("the later refusal should render the cap notice: %s", later.Error())
+	if shown.truncated {
+		t.Fatal("a finding exactly at the cap is shown in full")
+	}
+	if !later.truncated {
+		t.Fatal("a finding past the cap must be marked truncated")
 	}
 	if shown.authorizes(later) {
 		t.Fatal("a file past the display cap was authorised by a refusal that never showed it")
 	}
 	if !shown.authorizes(shown) {
-		t.Fatal("a refusal must authorise itself")
+		t.Fatal("a fully displayed refusal must authorise itself")
 	}
 	if !strings.Contains(later.Error(), "and 1 more file") {
 		t.Fatalf("a person must be told what the cap left out: %s", later.Error())
 	}
 }
 
-// TestDecisionReversionRefusalDisclosesEverythingItAuthorises closes the gap
-// between what a refusal shows and what answering it authorises. The identity is
-// the complete finding, so a refusal that quietly lists five of twelve
-// reinstated lines would have a person authorise seven they never saw.
-func TestDecisionReversionRefusalDisclosesEverythingItAuthorises(t *testing.T) {
+// TestDecisionReversionRefusalDisclosesAndRefusesToAuthoriseWhatItHid closes the
+// gap between what a refusal shows and what answering it authorises. A finding
+// bigger than the display bounds is still reported - with the counts it left out
+// - but it authorises nothing, because a fix response would otherwise approve
+// the part the person only saw as a number.
+func TestDecisionReversionRefusalDisclosesAndRefusesToAuthoriseWhatItHid(t *testing.T) {
 	t.Parallel()
 	var lines []string
 	for i := 0; i < 12; i++ {
 		lines = append(lines, fmt.Sprintf("restored line %02d", i))
 	}
-	sample, total, keys := sampleAndKeys(lines)
-	refusal := &decisionReversionError{evidence: []reversionEvidence{{
-		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys,
-	}}}
+	big := newReversionRefusal([]reversionEvidence{{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: lines}})
 
-	report := refusal.Error()
-	if len(sample) != maxReversionEvidenceLines {
-		t.Fatalf("sample = %d lines, want the display cap %d", len(sample), maxReversionEvidenceLines)
-	}
+	report := big.Error()
 	if !strings.Contains(report, "and 7 more lines") {
-		t.Fatalf("refusal hides %d reinstated lines it would authorise: %s", total-len(sample), report)
+		t.Fatalf("refusal hides reinstated lines without saying so: %s", report)
 	}
-	detail := reversionDetail(refusal)
-	if !strings.Contains(detail, "and 7 more lines") {
-		t.Fatalf("the gate finding hides the same lines: %s", detail)
+	if !strings.Contains(reversionDetail(big), "and 7 more lines") {
+		t.Fatalf("the gate finding hides the same lines: %s", reversionDetail(big))
 	}
-	if strings.Contains(refusal.Error(), "and 1 more line\n") {
-		t.Fatal("singular/plural rendering is wrong for a multi-line remainder")
+	if !big.truncated {
+		t.Fatal("a finding larger than the display bounds must be marked truncated")
+	}
+	if big.authorizes(big) {
+		t.Fatal("a truncated refusal must authorise nothing, not even itself")
 	}
 
 	// One omitted line reads as a line, not lines.
-	sample1, total1, keys1 := sampleAndKeys(append(append([]string{}, lines[:maxReversionEvidenceLines]...), "one more"))
-	single := &decisionReversionError{evidence: []reversionEvidence{{
-		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample1, Total: total1, LineKeys: keys1,
-	}}}
+	single := newReversionRefusal([]reversionEvidence{{
+		Path: "SKILL.md", Kind: reversionReinstatedText,
+		Lines: append(append([]string{}, lines[:maxReversionEvidenceLines]...), "one more"),
+	}})
 	if !strings.Contains(single.Error(), "and 1 more line") {
 		t.Fatalf("single omitted line not disclosed: %s", single.Error())
+	}
+
+	// A finding that fits is shown in full and is authorisable.
+	small := newReversionRefusal([]reversionEvidence{{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: lines[:3]}})
+	if small.truncated || !small.authorizes(newReversionRefusal([]reversionEvidence{{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: lines[:3]}})) {
+		t.Fatal("a finding that fits must be authorisable")
 	}
 }
 
@@ -748,31 +770,5 @@ func TestCIRepair_AuthorisationIsSpentOnUse(t *testing.T) {
 	}
 	if !strings.Contains(reversion.Error(), "wiki-drift-monitor.yml") {
 		t.Errorf("refusal does not name the newly reverted file: %s", reversion.Error())
-	}
-}
-
-// TestDecisionReversionAuthorizationCoversFewerLinesInTheSameFile keeps the
-// escape hatch consistent between the file and line dimensions: undoing less
-// than was authorised is within the authorisation either way.
-func TestDecisionReversionAuthorizationCoversFewerLinesInTheSameFile(t *testing.T) {
-	t.Parallel()
-	build := func(lines ...string) *decisionReversionError {
-		sample, total, keys := sampleAndKeys(lines)
-		return &decisionReversionError{evidence: []reversionEvidence{{
-			Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, LineKeys: keys,
-		}}}
-	}
-	shown := build("alpha", "bravo", "charlie")
-	if !shown.authorizes(build("alpha")) {
-		t.Error("a replacement round reinstating fewer authorised lines must stay authorised")
-	}
-	if !shown.authorizes(build("alpha", "charlie")) {
-		t.Error("a subset of the authorised lines must stay authorised")
-	}
-	if shown.authorizes(build("alpha", "delta")) {
-		t.Error("a line that was never authorised must park")
-	}
-	if shown.authorizes(build("alpha", "bravo", "charlie", "delta")) {
-		t.Error("an additional line must park")
 	}
 }
