@@ -189,6 +189,11 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
+	if stepName != types.StepReview {
+		if err := assertRecordedFixDecisions(sctx); err != nil {
+			return err
+		}
+	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("check %s changes: %w", stepName, err)

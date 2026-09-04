@@ -889,6 +889,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
 		}
+		var conflict *DecisionConflictError
+		if errors.As(err, &conflict) {
+			findings, marshalErr := types.MarshalFindingsJSON(conflict.Findings)
+			outcome = &StepOutcome{NeedsApproval: true, Findings: findings}
+			err = marshalErr
+		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {

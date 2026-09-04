@@ -161,6 +161,10 @@ Previous review findings to address:
 		fixSummary = summary
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
+	decisionConstraints, err := recordedFixConstraints(sctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// The changed-file set is read once and viewed two ways on purpose: the
 	// ignore-filtered subset decides whether there is anything to review, while
@@ -178,7 +182,7 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
+	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 && decisionConstraints == "" {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -213,6 +217,9 @@ Previous review findings to address:
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	if decisionConstraints != "" {
+		historySection += "\n\nComplete same-run decision constraints (required for acceptance):\n" + recordedFixDecisionRule + "\n" + decisionConstraints
+	}
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed

@@ -255,6 +255,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			outcome, err = refusal, nil
 			return
 		}
+		var conflict *pipeline.DecisionConflictError
+		if errors.As(err, &conflict) {
+			return
+		}
 		findings, _ := types.ParseFindingsJSON(refusalFindings)
 		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
 		if err != nil {
@@ -670,6 +674,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 						return outcome, nil
 					}
+					if errors.Is(err, errDecisionCheck) {
+						return nil, err
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
@@ -718,6 +725,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 						return outcome, nil
+					}
+					if errors.Is(err, errDecisionCheck) {
+						return nil, err
 					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil

@@ -310,6 +310,9 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
+	if err := assertRecordedFixDecisions(sctx); err != nil {
+		return ciRepairResult{}, err
+	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("check CI changes: %w", err)

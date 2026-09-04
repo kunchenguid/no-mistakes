@@ -30,9 +30,13 @@ Review flags every newly added violation and requires same-pattern tests encount
 
 When a human resolves a findings gate with Approve, Skip, or Abort without selecting a fix, no-mistakes records that the round's findings were declined. A gate with no findings records no decision. When the human selects only some findings to fix, the unselected complement is recorded as declined; findings merely left out by automatic filtering remain undecided.
 
-Review, Test, Document, Lint, and CI fix agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
+Review, Test, Document, Lint, Rebase, and CI repair agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later human decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
-This context is advisory and fails open. It tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but it does not block a step or commit and is not a reversion detector. Rebase fix prompts do not receive this decision history.
+Recorded choices to fix, including per-finding instructions, bind later fixes and Review's acceptance criteria. Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it. Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
+
+When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance before the shared Test/Document/Lint commit, a Rebase conflict repair, a CI repair, or Push's acceptance of leftover edits. Review uses its existing independent pass. Runs without a positive human selection, and unchanged trees, incur no additional agent call. A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision. An unreadable or oversized complete decision history, failed checker, or malformed checker output also stops the repair. Detection is model-based, not a deterministic semantic guarantee.
+
+Declines retain their existing advisory semantics: agents may re-raise a declined finding when current code introduces a materially different problem. Earlier-run branch history remains bounded advisory context; it does not activate the additional same-run check.
 
 ## Intent
 

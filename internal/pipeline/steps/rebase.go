@@ -405,6 +405,7 @@ Instructions:
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
 	prompt += userIntentPromptSection(sctx)
+	prompt += roundHistoryPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
@@ -425,7 +426,7 @@ Instructions:
 		return fmt.Errorf("agent did not complete the rebase")
 	}
 
-	return nil
+	return assertRecordedFixDecisions(sctx)
 }
 
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.
