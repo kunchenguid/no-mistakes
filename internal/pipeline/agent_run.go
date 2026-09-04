@@ -60,6 +60,9 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	timeout := AgentTimeout(nil)
 	if sctx != nil {
 		ag = sctx.Agent
+		if sessionRole == SessionRoleFixer && sctx.ReviewFixAgent != nil {
+			ag = sctx.ReviewFixAgent
+		}
 		timeout = AgentTimeout(sctx.Config)
 	}
 	activity := observeAgentActivity(&opts)
