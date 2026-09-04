@@ -574,6 +574,26 @@ Set `0` here to never spend someone else's CI minutes; this is the only place to
 
 The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) overrides this value and owns the classification, the trust boundary, and every case that skips the rerun.
 
+### ci.decision_checks
+
+Checks whose red state means a human decision is outstanding rather than that something is broken, and which the CI fix agent must therefore never be asked to repair.
+
+| | |
+|---|---|
+| Type | `list of string` (shell globs) |
+| Default | empty |
+
+```yaml
+ci:
+  decision_checks:
+    - "workflow pin*"
+```
+
+Setting this here covers every repository this daemon runs, which is useful for a naming convention you apply across your own projects.
+A repository that sets `ci.decision_checks` on its own trusted default branch replaces this value for that repository.
+
+The per-repo [`ci.decision_checks`](/no-mistakes/reference/repo-config/#cidecision_checks) owns the semantics, the matching rules, the gate behaviour, and the trust boundary.
+
 ### commit.fix_message
 
 Template for the subject of commits created by the Review, Test, Document, Lint, and CI repair paths.

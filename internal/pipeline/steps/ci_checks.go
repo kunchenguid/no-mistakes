@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -178,6 +179,65 @@ func decodeLastFixedChecks(raw string) (lastFixedIssues, bool) {
 		return lastFixedIssues{}, false
 	}
 	return issues, true
+}
+
+// ciConfig reads the resolved CI-step settings, tolerating a step context that
+// carries no config at all (some unit paths build one directly).
+func ciConfig(sctx *pipeline.StepContext) config.CI {
+	if sctx == nil || sctx.Config == nil {
+		return config.CI{}
+	}
+	return sctx.Config.CI
+}
+
+// splitDecisionChecks separates the failing checks a maintainer has declared to
+// mean "a human decision is outstanding" from the ones the fix agent may repair.
+//
+// The declaration lives in ci.decision_checks on the repository's own trusted
+// default branch, so a pushed branch cannot take its guard out of the set. The
+// separation is what makes the boundary structural rather than a matter of how
+// the failing check words its message: a decision check is never offered as a
+// fix target and its logs never reach the fix prompt, so the agent never gets
+// the chance to reason about the remedy the failure advertises.
+func splitDecisionChecks(names []string, cfg config.CI) (decision, repairable []string) {
+	for _, name := range names {
+		if cfg.MatchesDecisionCheck(name) {
+			decision = append(decision, name)
+			continue
+		}
+		repairable = append(repairable, name)
+	}
+	return decision, repairable
+}
+
+// ciDecisionCheckOutcome parks for a person because a declared decision check is
+// red.
+//
+// This gate deliberately offers no fix round, and re-parks even when the user
+// answers with a fix selection. It is the maintainer's standing declaration,
+// recorded on the trusted default branch, that the red state of this check
+// means a person must act - so a run-time answer, which any agent driving the
+// pipeline can give, must not dissolve it. The ways forward are to resolve the
+// check outside the pipeline, or to approve or skip and leave it red and
+// visible.
+func ciDecisionCheckOutcome(decisionChecks []string) *pipeline.StepOutcome {
+	findings := Findings{Summary: "CI checks that require a human decision are failing"}
+	for _, name := range decisionChecks {
+		findings.Items = append(findings.Items, Finding{
+			Severity: "blocking",
+			Description: fmt.Sprintf(
+				"CI check failing: %s. This repository declares it in ci.decision_checks, which means its red state is a statement that a human decision is outstanding, not that something is broken. "+
+					"No fix round is run for it and none can be requested: a repair would be the pipeline making the decision instead of surfacing it. "+
+					"Resolve it outside the pipeline, or approve or skip to leave the run as it is with the check still red.",
+				name),
+			Action: types.ActionAskUser,
+		})
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
 }
 
 func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {

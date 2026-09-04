@@ -187,10 +187,18 @@ Previous review findings to address:
 	// findings; later steps own those. External / pre-existing lifecycle
 	// requirements stay in scope.
 	//
-	// TODO(intent-conformance-C, HELD): add the deterministic, zero-LLM
-	// net-deleted-author-lines git-diff backstop for the removal-of-required
-	// class - a fixer round that net-deletes author-added lines parks
-	// regardless of intent source. Held pending a scope decision.
+	// The deterministic, zero-LLM git-diff backstop for the removal-of-required
+	// class now exists as ci_reversion.go, wired into the CI repair path only -
+	// that is where all three recorded occurrences of a fix round undoing a
+	// human decision happened, and it is the round no later gate can see,
+	// because it commits after review has already run.
+	//
+	// STILL HELD for the review, lint, and document fix rounds. The hole is the
+	// same in all of them (undoing the branch's own work is invisible in
+	// base..head, so the re-review has nothing to look at), but review's fix
+	// rounds are already certified by a session-free rereview under the
+	// author-grade adversarial standard, so extending it there is a scope
+	// decision about false-positive cost rather than an uncovered class.
 	historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted

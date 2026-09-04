@@ -70,12 +70,14 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
 		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		- Verify the fix by running the most relevant commands locally before finishing.
+		- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
 	case mergeConflict:
 		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
-		- Verify the rebase completes cleanly before finishing.`
+		- Verify the rebase completes cleanly before finishing.
+		- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = `- You MUST produce file changes that fix the failing checks. Do not conclude that nothing needs to change.
@@ -83,7 +85,8 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		- If a test is flaky, make it deterministic.
 		- Make the smallest correct root-cause fix.
 		- Do not refactor beyond what is needed for that root-cause fix.
-		- Verify the fix by running the most relevant commands locally before finishing.`
+		- Verify the fix by running the most relevant commands locally before finishing.
+		- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
 	}
 
 	prompt := fmt.Sprintf(
@@ -120,6 +123,14 @@ CI logs:
 	if reviewCommentsSection != "" {
 		prompt += reviewCommentsSection
 	}
+	// Recorded decisions reach this round. Occurrence 1 of
+	// fm-nomistakes-fixer-reverses-decisions was a CI repair that reinstated a
+	// closure an ask-user decision had just removed, in the same run: the
+	// decision was recorded through the supported gate flow and this prompt was
+	// the one step prompt that never carried it. That is advisory - the
+	// enforcement is the decision-reversion guard in commitRepair - but an agent
+	// that can see the decision has no reason to reverse it by accident.
+	prompt += roundHistoryPromptSection(sctx)
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
@@ -213,6 +224,31 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool, error) {
+	// The decision-reversion guard runs first, before anything is staged and
+	// before either commit path is chosen, so a refusal leaves the branch head,
+	// the index, and the recorded run state exactly as they were and keeps the
+	// proposed changes in the worktree for a person to look at. Running it here
+	// rather than beside the commit is what covers a fix agent that committed
+	// its own work: both paths below are measured from the same pre-repair head.
+	//
+	// It is skipped when sctx.Fixing is set. That flag means a person answered
+	// this step's gate with a fix selection, which is the deliberate, recorded
+	// decision the guard exists to ask for; re-parking it would leave no way
+	// forward at all. This is the opposite of the ci.decision_checks policy in
+	// ci.go, which a gate answer must NOT dissolve: that one is the maintainer's
+	// standing declaration about which checks a fix round may touch, made on the
+	// trusted default branch, while this one is a question about one concrete
+	// repair the answerer can see in full.
+	if !sctx.Fixing {
+		evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+		if detectErr != nil {
+			return false, &decisionReversionError{reason: detectErr.Error()}
+		}
+		if len(evidence) > 0 {
+			return false, &decisionReversionError{evidence: evidence}
+		}
+	}
+
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
