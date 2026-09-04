@@ -42,6 +42,17 @@ func newRerunCmd() *cobra.Command {
 				if branch == "HEAD" {
 					return fmt.Errorf("not on a branch")
 				}
+				var callerHead string
+				dirty, err := git.HasUncommittedChanges(context.Background(), ".")
+				if err != nil {
+					return fmt.Errorf("check working tree: %w", err)
+				}
+				if !dirty {
+					callerHead, err = git.HeadSHA(context.Background(), ".")
+					if err != nil {
+						return fmt.Errorf("get caller head: %w", err)
+					}
+				}
 
 				if err := daemon.EnsureDaemon(p); err != nil {
 					return fmt.Errorf("start daemon: %w", err)
@@ -54,7 +65,7 @@ func newRerunCmd() *cobra.Command {
 				defer client.Close()
 
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, CallerHeadSHA: callerHead}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 

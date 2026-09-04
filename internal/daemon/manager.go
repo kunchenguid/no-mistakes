@@ -720,7 +720,9 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // runs without one infer intent afresh. The selected run's PR URL is inherited
 // when that PR is not already merged or closed, so a later --base-branch
 // retarget can prove it is moving the same still-open review object.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch string) (string, error) {
+// A supplied clean caller head must match the selected head before any run
+// starts or is superseded. It never changes head selection.
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, prBaseBranch, callerHeadSHA string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -760,6 +762,9 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	headSHA, err := resolveRerunHead(ctx, gateDir, branch, latestForBranch)
 	if err != nil {
 		return "", err
+	}
+	if callerHeadSHA != "" && callerHeadSHA != headSHA {
+		return "", fmt.Errorf("refusing rerun: selected head %s differs from clean local head %s; inspect `no-mistakes axi status` and reconcile custody before using `no-mistakes axi run` to submit the local head", headSHA, callerHeadSHA)
 	}
 	selectedRun := latestForBranch
 	if previousRunID != "" {

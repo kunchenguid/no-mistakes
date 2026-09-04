@@ -132,6 +132,9 @@ type RerunParams struct {
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
 	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	// CallerHeadSHA is a clean caller worktree's HEAD, when known. It guards
+	// the daemon's selected head; it never supplies a replacement run head.
+	CallerHeadSHA string `json:"caller_head_sha,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

@@ -348,14 +348,19 @@ is stale. The command refuses instead of falling back to the gate branch when
 the run-specific recovery ref is conflicting, invalid, or the recorded head is
 unavailable. Use `no-mistakes axi status` and reconcile custody first in that
 case.
+When invoked from a clean worktree, `rerun` also refuses if that worktree's HEAD
+differs from the selected gate or preserved head. The error names both heads;
+inspect `no-mistakes axi status` and follow its custody guidance, then use
+`no-mistakes axi run` to submit local commits. Rerun never replaces its selected
+head with the caller's head. Dirty worktrees retain the existing selection behavior.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
 explicit intent in either case. Inherited intent keeps distinct rerun provenance;
 an override is recorded as newly supplied explicit intent, while fresh inference
 records the transcript source. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
-failed or cancelled outcome, or after you have committed a separate fix outside
-an active run; do not use it to bypass a gate.
+failed or cancelled outcome; use `axi run` for separate local fixes, and do not
+use rerun to bypass a gate.
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
