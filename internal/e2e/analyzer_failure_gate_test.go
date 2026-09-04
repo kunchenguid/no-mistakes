@@ -15,11 +15,23 @@ import (
 
 // TestAnalyzerEvidenceFailuresFailPipelineJourney exercises the real gate
 // transport, native-agent adapter, and persisted run state. A native response
-// that cannot certify either Review or Test must terminate the run instead of
+// that cannot certify a pipeline phase must terminate the run instead of
 // producing an approval that AXI --yes could accept.
 func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "analyzer-failure-gate.yaml")
 	content := `actions:
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: analyzer-document-malformed-output"
+    text: "documentation unavailable"
+    structured_raw: '{"summary":123}'
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: analyzer-document-malformed-output"
+    text: "tests passed"
+    structured:
+      findings: []
+      summary: "targeted test passed"
+      tested:
+        - "fakeagent: targeted test"
+      testing_summary: "targeted validation passed"
+      artifacts: []
   - match: "Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.\n\nContext:\n- branch: analyzer-lint-malformed-output"
     text: "lint unavailable"
     structured_raw: '{"summary":123}'
@@ -65,6 +77,12 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
 		stepError  string
 		changePath string
 	}{
+		{
+			branch:     "analyzer-document-malformed-output",
+			step:       types.StepDocument,
+			stepError:  "validate document analyzer findings",
+			changePath: "document.txt",
+		},
 		{
 			branch:     "analyzer-review-null-findings",
 			step:       types.StepReview,

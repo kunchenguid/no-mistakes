@@ -212,6 +212,21 @@ func TestLintStep_ConsumesCombinedResultWithoutAgentPass(t *testing.T) {
 	}
 }
 
+func TestLintStep_MalformedCombinedResultFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newHousekeepingContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{FindingsJSON: `{not json`})
+
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "validate combined housekeeping lint result") {
+		t.Fatalf("Execute() error = %v, want malformed combined housekeeping result", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+}
+
 // TestLintStep_RunsOwnPassWithoutCombinedResult proves the lint duty is
 // never silently dropped: with no stashed result (document step skipped or
 // failed to produce trustworthy output) the lint step runs its own pass.
