@@ -45,10 +45,13 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// evidence is deliberately not among them: it is collected outside the
 	// worktree and published to the orphan evidence branch (internal/evidence),
 	// so no artifact ever enters the pushed branch or the default branch's history.
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("check agent changes: %w", err)
+	}
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		if err := stagePipelineChanges(sctx); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
 		if err := commitPipelineCorrection(ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {

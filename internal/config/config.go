@@ -236,6 +236,10 @@ type RepoConfig struct {
 	Agents         []types.AgentName `yaml:"-"`
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	// ProtectedPaths prevents automatic staging of dirty matching paths. It is
+	// trusted-only, regardless of allow_repo_commands, so a pushed branch cannot
+	// remove the maintainer's protection from its own fixes.
+	ProtectedPaths []string `yaml:"protected_paths"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
 	// fields (commands.{test,lint,format} and agent) from a contributor's
 	// pushed branch instead of the trusted default-branch copy. It is read
@@ -433,6 +437,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Agent                  agentList    `yaml:"agent"`
 		Commands               Commands     `yaml:"commands"`
 		IgnorePatterns         []string     `yaml:"ignore_patterns"`
+		ProtectedPaths         []string     `yaml:"protected_paths"`
 		AllowRepoCommands      bool         `yaml:"allow_repo_commands"`
 		AutoFix                AutoFixRaw   `yaml:"auto_fix"`
 		CI                     CIRaw        `yaml:"ci"`
@@ -454,6 +459,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Agents = copyAgents(raw.Agent)
 	c.Commands = raw.Commands
 	c.IgnorePatterns = raw.IgnorePatterns
+	c.ProtectedPaths = raw.ProtectedPaths
 	c.AllowRepoCommands = raw.AllowRepoCommands
 	c.AutoFix = raw.AutoFix
 	c.CI = raw.CI
@@ -572,6 +578,7 @@ type Config struct {
 	Eval                  Eval
 	Commands              Commands
 	IgnorePatterns        []string
+	ProtectedPaths        []string
 	AutoFix               AutoFix
 	CI                    CI
 	Commit                Commit
@@ -2178,6 +2185,16 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateReviewRaw(cfg.Review); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	for i, pattern := range cfg.ProtectedPaths {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			return nil, fmt.Errorf("protected_paths[%d] must not be empty", i)
+		}
+		if err := validatePathInstructionGlob(pattern); err != nil {
+			return nil, fmt.Errorf("protected_paths[%d] %q is not a valid glob: %w", i, pattern, err)
+		}
+		cfg.ProtectedPaths[i] = pattern
+	}
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
@@ -2309,6 +2326,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	effective := *pushed
 	if trusted != nil {
 		effective.Document = trusted.Document
+		effective.ProtectedPaths = append([]string(nil), trusted.ProtectedPaths...)
 		// review.path_instructions steers the gate agent that reviews the pushed
 		// branch, so it is trusted-only exactly like document.instructions and
 		// regardless of allow_repo_commands: a contributor must not be able to
@@ -2352,6 +2370,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		}
 	} else {
 		effective.Document = DocumentRaw{}
+		effective.ProtectedPaths = nil
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
@@ -2751,6 +2770,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Eval:           global.Eval,
 		Commands:       repo.Commands,
 		IgnorePatterns: repo.IgnorePatterns,
+		ProtectedPaths: repo.ProtectedPaths,
 		AutoFix:        af,
 		CI:             ci,
 		Commit:         commit,

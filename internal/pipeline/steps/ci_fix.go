@@ -305,7 +305,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("render CI repair commit message: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+	if err := stagePipelineChanges(sctx); err != nil {
 		return ciRepairResult{}, fmt.Errorf("stage CI changes: %w", err)
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {

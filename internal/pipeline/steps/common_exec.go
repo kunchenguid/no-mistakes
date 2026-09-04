@@ -188,6 +188,12 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 // non-interactive git overrides. It is like git.Run but respects sctx.Env so
 // step-scoped PATH and credential environment stay in effect.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
+	out, err := stepGitRunRaw(sctx, args...)
+	return strings.TrimSpace(out), err
+}
+
+// stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
+func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
 	out, err := cmd.Output()
@@ -198,7 +204,7 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 		}
 		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return string(out), nil
 }
 
 func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
