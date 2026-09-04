@@ -1192,8 +1192,10 @@ func TestRecoverKeepLocalRefusesDanglingIndependentGateHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	inspected := f.service.InspectCached(f.ctx)
+	assertManualReconciliationOffer(t, inspected)
 	state := f.service.Recover(f.ctx, true)
-	if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
+	if state.Recovered || state.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("recovery with dangling independent gate head = %#v", state)
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != dangling {
@@ -1201,6 +1203,26 @@ func TestRecoverKeepLocalRefusesDanglingIndependentGateHead(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("dangling independent gate head stamped custody")
+	}
+}
+
+func TestInspectDoesNotAdvertiseRecoveryWhenIndependentGateAnchorConflicts(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.gate, "update-ref", custody.RecoveryGateRef(f.run.ID), f.submitted)
+
+	state := f.service.InspectCached(f.ctx)
+	assertManualReconciliationOffer(t, state)
+	kept := f.service.Recover(f.ctx, true)
+	if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
+		t.Fatalf("keep-local with conflicting independent gate anchor = %#v", kept)
+	}
+	if f.custodyReturned() {
+		t.Fatal("conflicting independent gate anchor stamped custody")
 	}
 }
 

@@ -768,11 +768,12 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head is unavailable and cannot be preserved; no files or branch refs were changed")
 			}
 			gateAnchor := custody.RecoveryGateRef(run.ID)
-			existing, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
-			if err != nil || (exists && existing != gateHead) {
+			compatible, err := recoveryGateAnchorCompatible(ctx, s.GateDir, run.ID, gateHead)
+			if err != nil || !compatible {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the independently moved gate head conflicts with the existing run recovery anchor; inspect both refs before returning custody; no files or branch refs were changed")
 			}
-			if !exists {
+			_, exists, err := git.ExactRefTarget(ctx, s.GateDir, gateAnchor)
+			if err == nil && !exists {
 				err = custody.PreserveRecoveryAnchor(ctx, s.GateDir, gateAnchor, gateHead)
 			}
 			if err != nil {
@@ -1590,7 +1591,8 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 	if _, err := os.Stat(gateDir); err != nil {
 		return nil, nil, false, false
 	}
-	if _, _, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch); err != nil {
+	gateHead, gateHeadExists, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch)
+	if err != nil {
 		return nil, nil, false, false
 	}
 	var runIDs []string
@@ -1627,6 +1629,22 @@ func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, ru
 		allEligible = allEligible && eligible
 		runIDs = append(runIDs, candidate.ID)
 		candidateHeads = append(candidateHeads, candidate.HeadSHA)
+	}
+	if gateHeadExists && gateHead != state.Local.Head {
+		candidateGateHead := false
+		for _, candidateHead := range candidateHeads {
+			if gateHead == candidateHead {
+				candidateGateHead = true
+				break
+			}
+		}
+		if !candidateGateHead {
+			allEligible = allEligible && objectExists(ctx, gateDir, gateHead)
+			if allEligible {
+				compatible, err := recoveryGateAnchorCompatible(ctx, gateDir, run.ID, gateHead)
+				allEligible = err == nil && compatible
+			}
+		}
 	}
 	return runIDs, candidateHeads, selectedEligible, allEligible
 }
@@ -1693,19 +1711,26 @@ func localRecoveryEligible(ctx context.Context, wd string, state *State, run *db
 // preservation, but rejects every existing ref that is not exactly the
 // recorded commit, including symbolic and non-commit evidence.
 func recoveryAnchorCompatible(ctx context.Context, repoDir, runID, preserved string) (bool, error) {
-	anchorRef := custody.RecoveryRef(runID)
-	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", anchorRef); err == nil && symbolic != "" {
+	return exactCommitRefCompatible(ctx, repoDir, custody.RecoveryRef(runID), preserved)
+}
+
+func recoveryGateAnchorCompatible(ctx context.Context, repoDir, runID, gateHead string) (bool, error) {
+	return exactCommitRefCompatible(ctx, repoDir, custody.RecoveryGateRef(runID), gateHead)
+}
+
+func exactCommitRefCompatible(ctx context.Context, repoDir, ref, expected string) (bool, error) {
+	if symbolic, err := git.Run(ctx, repoDir, "symbolic-ref", "-q", ref); err == nil && symbolic != "" {
 		return false, nil
 	}
-	_, exists, err := git.ExactRefTarget(ctx, repoDir, anchorRef)
+	_, exists, err := git.ExactRefTarget(ctx, repoDir, ref)
 	if err != nil {
 		return false, err
 	}
 	if !exists {
 		return true, nil
 	}
-	anchored, err := git.Run(ctx, repoDir, "rev-parse", anchorRef+"^{commit}")
-	return err == nil && anchored == preserved, nil
+	anchored, err := git.Run(ctx, repoDir, "rev-parse", ref+"^{commit}")
+	return err == nil && anchored == expected, nil
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
