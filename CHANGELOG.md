@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.1](https://github.com/kunchenguid/no-mistakes/compare/v1.65.0...v1.65.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **branchsync:** recover custody when preserved heads are missing ([#958](https://github.com/kunchenguid/no-mistakes/issues/958)) ([100c1f5](https://github.com/kunchenguid/no-mistakes/commit/100c1f55cffa8ded4d6f1b9a7a8a4f4cf4098ea4))
+
 ## [1.65.0](https://github.com/kunchenguid/no-mistakes/compare/v1.64.0...v1.65.0) (2026-09-03)
 
 
