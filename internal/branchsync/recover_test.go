@@ -971,6 +971,71 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestRecoverKeepLocalReleasesMixedEvidenceStack(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	time.Sleep(1100 * time.Millisecond)
+	newest, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newest.ID, types.RunFailed, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != newest.ID || state.NextAction == nil || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
+		t.Fatalf("mixed stack state = %#v", state)
+	}
+	kept := f.service.Recover(f.ctx, true)
+	if !kept.Recovered {
+		t.Fatalf("mixed stack recovery = %#v", kept)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("older preserved anchor = %s, want %s", got, f.preserved)
+	}
+	for _, id := range []string{f.run.ID, newest.ID} {
+		run, err := f.db.GetRun(id)
+		if err != nil || run == nil || run.CustodyReturnedAt == nil {
+			t.Fatalf("run %s custody = %#v, %v", id, run, err)
+		}
+	}
+}
+
+func TestRecoverKeepLocalPreservesHeadRestoredAfterPreflight(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	tree := mustRun(t, f.gate, "rev-parse", f.preserved+"^{tree}")
+	restoredHead := mustRun(t, f.gate, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit-tree", tree, "-p", f.preserved, "-m", "restored head")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", restoredHead)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, restoredHead); err != nil {
+		t.Fatal(err)
+	}
+	objectPath := filepath.Join(f.gate, "objects", restoredHead[:2], restoredHead[2:])
+	objectData, err := os.ReadFile(objectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(objectPath); err != nil {
+		t.Fatal(err)
+	}
+	f.service.beforeGateReset = func() {
+		if err := os.WriteFile(objectPath, objectData, 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered {
+		t.Fatalf("recovery with restored head = %#v", state)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()+"^{commit}"); got != restoredHead {
+		t.Fatalf("restored recovery anchor = %s, want %s", got, restoredHead)
+	}
+}
+
 func TestRecoverKeepLocalIgnoresSupersededUnpublishedRuns(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	binding := db.PushBinding{HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover"}
