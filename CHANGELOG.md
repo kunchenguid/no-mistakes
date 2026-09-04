@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.3](https://github.com/kunchenguid/no-mistakes/compare/v1.65.2...v1.65.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **eval:** preserve agent authentication during replay ([#968](https://github.com/kunchenguid/no-mistakes/issues/968)) ([b99bce8](https://github.com/kunchenguid/no-mistakes/commit/b99bce828e133e2a7682b2bc76a24f3748ff3852))
+
 ## [1.65.2](https://github.com/kunchenguid/no-mistakes/compare/v1.65.1...v1.65.2) (2026-09-04)
 
 
