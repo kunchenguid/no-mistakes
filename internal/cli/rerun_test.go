@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
@@ -37,7 +38,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			cliGit(t, dir, "init", "-b", "main")
 			cliGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "initial")
 			chdir(t, dir)
-			root, err := os.Getwd()
+			root, err := git.FindGitRoot(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
