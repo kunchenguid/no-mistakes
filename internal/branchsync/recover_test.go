@@ -872,6 +872,29 @@ func TestInspectOffersKeepLocalWhenRecordedHeadIsMissing(t *testing.T) {
 	}
 }
 
+func TestInspectDoesNotOfferKeepLocalForUnverifiedMissingHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	missing := strings.Repeat("f", 40)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, missing); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	assertManualReconciliationOffer(t, state)
+	kept := f.service.Recover(f.ctx, true)
+	if kept.Recovered || kept.Safety != "blocked_recover_unverified_head" {
+		t.Fatalf("keep-local with unverified missing head = %#v", kept)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unverified missing head stamped custody")
+	}
+}
+
 func TestRecoverKeepLocalReturnsCustodyWhenRecordedHeadIsMissing(t *testing.T) {
 	t.Parallel()
 
@@ -942,7 +965,9 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
 	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.submitted)
 
 	state := f.service.InspectCached(f.ctx)
@@ -974,15 +999,24 @@ func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorIsNotACommit(t *testin
 	}
 }
 
-func TestInspectDoesNotAdvertiseRecoveryFromLooseObjectWithoutUsableGate(t *testing.T) {
+func TestMissingHeadRecoveryRequiresAccessibleGate(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
-	mustRun(t, f.local, "fetch", f.gate, f.preserved)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+		t.Fatal(err)
+	}
 	f.service.GateDir = filepath.Join(t.TempDir(), "missing-gate.git")
 
 	state := f.service.InspectCached(f.ctx)
 	assertManualReconciliationOffer(t, state)
+	kept := f.service.Recover(f.ctx, true)
+	if kept.Recovered || kept.Safety != "blocked_recover_gate_unavailable" {
+		t.Fatalf("keep-local with unavailable gate = %#v", kept)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unavailable gate stamped custody")
+	}
 }
 
 func TestRecoverDoesNotOverwriteConflictingCheckoutAnchor(t *testing.T) {
@@ -1823,6 +1857,14 @@ func TestRecoverIncompleteAdoptionDoesNotStampStaleWorktree(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("incomplete adoption stamped custody")
+	}
+
+	kept := f.service.Recover(f.ctx, true)
+	if kept.Recovered || kept.Changed || kept.Safety != "blocked_recover_incomplete_adoption" {
+		t.Fatalf("keep-local bypassed incomplete adoption: %#v", kept)
+	}
+	if f.custodyReturned() {
+		t.Fatal("keep-local stamped incomplete adoption custody")
 	}
 }
 
