@@ -381,6 +381,21 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 }
 
+func TestRunPreflightCommandFailsWithCommandOutput(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Config:  &config.Config{Commands: config.Commands{Preflight: "printf missing-tool >&2; exit 7"}},
+	}
+	err := RunPreflightCommand(sctx)
+	if err == nil {
+		t.Fatal("expected failed preflight command")
+	}
+	if !strings.Contains(err.Error(), "exit code 7") || !strings.Contains(err.Error(), "missing-tool") {
+		t.Fatalf("preflight error = %q", err)
+	}
+}
+
 func TestStepExecutableAvailable_ResolvesRelativePathFromWorkDir(t *testing.T) {
 	t.Parallel()
 

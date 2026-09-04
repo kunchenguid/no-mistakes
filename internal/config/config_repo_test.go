@@ -38,6 +38,7 @@ func TestLoadRepo_FromFile(t *testing.T) {
 	path := filepath.Join(dir, ".no-mistakes.yaml")
 	data := `agent: codex
 commands:
+  preflight: "./scripts/check-tools.sh"
   lint: "golangci-lint run ./..."
   test: "go test -race ./..."
   format: "gofmt -w ."
@@ -55,6 +56,9 @@ ignore_patterns:
 	}
 	if cfg.Agent != types.AgentCodex {
 		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentCodex)
+	}
+	if cfg.Commands.Preflight != "./scripts/check-tools.sh" {
+		t.Errorf("preflight = %q", cfg.Commands.Preflight)
 	}
 	if cfg.Commands.Lint != "golangci-lint run ./..." {
 		t.Errorf("lint = %q", cfg.Commands.Lint)

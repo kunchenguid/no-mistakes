@@ -297,6 +297,30 @@ func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int
 	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
 }
 
+// RunPreflightCommand executes the repository-owned prerequisite check during
+// run setup, before agent creation or test execution.
+func RunPreflightCommand(sctx *pipeline.StepContext) error {
+	cmdStr := strings.TrimSpace(sctx.Config.Commands.Preflight)
+	if cmdStr == "" {
+		return nil
+	}
+	output, exitCode, err := runStepShellCommand(sctx, cmdStr)
+	if err != nil {
+		return fmt.Errorf("run preflight command: %w", err)
+	}
+	if exitCode == 0 {
+		return nil
+	}
+	detail := strings.TrimSpace(safeurl.RedactText(output))
+	if len(detail) > 4096 {
+		detail = detail[len(detail)-4096:]
+	}
+	if detail == "" {
+		return fmt.Errorf("preflight command failed with exit code %d", exitCode)
+	}
+	return fmt.Errorf("preflight command failed with exit code %d: %s", exitCode, detail)
+}
+
 // runStreamingStepShellCommand preserves the complete combined output while
 // forwarding it as it arrives so long-running commands keep the active-step
 // status and elapsed-time display current.

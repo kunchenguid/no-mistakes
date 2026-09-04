@@ -1113,6 +1113,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		Env:          forgeEnvironment(forgeCtx).Apply(nil),
 	}
 	execSteps := m.steps()
+	if err := steps.RunPreflightCommand(preflightContext); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("command_preflight")
+		return "", err
+	}
 	providerNeeded := (pipelineContainsStep(execSteps, types.StepPR) && !containsStep(skipSteps, types.StepPR)) ||
 		(pipelineContainsStep(execSteps, types.StepCI) && !containsStep(skipSteps, types.StepCI))
 	if !steps.IsDemoMode() && providerNeeded {

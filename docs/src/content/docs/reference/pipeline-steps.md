@@ -10,7 +10,7 @@ intent → rebase → review → test → document → lint → push → pr → 
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
-Before creating the configured agent, run setup checks the selected provider authentication when PR or CI is active and performs a non-mutating Git push dry run when Push is active. A missing credential, unwritable upstream, or invalid fork destination therefore fails before model or test work begins.
+Before creating the configured agent, run setup executes `commands.preflight`, checks the selected provider authentication when PR or CI is active, and performs a non-mutating Git push dry run when Push is active. Missing tools, a pinned-version mismatch, missing credentials, an unwritable upstream, or an invalid fork destination therefore fail before model or test work begins.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output stops the affected step, including Document; it never creates a gate that unattended AXI mode can accept.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps: `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, and gates with only `no-op` findings are approved as-is.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.

@@ -138,7 +138,7 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{preflight,test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
 | --- | --- |
@@ -211,6 +211,17 @@ It is read from the trusted default-branch copy regardless of `allow_repo_comman
 The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
 An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
 
+### commands.preflight
+
+Fast prerequisite command run during setup before provider checks, agent creation, or pipeline steps. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | Empty |
+
+Use this for deterministic checks that required executables, pinned tool versions, runtimes, or other local prerequisites are available to the daemon. Keep it fast and free of repository mutations. A non-zero exit fails the run before model or test work begins.
+
 ### commands.test
 
 Explicit **targeted** local test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
@@ -224,9 +235,9 @@ Explicit **targeted** local test command. Run via the platform shell - `sh -c` o
 Broad regression belongs in remote CI and remains mandatory before a PR is ready; do not put a complete-suite walk here just to mirror CI.
 no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
-When set, the test step runs this exact command first as the baseline and checks the exit code.
+When set, the test step runs this exact command once and checks the exit code.
 When empty, the agent detects and runs the smallest relevant tests itself (and is instructed never to run the complete repository suite).
-When user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation, still under the same targeted-validation contract.
+A successful configured command completes Test without a second agent invocation.
 
 ### commands.lint
 
