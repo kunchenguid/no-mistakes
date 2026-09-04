@@ -554,17 +554,20 @@ func (s *Service) Apply(ctx context.Context) State {
 //     the gate branch to the kept head with an atomic compare-and-swap, so a
 //     concurrent gate push wins and recovery refuses. An independently moved
 //     gate head is pinned first so that CAS never discards it.
-//   - Anything unverifiable (missing recorded head, missing gate where required,
-//     failed anchor write or fetch, changed assumptions) refuses with a reason.
-//     The sole exception is an actually missing preserved head with --keep-local:
-//     that flag explicitly discards the unavailable pipeline commits. Plain
-//     --recover still refuses rather than moving a branch that cannot anchor a
-//     real preserved head.
+//   - Anything unverifiable (an unverified recorded head, missing gate where
+//     required, conflicting evidence, failed anchor write or fetch, or changed
+//     assumptions) refuses with a reason. The sole exception is a verified head
+//     proven absent from both the worktree and an accessible gate when
+//     --keep-local explicitly discards those unavailable pipeline commits.
+//     When any run in a stranded stack has such a missing head, the same preflight
+//     validates every non-superseded run, anchors each available head, and stamps
+//     the whole stack atomically. Plain --recover still refuses rather than
+//     moving a branch that cannot anchor a real preserved head.
 //
-// Recovery ends with a persisted custody-return stamp on the run; inspection
-// then reports custody_returned (never-pushed runs) or the ordinary
-// classification against the last push binding (pushed runs), both pointing at
-// run_pipeline as the next step. `no-mistakes rerun` remains the alternative
+// Recovery ends with persisted custody-return stamps on the recovered run or
+// stranded stack; inspection then reports custody_returned (never-pushed runs)
+// or the ordinary classification against the last push binding (pushed runs),
+// both pointing at run_pipeline as the next step. `no-mistakes rerun` remains the alternative
 // exit that resumes validating the preserved head instead of taking it back.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {

@@ -1119,6 +1119,7 @@ func TestAxiStatusOffersKeepLocalWhenPreservedHeadIsMissing(t *testing.T) {
 	if got := cliGit(t, ".", "rev-parse", "HEAD"); got != localHead {
 		t.Fatal("plain recover moved the rebuilt local head")
 	}
+	t.Logf("axi status before recovery:\n%s\naxi sync --check before recovery:\n%s\nplain recovery refusal:\n%s", out, check, refused)
 }
 
 func TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMissing(t *testing.T) {
@@ -1156,6 +1157,7 @@ func TestAxiSyncRecoverKeepLocalReturnsCustodyWhenPreservedHeadIsMissing(t *test
 	if !strings.Contains(check, "state: custody_returned") {
 		t.Fatalf("post-recover check:\n%s", check)
 	}
+	t.Logf("keep-local recovery:\n%s\naxi status after recovery:\n%s\naxi sync --check after recovery:\n%s", out, status, check)
 }
 
 func TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns(t *testing.T) {
@@ -1184,6 +1186,7 @@ func TestAxiSyncRecoverKeepLocalClearsStackedStrandedRuns(t *testing.T) {
 	if strings.Contains(status, "state: pipeline_owned") || strings.Contains(status, "blocked_recover_preserved_head_missing") {
 		t.Fatalf("stacked keep-local left a stranded run:\n%s", status)
 	}
+	t.Logf("stacked keep-local recovery (%d/%d custody stamps):\n%s\naxi status after recovery:\n%s", stamped, total, out, status)
 }
 
 func TestHumanSyncRecoverRequiresConfirmationOutsideTTY(t *testing.T) {
