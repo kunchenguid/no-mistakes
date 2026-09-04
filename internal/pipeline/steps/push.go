@@ -19,6 +19,33 @@ type PushStep struct{}
 
 func (s *PushStep) Name() types.StepName { return types.StepPush }
 
+// PreflightPush verifies the configured destination, credentials, and branch
+// update policy with a non-mutating dry run before any pipeline agent starts.
+func PreflightPush(sctx *pipeline.StepContext, headSHA string) error {
+	pushURL := resolvePushURL(sctx)
+	ref := normalizedBranchRef(sctx.Run.Branch)
+	remoteSHA, err := lsRemoteSHA(func(args ...string) (string, error) {
+		return stepGitRun(sctx, args...)
+	}, pushURL, ref)
+	if err != nil {
+		return fmt.Errorf("push preflight: inspect configured destination: %w", err)
+	}
+
+	args := []string{"push", "--dry-run", pushURL}
+	if remoteSHA != "" && remoteSHA != headSHA {
+		args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, remoteSHA))
+	}
+	args = append(args, headSHA+":"+ref)
+	if _, err := stepGitRun(sctx, args...); err != nil {
+		target := "upstream"
+		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+			target = "fork"
+		}
+		return fmt.Errorf("push preflight for configured %s failed before validation: %w", target, err)
+	}
+	return nil
+}
+
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err

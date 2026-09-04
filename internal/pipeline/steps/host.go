@@ -177,6 +177,23 @@ func BuildHostForTest(sctx *pipeline.StepContext, provider scm.Provider) (scm.Ho
 	return buildHost(sctx, provider)
 }
 
+// PreflightProvider verifies the run's provider CLI and authentication before
+// any pipeline agent is launched.
+func PreflightProvider(sctx *pipeline.StepContext) error {
+	provider := resolvedProvider(sctx)
+	if provider == scm.ProviderUnknown {
+		return nil
+	}
+	host, reason := buildHost(sctx, provider)
+	if host == nil {
+		return fmt.Errorf("provider preflight: %s", reason)
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		return fmt.Errorf("provider preflight: %w", err)
+	}
+	return nil
+}
+
 func detectProviderForStep(sctx *pipeline.StepContext, remoteURL string) scm.Provider {
 	return scm.DetectProviderContextWithForgejoBaseURL(sctx.Ctx, remoteURL, forgejoBaseURLForStep(sctx))
 }

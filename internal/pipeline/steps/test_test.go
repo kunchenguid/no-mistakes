@@ -3,9 +3,9 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -403,18 +403,18 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 	}
 }
 
-func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
+func TestTestStep_ConfiguredCommandRunsOnceWithoutEvidenceAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	baselineLog := filepath.Join(dir, "baseline.log")
-	testCmd := "go env GOOS > baseline.log"
+	testCmd := "printf passed >> baseline.log"
 
 	callCount := 0
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence","artifacts":[]}`)}, nil
+			return nil, errors.New("evidence agent must not run after a green configured command")
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
@@ -428,51 +428,15 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	if outcome.NeedsApproval {
 		t.Fatal("expected no approval when evidence-oriented agent testing passes")
 	}
-	if callCount != 1 {
-		t.Fatalf("expected evidence agent to run after configured test command, got %d calls", callCount)
+	if callCount != 0 {
+		t.Fatalf("expected no evidence agent after configured test command, got %d calls", callCount)
 	}
 	data, err := os.ReadFile(baselineLog)
 	if err != nil {
 		t.Fatalf("expected configured test command to run: %v", err)
 	}
-	if strings.TrimSpace(string(data)) != runtime.GOOS {
-		t.Fatalf("configured test command output = %q, want %s", string(data), runtime.GOOS)
-	}
-	prompt := ag.calls[0].Prompt
-	for _, want := range []string{
-		"Show users a success screen after checkout",
-		"Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied",
-		"Unit tests passing is not sufficient evidence by itself",
-		"Demonstrate the user intent working end-to-end in a way consistent with how an end user would actually experience it",
-		"Prefer product-level artifacts",
-		"Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior",
-		"Configured test command already ran successfully as baseline",
-		testCmd,
-		"The \"testing_summary\" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result",
-		"screenshots, GIFs, videos, rendered UI, CLI transcripts",
-		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
-		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
-		"If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary",
-		"Write new evidence files into this evidence directory, never into the worktree:",
-		sctx.EvidenceDir,
-		"Do not move, commit, or modify source files only to make evidence linkable",
-		"If no existing test produces sufficient evidence, write or improve a focused test",
-		"If automated testing cannot produce the needed evidence, execute manual verification steps",
-		"Always include an \"artifacts\" array",
-		"If sufficient evidence is not possible, report a warning finding",
-		"When the blocker is a host capability or OS permission the agent's own process lacks",
-		"name the specific capability or permission and how to grant it",
-		"remove any transient artifacts your testing created in the working tree",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
-		}
-	}
-	if strings.Contains(prompt, "will be available from the pushed commit") || strings.Contains(prompt, "files that already exist in the repository") {
-		t.Fatalf("expected prompt not to make the testing agent worry about committed evidence files, got:\n%s", prompt)
-	}
-	if _, err := os.Stat(sctx.EvidenceDir); err != nil {
-		t.Fatalf("expected temporary evidence directory to exist: %v", err)
+	if string(data) != "passed" {
+		t.Fatalf("configured test command output = %q, want one execution", string(data))
 	}
 
 	var findings Findings
@@ -480,8 +444,8 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Logf("evidence findings JSON: %s", outcome.Findings)
-	if len(findings.Tested) != 2 || findings.Tested[0] != testCmd || findings.Tested[1] != "manual screenshot review" {
-		t.Fatalf("expected baseline command and agent-tested evidence to be recorded, got %+v", findings.Tested)
+	if len(findings.Tested) != 1 || findings.Tested[0] != testCmd {
+		t.Fatalf("expected only the configured command to be recorded, got %+v", findings.Tested)
 	}
 }
 

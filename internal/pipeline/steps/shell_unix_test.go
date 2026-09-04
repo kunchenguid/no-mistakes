@@ -4,6 +4,7 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,7 +12,41 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
+
+func TestRunStreamingStepShellCommandForwardsOutputBeforeExit(t *testing.T) {
+	dir := t.TempDir()
+	chunks := make(chan string, 2)
+	sctx := &pipeline.StepContext{
+		Ctx:      context.Background(),
+		WorkDir:  dir,
+		LogChunk: func(chunk string) { chunks <- chunk },
+	}
+	done := make(chan error, 1)
+	go func() {
+		output, exitCode, err := runStreamingStepShellCommand(sctx, "printf first; sleep 1; printf second")
+		if err == nil && (exitCode != 0 || output != "firstsecond") {
+			err = fmt.Errorf("exit=%d output=%q", exitCode, output)
+		}
+		done <- err
+	}()
+
+	select {
+	case chunk := <-chunks:
+		if !strings.Contains(chunk, "first") {
+			t.Fatalf("first streamed chunk = %q", chunk)
+		}
+	case err := <-done:
+		t.Fatalf("command completed before forwarding its first chunk: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("command did not stream output before completion")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 // TestRunShellCommandWithEnv_KillsGrandchildOnCancel is a regression test for
 // orphan subprocesses on cancellation. runShellCommandWithEnv must kill the

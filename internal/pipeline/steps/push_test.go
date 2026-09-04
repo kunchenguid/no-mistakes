@@ -26,6 +26,24 @@ func setupGateMirror(t *testing.T, sctx *pipeline.StepContext) string {
 	return gateDir
 }
 
+func TestPreflightPushChecksDestinationWithoutMutation(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	if err := PreflightPush(sctx, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feature")
+	cmd.Dir = upstream
+	if err := cmd.Run(); err == nil {
+		t.Fatal("push preflight mutated the destination")
+	}
+}
+
 // TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit reproduces
 // the end-user incident at the real push boundary. Review approved R, then an
 // out-of-band reset replaced HEAD with divergent D and no pipeline-owned commit

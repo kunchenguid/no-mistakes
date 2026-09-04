@@ -153,12 +153,12 @@ Previous lint findings to address:
 
 	// Run configured lint command
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
-	output, exitCode, err := runStepShellCommand(sctx, lintCmd)
+	output, exitCode, err := runStreamingStepShellCommand(sctx, lintCmd)
 	if err != nil {
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}
 
-	projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepLint)
+	projectedOutput := configuredCommandFailureSummary(output, types.StepLint)
 
 	if exitCode != 0 {
 		findings := Findings{

@@ -33,8 +33,9 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 That last point matters: the agent helps fill in gaps, but explicit repo
 commands are still the strongest way to make the baseline gate predictable.
-When user intent is available, the test step may still invoke the configured agent after `commands.test` succeeds to gather evidence that demonstrates the change.
-That testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
+When `commands.test` succeeds, the test step accepts that configured gate without launching another agent or repeating test execution.
+Leave `commands.test` empty when the project needs agent-selected end-to-end checks or reviewer-visible evidence instead.
+An agent-led testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
 That directory is always outside the worktree and is reaped by no-mistakes on a bounded retention schedule; GitHub.com/GHEC PRs upload supported screenshots and recordings, and can also publish an orphan evidence branch with `test.evidence.store_in_repo`. See [`test.evidence`](/no-mistakes/reference/global-config/#testevidence) for its location, attachments, and cleanup.
 
 ## Supported agents
@@ -64,7 +65,7 @@ This refusal also applies when deterministic test or lint commands are configure
 | Start or rerun a validation gate | No | The run fails before any pipeline step starts. |
 | Review | No | Requires agent judgment and structured findings. |
 | Test with `commands.test` | No, as part of a full gate | The command is deterministic, but the gate refuses before steps start rather than presenting command-only validation as a complete pass. |
-| Test without `commands.test`, or evidence validation with user intent | No | Requires the agent to discover checks and gather end-to-end evidence. |
+| Test without `commands.test` | No | Requires the agent to discover checks and gather end-to-end evidence. |
 | Document | No | Requires the agent to discover and update documentation gaps. |
 | Lint with `commands.lint` | No, as part of a full gate | The command is deterministic, but the full gate still requires an agent. |
 | Lint without `commands.lint` and all fix rounds | No | The document step performs the initial combined housekeeping pass, and an agent is still needed for fallback assessment or code changes. |

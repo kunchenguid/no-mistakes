@@ -1343,6 +1343,35 @@ func TestReviewStep_PromptClassifiesFindingsByRemedyScope(t *testing.T) {
 	}
 }
 
+func TestReviewStep_PromptChecksExternalDependencySemantics(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"external executable, service, SDK, configuration source, or environment-dependent runtime",
+		"actual semantics from its authoritative interface or implementation",
+		"precedence among explicit flags, environment variables, configuration files, defaults, and fallbacks",
+		"environment of the process that actually consumes them",
+		"Do not assume that a fallback is exclusive",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing external-dependency rule %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // TestReviewStep_FixPromptPrefersSimplificationOverMachinery pins the fixer's
 // depth rule as rendered: fix the reported instance narrowly, and when depth is
 // warranted reach it by simplifying an architectural reason rather than bolting

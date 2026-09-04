@@ -15,7 +15,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// TestStep runs baseline tests, gathers evidence for user intent, and optionally asks the agent to fix failures.
+// TestStep runs configured tests or gathers targeted evidence when no command is configured,
+// and optionally asks the agent to fix failures.
 type TestStep struct{}
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
@@ -99,13 +100,13 @@ Previous test findings to address:
 	tested := []string{}
 	if testCmd != "" {
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-		output, exitCode, err := runStepShellCommand(sctx, testCmd)
+		output, exitCode, err := runStreamingStepShellCommand(sctx, testCmd)
 		if err != nil {
 			return nil, fmt.Errorf("run test command: %w", err)
 		}
 		tested = append(tested, testCmd)
 
-		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
+		projectedOutput := configuredCommandFailureSummary(output, types.StepTest)
 
 		if exitCode != 0 {
 			findings := Findings{
@@ -127,7 +128,10 @@ Previous test findings to address:
 		}
 	}
 
-	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
+	// A configured command is the repository owner's complete local Test gate.
+	// Running an evidence agent after it passes repeats validation unpredictably,
+	// so agent-led evidence collection is reserved for repositories without one.
+	useEvidenceAgent := testCmd == ""
 	if useEvidenceAgent {
 		evidenceDir := testEvidenceDir(sctx)
 		if evidenceDir == "" {
@@ -136,19 +140,11 @@ Previous test findings to address:
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create test evidence dir: %w", err)
 		}
-		if testCmd == "" {
-			sctx.Log("no test command configured, asking agent to run tests...")
-		} else {
-			sctx.Log("user intent available, asking agent to gather test evidence...")
-		}
+		sctx.Log("no test command configured, asking agent to run tests...")
 		reassessHistory := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
 		if sctx.Config.Test.Evidence.StoreInRepo {
 			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
-		}
-		configuredTestCommand := ""
-		if testCmd != "" {
-			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		}
 		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
 		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
@@ -159,7 +155,6 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-%s
 
 Task:
 - Understand the user intent before testing it. If extracted user intent is present, use it as the primary hint for what success means.
@@ -200,7 +195,6 @@ Rules:
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
-				configuredTestCommand,
 				evidenceGuidance,
 				reassessHistory,
 			),

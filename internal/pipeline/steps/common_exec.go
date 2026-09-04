@@ -1,8 +1,10 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -293,6 +295,43 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
 	return runShellCommandWithProcessEnv(sctx.Ctx, sctx.WorkDir, stepEnvironment(sctx), cmdStr)
+}
+
+// runStreamingStepShellCommand preserves the complete combined output while
+// forwarding it as it arrives so long-running commands keep the active-step
+// status and elapsed-time display current.
+func runStreamingStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(sctx.Ctx, "cmd.exe", "/c", cmdStr)
+	} else {
+		cmd = exec.CommandContext(sctx.Ctx, "sh", "-c", cmdStr)
+	}
+	shellenv.ConfigureShellCommand(cmd)
+	cmd.Dir = sctx.WorkDir
+	cmd.Env = stepEnvironment(sctx)
+
+	var output bytes.Buffer
+	stream := io.MultiWriter(&output, logChunkWriter(sctx.LogChunk))
+	cmd.Stdout = stream
+	cmd.Stderr = stream
+	err := shellenv.RunShellCommand(cmd)
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return output.String(), ee.ExitCode(), nil
+		}
+		return "", -1, fmt.Errorf("run command %q: %w", cmdStr, err)
+	}
+	return output.String(), 0, nil
+}
+
+type logChunkWriter func(string)
+
+func (w logChunkWriter) Write(p []byte) (int, error) {
+	if w != nil && len(p) > 0 {
+		w(string(p))
+	}
+	return len(p), nil
 }
 
 func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {

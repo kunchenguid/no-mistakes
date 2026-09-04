@@ -106,6 +106,24 @@ type recoveredRunPlan struct {
 	forge   *forgecontext.Context
 }
 
+func containsStep(steps []types.StepName, target types.StepName) bool {
+	for _, step := range steps {
+		if step == target {
+			return true
+		}
+	}
+	return false
+}
+
+func pipelineContainsStep(steps []pipeline.Step, target types.StepName) bool {
+	for _, step := range steps {
+		if step.Name() == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
@@ -1084,6 +1102,33 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("resolve_forge_profile")
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
+	preflightContext := &pipeline.StepContext{
+		Ctx:          ctx,
+		Run:          run,
+		Repo:         repo,
+		WorkDir:      wtDir,
+		GateDir:      gateDir,
+		Config:       cfg,
+		ForgeContext: forgeCtx,
+		Env:          forgeEnvironment(forgeCtx).Apply(nil),
+	}
+	execSteps := m.steps()
+	providerNeeded := (pipelineContainsStep(execSteps, types.StepPR) && !containsStep(skipSteps, types.StepPR)) ||
+		(pipelineContainsStep(execSteps, types.StepCI) && !containsStep(skipSteps, types.StepCI))
+	if !steps.IsDemoMode() && providerNeeded {
+		if err := steps.PreflightProvider(preflightContext); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("provider_preflight")
+			return "", err
+		}
+	}
+	if !steps.IsDemoMode() && pipelineContainsStep(execSteps, types.StepPush) && !containsStep(skipSteps, types.StepPush) {
+		if err := steps.PreflightPush(preflightContext, headSHA); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("push_preflight")
+			return "", err
+		}
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
@@ -1132,7 +1177,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}
 
-	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
 		"action":      "started",
 		"trigger":     trigger,
