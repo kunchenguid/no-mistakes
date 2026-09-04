@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -531,7 +532,17 @@ func (s *notifyBlockStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOut
 
 func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 	t.Helper()
-	timeout := time.After(3 * time.Second)
+	wait := 3 * time.Second
+	if runtime.GOOS == "windows" {
+		// Reaching the first pipeline step means the run finished worktree
+		// creation and git-identity setup, each a git.exe spawn the git-heavy
+		// Windows CI shard runs under Defender's per-spawn tax while several
+		// packages execute at once. Match waitForRunTerminalState's Windows
+		// budget so normal process-spawn latency is not read as a run that
+		// never started.
+		wait = time.Minute
+	}
+	timeout := time.After(wait)
 	for {
 		select {
 		case got := <-started:
