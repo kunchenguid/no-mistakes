@@ -221,6 +221,9 @@ Rules:
 		if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
 			return nil, fmt.Errorf("validate test analyzer findings: %w", err)
 		}
+		if err := assertRecordedFixDecisions(sctx); err != nil {
+			return nil, err
+		}
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}

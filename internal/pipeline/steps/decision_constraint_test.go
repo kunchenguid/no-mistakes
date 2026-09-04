@@ -207,3 +207,24 @@ func TestReviewStep_RecordedFixDecisionSurvivesEmptyDiff(t *testing.T) {
 		t.Fatalf("empty diff bypassed recorded decision conformance: outcome=%+v err=%v calls=%d", outcome, err, len(ag.calls))
 	}
 }
+
+func TestTestStep_EvidenceFixCannotSilentlyReverseDecision(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("reclaim\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"tests pass","tested":["focused test"],"testing_summary":"tests pass","artifacts":[]}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","action":"ask-user","description":"review round 1 remove-teardown-reclamation contradicted by teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+	if outcome, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "remove-teardown-reclamation") {
+		t.Fatalf("evidence agent's zero-finding reversal passed: outcome=%+v, err=%v", outcome, err)
+	}
+}

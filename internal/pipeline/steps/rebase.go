@@ -426,7 +426,7 @@ Instructions:
 		return fmt.Errorf("agent did not complete the rebase")
 	}
 
-	return assertRecordedFixDecisions(sctx)
+	return nil
 }
 
 // shouldSkipRebase checks whether a rebase onto targetRef can be skipped.
