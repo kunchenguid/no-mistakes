@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -602,9 +603,17 @@ func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, s
 // replacement agent turn produced.
 func TestDecisionReversionAuthorization(t *testing.T) {
 	t.Parallel()
+	reinstated := func(path string, lines ...string) reversionEvidence {
+		sample, digest := sampleAndDigest(lines)
+		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Digest: digest}
+	}
 	store := reversionEvidence{Path: "store", Kind: reversionRestoredFile}
-	skill := reversionEvidence{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: []string{"count: six"}}
-	skillOtherLine := reversionEvidence{Path: "SKILL.md", Kind: reversionReinstatedText, Lines: []string{"count: five"}}
+	skill := reinstated("SKILL.md", "count: six")
+	skillOtherLine := reinstated("SKILL.md", "count: five")
+	// The display cap hides everything past the fifth line, so these two render
+	// identically. They must not be treated as the same finding.
+	skillManyLines := reinstated("SKILL.md", "a", "b", "c", "d", "e", "f")
+	skillSameSample := reinstated("SKILL.md", "a", "b", "c", "d", "e")
 
 	cases := []struct {
 		name  string
@@ -617,6 +626,7 @@ func TestDecisionReversionAuthorization(t *testing.T) {
 		{"a lesser reversion", &decisionReversionError{evidence: []reversionEvidence{store, skill}}, &decisionReversionError{evidence: []reversionEvidence{store}}, true},
 		{"an additional file", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{evidence: []reversionEvidence{store, skill}}, false},
 		{"the same file, different lines", &decisionReversionError{evidence: []reversionEvidence{skill}}, &decisionReversionError{evidence: []reversionEvidence{skillOtherLine}}, false},
+		{"more lines than the display cap shows", &decisionReversionError{evidence: []reversionEvidence{skillSameSample}}, &decisionReversionError{evidence: []reversionEvidence{skillManyLines}}, false},
 		{"the same unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "no base commit"}, true},
 		{"a different unevaluable guard", &decisionReversionError{reason: "no base commit"}, &decisionReversionError{reason: "read blob: exit status 128"}, false},
 		{"evidence does not authorise an unevaluable guard", &decisionReversionError{evidence: []reversionEvidence{store}}, &decisionReversionError{reason: "no base commit"}, false},
@@ -628,5 +638,36 @@ func TestDecisionReversionAuthorization(t *testing.T) {
 				t.Fatalf("authorizes = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap is the specific
+// trap: the refusal a person reads is capped, and if that capped artefact were
+// also the authorisation identity, a replacement round could keep the twenty
+// files shown and add a twenty-first that sorts after them, which would render
+// identically and commit a reversion nobody saw.
+func TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap(t *testing.T) {
+	t.Parallel()
+	var shownEvidence []reversionEvidence
+	for i := 0; i < maxReversionEvidenceFiles; i++ {
+		shownEvidence = append(shownEvidence, reversionEvidence{
+			Path: fmt.Sprintf("a-file-%02d.txt", i), Kind: reversionRestoredFile,
+		})
+	}
+	shown := &decisionReversionError{evidence: shownEvidence}
+	later := &decisionReversionError{evidence: append(append([]reversionEvidence{}, shownEvidence...),
+		reversionEvidence{Path: "z-added-after-the-cap.txt", Kind: reversionRestoredFile})}
+
+	if shown.Error() != later.Error()[:len(shown.Error())] && !strings.Contains(later.Error(), "and 1 more file") {
+		t.Fatalf("the later refusal should render the cap notice: %s", later.Error())
+	}
+	if shown.authorizes(later) {
+		t.Fatal("a file past the display cap was authorised by a refusal that never showed it")
+	}
+	if !shown.authorizes(shown) {
+		t.Fatal("a refusal must authorise itself")
+	}
+	if !strings.Contains(later.Error(), "and 1 more file") {
+		t.Fatalf("a person must be told what the cap left out: %s", later.Error())
 	}
 }

@@ -1,6 +1,8 @@
 package steps
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,10 +62,13 @@ import (
 // the repair. The proposed changes stay in the run worktree, uncommitted and
 // unpushed, so nothing is lost and a person decides.
 
-// maxReversionEvidenceFiles bounds how many files a refusal names, and
+// maxReversionEvidenceFiles bounds how many files a refusal RENDERS, and
 // maxReversionEvidenceLines how many restored lines it quotes per file. The
 // evidence is a decision aid, not a diff: a person who needs the rest reads the
-// worktree the finding names.
+// worktree the finding names, and is told how much was left out.
+//
+// These are display bounds only. A refusal always carries the complete finding,
+// because that is what one fix response is checked against.
 const (
 	maxReversionEvidenceFiles = 20
 	maxReversionEvidenceLines = 5
@@ -80,10 +85,17 @@ const (
 
 // reversionEvidence is one file's proof that the proposed repair undoes work the
 // branch deliberately did.
+//
+// Lines is a display sample and Digest covers the COMPLETE set it was sampled
+// from. Keeping those apart is load-bearing: the sample exists to fit in a
+// finding a person reads, and an identity built from it would make two refusals
+// that differ only past the cap look identical - which is exactly how an
+// authorisation for one reversion would come to cover a wider one.
 type reversionEvidence struct {
-	Path  string
-	Kind  reversionKind
-	Lines []string
+	Path   string
+	Kind   reversionKind
+	Lines  []string
+	Digest string
 }
 
 // decisionReversionError refuses a CI repair. It carries either per-file
@@ -100,9 +112,10 @@ func (e *decisionReversionError) Error() string {
 	if e.reason != "" {
 		return "CI repair refused: the decision-reversion guard could not be evaluated: " + e.reason
 	}
+	shown, elided := boundEvidence(e.evidence)
 	var b strings.Builder
 	b.WriteString("CI repair refused: it undoes work this branch deliberately did")
-	for _, ev := range e.evidence {
+	for _, ev := range shown {
 		b.WriteString("\n- ")
 		b.WriteString(ev.Path)
 		b.WriteString(": ")
@@ -112,7 +125,27 @@ func (e *decisionReversionError) Error() string {
 			b.WriteString(line)
 		}
 	}
+	if elided > 0 {
+		b.WriteString(fmt.Sprintf("\n- and %d more %s", elided, pluralFiles(elided)))
+	}
 	return b.String()
+}
+
+// boundEvidence limits what a refusal renders. It is presentation only: the
+// refusal keeps the complete set, which is what authorizes compares, so a person
+// is always told when more was found than is listed.
+func boundEvidence(evidence []reversionEvidence) (shown []reversionEvidence, elided int) {
+	if len(evidence) <= maxReversionEvidenceFiles {
+		return evidence, 0
+	}
+	return evidence[:maxReversionEvidenceFiles], len(evidence) - maxReversionEvidenceFiles
+}
+
+func pluralFiles(n int) string {
+	if n == 1 {
+		return "file"
+	}
+	return "files"
 }
 
 // authorizes reports whether a person's fix response to the receiver also
@@ -145,11 +178,11 @@ func (e *decisionReversionError) authorizes(later *decisionReversionError) bool 
 	return true
 }
 
-// identity is one piece of evidence's stable key. Detection is deterministic -
-// paths sorted, lines sorted and capped - so the same reversion always produces
-// the same key and a different one never does.
+// identity is one piece of evidence's stable key, taken from the complete
+// finding rather than from the sample shown, so two refusals that differ only in
+// what the display cap hid never compare equal.
 func (ev reversionEvidence) identity() string {
-	return ev.Path + "\x00" + string(ev.Kind) + "\x00" + strings.Join(ev.Lines, "\n")
+	return ev.Path + "\x00" + string(ev.Kind) + "\x00" + ev.Digest
 }
 
 // detectDecisionReversion compares the repair's proposed state - the run
@@ -246,13 +279,13 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 			return nil, err
 		}
 		if lines := reinstatedBaseLines(base, pre, post); len(lines) > 0 {
-			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: lines})
+			sample, digest := sampleAndDigest(lines)
+			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Digest: digest})
 		}
 	}
+	// Deliberately NOT truncated to the display cap: the full set is the
+	// authorisation identity, and Error/reversionDetail bound what is rendered.
 	sort.Slice(evidence, func(i, j int) bool { return evidence[i].Path < evidence[j].Path })
-	if len(evidence) > maxReversionEvidenceFiles {
-		evidence = evidence[:maxReversionEvidenceFiles]
-	}
 	return evidence, nil
 }
 
@@ -369,13 +402,29 @@ func reinstatedBaseLines(base, pre, post string) []string {
 		restored = append(restored, line)
 	}
 	sort.Strings(restored)
-	if len(restored) > maxReversionEvidenceLines {
-		restored = restored[:maxReversionEvidenceLines]
-	}
-	for i, line := range restored {
-		restored[i] = clampEvidenceLine(line)
-	}
 	return restored
+}
+
+// sampleAndDigest splits a complete finding into what a person is shown and what
+// identifies it. The digest covers every line, so a later refusal that restores
+// more than the sample can hold is still a different refusal.
+func sampleAndDigest(lines []string) (sample []string, digest string) {
+	sum := sha256.New()
+	for _, line := range lines {
+		sum.Write([]byte(line))
+		sum.Write([]byte{0})
+	}
+	digest = hex.EncodeToString(sum.Sum(nil))
+
+	sample = lines
+	if len(sample) > maxReversionEvidenceLines {
+		sample = sample[:maxReversionEvidenceLines]
+	}
+	clamped := make([]string, len(sample))
+	for i, line := range sample {
+		clamped[i] = clampEvidenceLine(line)
+	}
+	return clamped, digest
 }
 
 func lineCounts(content string) map[string]int {
@@ -522,13 +571,17 @@ func reversionDetail(reversion *decisionReversionError) string {
 	if reversion.reason != "" {
 		return "The guard that proves this could not be evaluated (" + reversion.reason + "), so the repair fails closed."
 	}
+	shown, elided := boundEvidence(reversion.evidence)
 	var parts []string
-	for _, ev := range reversion.evidence {
+	for _, ev := range shown {
 		part := ev.Path + " would be " + string(ev.Kind)
 		if len(ev.Lines) > 0 {
 			part += " (for example: " + strings.Join(ev.Lines, " / ") + ")"
 		}
 		parts = append(parts, part)
+	}
+	if elided > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more %s", elided, pluralFiles(elided)))
 	}
 	return "Evidence: " + strings.Join(parts, "; ") + "."
 }
