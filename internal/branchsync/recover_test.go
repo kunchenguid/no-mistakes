@@ -961,6 +961,105 @@ func TestRecoverKeepLocalReleasesAllStrandedTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestRecoverKeepLocalPreflightsEveryStrandedRun(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		setup func(*recoverFixture, *db.Run)
+	}{
+		{
+			name: "conflicting anchor",
+			setup: func(f *recoverFixture, older *db.Run) {
+				if err := f.db.UpdateRunStatusWithVerifiedHead(older.ID, types.RunFailed, strings.Repeat("e", 40)); err != nil {
+					f.t.Fatal(err)
+				}
+				mustRun(f.t, f.gate, "update-ref", custody.RecoveryRef(older.ID), f.submitted)
+			},
+		},
+		{
+			name: "unverified head",
+			setup: func(f *recoverFixture, older *db.Run) {
+				if err := f.db.UpdateRunHeadSHA(older.ID, strings.Repeat("e", 40)); err != nil {
+					f.t.Fatal(err)
+				}
+				if err := f.db.UpdateRunStatus(older.ID, types.RunFailed); err != nil {
+					f.t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRecoverFixture(t, types.RunCancelled)
+			tt.setup(f, f.run)
+			time.Sleep(1100 * time.Millisecond)
+			newest, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.UpdateRunStatusWithVerifiedHead(newest.ID, types.RunFailed, strings.Repeat("f", 40)); err != nil {
+				t.Fatal(err)
+			}
+
+			state := f.service.InspectCached(f.ctx)
+			if state.Pipeline.RunID != newest.ID {
+				t.Fatalf("selected run = %s, want %s", state.Pipeline.RunID, newest.ID)
+			}
+			assertManualReconciliationOffer(t, state)
+			kept := f.service.Recover(f.ctx, true)
+			if kept.Recovered || kept.Safety != "blocked_recover_manual_reconciliation" {
+				t.Fatalf("keep-local with unsafe older run = %#v", kept)
+			}
+			for _, id := range []string{f.run.ID, newest.ID} {
+				run, err := f.db.GetRun(id)
+				if err != nil || run == nil || run.CustodyReturnedAt != nil {
+					t.Fatalf("run %s custody = %#v, %v", id, run, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRecoverMissingHeadRevalidatesGateBeforeStamping(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		mutateGate func(*recoverFixture)
+		wantSafety string
+	}{
+		{
+			name: "gate disappears",
+			mutateGate: func(f *recoverFixture) {
+				if err := os.RemoveAll(f.gate); err != nil {
+					f.t.Fatal(err)
+				}
+			},
+			wantSafety: "blocked_recover_gate_unavailable",
+		},
+		{
+			name: "equal gate branch moves",
+			mutateGate: func(f *recoverFixture) {
+				mustRun(f.t, f.gate, "update-ref", "refs/heads/feature/recover", f.base)
+			},
+			wantSafety: "blocked_recover_gate_race",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRecoverFixture(t, types.RunCancelled)
+			if err := f.db.UpdateRunHeadSHA(f.run.ID, strings.Repeat("f", 40)); err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+			f.service.beforeGateReset = func() { tt.mutateGate(f) }
+
+			state := f.service.Recover(f.ctx, true)
+			if state.Recovered || state.Safety != tt.wantSafety {
+				t.Fatalf("recovery after gate mutation = %#v", state)
+			}
+			if f.custodyReturned() {
+				t.Fatal("stale gate evidence stamped custody")
+			}
+		})
+	}
+}
+
 func TestInspectDoesNotAdvertiseRecoveryWhenTerminalAnchorConflicts(t *testing.T) {
 	t.Parallel()
 

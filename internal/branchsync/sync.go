@@ -590,8 +590,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
-	if keepLocal && s.missingHeadKeepLocalEligible(ctx, &state, run) {
-		return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
+	if keepLocal {
+		runIDs, selectedEligible, allEligible := s.missingHeadKeepLocalRuns(ctx, &state, run)
+		if selectedEligible && !allEligible {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_manual_reconciliation", "an older stranded run has unverified or conflicting recovery evidence; reconcile it before returning branch custody")
+		}
+		if selectedEligible {
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, runIDs)
+		}
 	}
 	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
@@ -648,7 +654,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			}
 		}
 		if keepLocal {
-			return s.finishKeepLocalRecover(ctx, state)
+			return s.finishKeepLocalRecover(ctx, state, []string{run.ID})
 		}
 		return s.finishRecover(ctx, run, false)
 	}
@@ -699,12 +705,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		// Equal or ahead, discovered only after anchoring made the preserved
 		// head comparable locally.
 		if keepLocal {
-			return s.finishKeepLocalRecover(ctx, state)
+			return s.finishKeepLocalRecover(ctx, state, []string{run.ID})
 		}
 		return s.finishRecover(ctx, run, false)
 	case isAncestor(ctx, wd, local, preserved):
 		if keepLocal {
-			return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID})
 		}
 		if !state.Local.Clean {
 			state.Relation = RelationBehind
@@ -715,7 +721,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return s.recoverFastForward(ctx, run, state, preserved)
 	default:
 		if keepLocal {
-			return s.recoverKeepLocalAtCurrentHead(ctx, run, state)
+			return s.recoverKeepLocalAtCurrentHead(ctx, run, state, []string{run.ID})
 		}
 		if preservedContainsLocalWork(ctx, wd, local, preserved) {
 			if !state.Local.Clean {
@@ -739,7 +745,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 // being clobbered. The kept head's objects reach the gate through a gate-side
 // fetch - never a push, which would fire the gate's receive hooks and start a
 // pipeline run. The preserved head stays reachable through the anchor ref.
-func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string) State {
+func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string, runIDs []string) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
@@ -787,29 +793,36 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
 		}
 	}
-	return s.finishKeepLocalRecover(ctx, state)
+	if _, err := os.Stat(s.GateDir); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "the local gate became unavailable while custody was being returned; custody was not recorded")
+	}
+	liveGateHead, exists, err := git.ExactRefTarget(ctx, s.GateDir, "refs/heads/"+state.Local.Branch)
+	if err != nil || !exists || liveGateHead != state.Local.Head {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; custody was not recorded")
+	}
+	return s.finishKeepLocalRecover(ctx, state, runIDs)
 }
 
 // recoverKeepLocalAtCurrentHead returns custody at the current local head
 // without requiring a preserved pipeline object. --keep-local is the
 // operator's explicit discard of unpublished pipeline commits, so a missing
 // or dangling gate branch must not block it.
-func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run, state State) State {
+func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run, state State, runIDs []string) State {
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
-		return s.finishKeepLocalRecover(ctx, state)
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository; custody was not recorded")
 	}
 	if _, err := os.Stat(gateDir); err != nil {
-		return s.finishKeepLocalRecover(ctx, state)
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "the local gate is unavailable; custody was not recorded")
 	}
 	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch)
 	if err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate branch %s could not be inspected; no files or refs were changed", state.Local.Branch))
 	}
 	if !exists {
-		return s.recoverKeepLocal(ctx, run, state, "")
+		return s.recoverKeepLocal(ctx, run, state, "", runIDs)
 	}
-	return s.recoverKeepLocal(ctx, run, state, gateHead)
+	return s.recoverKeepLocal(ctx, run, state, gateHead, runIDs)
 }
 
 // recoverFastForward advances the clean checked-out branch to the preserved
@@ -1036,12 +1049,9 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 	return state
 }
 
-// finishKeepLocalRecover stamps custody returned on every stranded terminal
-// unpublished run on the current branch. --keep-local keeps the operator's
-// current head and discards unpublished pipeline commits, so one call must
-// release the whole stack rather than peeling one run per invocation.
-func (s *Service) finishKeepLocalRecover(ctx context.Context, state State) State {
-	if err := s.releaseStrandedTerminalRuns(state.Local.Branch); err != nil {
+// finishKeepLocalRecover stamps custody returned on the preflighted runs.
+func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runIDs []string) State {
+	if err := s.releaseRuns(runIDs); err != nil {
 		fresh, _, _ := s.inspect(ctx)
 		fresh.Changed = false
 		fresh.Safety = "blocked_recover_stamp_failed"
@@ -1055,16 +1065,9 @@ func (s *Service) finishKeepLocalRecover(ctx context.Context, state State) State
 	return fresh
 }
 
-func (s *Service) releaseStrandedTerminalRuns(branch string) error {
-	runs, err := s.DB.GetRunsByRepo(s.Repo.ID)
-	if err != nil {
-		return err
-	}
-	for _, candidate := range runs {
-		if candidate.Branch != branch || !terminalRunStatus(candidate.Status) || !unpublishedPipelineHead(candidate) {
-			continue
-		}
-		if err := s.DB.SetRunCustodyReturned(candidate.ID); err != nil {
+func (s *Service) releaseRuns(runIDs []string) error {
+	for _, runID := range runIDs {
+		if err := s.DB.SetRunCustodyReturned(runID); err != nil {
 			return err
 		}
 	}
@@ -1505,7 +1508,7 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
 		if !s.recoverySourceAvailable(ctx, state, run) {
-			if s.missingHeadKeepLocalEligible(ctx, state, run) {
+			if _, selectedEligible, allEligible := s.missingHeadKeepLocalRuns(ctx, state, run); selectedEligible && allEligible {
 				state.Safety = "blocked_recover_preserved_head_missing"
 				state.Error = "the run finished " + string(run.Status) + " but its recorded pipeline head is not available in the invoking worktree or local gate; recover custody by keeping the current local head, which discards the missing preserved commits"
 				state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
@@ -1526,30 +1529,47 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 }
 
-func (s *Service) missingHeadKeepLocalEligible(ctx context.Context, state *State, run *db.Run) bool {
-	if state == nil || run == nil || run.TerminalHeadVerifiedAt == nil || strings.TrimSpace(run.HeadSHA) == "" {
-		return false
+func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, run *db.Run) ([]string, bool, bool) {
+	if state == nil || run == nil {
+		return nil, false, false
 	}
-	if objectExists(ctx, s.workDir(), run.HeadSHA) {
-		return false
+	runs, err := s.DB.GetRunsByRepo(s.Repo.ID)
+	if err != nil {
+		return nil, false, false
 	}
 	gateDir := strings.TrimSpace(s.GateDir)
 	if gateDir == "" {
-		return false
+		return nil, false, false
 	}
 	if _, err := os.Stat(gateDir); err != nil {
-		return false
-	}
-	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, run.HeadSHA); err != nil || !compatible {
-		return false
-	}
-	if compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, run.HeadSHA); err != nil || !compatible {
-		return false
+		return nil, false, false
 	}
 	if _, _, err := git.ExactRefTarget(ctx, gateDir, "refs/heads/"+state.Local.Branch); err != nil {
-		return false
+		return nil, false, false
 	}
-	return !objectExists(ctx, gateDir, run.HeadSHA)
+	var runIDs []string
+	selectedEligible := false
+	allEligible := true
+	for _, candidate := range runs {
+		if candidate.Branch != state.Local.Branch || !terminalRunStatus(candidate.Status) || !unpublishedPipelineHead(candidate) {
+			continue
+		}
+		eligible := candidate.TerminalHeadVerifiedAt != nil && strings.TrimSpace(candidate.HeadSHA) != "" && !objectExists(ctx, s.workDir(), candidate.HeadSHA) && !objectExists(ctx, gateDir, candidate.HeadSHA)
+		if eligible {
+			compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), candidate.ID, candidate.HeadSHA)
+			eligible = err == nil && compatible
+		}
+		if eligible {
+			compatible, err := recoveryAnchorCompatible(ctx, gateDir, candidate.ID, candidate.HeadSHA)
+			eligible = err == nil && compatible
+		}
+		if candidate.ID == run.ID {
+			selectedEligible = eligible
+		}
+		allEligible = allEligible && eligible
+		runIDs = append(runIDs, candidate.ID)
+	}
+	return runIDs, selectedEligible, allEligible
 }
 
 func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run *db.Run) bool {
