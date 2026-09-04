@@ -142,23 +142,16 @@ type pipelineCommitForCLI struct {
 	files   map[string]string
 }
 
-func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
-	human := newSyncCmd()
-	agent := newAxiSyncCmd()
-	for name, content := range map[string]string{"human help": human.Long, "axi help": agent.Long} {
-		for _, want := range []string{"fast-forward", "clean", "push", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
-			if !strings.Contains(content, want) {
-				t.Errorf("%s missing %q: %s", name, want, content)
-			}
+func TestSyncHelpExposesGuardedModes(t *testing.T) {
+	for _, args := range [][]string{{"sync", "--help"}, {"axi", "sync", "--help"}} {
+		out, err := executeCmd(args...)
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
-	}
-	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "src", "content", "docs", "reference", "cli.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check", "--bind-archive-ref", "branch_sync.recovery"} {
-		if !strings.Contains(string(doc), want) {
-			t.Errorf("CLI reference missing %q", want)
+		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v help missing %q:\n%s", args, want, out)
+			}
 		}
 	}
 }

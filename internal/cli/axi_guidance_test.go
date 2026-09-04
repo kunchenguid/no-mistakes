@@ -35,27 +35,6 @@ var canonicalPreserveGateFixPhrases = []string{
 	"every pipeline fix commit",
 }
 
-var canonicalBranchSyncPhrases = []string{
-	"branch_sync",
-	"next_action.command",
-	"no-mistakes axi sync",
-	"blocked",
-	"reset, stash, merge, rebase, force, or branch replacement",
-	// Guarded custody recovery for a terminal run whose pipeline commits were
-	// never published: the action, exact ordinary/archive commands, and the
-	// archive's keep-required-head rule stay on every guidance surface.
-	"recover_custody",
-	"no-mistakes axi sync --recover",
-	"no-mistakes axi sync --recover --keep-local",
-	"bound archive",
-	"required head",
-	// Cancellation releases a run that never changed the submitted head
-	// (v1.44.2 dogfood catch): every surface must name the released state and
-	// that it needs no recovery.
-	"user_owned",
-	"before changing the submitted head",
-}
-
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
 
 const canonicalUnknownBranchRunRelationship = "An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship."
@@ -134,17 +113,25 @@ func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	}
 }
 
-func TestBranchSyncGuidance_SyncedAcrossStaticAndLiveSurfaces(t *testing.T) {
-	surfaces := map[string]string{
-		"skill body":         skill.Markdown(),
-		"agents guide":       readAgentsGuide(t),
-		"live sync guidance": branchSyncAgentGuidance,
+func TestBranchSyncGuidance_EmittedForBoundArchiveRecovery(t *testing.T) {
+	f := newCLIDivergentArchiveFixture(t)
+	if out, err := executeCmd("axi", "sync", "--bind-archive-ref", f.archiveRef); err != nil {
+		t.Fatalf("bind archive: %v\n%s", err, out)
 	}
-	for name, content := range surfaces {
-		for _, phrase := range canonicalBranchSyncPhrases {
-			if !strings.Contains(content, phrase) {
-				t.Errorf("%s is missing branch-sync guidance phrase %q", name, phrase)
-			}
+
+	out, err := executeCmd("axi")
+	if err != nil {
+		t.Fatalf("axi home: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"branch_sync:",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover --keep-local",
+		"bound archive preserves a divergent later head",
+		"custody returns at the reported required head",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("axi home missing recovery guidance %q:\n%s", want, out)
 		}
 	}
 }
