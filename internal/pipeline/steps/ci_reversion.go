@@ -95,6 +95,7 @@ type reversionEvidence struct {
 	Path   string
 	Kind   reversionKind
 	Lines  []string
+	Total  int
 	Digest string
 }
 
@@ -124,9 +125,12 @@ func (e *decisionReversionError) Error() string {
 			b.WriteString("\n    + ")
 			b.WriteString(line)
 		}
+		if omitted := ev.omittedLines(); omitted > 0 {
+			b.WriteString(fmt.Sprintf("\n    + and %d more %s", omitted, plural(omitted, "line")))
+		}
 	}
 	if elided > 0 {
-		b.WriteString(fmt.Sprintf("\n- and %d more %s", elided, pluralFiles(elided)))
+		b.WriteString(fmt.Sprintf("\n- and %d more %s", elided, plural(elided, "file")))
 	}
 	return b.String()
 }
@@ -141,11 +145,20 @@ func boundEvidence(evidence []reversionEvidence) (shown []reversionEvidence, eli
 	return evidence[:maxReversionEvidenceFiles], len(evidence) - maxReversionEvidenceFiles
 }
 
-func pluralFiles(n int) string {
-	if n == 1 {
-		return "file"
+// omittedLines reports how much of this file's finding the display cap hid. A
+// person authorises the whole finding, so a partial list has to say it is one.
+func (ev reversionEvidence) omittedLines() int {
+	if ev.Total <= len(ev.Lines) {
+		return 0
 	}
-	return "files"
+	return ev.Total - len(ev.Lines)
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 // authorizes reports whether a person's fix response to the receiver also
@@ -279,8 +292,8 @@ func detectDecisionReversion(sctx *pipeline.StepContext, baseSHA, preHeadSHA str
 			return nil, err
 		}
 		if lines := reinstatedBaseLines(base, pre, post); len(lines) > 0 {
-			sample, digest := sampleAndDigest(lines)
-			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Digest: digest})
+			sample, total, digest := sampleAndDigest(lines)
+			evidence = append(evidence, reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest})
 		}
 	}
 	// Deliberately NOT truncated to the display cap: the full set is the
@@ -408,7 +421,7 @@ func reinstatedBaseLines(base, pre, post string) []string {
 // sampleAndDigest splits a complete finding into what a person is shown and what
 // identifies it. The digest covers every line, so a later refusal that restores
 // more than the sample can hold is still a different refusal.
-func sampleAndDigest(lines []string) (sample []string, digest string) {
+func sampleAndDigest(lines []string) (sample []string, total int, digest string) {
 	sum := sha256.New()
 	for _, line := range lines {
 		sum.Write([]byte(line))
@@ -416,6 +429,7 @@ func sampleAndDigest(lines []string) (sample []string, digest string) {
 	}
 	digest = hex.EncodeToString(sum.Sum(nil))
 
+	total = len(lines)
 	sample = lines
 	if len(sample) > maxReversionEvidenceLines {
 		sample = sample[:maxReversionEvidenceLines]
@@ -424,7 +438,7 @@ func sampleAndDigest(lines []string) (sample []string, digest string) {
 	for i, line := range sample {
 		clamped[i] = clampEvidenceLine(line)
 	}
-	return clamped, digest
+	return clamped, total, digest
 }
 
 func lineCounts(content string) map[string]int {
@@ -576,12 +590,16 @@ func reversionDetail(reversion *decisionReversionError) string {
 	for _, ev := range shown {
 		part := ev.Path + " would be " + string(ev.Kind)
 		if len(ev.Lines) > 0 {
-			part += " (for example: " + strings.Join(ev.Lines, " / ") + ")"
+			part += " (for example: " + strings.Join(ev.Lines, " / ")
+			if omitted := ev.omittedLines(); omitted > 0 {
+				part += fmt.Sprintf(", and %d more %s", omitted, plural(omitted, "line"))
+			}
+			part += ")"
 		}
 		parts = append(parts, part)
 	}
 	if elided > 0 {
-		parts = append(parts, fmt.Sprintf("and %d more %s", elided, pluralFiles(elided)))
+		parts = append(parts, fmt.Sprintf("and %d more %s", elided, plural(elided, "file")))
 	}
 	return "Evidence: " + strings.Join(parts, "; ") + "."
 }

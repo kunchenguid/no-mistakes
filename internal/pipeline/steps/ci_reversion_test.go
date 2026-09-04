@@ -604,8 +604,8 @@ func (h *recordingDecisionHost) FetchFailedCheckLogs(context.Context, *scm.PR, s
 func TestDecisionReversionAuthorization(t *testing.T) {
 	t.Parallel()
 	reinstated := func(path string, lines ...string) reversionEvidence {
-		sample, digest := sampleAndDigest(lines)
-		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Digest: digest}
+		sample, total, digest := sampleAndDigest(lines)
+		return reversionEvidence{Path: path, Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest}
 	}
 	store := reversionEvidence{Path: "store", Kind: reversionRestoredFile}
 	skill := reinstated("SKILL.md", "count: six")
@@ -669,5 +669,45 @@ func TestDecisionReversionAuthorizationIsNotBoundedByTheDisplayCap(t *testing.T)
 	}
 	if !strings.Contains(later.Error(), "and 1 more file") {
 		t.Fatalf("a person must be told what the cap left out: %s", later.Error())
+	}
+}
+
+// TestDecisionReversionRefusalDisclosesEverythingItAuthorises closes the gap
+// between what a refusal shows and what answering it authorises. The identity is
+// the complete finding, so a refusal that quietly lists five of twelve
+// reinstated lines would have a person authorise seven they never saw.
+func TestDecisionReversionRefusalDisclosesEverythingItAuthorises(t *testing.T) {
+	t.Parallel()
+	var lines []string
+	for i := 0; i < 12; i++ {
+		lines = append(lines, fmt.Sprintf("restored line %02d", i))
+	}
+	sample, total, digest := sampleAndDigest(lines)
+	refusal := &decisionReversionError{evidence: []reversionEvidence{{
+		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample, Total: total, Digest: digest,
+	}}}
+
+	report := refusal.Error()
+	if len(sample) != maxReversionEvidenceLines {
+		t.Fatalf("sample = %d lines, want the display cap %d", len(sample), maxReversionEvidenceLines)
+	}
+	if !strings.Contains(report, "and 7 more lines") {
+		t.Fatalf("refusal hides %d reinstated lines it would authorise: %s", total-len(sample), report)
+	}
+	detail := reversionDetail(refusal)
+	if !strings.Contains(detail, "and 7 more lines") {
+		t.Fatalf("the gate finding hides the same lines: %s", detail)
+	}
+	if strings.Contains(refusal.Error(), "and 1 more line\n") {
+		t.Fatal("singular/plural rendering is wrong for a multi-line remainder")
+	}
+
+	// One omitted line reads as a line, not lines.
+	sample1, total1, digest1 := sampleAndDigest(append(append([]string{}, lines[:maxReversionEvidenceLines]...), "one more"))
+	single := &decisionReversionError{evidence: []reversionEvidence{{
+		Path: "SKILL.md", Kind: reversionReinstatedText, Lines: sample1, Total: total1, Digest: digest1,
+	}}}
+	if !strings.Contains(single.Error(), "and 1 more line") {
+		t.Fatalf("single omitted line not disclosed: %s", single.Error())
 	}
 }
