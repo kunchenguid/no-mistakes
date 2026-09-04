@@ -417,7 +417,7 @@ Shows runs newest-first with branch, status (styled), short SHA, timestamp, and 
 
 ## no-mistakes eval
 
-Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model in isolation, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
+Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model with isolated no-mistakes state and a throwaway worktree, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
 
 See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
 
