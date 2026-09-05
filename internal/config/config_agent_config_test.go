@@ -59,6 +59,23 @@ agent_config:
 			t.Errorf("AgentConfig[%q] = %#v, want %#v", name, got, wantProfile)
 		}
 	}
+	if got := cfg.AgentConfig["pi"]; got.Model != "anthropic-vertex/claude-opus-4-8" || got.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("omitted Pi Review profile = %#v", got)
+	}
+	if got, ok := cfg.ReviewFixAgentConfig["pi"]; !ok || got.Profile.Model != "openai-codex/gpt-5.6-sol" || got.Profile.Effort != agentcfg.EffortLow || !got.Fast {
+		t.Fatalf("omitted Pi Review-fix profile = %#v, explicit=%v", got, ok)
+	}
+}
+
+func TestLoadGlobal_ExplicitPiAgentConfigReplacesRoleDefaults(t *testing.T) {
+	global := writeGlobalConfig(t, "agent_config:\n  pi:\n    model: custom-pi-model\n")
+	cfg := Merge(global, &RepoConfig{})
+	if got := cfg.AgentProfileFor(types.AgentPi); got != (agentcfg.Profile{Model: "custom-pi-model"}) {
+		t.Fatalf("explicit Pi Review profile = %#v", got)
+	}
+	if got, explicit := cfg.ReviewFixProfileFor(types.AgentPi); explicit || got.Profile.Model != "custom-pi-model" || got.Fast {
+		t.Fatalf("explicit Pi Review-fix fallback = %#v, explicit=%v", got, explicit)
+	}
 }
 
 func TestLoadGlobal_AgentConfigRejectsBadInput(t *testing.T) {
@@ -92,20 +109,16 @@ func TestLoadGlobal_AgentConfigAcceptsExplicitACPTarget(t *testing.T) {
 	}
 }
 
-// TestLoadGlobal_AgentConfigAbsentIsZero is the backwards-compatibility floor:
-// a config that predates agent_config resolves every agent to the zero Profile,
-// which changes no argv anywhere.
-func TestLoadGlobal_AgentConfigAbsentIsZero(t *testing.T) {
-	cfg := writeGlobalConfig(t, "agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\n")
-	if cfg.AgentConfig != nil {
-		t.Fatalf("AgentConfig = %#v, want nil for a config that does not set it", cfg.AgentConfig)
+func TestLoadGlobal_AgentConfigAbsentRetainsPiRoleDefaults(t *testing.T) {
+	global := writeGlobalConfig(t, "log_level: debug\n")
+	cfg := Merge(global, &RepoConfig{})
+	reviewer := cfg.AgentProfileFor(types.AgentPi)
+	if reviewer.Model != "anthropic-vertex/claude-opus-4-8" || reviewer.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("default Review profile = %#v", reviewer)
 	}
-	merged := Merge(cfg, &RepoConfig{})
-	if got := merged.AgentProfileFor(types.AgentCodex); !got.IsZero() {
-		t.Fatalf("AgentProfileFor(codex) = %#v, want the zero profile", got)
-	}
-	if got := merged.AgentArgsFor(types.AgentCodex); len(got) != 2 || got[0] != "-m" {
-		t.Fatalf("AgentArgsFor(codex) = %v, want the untouched override", got)
+	fixer, explicit := cfg.ReviewFixProfileFor(types.AgentPi)
+	if !explicit || fixer.Profile.Model != "openai-codex/gpt-5.6-sol" || fixer.Profile.Effort != agentcfg.EffortLow || !fixer.Fast {
+		t.Fatalf("default Review-fix profile = %#v, explicit=%v", fixer, explicit)
 	}
 }
 
@@ -179,18 +192,21 @@ func TestRepoConfigCannotSetAgentConfig(t *testing.T) {
 	}
 }
 
-// TestDefaultConfigYAML_DocumentsAgentConfig keeps the shipped config commentary
-// honest about the field that replaces knowing each harness's own flag.
-func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
+func TestDefaultConfigYAML_ActivatesPiRoleProfiles(t *testing.T) {
 	cfg, err := LoadGlobalFromBytes([]byte(defaultConfigYAML))
 	if err != nil {
 		t.Fatalf("default config does not load: %v", err)
 	}
-	if cfg.AgentConfig != nil {
-		t.Fatalf("default config activates agent_config: %#v", cfg.AgentConfig)
+	if cfg.Agent != types.AgentPi || len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentPi {
+		t.Fatalf("default agent = %q %v, want pi", cfg.Agent, cfg.Agents)
 	}
-	if !strings.Contains(defaultConfigYAML, "# agent_config:") {
-		t.Fatal("default config.yaml does not document agent_config")
+	reviewer := cfg.AgentConfig["pi"]
+	if reviewer.Model != "anthropic-vertex/claude-opus-4-8" || reviewer.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("default Review profile = %#v", reviewer)
+	}
+	fixer, ok := cfg.ReviewFixAgentConfig["pi"]
+	if !ok || fixer.Profile.Model != "openai-codex/gpt-5.6-sol" || fixer.Profile.Effort != agentcfg.EffortLow || !fixer.Fast {
+		t.Fatalf("default Review-fix profile = %#v, explicit=%v", fixer, ok)
 	}
 	for _, effort := range agentcfg.EffortNames() {
 		if !strings.Contains(defaultConfigYAML, effort) {

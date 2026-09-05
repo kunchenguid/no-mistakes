@@ -131,14 +131,15 @@ type GlobalConfig struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	// AgentConfig is the harness-neutral per-agent tuning map (agent_config):
 	// model and reasoning effort stated once in a common spelling, mapped down
-	// to each harness's own mechanism by internal/agentcfg. It is additive to
+	// to each harness's own mechanism by internal/agentcfg. A nested review_fix
+	// profile is resolved separately into ReviewFixAgentConfig. It is additive to
 	// agent_args_override, which still wins for any knob it already pins
-	// natively, so every configuration written before this field keeps its exact
-	// previous behavior. Global-only for the same reason as
-	// agent_args_override: it describes this machine's agent setup and decides
+	// natively. Global-only for the same reason as agent_args_override: it
+	// describes this machine's agent setup and decides
 	// which model runs with the operator's credentials, so no pushed branch may
 	// set it.
-	AgentConfig map[string]agentcfg.Profile `yaml:"agent_config"`
+	AgentConfig          map[string]agentcfg.Profile `yaml:"agent_config"`
+	ReviewFixAgentConfig map[string]ReviewFixProfile `yaml:"-"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -548,39 +549,42 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	ReplayGlobalYAML      []byte
-	ReplayRepoYAML        []byte
-	TrustedConfigSHA      string
-	CaptureEvalProvenance bool
-	Agent                 types.AgentName
-	Agents                []types.AgentName
-	ACPXPath              string
-	ForgejoAXIPath        string
-	ACPRegistryOverrides  map[string]string
-	AgentPathOverride     map[string]string
-	AgentArgsOverride     map[string][]string
-	AgentConfig           map[string]agentcfg.Profile
-	CITimeout             time.Duration
-	StepQuietWarning      time.Duration
-	AgentTimeout          time.Duration
-	ReviewAgentTimeout    time.Duration
-	TestAgentTimeout      time.Duration
-	GateReconcileInterval time.Duration
-	GateReconcileTimeout  time.Duration
-	LogLevel              string
-	SessionReuse          bool
-	Eval                  Eval
-	Commands              Commands
-	IgnorePatterns        []string
-	AutoFix               AutoFix
-	CI                    CI
-	Commit                Commit
-	Intent                Intent
-	Test                  Test
-	Document              Document
-	Review                Review
-	PR                    PR
-	ForgeProfiles         ForgeProfiles
+	ReplayGlobalYAML           []byte
+	ReplayRepoYAML             []byte
+	TrustedConfigSHA           string
+	CaptureEvalProvenance      bool
+	Agent                      types.AgentName
+	Agents                     []types.AgentName
+	ReviewFixAgents            []types.AgentName
+	ACPXPath                   string
+	ForgejoAXIPath             string
+	ACPRegistryOverrides       map[string]string
+	AgentPathOverride          map[string]string
+	AgentArgsOverride          map[string][]string
+	ReviewFixAgentArgsOverride map[string][]string
+	AgentConfig                map[string]agentcfg.Profile
+	ReviewFixAgentConfig       map[string]ReviewFixProfile
+	CITimeout                  time.Duration
+	StepQuietWarning           time.Duration
+	AgentTimeout               time.Duration
+	ReviewAgentTimeout         time.Duration
+	TestAgentTimeout           time.Duration
+	GateReconcileInterval      time.Duration
+	GateReconcileTimeout       time.Duration
+	LogLevel                   string
+	SessionReuse               bool
+	Eval                       Eval
+	Commands                   Commands
+	IgnorePatterns             []string
+	AutoFix                    AutoFix
+	CI                         CI
+	Commit                     Commit
+	Intent                     Intent
+	Test                       Test
+	Document                   Document
+	Review                     Review
+	PR                         PR
+	ForgeProfiles              ForgeProfiles
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -804,31 +808,37 @@ type Intent struct {
 type agentList []types.AgentName
 
 func (a *agentList) UnmarshalYAML(value *yaml.Node) error {
+	names, err := decodeAgentList(value, "agent")
+	if err != nil {
+		return err
+	}
+	*a = names
+	return nil
+}
+
+func decodeAgentList(value *yaml.Node, field string) ([]types.AgentName, error) {
 	switch value.Kind {
 	case yaml.ScalarNode:
 		name := strings.TrimSpace(value.Value)
 		if name == "" {
-			*a = nil
-			return nil
+			return nil, nil
 		}
-		*a = []types.AgentName{types.AgentName(name)}
-		return nil
+		return []types.AgentName{types.AgentName(name)}, nil
 	case yaml.SequenceNode:
 		names := make([]types.AgentName, 0, len(value.Content))
 		for i, item := range value.Content {
 			if item.Kind != yaml.ScalarNode {
-				return fmt.Errorf("agent[%d] must be a string", i)
+				return nil, fmt.Errorf("%s[%d] must be a string", field, i)
 			}
 			name := strings.TrimSpace(item.Value)
 			if name == "" {
-				return fmt.Errorf("agent[%d] must not be empty", i)
+				return nil, fmt.Errorf("%s[%d] must not be empty", field, i)
 			}
 			names = append(names, types.AgentName(name))
 		}
-		*a = names
-		return nil
+		return names, nil
 	default:
-		return fmt.Errorf("agent must be a string or a list of strings")
+		return nil, fmt.Errorf("%s must be a string or a list of strings", field)
 	}
 }
 
@@ -883,7 +893,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
-agent: auto
+agent: pi
 
 # Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
 # acpx_path: acpx
@@ -956,7 +966,9 @@ log_level: info
 #   grok: /Users/you/.grok/bin/grok
 
 # Model and reasoning effort per agent, in one common spelling (optional, global
-# only). no-mistakes maps these down to whatever the harness actually uses:
+# only). Pi's nested review_fix profile tunes only Review remediation; when
+# absent, the fixer uses the ordinary profile. no-mistakes maps these down to whatever
+# the harness actually uses:
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
 # codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
 # session-message body for opencode (its model needs the provider/model form),
@@ -965,7 +977,14 @@ log_level: info
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
 # agent_config is refused for them; agent_args_override remains an escape hatch
 # only if your installed CLI build accepts a suitable flag.
-# agent_config:
+agent_config:
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 #   codex:
 #     model: gpt-5.4
 #     effort: low
@@ -1175,12 +1194,16 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 // identity, and kept as fallbacks. The lookPath function should behave like
 // exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
+	return c.resolveAgentSelection(ctx, lookPath, "agent")
+}
+
+func (c *Config) resolveAgentSelection(ctx context.Context, lookPath func(string) (string, error), field string) error {
 	candidates := c.configuredAgents()
 	if len(candidates) <= 1 {
 		c.Agent = firstAgent(candidates)
 		c.Agents = copyAgents(candidates)
 		if c.Agent == types.AgentAuto {
-			name, err := c.resolveAutoAgent(ctx, lookPath)
+			name, err := c.resolveAutoAgent(ctx, lookPath, field)
 			if err != nil {
 				return err
 			}
@@ -1188,19 +1211,19 @@ func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string
 			c.Agents = []types.AgentName{name}
 			return nil
 		}
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
+		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath, field)
 		if err != nil {
 			return err
 		}
 		if !ok {
-			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe})
+			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe}, field)
 		}
 		c.Agent = name
 		c.Agents = []types.AgentName{name}
 		return nil
 	}
 
-	resolved, err := c.resolveAgentList(ctx, candidates, lookPath)
+	resolved, err := c.resolveAgentList(ctx, candidates, lookPath, field)
 	if err != nil {
 		return err
 	}
@@ -1219,7 +1242,7 @@ func (c *Config) configuredAgents() []types.AgentName {
 	return []types.AgentName{types.AgentAuto}
 }
 
-func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (string, error)) (types.AgentName, error) {
+func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (string, error), field string) (types.AgentName, error) {
 	probed := make([]string, 0, len(nativeAgentProbeOrder)+len(types.ACPAliases())+1)
 	for _, name := range nativeAgentProbeOrder {
 		bin := string(name)
@@ -1258,15 +1281,15 @@ func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (st
 			return alias.Name, nil
 		}
 	}
-	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed)
+	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed, field)
 }
 
-func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error)) ([]types.AgentName, error) {
+func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error), field string) ([]types.AgentName, error) {
 	resolved := make([]types.AgentName, 0, len(candidates))
 	seen := map[string]bool{}
 	probed := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		name, ok, probe, err := c.resolveConfiguredAgent(ctx, candidate, lookPath)
+		name, ok, probe, err := c.resolveConfiguredAgent(ctx, candidate, lookPath, field)
 		if probe != "" {
 			probed = append(probed, probe)
 		}
@@ -1284,7 +1307,7 @@ func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentN
 		resolved = append(resolved, name)
 	}
 	if len(resolved) == 0 {
-		return nil, noRunnableAgentError(candidates, probed)
+		return nil, noRunnableAgentError(candidates, probed, field)
 	}
 	return resolved, nil
 }
@@ -1296,7 +1319,7 @@ func resolvedAgentIdentity(name types.AgentName) string {
 	return "native:" + string(name)
 }
 
-func noRunnableAgentError(configured []types.AgentName, probed []string) error {
+func noRunnableAgentError(configured []types.AgentName, probed []string, field string) error {
 	names := make([]string, 0, len(configured))
 	for _, name := range configured {
 		names = append(names, string(name))
@@ -1308,16 +1331,16 @@ func noRunnableAgentError(configured []types.AgentName, probed []string) error {
 	)
 }
 
-func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error)) (types.AgentName, bool, string, error) {
+func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error), field string) (types.AgentName, bool, string, error) {
 	if name == types.AgentAuto {
-		resolved, err := c.resolveAutoAgent(ctx, lookPath)
+		resolved, err := c.resolveAutoAgent(ctx, lookPath, field)
 		if err != nil && strings.HasPrefix(err.Error(), "no runnable agent found") {
 			return "", false, "auto", nil
 		}
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set %q in ~/.no-mistakes/config.yaml)", name, field)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
@@ -1469,6 +1492,13 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+func (c *Config) ReviewFixAgentArgsFor(name types.AgentName) []string {
+	if c.ReviewFixAgentArgsOverride != nil {
+		return c.ReviewFixAgentArgsOverride[string(name)]
+	}
+	return c.AgentArgsFor(name)
+}
+
 // AgentProfile returns the harness-neutral model/effort selection for the
 // configured agent, as declared in agent_config. The zero Profile means the
 // harness keeps its own defaults.
@@ -1483,42 +1513,107 @@ func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
 	return c.AgentConfig[string(name)]
 }
 
+// ReviewFixProfile is Pi's optional role-specific profile nested at
+// agent_config.pi.review_fix. Profile carries model and effort through the
+// common agentcfg mapping. Fast enables Pi's verified openai-codex priority
+// request mechanism.
+type ReviewFixProfile struct {
+	Profile agentcfg.Profile
+	Fast    bool
+}
+
+// ReviewFixProfileFor returns the role profile when present, otherwise the
+// agent's ordinary profile. The bool distinguishes an explicit zero role
+// profile from absence.
+func (c *Config) ReviewFixProfileFor(name types.AgentName) (ReviewFixProfile, bool) {
+	if c.ReviewFixAgentConfig != nil {
+		if profile, ok := c.ReviewFixAgentConfig[string(name)]; ok {
+			return profile, true
+		}
+	}
+	return ReviewFixProfile{Profile: c.AgentProfileFor(name)}, false
+}
+
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
 // is a string here so an invalid level is reported as a config error naming the
 // valid vocabulary rather than decoding into a value no harness accepts.
 type agentProfileRaw struct {
-	Model  string `yaml:"model"`
-	Effort string `yaml:"effort"`
+	Model     string                    `yaml:"model"`
+	Effort    string                    `yaml:"effort"`
+	ReviewFix *reviewFixAgentProfileRaw `yaml:"review_fix"`
 }
 
-// parseAgentConfig validates the agent_config map and resolves it to
-// harness-neutral profiles. Every knob is checked against what the named
-// harness can actually express, so an unmappable request fails at load rather
-// than being silently dropped at run time.
-func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, error) {
+type reviewFixAgentProfileRaw struct {
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
+	Fast   bool   `yaml:"fast"`
+}
+
+// parseAgentConfig validates the agent_config map and Pi's role profile. The
+// nested Review-fix profile is independent: omitted knobs keep Pi's defaults
+// rather than inheriting reviewer tuning.
+func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]ReviewFixProfile, error) {
 	profiles := make(map[string]agentcfg.Profile, len(raw))
+	fixProfiles := make(map[string]ReviewFixProfile)
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
-		effort, err := agentcfg.ParseEffort(entry.Effort)
+		profile, err := parseAgentProfile(agentName, entry.Model, entry.Effort, "agent_config."+name)
 		if err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, nil, err
 		}
-		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
-		if err := agentcfg.Validate(agentName, profile); err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+		if !profile.IsZero() {
+			profiles[name] = profile
 		}
-		if profile.IsZero() {
-			continue
+		if entry.ReviewFix != nil {
+			if agentName != types.AgentPi {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.review_fix: review_fix is supported only by agent pi", name)
+			}
+			fixProfile, err := parseAgentProfile(agentName, entry.ReviewFix.Model, entry.ReviewFix.Effort, "agent_config."+name+".review_fix")
+			if err != nil {
+				return nil, nil, err
+			}
+			resolved := ReviewFixProfile{Profile: fixProfile, Fast: entry.ReviewFix.Fast}
+			if err := validateReviewFixProfile(agentName, resolved); err != nil {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.review_fix: %w", name, err)
+			}
+			fixProfiles[name] = resolved
 		}
-		profiles[name] = profile
 	}
 	if len(profiles) == 0 {
-		return nil, nil
+		profiles = nil
 	}
-	return profiles, nil
+	if len(fixProfiles) == 0 {
+		fixProfiles = nil
+	}
+	return profiles, fixProfiles, nil
+}
+
+func parseAgentProfile(name types.AgentName, model, effortValue, field string) (agentcfg.Profile, error) {
+	effort, err := agentcfg.ParseEffort(effortValue)
+	if err != nil {
+		return agentcfg.Profile{}, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	profile := agentcfg.Profile{Model: strings.TrimSpace(model), Effort: effort}
+	if err := agentcfg.Validate(name, profile); err != nil {
+		return agentcfg.Profile{}, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return profile, nil
+}
+
+func validateReviewFixProfile(name types.AgentName, profile ReviewFixProfile) error {
+	if !profile.Fast {
+		return nil
+	}
+	if name != types.AgentPi {
+		return fmt.Errorf("fast is supported only by agent pi")
+	}
+	if !strings.HasPrefix(profile.Profile.Model, "openai-codex/") {
+		return fmt.Errorf("fast requires model: openai-codex/<model>")
+	}
+	return nil
 }
 
 func agentNamesText(names []types.AgentName) []string {
@@ -1743,8 +1838,17 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                   types.AgentAuto,
-		Agents:                  []types.AgentName{types.AgentAuto},
+		Agent:  types.AgentPi,
+		Agents: []types.AgentName{types.AgentPi},
+		AgentConfig: map[string]agentcfg.Profile{
+			"pi": {Model: "anthropic-vertex/claude-opus-4-8", Effort: agentcfg.EffortXHigh},
+		},
+		ReviewFixAgentConfig: map[string]ReviewFixProfile{
+			"pi": {
+				Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+				Fast:    true,
+			},
+		},
 		ForgejoAXIPath:          "forgejo-axi",
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
@@ -1951,11 +2055,22 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
 	}
 	if raw.AgentConfig != nil {
-		profiles, err := parseAgentConfig(raw.AgentConfig)
+		profiles, fixProfiles, err := parseAgentConfig(raw.AgentConfig)
 		if err != nil {
 			return nil, err
 		}
+		if _, explicitPi := raw.AgentConfig[string(types.AgentPi)]; !explicitPi {
+			if profiles == nil {
+				profiles = make(map[string]agentcfg.Profile)
+			}
+			profiles[string(types.AgentPi)] = cfg.AgentConfig[string(types.AgentPi)]
+			if fixProfiles == nil {
+				fixProfiles = make(map[string]ReviewFixProfile)
+			}
+			fixProfiles[string(types.AgentPi)] = cfg.ReviewFixAgentConfig[string(types.AgentPi)]
+		}
 		cfg.AgentConfig = profiles
+		cfg.ReviewFixAgentConfig = fixProfiles
 	}
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
@@ -2737,6 +2852,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AgentPathOverride:     global.AgentPathOverride,
 		AgentArgsOverride:     global.AgentArgsOverride,
 		AgentConfig:           global.AgentConfig,
+		ReviewFixAgentConfig:  global.ReviewFixAgentConfig,
 		CITimeout:             global.CITimeout,
 		StepQuietWarning:      global.StepQuietWarning,
 		AgentTimeout:          global.AgentTimeout,

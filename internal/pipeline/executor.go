@@ -44,13 +44,14 @@ type approvalResponse struct {
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
 type Executor struct {
-	db     *db.DB
-	paths  *paths.Paths
-	config *config.Config
-	forge  *forgecontext.Context
-	agent  agent.Agent
-	steps  []Step
-	skips  map[types.StepName]bool
+	db             *db.DB
+	paths          *paths.Paths
+	config         *config.Config
+	forge          *forgecontext.Context
+	agent          agent.Agent
+	reviewFixAgent agent.Agent
+	steps          []Step
+	skips          map[types.StepName]bool
 
 	onEvent EventFunc
 
@@ -107,6 +108,7 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 		paths:                 p,
 		config:                cfg,
 		agent:                 ag,
+		reviewFixAgent:        agent.AgentForReviewFix(ag),
 		steps:                 steps,
 		onEvent:               onEvent,
 		approvalCh:            make(chan approvalResponse, 1),
@@ -289,8 +291,8 @@ func (e *Executor) prepareRestart(runID string, name types.StepName, currentInde
 }
 
 func (e *Executor) initializeRunScopes(runID string) {
-	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
-	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
+	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.reviewFixAgent != nil
+	e.sessions = NewRunSessions(e.db, runID, e.reviewFixAgent, sessionsEnabled)
 	e.shared = &RunShared{}
 }
 
@@ -384,17 +386,18 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	}
 	reconcileCtx := &StepContext{
-		Ctx:          ctx,
-		Run:          run,
-		Repo:         repo,
-		WorkDir:      workDir,
-		GateDir:      e.paths.RepoDir(repo.ID),
-		Config:       e.config,
-		ForgeContext: e.forge,
-		DB:           e.db,
-		Agent:        e.agent,
-		Sessions:     e.sessions,
-		Shared:       e.shared,
+		Ctx:            ctx,
+		Run:            run,
+		Repo:           repo,
+		WorkDir:        workDir,
+		GateDir:        e.paths.RepoDir(repo.ID),
+		Config:         e.config,
+		ForgeContext:   e.forge,
+		DB:             e.db,
+		Agent:          e.agent,
+		ReviewFixAgent: e.reviewFixAgent,
+		Sessions:       e.sessions,
+		Shared:         e.shared,
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
@@ -804,20 +807,27 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	autoFixAttempts := state.autoFixAttempts
 	roundNum := state.roundNum
 
-	stepAgent := e.agent
-	if stepAgent != nil {
+	decorateStepAgent := func(raw agent.Agent) agent.Agent {
+		if raw == nil {
+			return nil
+		}
 		// Innermost: default-by-construction invocation deadline so a step
 		// that calls Agent.Run directly cannot hang the run.
-		stepAgent = &timeoutAgent{inner: stepAgent, timeout: AgentTimeout(e.config)}
-		stepAgent = &gateStepBoundaryAgent{inner: stepAgent, phase: stepName}
-		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
-		stepAgent = &perfRecordingAgent{
-			inner:    stepAgent,
+		var decorated agent.Agent = &timeoutAgent{inner: raw, timeout: AgentTimeout(e.config)}
+		decorated = &gateStepBoundaryAgent{inner: decorated, phase: stepName}
+		decorated = &lifecycleAgent{inner: decorated, onLifecycle: onAgentLifecycle}
+		return &perfRecordingAgent{
+			inner:    decorated,
 			db:       e.db,
 			runID:    run.ID,
 			stepName: stepName,
 			round:    func() int { return roundNum + 1 },
 		}
+	}
+	stepAgent := decorateStepAgent(e.agent)
+	reviewFixStepAgent := stepAgent
+	if agent.HasReviewFixSelection(e.agent) {
+		reviewFixStepAgent = decorateStepAgent(e.reviewFixAgent)
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI
@@ -837,6 +847,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		WorkDir:          workDir,
 		GateDir:          e.paths.RepoDir(repo.ID),
 		Agent:            stepAgent,
+		ReviewFixAgent:   reviewFixStepAgent,
 		Config:           e.config,
 		ForgeContext:     e.forge,
 		DB:               e.db,

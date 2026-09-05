@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
+
+const piAnthropicVertexExtension = "npm:@twogiants/pi-anthropic-vertex@0.1.13"
 
 // piAgent spawns the pi CLI for each invocation. Pi reads its prompt from
 // stdin and emits JSONL on stdout when --mode json is set. The lifecycle is
@@ -23,6 +26,10 @@ type piAgent struct {
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
+	// fast installs a run-scoped trusted extension that sets OpenAI Codex's
+	// Responses service_tier to priority. Pi has no stock fast-mode flag.
+	fast              bool
+	providerExtension string
 	subprocessContext
 }
 
@@ -61,7 +68,13 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		// turn a recovery attempt into an arbitrary session-file selection.
 		return nil, fmt.Errorf("invalid pi session identity")
 	}
-	args := a.buildArgs(opts.Session)
+	args, extensionPath, err := a.buildRunArgs(opts.Session)
+	if err != nil {
+		return nil, err
+	}
+	if extensionPath != "" {
+		defer os.Remove(extensionPath)
+	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
@@ -153,6 +166,52 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 	emitAgentExited(opts, "pi", pid, err)
 	return res, err
+}
+
+const piFastExtension = `export default function (pi) {
+  pi.on("before_provider_request", (event, ctx) => {
+    if (ctx.model?.provider !== "openai-codex" ||
+        ctx.model?.api !== "openai-codex-responses" ||
+        event.payload === null || typeof event.payload !== "object" || Array.isArray(event.payload)) {
+      process.stderr.write("no-mistakes fast mode requires Pi's openai-codex Responses provider\n");
+      process.exit(78);
+    }
+    return { ...event.payload, service_tier: "priority" };
+  });
+}
+`
+
+func (a *piAgent) buildRunArgs(session *SessionRef) ([]string, string, error) {
+	args := a.buildArgs(session)
+	if a.providerExtension != "" {
+		args = append(args, "--extension", a.providerExtension)
+	}
+	if !a.fast {
+		return args, "", nil
+	}
+	extensionPath, err := writePiFastExtension()
+	if err != nil {
+		return nil, "", err
+	}
+	return append(args, "--extension", extensionPath), extensionPath, nil
+}
+
+func writePiFastExtension() (string, error) {
+	file, err := os.CreateTemp("", "no-mistakes-pi-fast-*.mjs")
+	if err != nil {
+		return "", fmt.Errorf("create Pi fast-mode extension: %w", err)
+	}
+	path := file.Name()
+	if _, err := file.WriteString(piFastExtension); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write Pi fast-mode extension: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close Pi fast-mode extension: %w", err)
+	}
+	return path, nil
 }
 
 func piStdinError(err error) error {

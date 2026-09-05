@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -41,9 +42,33 @@ func TestNewPipelineAgent_ProfileIsPerAgent(t *testing.T) {
 	_ = ag.Close()
 }
 
-// TestNewPipelineAgent_NoProfileIsUnchanged is the backwards-compatibility
-// floor at the daemon: a configuration that predates agent_config builds every
-// agent exactly as before.
+func TestNewPipelineAgent_SamePiUsesSeparateReviewFixProfile(t *testing.T) {
+	cfg := &config.Config{
+		Agent:  types.AgentPi,
+		Agents: []types.AgentName{types.AgentPi},
+		AgentConfig: map[string]agentcfg.Profile{
+			"pi": {Model: "anthropic-vertex/claude-opus-4-8", Effort: agentcfg.EffortXHigh},
+		},
+		ReviewFixAgentConfig: map[string]config.ReviewFixProfile{
+			"pi": {
+				Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+				Fast:    true,
+			},
+		},
+	}
+	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err != nil {
+		t.Fatalf("newPipelineAgent = %v", err)
+	}
+	defer ag.Close()
+	if !agent.HasReviewFixSelection(ag) {
+		t.Fatal("same Pi harness did not create independent reviewer and fixer sessions")
+	}
+	if got := agent.AgentForReviewFix(ag).Name(); got != string(types.AgentPi) {
+		t.Fatalf("Review fixer = %q, want pi", got)
+	}
+}
+
 func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 	cfg := &config.Config{
 		Agent:             types.AgentCodex,
@@ -52,6 +77,9 @@ func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 	ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
 	if err != nil {
 		t.Fatalf("newPipelineAgent = %v", err)
+	}
+	if agent.AgentForReviewFix(ag) != ag {
+		t.Fatal("a config without a Review-fix profile must keep the existing agent as its fixer")
 	}
 	_ = ag.Close()
 }

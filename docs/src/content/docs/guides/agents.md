@@ -6,7 +6,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 `no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
 It is not runner-free.
 Every validation run requires a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`.
-The default `agent: auto` setting picks the first supported native agent or ACP alias available on your system.
+The default role setup uses Pi; the [Global Config Reference](/no-mistakes/reference/global-config/#agent_config) owns its Review and Review-fix profiles.
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
 Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
@@ -26,8 +26,10 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 ## How to choose quickly
 
-- Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
+- Keep the default Pi role setup when Pi and its configured providers are available.
+- Set `agent: auto` if you prefer automatic selection of another installed agent.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
+- Use `agent_config.pi.review_fix` when Pi Review remediation needs a different profile; every other duty uses the ordinary agent profile.
 - Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable.
 - Set explicit `commands.lint` and a **targeted** `commands.test` if you want deterministic local baseline command execution regardless of agent choice; leave `commands.test` empty for agent-selected smallest relevant checks. Do not configure a complete-suite walk as local Test - remote CI owns broad regression.
 
@@ -97,8 +99,10 @@ If the calling environment exposes neither a supported native CLI nor a working 
 
 ```yaml
 # ~/.no-mistakes/config.yaml
-agent: auto
+agent: pi
 ```
+
+The [`agent_config` reference](/no-mistakes/reference/global-config/#agent_config) owns the built-in role profiles and their customization.
 
 ### Per-repo override
 
@@ -115,6 +119,10 @@ Repo config takes precedence over global config.
 # ~/.no-mistakes/config.yaml or .no-mistakes.yaml
 agent: [codex, grok]
 ```
+
+### Separate Review fixer profile
+
+Use `agent_config.pi.review_fix` for different Pi fixer tuning. The [`agent_config`](/no-mistakes/reference/global-config/#agent_config) reference owns the exact defaults, scope, precedence, and fast-mode behavior.
 
 ### Optional ACP target
 
@@ -192,20 +200,19 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-Six global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
+Seven global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
-- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, mapped down to each harness's own mechanism, with the full per-harness mapping table and the precedence rule against raw flags.
-- [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as service tier or permission mode, including the reserved-flag rules and smart defaults. Keep both global-only; they reflect your local agent setup rather than repo policy.
+- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, plus Pi's nested Review-fix role profile and fast mode, mapped down to each harness's verified mechanism with explicit precedence against raw flags.
+- [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as permission mode or a general service tier, including the reserved-flag rules and smart defaults. Keep both global-only; they reflect your local agent setup rather than repo policy.
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
 - [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
-Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
-The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
+With the default `session_reuse: true`, supported agents keep a durable session for Review-fix turns, while Review and rereview turns remain fresh and session-free.
+The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the selected-agent, role-profile, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface
 

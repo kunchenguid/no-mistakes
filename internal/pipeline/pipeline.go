@@ -15,12 +15,16 @@ var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx                   context.Context
-	Run                   *db.Run
-	Repo                  *db.Repo
-	WorkDir               string
-	GateDir               string
-	Agent                 agent.Agent
+	Ctx     context.Context
+	Run     *db.Run
+	Repo    *db.Repo
+	WorkDir string
+	GateDir string
+	Agent   agent.Agent
+	// ReviewFixAgent is selected only for turns that remediate Review findings.
+	// It equals Agent when no global override is configured. Review and every
+	// other pipeline duty continue to use Agent.
+	ReviewFixAgent        agent.Agent
 	Config                *config.Config
 	ForgeContext          *forgecontext.Context
 	DB                    *db.DB
@@ -72,9 +76,9 @@ type StepContext struct {
 	// context only.
 	PriorBranchDecisions          []*db.BranchDecisionRound
 	PriorBranchDecisionsTruncated bool
-	// Sessions manages the run's durable review-fixer session. The session
-	// machinery remains role-generic for legacy recovery; nil runs every
-	// invocation cold.
+	// Sessions manages the run's durable review-fixer session using
+	// ReviewFixAgent. The session machinery remains role-generic for legacy
+	// recovery; nil runs every invocation cold.
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).

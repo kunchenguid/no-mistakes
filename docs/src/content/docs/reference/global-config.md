@@ -8,7 +8,7 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-agent: auto
+agent: pi
 
 acpx_path: acpx
 
@@ -27,9 +27,13 @@ agent_path_override:
   copilot: /usr/local/bin/copilot
 
 agent_config:
-  codex:
-    model: gpt-5.4
-    effort: low
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 
 agent_args_override:
   codex:
@@ -114,13 +118,13 @@ providers:
 
 ### agent
 
-Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
+Default agent for all pipeline duties and setup-wizard suggestions, including Review remediation. Can be overridden per-repo.
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
 | Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | `auto`                                                                                      |
+| Default | `pi`                                                                                        |
 
 `auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
 `cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
@@ -210,13 +214,13 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
+Model and reasoning effort per agent, in one common spelling. Pi's optional nested `review_fix` profile replaces its ordinary profile only for Review remediation; other agents reject `review_fix`. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
-|         |                                                                                     |
-| ------- | ----------------------------------------------------------------------------------- |
-| Type    | `map[string]{model, effort}`                                                        |
+|         |                                                                                                         |
+| ------- | ------------------------------------------------------------------------------------------------------- |
+| Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                                         |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Empty (every harness keeps its own defaults)                                        |
+| Default | Built-in Pi profiles shown below when `agent_config.pi` is omitted                                     |
 
 ```yaml
 agent_config:
@@ -230,23 +234,38 @@ agent_config:
     model: openai/gpt-5
   cursor:
     model: gpt-5
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 ```
+
+The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. Those defaults remain active when `agent_config` contains only other agents; an explicit `agent_config.pi` entry replaces both Pi defaults, and omitting its `review_fix` block makes remediation use that explicit ordinary Pi profile. For an `anthropic-vertex` profile, no-mistakes loads the pinned `@twogiants/pi-anthropic-vertex` package for that invocation; configure Google Cloud Application Default Credentials, enable the Claude model in Vertex AI Model Garden, and set `GOOGLE_CLOUD_PROJECT` (plus `GOOGLE_CLOUD_LOCATION` when needed) in the daemon environment. Pi installs this invocation-scoped package into temporary storage for each agent process: no-mistakes does not persist or reuse it, so repeated Review invocations incur package-install startup latency and require network access even after an earlier invocation succeeded. An unavailable package registry or offline daemon therefore prevents the Vertex-backed Review from starting.
+
+Each new run records its effective Review-remediation agent candidates, profiles, and native argument overrides before execution. Recovery restores that snapshot, so later global config edits affect later runs without retargeting an in-flight run's fixer; runs created by older versions without a snapshot retain the legacy recovery selection.
+
+The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes.
+
+`fast` is accepted only in a Pi `review_fix` profile whose model uses `openai-codex/<model>`; other combinations fail config loading with a concise correction. Because Pi has no stock fast-mode flag, no-mistakes loads a trusted invocation-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests and terminates the invocation if the effective provider, API, or payload shape does not match. It does not depend on an ambient user extension or launcher-specific environment variable.
 
 `effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
 
 How each field maps:
 
-| Agent             | `model`                                       | `effort`                          | Accepted effort levels                              |
-| ----------------- | --------------------------------------------- | --------------------------------- | --------------------------------------------------- |
-| `claude`          | `--model`                                     | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
-| `codex`           | `-m`                                          | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
-| `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
-| `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
-| `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
-| `rovodev`         | not expressible                               | not expressible                   | -                                                   |
-| `antigravity`     | not expressible                               | not expressible                   | -                                                   |
+| Agent             | `model`                                          | `effort`                          | Accepted effort levels                              |
+| ----------------- | ------------------------------------------------ | --------------------------------- | --------------------------------------------------- |
+| `claude`          | `--model`                                        | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
+| `codex`           | `-m`                                             | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
+| `grok`            | `--model`                                        | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
+| `copilot`         | `--model`                                        | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `pi`              | `--model`                                        | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`         | provider-specific                                   |
+| `cursor`, `acp:*` | `acpx --model`                                   | not expressible                   | -                                                   |
+| `rovodev`         | not expressible                                  | not expressible                   | -                                                   |
+| `antigravity`     | not expressible                                  | not expressible                   | -                                                   |
 
 `opencode` needs the `provider/model` form (for example `openai/gpt-5`) because its session API takes the provider and the model as separate fields; a bare model name is refused at config load rather than dropped. Both of its knobs travel in the session message, not in the launch command, because `opencode serve` exits with usage on an unknown flag.
 
@@ -270,7 +289,7 @@ agent_args_override:
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this for anything [`agent_config`](#agent_config) does not cover - service tier, permission mode, profiles, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
+Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.pi.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
 
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
@@ -530,7 +549,7 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
+When enabled and the effective agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
 When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.
@@ -598,7 +617,7 @@ How many times the CI step may re-run a single provider-attributed check before 
 This covers cancellations on supported providers and, when the value is positive, opts GitHub into detecting jobs that failed before any repository step ran.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `int` |
 | Default | `0` |
 | Range | `0` to `5`; values outside it are clamped |
@@ -618,7 +637,7 @@ The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_
 The operator-level fallback for [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs), whose per-repository reference owns the repair-delivery semantics, safety rationale, and trust boundary.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -761,7 +780,7 @@ These are operator settings for this machine's local disk, so they are global-on
 Open pull requests created on GitHub as drafts (`gh pr create --draft`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -773,7 +792,7 @@ This is a global default. Per-repo config can override it via `providers.github.
 Open merge requests created on GitLab as drafts (`glab mr create --draft`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -785,7 +804,7 @@ This is a global default. Per-repo config can override it via `providers.gitlab.
 Open pull requests created on Bitbucket Cloud as drafts (`"draft": true` in the create-PR API request).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -797,7 +816,7 @@ This is a global default. Per-repo config can override it via `providers.bitbuck
 Open pull requests created on Azure DevOps as drafts (`az repos pr create --draft true`).
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 

@@ -243,6 +243,11 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if run.ReviewFixConfigJSON != nil {
+		if err := cfg.ApplyReviewFixRunConfig(*run.ReviewFixConfigJSON); err != nil {
+			return nil, err
+		}
+	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		return nil, err
 	}
@@ -262,16 +267,51 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
-	agents := cfg.Agents
-	if len(agents) == 0 {
-		agents = []types.AgentName{cfg.Agent}
+	primary, err := newConfiguredAgentSet(cfg, cfg.Agents, evidenceRoot, environment, false)
+	if err != nil {
+		return nil, err
 	}
-	created := make([]agent.Agent, 0, len(agents))
-	for _, name := range agents {
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+	ag := primary
+	fixerNames := cfg.ReviewFixAgentsForRun()
+	separateFixer := !agentListsEqual(cfg.Agents, fixerNames) || cfg.HasReviewFixProfileFor(fixerNames)
+	if separateFixer {
+		fixer, fixErr := newConfiguredAgentSet(cfg, fixerNames, evidenceRoot, environment, true)
+		if fixErr != nil {
+			_ = primary.Close()
+			return nil, fmt.Errorf("create review fixer: %w", fixErr)
+		}
+		ag = agent.NewReviewFixSelection(primary, fixer)
+	}
+
+	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
+	// unverified harness when the repo disabled project settings; otherwise run
+	// every adapter as before. The role selection reports neutralization across
+	// both the ordinary and Review-fixer agent sets.
+	if cfg.DisableProjectSettings {
+		if err := agent.EnsureGateNeutralized(ag); err != nil {
+			_ = ag.Close()
+			return nil, err
+		}
+	}
+	return ag, nil
+}
+
+func newConfiguredAgentSet(cfg *config.Config, names []types.AgentName, evidenceRoot string, environment runenv.Overlay, reviewFix bool) (agent.Agent, error) {
+	created := make([]agent.Agent, 0, len(names))
+	for _, name := range names {
+		profile := config.ReviewFixProfile{Profile: cfg.AgentProfileFor(name)}
+		if reviewFix {
+			profile, _ = cfg.ReviewFixProfileFor(name)
+		}
+		args := cfg.AgentArgsFor(name)
+		if reviewFix {
+			args = cfg.ReviewFixAgentArgsFor(name)
+		}
+		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), args, agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
-			Profile:                cfg.AgentProfileFor(name),
+			Profile:                profile.Profile,
+			Fast:                   profile.Fast,
 			Environment:            environment,
 		})
 		if err != nil {
@@ -282,17 +322,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 		created = append(created, agent.WithSteering(next, evidenceRoot))
 	}
-	ag := agent.NewFallback(created)
-	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
-	// unverified harness when the repo disabled project settings; otherwise run
-	// every adapter as before.
-	if cfg.DisableProjectSettings {
-		if err := agent.EnsureGateNeutralized(ag); err != nil {
-			_ = ag.Close()
-			return nil, err
-		}
-	}
-	return ag, nil
+	return agent.NewFallback(created), nil
 }
 
 func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
@@ -1085,52 +1115,30 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
 
-	// Create agent. In demo mode, skip resolution and use a no-op agent.
-	var ag agent.Agent
-	if steps.IsDemoMode() {
-		ag = agent.NewNoop()
-	} else {
-		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
-			m.db.UpdateRunError(run.ID, err.Error())
-			trackStartFailure("resolve_agent")
-			return "", err
-		}
-		agents := cfg.Agents
-		if len(agents) == 0 {
-			agents = []types.AgentName{cfg.Agent}
-		}
-		created := make([]agent.Agent, 0, len(agents))
-		for _, name := range agents {
-			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
-				DisableProjectSettings: cfg.DisableProjectSettings,
-				Profile:                cfg.AgentProfileFor(name),
-				Environment:            forgeEnvironment(forgeCtx),
-			})
-			if agErr != nil {
-				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
-				trackStartFailure("create_agent")
-				return "", fmt.Errorf("create agent %s: %w", name, agErr)
-			}
-			// Steer every pipeline agent to keep writes inside the worktree and
-			// avoid mutating system state (e.g. brew/Homebrew touching
-			// /Applications), which triggers macOS App Management prompts.
-			created = append(created, agent.WithSteering(next, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot)))
-		}
-		ag = agent.NewFallback(created)
-		// Fail closed ONLY under the trusted opt-out: when the repo asked to
-		// disable project settings, refuse any resolved harness that lacks a
-		// verified suppression knob rather than launch it with the target repo's
-		// project instructions loaded. When the repo did not opt out, every
-		// adapter runs exactly as before (backward-compat).
-		if cfg.DisableProjectSettings {
-			if err := agent.EnsureGateNeutralized(ag); err != nil {
-				m.db.UpdateRunError(run.ID, err.Error())
-				trackStartFailure("gate_not_neutralized")
-				return "", err
-			}
-		}
+	// Create the run-owned agent selection once, then record its resolved
+	// Review-fixer routing before execution. The in-memory executor keeps that
+	// selection, and recovery reapplies the snapshot instead of current global
+	// role config, so later edits affect only later runs.
+	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
+	if err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("create_agent")
+		return "", err
 	}
+	fixerSnapshot, err := cfg.MarshalReviewFixRunConfig()
+	if err != nil {
+		_ = ag.Close()
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("snapshot_review_fixer")
+		return "", err
+	}
+	if err := m.db.SetRunReviewFixConfig(run.ID, fixerSnapshot); err != nil {
+		_ = ag.Close()
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("snapshot_review_fixer")
+		return "", err
+	}
+	run.ReviewFixConfigJSON = &fixerSnapshot
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
