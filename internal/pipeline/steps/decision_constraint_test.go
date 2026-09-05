@@ -321,104 +321,130 @@ func TestRebaseStep_EmptyConflictResolutionStillReachesIndependentReview(t *test
 }
 
 func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
-	f := newCIRepairFixture(t, false, nil)
-	recordReclamationDecision(t, f.sctx, db.RoundSelectionSourceUser)
-	gitCmd(t, f.dir, "checkout", "main")
-	for _, file := range []string{"feature.txt", "teardown.txt"} {
-		if err := os.WriteFile(filepath.Join(f.dir, file), []byte("reclaim build outputs during teardown\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	gitCmd(t, f.dir, "add", "-A")
-	gitCmd(t, f.dir, "commit", "-m", "restore upstream teardown behavior")
-	gitCmd(t, f.dir, "push", "origin", "main")
-	gitCmd(t, f.dir, "checkout", "feature")
-	sr, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.StepResultID = sr.ID
-	calls := 0
-	f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		calls++
-		switch calls {
-		case 1:
-			if _, err := stepGitRun(f.sctx, "rebase", "origin/main"); err == nil {
-				t.Fatal("expected a real rebase conflict")
+	for _, tc := range []struct {
+		name, checks string
+		noChange     bool
+	}{
+		{"failing", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`, false},
+		{"green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, false},
+		{"pending", `[{"name":"test","state":"PENDING","bucket":"pending"}]`, false},
+		{"no_change_green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCIRepairFixture(t, false, nil)
+			recordReclamationDecision(t, f.sctx, db.RoundSelectionSourceUser)
+			gitCmd(t, f.dir, "checkout", "main")
+			for _, file := range []string{"feature.txt", "teardown.txt"} {
+				if err := os.WriteFile(filepath.Join(f.dir, file), []byte("reclaim build outputs during teardown\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
-			gitCmd(t, f.dir, "rebase", "--skip")
-			return &agent.Result{Output: json.RawMessage(`{"summary":"resolve conflict","code_change_needed":true}`)}, nil
-		case 2:
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"decision-reversal","severity":"error","action":"ask-user","file":"teardown.txt","description":"review round 1 remove-teardown-reclamation contradicted by HEAD restoring teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
-		case 3:
-			if !strings.Contains(opts.Prompt, "Remove the rejected teardown restoration") {
-				t.Fatal("Fix re-entry lost the new per-finding instructions")
-			}
-			if err := os.Remove(filepath.Join(f.dir, "teardown.txt")); err != nil {
+			gitCmd(t, f.dir, "add", "-A")
+			gitCmd(t, f.dir, "commit", "-m", "restore upstream teardown behavior")
+			gitCmd(t, f.dir, "push", "origin", "main")
+			gitCmd(t, f.dir, "checkout", "feature")
+			sr, err := f.sctx.DB.InsertStepResult(f.sctx.Run.ID, types.StepCI)
+			if err != nil {
 				t.Fatal(err)
 			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"preserve teardown removal","code_change_needed":true}`)}, nil
-		case 4:
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"recorded ruling preserved"}`)}, nil
-		default:
-			t.Fatalf("unexpected agent call %d", calls)
-			return nil, nil
-		}
-	}}
-	step := &CIStep{}
-	_, err = step.Execute(f.sctx)
-	var conflict *pipeline.DecisionConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("rejected repair did not surface a decision gate: %v", err)
-	}
-	rejectedHead := f.localHead(t)
-	if rejectedHead == f.headSHA {
-		t.Fatal("rejection did not preserve the rewritten head")
-	}
-	raw, err := types.MarshalFindingsJSON(conflict.Findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	round, err := f.sctx.DB.InsertStepRound(sr.ID, 1, "initial", &raw, nil, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, sr.ID, types.StepStatusAwaitingApproval, 1, &raw); err != nil {
-		t.Fatal(err)
-	}
-	if resolved, err := step.ReconcileApprovalGate(f.sctx); err != nil || resolved {
-		t.Fatalf("rejected repair cannot remain parked: resolved=%t err=%v", resolved, err)
-	}
-	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.AwaitingAgentSince == nil || run.HeadSHA != rejectedHead || f.sctx.Run.HeadSHA != rejectedHead || run.ReviewApprovedHeadSHA != nil || f.sctx.Run.ReviewApprovedHeadSHA != nil {
-		t.Fatalf("rejected repair lost its parked, unapproved state: %+v", run)
-	}
-	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.headSHA || f.remoteHead(t) != f.headSHA {
-		t.Fatal("rejected repair changed publication state")
-	}
-	if err := assertReviewApprovedPushHead(f.sctx, rejectedHead); err == nil {
-		t.Fatal("rejected repair gained publication authority")
-	}
-	conflict.Findings.Items[0].UserInstructions = "Remove the rejected teardown restoration"
-	selected := `["decision-reversal"]`
-	userFindings, err := types.MarshalFindingsJSON(conflict.Findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &userFindings); err != nil {
-		t.Fatal(err)
-	}
-	f.sctx.Fixing = true
-	f.sctx.PreviousFindings = userFindings
-	outcome, err := step.Execute(f.sctx)
-	if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview || calls != 4 {
-		t.Fatalf("Fix re-entry failed to return the corrected repair to Review: outcome=%+v err=%v calls=%d", outcome, err, calls)
-	}
-	if f.remoteHead(t) != f.headSHA || assertReviewApprovedPushHead(f.sctx, f.localHead(t)) == nil {
-		t.Fatal("corrected repair published before independent Review")
+			f.sctx.StepResultID = sr.ID
+			calls := 0
+			f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				calls++
+				switch calls {
+				case 1:
+					if _, err := stepGitRun(f.sctx, "rebase", "origin/main"); err == nil {
+						t.Fatal("expected a real rebase conflict")
+					}
+					gitCmd(t, f.dir, "rebase", "--skip")
+					return &agent.Result{Output: json.RawMessage(`{"summary":"resolve conflict","code_change_needed":true}`)}, nil
+				case 2:
+					return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"decision-reversal","severity":"error","action":"ask-user","file":"teardown.txt","description":"review round 1 remove-teardown-reclamation contradicted by HEAD restoring teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
+				case 3:
+					if !strings.Contains(opts.Prompt, "Remove the rejected teardown restoration") {
+						t.Fatal("Fix re-entry lost the new per-finding instructions")
+					}
+					if tc.noChange {
+						return &agent.Result{Output: json.RawMessage(`{"summary":"no change proposed","code_change_needed":false}`)}, nil
+					}
+					if err := os.Remove(filepath.Join(f.dir, "teardown.txt")); err != nil {
+						t.Fatal(err)
+					}
+					return &agent.Result{Output: json.RawMessage(`{"summary":"preserve teardown removal","code_change_needed":true}`)}, nil
+				case 4:
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"recorded ruling preserved"}`)}, nil
+				default:
+					t.Fatalf("unexpected agent call %d", calls)
+					return nil, nil
+				}
+			}}
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+				return context.DeadlineExceeded
+			}}
+			_, err = step.Execute(f.sctx)
+			var conflict *pipeline.DecisionConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("rejected repair did not surface a decision gate: %v", err)
+			}
+			rejectedHead := f.localHead(t)
+			if rejectedHead == f.headSHA {
+				t.Fatal("rejection did not preserve the rewritten head")
+			}
+			raw, err := types.MarshalFindingsJSON(conflict.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			round, err := f.sctx.DB.InsertStepRound(sr.ID, 1, "initial", &raw, nil, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, sr.ID, types.StepStatusAwaitingApproval, 1, &raw); err != nil {
+				t.Fatal(err)
+			}
+			if resolved, err := step.ReconcileApprovalGate(f.sctx); err != nil || resolved {
+				t.Fatalf("rejected repair cannot remain parked: resolved=%t err=%v", resolved, err)
+			}
+			run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.AwaitingAgentSince == nil || run.HeadSHA != rejectedHead || f.sctx.Run.HeadSHA != rejectedHead || run.ReviewApprovedHeadSHA != nil || f.sctx.Run.ReviewApprovedHeadSHA != nil {
+				t.Fatalf("rejected repair lost its parked, unapproved state: %+v", run)
+			}
+			if run.LastPushedSHA == nil || *run.LastPushedSHA != f.headSHA || f.remoteHead(t) != f.headSHA {
+				t.Fatal("rejected repair changed publication state")
+			}
+			if err := assertReviewApprovedPushHead(f.sctx, rejectedHead); err == nil {
+				t.Fatal("rejected repair gained publication authority")
+			}
+			conflict.Findings.Items[0].UserInstructions = "Remove the rejected teardown restoration"
+			selected := `["decision-reversal"]`
+			userFindings, err := types.MarshalFindingsJSON(conflict.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &userFindings); err != nil {
+				t.Fatal(err)
+			}
+			f.sctx.Env = fakeCIGH(t, "OPEN", tc.checks)
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = userFindings
+			outcome, err := step.Execute(f.sctx)
+			wantCalls := 4
+			if tc.noChange {
+				wantCalls = 3
+			}
+			if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview || calls != wantCalls {
+				t.Fatalf("Fix re-entry failed to return the corrected repair to Review: outcome=%+v err=%v calls=%d", outcome, err, calls)
+			}
+			run, err = f.sctx.DB.GetRun(f.sctx.Run.ID)
+			if err != nil || run.CIReadyAt != nil {
+				t.Fatalf("unpublished decision repair became ready: run=%+v err=%v", run, err)
+			}
+			if f.remoteHead(t) != f.headSHA || assertReviewApprovedPushHead(f.sctx, f.localHead(t)) == nil {
+				t.Fatal("corrected repair published before independent Review")
+			}
+		})
 	}
 }
 

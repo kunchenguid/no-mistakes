@@ -90,6 +90,9 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 		- Verify the rebase completes cleanly before finishing.`
+	case sctx.Fixing && len(failingNames) == 0:
+		promptIntro = "A local CI repair was rejected for contradicting a recorded decision. Apply the selected findings and user instructions below. Remote checks describe the published head and do not resolve this rejected local repair."
+		promptRules = ciFailingCheckFixRules
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = ciFailingCheckFixRules

@@ -340,6 +340,31 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		baseBranch = strings.TrimSpace(pr.BaseBranch)
 	}
 
+	// A rejected decision repair revoked review approval. Checks still describe
+	// the published head, so a Fix response must repair the local decision first,
+	// even if those checks have since passed or started running again.
+	if sctx.Fixing && sctx.Run.ReviewApprovedHeadSHA == nil {
+		decisions, err := recordedFixConstraints(sctx)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errDecisionCheck, err)
+		}
+		if decisions != "" {
+			if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+				return nil, err
+			}
+			_, err := s.autoFixCI(sctx, host, pr, nil, false)
+			if outcome := ciFixAgentBudgetOutcome(sctx, "rejected decision repair", err); outcome != nil {
+				return outcome, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			// Even a no-change conclusion needs independent Review to resolve
+			// the rejected head; live checks cannot restore its approval.
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+	}
+
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
 	// to the default; >0 is an explicit finite idle timeout.
