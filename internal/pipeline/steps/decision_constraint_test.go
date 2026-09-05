@@ -338,8 +338,8 @@ func TestDecisionCheck_UnmatchedSelectedFindingIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mixed selection failed instead of binding the matched finding: %v", err)
 	}
-	if !strings.Contains(decisions, `"id":"review-1"`) || strings.Contains(decisions, `"review-9"`) {
-		t.Fatalf("mixed selection must bind only the matched finding: %q", decisions)
+	if !strings.Contains(decisions, `user chose to fix: {"id":"review-1"`) || strings.Contains(decisions, "declined") || strings.Contains(decisions, "review-9") {
+		t.Fatalf("mixed selection must bind only the matched finding as a positive decision: %q", decisions)
 	}
 }
 
