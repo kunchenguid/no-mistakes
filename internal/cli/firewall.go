@@ -17,44 +17,8 @@ func newFirewallCmd() *cobra.Command {
 		Use:   "firewall",
 		Short: "Publish-policy scanner and LAN portal for public product repos",
 	}
-	cmd.AddCommand(newFirewallScanCmd())
 	cmd.AddCommand(newFirewallGitHubCheckCmd())
 	cmd.AddCommand(newFirewallServeCmd())
-	return cmd
-}
-
-func newFirewallScanCmd() *cobra.Command {
-	var diffFile, title, body string
-	cmd := &cobra.Command{
-		Use:           "scan",
-		Short:         "Scan a unified diff on the LAN (prints findings; not for GitHub logs)",
-		Args:          cobra.NoArgs,
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			diff, err := readDiffFlag(diffFile, cmd.InOrStdin())
-			if err != nil {
-				return err
-			}
-			res := firewall.Scan(firewall.Input{Diff: diff, Title: title, Body: body})
-			if !res.Failed() {
-				fmt.Fprint(cmd.OutOrStdout(), "publish-policy ok\n")
-				return nil
-			}
-			rows := make([]firewall.AxiFinding, 0, len(res.Findings))
-			for _, f := range res.Findings {
-				rows = append(rows, firewall.AxiFinding{
-					ID: f.ID, Severity: f.Severity, File: f.File, Line: f.Line,
-					Action: f.Action, Class: string(f.Class), Description: f.Description,
-				})
-			}
-			emitDoc(cmd, toon.Field{Key: "conclusion", Value: res.Conclusion()}, toon.Field{Key: "findings", Value: rows})
-			return &exitError{code: 1}
-		},
-	}
-	cmd.Flags().StringVar(&diffFile, "diff", "-", "unified diff file, or - for stdin")
-	cmd.Flags().StringVar(&title, "title", "", "pull request title")
-	cmd.Flags().StringVar(&body, "body", "", "pull request body")
 	return cmd
 }
 

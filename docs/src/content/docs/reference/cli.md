@@ -481,12 +481,11 @@ Each validation run performs the authoritative agent resolution again after appl
 Publish-policy scanner and LAN portal. See the [publish firewall guide](/no-mistakes/guides/publish-firewall/).
 
 ```sh
-no-mistakes firewall scan --diff pr.diff
 no-mistakes firewall github-check --diff pr.diff --private-json /tmp/verdict.json
 no-mistakes firewall serve --listen 127.0.0.1:8787
 ```
 
-`github-check` prints only `publish-policy ok` or `publish-policy violation` plus an optional LAN portal URL. It never prints match snippets. `scan` is LAN-only and may print findings. `serve` does not start the pipeline daemon.
+`github-check` prints only `publish-policy ok` or `publish-policy violation` plus an optional LAN portal URL. It never prints match snippets; there is deliberately no subcommand that prints them to stdout. Full detail goes to `--private-json` and the LAN portal. `serve` does not start the pipeline daemon.
 
 ## no-mistakes axi firewall
 

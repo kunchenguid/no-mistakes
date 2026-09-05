@@ -1,51 +1,40 @@
-apiVersion: apps/v1
-kind: Deployment
+# The publish-policy check runs on Actions Runner Controller, the same runner
+# mechanism this cluster already uses. A plain Deployment of
+# ghcr.io/actions/actions-runner never registers and carries no `no-mistakes`
+# binary, so check.sh would fail closed on every pull request.
+#
+# The runner image is operator-owned and MUST contain the `no-mistakes` binary
+# on PATH; build it from a pinned commit of this fork. The ingest token is
+# deliberately NOT in this pod's environment: a `pull_request` workflow runs
+# YAML from the PR head, so a pod-wide secret would be readable by any
+# contributor whose run is approved. The action receives it as the
+# `portal-token` input from a repository secret, which GitHub withholds from
+# fork pull requests entirely.
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
 metadata:
-  name: no-mistakes-gha-runner
+  name: no-mistakes
   namespace: no-mistakes
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: no-mistakes-gha-runner
+  githubConfigUrl: https://github.com/carverauto/serviceradar
+  githubConfigSecret: github-runner
+  runnerGroup: default
+  runnerScaleSetName: no-mistakes
+  minRunners: 0
+  maxRunners: 4
   template:
-    metadata:
-      labels:
-        app: no-mistakes-gha-runner
     spec:
       containers:
         - name: runner
-          image: ghcr.io/actions/actions-runner:latest
+          # Operator-owned image: actions-runner plus the no-mistakes binary.
+          image: registry.carverauto.dev/no-mistakes/actions-runner:firewall
+          command: ["/home/runner/run.sh"]
           env:
-            - name: RUNNER_LABELS
-              value: "self-hosted,no-mistakes"
             - name: NM_HOME
-              value: /var/lib/no-mistakes
+              value: /home/runner/.no-mistakes
             - name: NO_MISTAKES_FIREWALL_PORTAL_URL
               value: http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787
-            - name: NO_MISTAKES_FIREWALL_INGEST_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: firewall-ingest
-                  key: token
-                  optional: true
-            - name: RUNNER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: github-runner
-                  key: token
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/no-mistakes
-      volumes:
-        - name: data
-          emptyDir: {}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: github-runner
-  namespace: no-mistakes
-type: Opaque
-stringData:
-  token: ""
+# ARC reads a GitHub App or PAT from this secret. Create it out of band:
+#   kubectl -n no-mistakes create secret generic github-runner \
+#     --from-literal=github_token=<pat>

@@ -27,7 +27,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/axi/runs/{id}/logs", s.getLogs)
 	mux.HandleFunc("POST /v1/axi/runs/{id}/respond", s.postRespond)
 	mux.HandleFunc("POST /v1/axi/runs/{id}/abort", s.postAbort)
-	mux.HandleFunc("GET /v1/firewall/verdicts/{id}/public", s.getPublic)
 	mux.HandleFunc("GET /v1/firewall/verdicts/{id}/notice", s.getNotice)
 	mux.HandleFunc("POST /v1/firewall/verdicts", s.postIngest)
 	return mux
@@ -57,8 +56,9 @@ type ingestRequest struct {
 	Body           string   `json:"body"`
 	CommitMessages []string `json:"commit_messages"`
 	Diff           string   `json:"diff"`
-	// Precomputed findings from a runner that already scanned. If empty, the
-	// server scans Diff/Title/Body itself.
+	// The verdict the client already published to GitHub. The portal records
+	// it verbatim; it never re-scans, so the LAN record cannot contradict the
+	// conclusion the required check reported.
 	Findings []Finding `json:"findings"`
 	Error    string    `json:"error"`
 }
@@ -92,9 +92,6 @@ func (s *Server) postIngest(w http.ResponseWriter, r *http.Request) {
 		Branch:         req.Branch,
 	}
 	res := Result{Findings: req.Findings, Error: req.Error}
-	if len(res.Findings) == 0 && res.Error == "" && (req.Diff != "" || req.Title != "" || req.Body != "") {
-		res = Scan(in)
-	}
 	v, err := s.Store.Insert(in, res, s.PortalBase)
 	if err != nil {
 		http.Error(w, "store", http.StatusInternalServerError)
@@ -196,17 +193,6 @@ func (s *Server) postAbort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": v.AxiRun(), "aborted": true})
-}
-
-func (s *Server) getPublic(w http.ResponseWriter, r *http.Request) {
-	v, err := s.Store.Get(r.PathValue("id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(v.PublicJSON())
 }
 
 func (s *Server) getNotice(w http.ResponseWriter, r *http.Request) {

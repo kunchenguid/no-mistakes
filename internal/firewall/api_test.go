@@ -53,14 +53,6 @@ func TestStoreAndAPI_AxiShapeAndPublicRedaction(t *testing.T) {
 		t.Fatalf("missing run: %v", status)
 	}
 
-	publicBody := getRaw(t, ts.URL+"/v1/firewall/verdicts/"+v.ID+"/public")
-	if strings.Contains(publicBody, "10.0.0.5") || strings.Contains(publicBody, "cfg.txt") {
-		t.Fatalf("public payload leaked: %s", publicBody)
-	}
-	if !strings.Contains(publicBody, `"conclusion":"failure"`) {
-		t.Fatalf("public payload: %s", publicBody)
-	}
-
 	noticeBody := getRaw(t, ts.URL+"/v1/firewall/verdicts/"+v.ID+"/notice")
 	if strings.Contains(noticeBody, "10.0.0.5") || strings.Contains(noticeBody, "cfg.txt") {
 		t.Fatalf("notice leaked: %s", noticeBody)
@@ -85,7 +77,7 @@ func TestStoreAndAPI_AxiShapeAndPublicRedaction(t *testing.T) {
 	}
 }
 
-func TestIngest_ScansWhenFindingsOmitted(t *testing.T) {
+func TestIngest_RecordsThePublishedVerdictWithoutRescanning(t *testing.T) {
 	dir := t.TempDir()
 	store, err := OpenStore(filepath.Join(dir, "firewall.sqlite"))
 	if err != nil {
@@ -96,24 +88,38 @@ func TestIngest_ScansWhenFindingsOmitted(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/firewall/verdicts", bytes.NewBufferString(`{
+	// The runner published a clean check for this diff. Even though the diff
+	// still carries a live address, the portal must not derive its own verdict.
+	run := ingestAs(t, ts.URL, "secret", `{
 		"repo":"carverauto/serviceradar",
 		"branch":"fm/example",
 		"head_sha":"abc",
+		"findings":[],
 		"diff":`+jsonString(unified("cfg.txt", []string{"bind 10.0.0.5"}))+`
-	}`))
+	}`)
+	if run["outcome"] != "passed" {
+		t.Fatalf("portal contradicted the published clean check: %v", run)
+	}
+	if run["gate"] != nil {
+		t.Fatalf("clean ingest must not open a gate: %v", run["gate"])
+	}
+
+	stored, err := store.List(10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if len(stored) != 1 || stored[0].Conclusion != "success" {
+		t.Fatalf("stored verdict must match the published one: %+v", stored)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("status=%d", res.StatusCode)
+
+	failing := ingestAs(t, ts.URL, "secret", `{
+		"repo":"carverauto/serviceradar",
+		"branch":"fm/example",
+		"head_sha":"def",
+		"findings":[{"id":"f1","severity":"error","file":"cfg.txt","class":"ip_address","action":"ask-user","description":"ip_address match"}]
+	}`)
+	if failing["outcome"] != "failed" {
+		t.Fatalf("a published violation must be recorded as failed: %v", failing)
 	}
 
 	unauth, err := http.Post(ts.URL+"/v1/firewall/verdicts", "application/json", bytes.NewBufferString(`{}`))
@@ -124,6 +130,29 @@ func TestIngest_ScansWhenFindingsOmitted(t *testing.T) {
 	if unauth.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", unauth.StatusCode)
 	}
+}
+
+func ingestAs(t *testing.T, base, token, body string) map[string]any {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/firewall/verdicts", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("ingest status=%d", res.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestAbort_ChangesRenderedOutcomeAndClearsGate(t *testing.T) {

@@ -92,12 +92,16 @@ var docSiteTokens = map[string]struct{}{
 }
 
 var (
-	uuidValue     = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	numericValue  = regexp.MustCompile(`^\d+$`)
-	digitInValue  = regexp.MustCompile(`\d`)
-	digitRunValue = regexp.MustCompile(`\d{2,}`)
-	versionValue  = regexp.MustCompile(`\d+\.\d+`)
-	buildIDValue  = regexp.MustCompile(`(?i)^[a-z]*\d{4,}[a-z0-9._+-]*$`)
+	uuidValue    = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	numericValue = regexp.MustCompile(`^\d+$`)
+	digitInValue = regexp.MustCompile(`\d`)
+	lowerInValue = regexp.MustCompile(`[a-z]`)
+	upperInValue = regexp.MustCompile(`[A-Z]`)
+	// A selector chain such as req.TraceID or row.SerialNumber.
+	dottedSelector = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$`)
+	digitRunValue  = regexp.MustCompile(`\d{2,}`)
+	versionValue   = regexp.MustCompile(`\d+\.\d+`)
+	buildIDValue   = regexp.MustCompile(`(?i)^[a-z]*\d{4,}[a-z0-9._+-]*$`)
 )
 
 // genericValues are literals and environment words that name a role rather
@@ -110,6 +114,8 @@ var genericValues = map[string]struct{}{
 	"local": {}, "dev": {}, "development": {}, "stage": {}, "staging": {},
 	"prod": {}, "production": {}, "qa": {}, "sandbox": {}, "system": {},
 	"main": {}, "master": {}, "global": {}, "shared": {}, "common": {},
+	"unknown": {}, "undefined": {}, "unset": {}, "placeholder": {},
+	"redacted": {}, "changeme": {},
 }
 
 // infraQualifiers are deployment-topology words, not organization names. A
@@ -156,14 +162,28 @@ func isLiveShaped(v string) bool {
 }
 
 // isCapturedLiteral reports whether a session or serial value is an opaque
-// token read off a live system rather than the identifier or expression that
-// ordinary tracing and device plumbing assigns.
+// token read off a live system. It fails closed: only a value that is
+// recognisably code - a selector chain, a call expression, or a mixed-case
+// alphabetic identifier - is dismissed. An all-digit, all-upper, or
+// all-lower token is a captured value, not plumbing.
 func isCapturedLiteral(v string) bool {
 	v = strings.Trim(strings.TrimSpace(v), `"'`)
 	if v == "" {
 		return false
 	}
-	return digitInValue.MatchString(v)
+	if _, ok := genericValues[strings.ToLower(v)]; ok {
+		return false
+	}
+	return !isCodeIdentifier(v)
+}
+
+func isCodeIdentifier(v string) bool {
+	if dottedSelector.MatchString(v) {
+		return true
+	}
+	return !digitInValue.MatchString(v) &&
+		lowerInValue.MatchString(v) &&
+		upperInValue.MatchString(v)
 }
 
 // isVersionShaped reports whether a firmware/build value is a real revision

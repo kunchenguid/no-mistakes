@@ -294,6 +294,27 @@ func TestScan_RealCapturedValuesStillFail(t *testing.T) {
 	}
 }
 
+func TestScan_OpaqueTokensWithoutDigitsStillFail(t *testing.T) {
+	cases := []struct {
+		name  string
+		line  string
+		class Class
+	}{
+		{"upper-session", "jsessionid=ABCDEFGHIJKLMNOP", ClassCapture},
+		{"upper-session-header", "Session-Id: AAAABBBBCCCCDDDD", ClassCapture},
+		{"upper-serial", "serial: ABCDEFGH", ClassSerial},
+		{"hex-asset-tag", "asset tag: DEADBEEF", ClassSerial},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(Input{Diff: unified("fixture.txt", []string{tc.line})})
+			if !hasClass(res, tc.class) {
+				t.Fatalf("want %s for %q, got %+v", tc.class, tc.line, classes(res))
+			}
+		})
+	}
+}
+
 func unified(file string, added []string) string {
 	var b strings.Builder
 	b.WriteString("diff --git a/" + file + " b/" + file + "\n")

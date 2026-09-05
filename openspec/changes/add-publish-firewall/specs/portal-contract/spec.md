@@ -2,7 +2,7 @@
 
 ### Requirement: Axi-shaped records
 
-The LAN portal API SHALL expose run, step, finding, and respond records using the same field names as `no-mistakes axi` (id, branch, status, head, pr, steps, findings, action, description) plus firewall verdict fields (conclusion, public_summary, portal_url, class counts).
+The LAN portal API SHALL expose run, step, finding, and respond records using the same field names as `no-mistakes axi` (id, branch, status, head, pr, steps, findings, action, description) plus firewall verdict fields (conclusion, public_summary, portal_url).
 
 #### Scenario: Status looks like axi
 - **WHEN** a client GET `/v1/axi/runs/{id}` for a firewall scan
@@ -19,6 +19,14 @@ LAN finding descriptions MAY include file, line, class, and snippet. Public verd
 #### Scenario: LAN status keeps details
 - **WHEN** the same verdict is fetched from GET `/v1/axi/runs/{id}`
 - **THEN** the finding description still includes the class and location needed to fix the diff
+
+### Requirement: The portal records the published verdict verbatim
+
+Ingest SHALL store the conclusion the client already published to GitHub. The portal MUST NOT re-scan an ingested pull request, so an independently versioned portal can never contradict the required check.
+
+#### Scenario: A clean ingest stays clean
+- **WHEN** the runner posts a clean verdict whose diff still contains a live-system value
+- **THEN** the stored conclusion is `success`, matching the check GitHub reported
 
 ### Requirement: Respond does not green the check
 

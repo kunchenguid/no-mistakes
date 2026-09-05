@@ -40,6 +40,10 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 - **WHEN** the diff contains `namespace: no-mistakes`, `cluster: staging`, `build: true`, or `vlan: 100`
 - **THEN** the scanner reports no findings, because the keyword alone is not a hit and none of those values carries an instance identity
 
+#### Scenario: An opaque token without digits is still a capture
+- **WHEN** the diff contains `jsessionid=ABCDEFGHIJKLMNOP` or `serial: ABCDEFGH`
+- **THEN** the scanner reports a finding: the value gate dismisses only recognisable code, so a token that happens to carry no digit still fails closed
+
 #### Scenario: Tracing plumbing and port counts are not captures
 - **WHEN** the diff contains `trace_id: req.TraceID`, `serialNumber: row.SerialNumber`, or `scans up to 65535 ports per host`
 - **THEN** the scanner reports no findings, because a session or serial value must be an opaque token and a port count is not a fleet unit

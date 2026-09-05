@@ -15,10 +15,14 @@ firstmate-notify owns the LiveView. This repository owns the HTTP contract.
 JSON field names match `no-mistakes axi`: `run.id`, `run.branch`, `run.status`,
 `run.head`, `run.pr`, `steps[]` (`step`, `status`, `findings`), `findings[]`
 (`id`, `severity`, `file`, `action`, `description`), plus firewall fields
-`conclusion`, `public_summary`, `portal_url`, and `class_counts`.
+`conclusion`, `public_summary`, and `portal_url`.
 
-LAN `description` values may include a snippet. Public and notice payloads
-must not.
+LAN `description` values may include a snippet. The notice payload must not.
+
+The portal never re-scans an ingest. The runner has already published its
+verdict as the required GitHub check, so re-deriving one here would let an
+independently versioned portal contradict a conclusion GitHub already
+reported.
 
 ## Routes
 
@@ -29,8 +33,7 @@ must not.
 | GET | `/v1/axi/runs/{id}/logs` | Generic log lines only |
 | POST | `/v1/axi/runs/{id}/respond` | `{ "action": "acknowledge" }` — does not pass the GitHub check |
 | POST | `/v1/axi/runs/{id}/abort` | Cancels the LAN record: `run.outcome` becomes `cancelled` and the gate clears |
-| POST | `/v1/firewall/verdicts` | Ingest from the self-hosted runner |
-| GET | `/v1/firewall/verdicts/{id}/public` | Generic summary + class counts |
+| POST | `/v1/firewall/verdicts` | Ingest from the self-hosted runner; the posted verdict is recorded verbatim |
 | GET | `/v1/firewall/verdicts/{id}/notice` | Discord-safe payload |
 
 Every `POST` mutates stored state and is gated by

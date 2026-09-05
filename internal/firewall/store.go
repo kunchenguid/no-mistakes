@@ -2,7 +2,6 @@ package firewall
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -362,26 +361,6 @@ func (v *Verdict) AxiRun() AxiRun {
 	return run
 }
 
-func (v *Verdict) PublicJSON() []byte {
-	payload := map[string]any{
-		"id":             v.ID,
-		"conclusion":     v.Conclusion,
-		"public_summary": strings.TrimSpace(v.PublicSummary),
-		"portal_url":     v.PortalURL,
-		"class_counts":   classCounts(v.Findings),
-	}
-	b, _ := json.Marshal(payload)
-	return b
-}
-
 func (v *Verdict) Notice() Notice {
 	return NewNotice(v.Repo, v.PRURL, v.PortalURL, v.Conclusion)
-}
-
-func classCounts(findings []Finding) map[string]int {
-	counts := map[string]int{}
-	for _, f := range findings {
-		counts[string(f.Class)]++
-	}
-	return counts
 }

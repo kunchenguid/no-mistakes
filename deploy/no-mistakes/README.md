@@ -26,8 +26,30 @@ kubectl apply -f deploy/no-mistakes/portal.yaml
 kubectl apply -f deploy/no-mistakes/runner.yaml
 ```
 
-Fill `github-runner` and `firewall-ingest` secrets before the runner
-Deployment will start. Image tags are operator-owned.
+`runner.yaml` is an Actions Runner Controller `AutoscalingRunnerSet`, the
+runner mechanism this cluster already runs. Two operator-owned prerequisites
+must exist first, or the check fails closed on every pull request:
+
+1. The runner image must contain the `no-mistakes` binary on PATH. `check.sh`
+   aborts with `conclusion=error` when `command -v no-mistakes` fails, so a
+   stock `ghcr.io/actions/actions-runner` makes `publish-policy` a permanently
+   red required check. Build the image from a pinned commit of this fork and
+   push it to `registry.carverauto.dev`.
+2. ARC must be installed in the cluster, and the `github-runner` secret must
+   carry a GitHub App or PAT:
+
+   ```sh
+   kubectl -n no-mistakes create secret generic github-runner \
+     --from-literal=github_token=<pat>
+   ```
+
+The ingest token is **not** an environment variable on the runner pod. A
+`pull_request` workflow runs YAML from the PR head, so a pod-wide secret would
+be readable by any contributor whose run is approved. Store it as a repository
+secret and pass it to the action's `portal-token` input; GitHub withholds
+repository secrets from fork pull requests, so ingest fails closed there
+instead of handing out the secret. Only the portal pod reads
+`firewall-ingest`.
 
 `portal.yaml` claims a `ReadWriteOnce` PersistentVolumeClaim for
 `/var/lib/no-mistakes`. The verdict store is the only place match details
