@@ -365,12 +365,12 @@ Final diff paths and statuses:
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
 			content.Body = neutralizeAttestationMarkers(content.Body)
-			if content.Title != "" && content.Body != "" {
-				originalTitle := content.Title
-				content.Title = conventional.TightenTitle(publicprose.Text(content.Title))
-				if content.Title != originalTitle {
-					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
+			title := conventional.TightenTitle(publicprose.Text(content.Title))
+			if title != "" && content.Body != "" {
+				if title != content.Title {
+					slog.Warn("tightened agent PR title type", "from", content.Title, "to", title)
 				}
+				content.Title = title
 				if bodyLimit > 0 {
 					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
 				} else {
