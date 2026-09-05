@@ -85,6 +85,31 @@ func TestRedactPRContent_OperatorAddressBlockquoteBoundaries(t *testing.T) {
 	}
 }
 
+func TestRedactPRContent_OperatorAddressThematicBreaks(t *testing.T) {
+	t.Parallel()
+	for _, separator := range []string{"---", "***", "___", "  - - -  ", " *\t* *\t", "   _ _ _ _\t"} {
+		t.Run(separator, func(t *testing.T) {
+			input := "> Captain, quoted evidence\n" + separator + "\nCaptain, next steps"
+			want := "> Captain, quoted evidence\n" + separator + "\nnext steps"
+			if got := redactPRContent(prContent{Body: input}).Body; got != want {
+				t.Errorf("body = %q, want %q", got, want)
+			}
+		})
+	}
+	for _, input := range []string{
+		"> note\n--\nCaptain, quoted continuation",
+		"> note\n-_*\nCaptain, quoted continuation",
+		"> note\n___ suffix\nCaptain, quoted continuation",
+		"> note\n    ---\nCaptain, quoted continuation",
+		"> note\n> ---\n> Captain, quoted evidence",
+		"```text\n> note\n---\nCaptain, literal output\n```",
+	} {
+		if got := redactPRContent(prContent{Body: input}).Body; got != input {
+			t.Errorf("body = %q, want unchanged %q", got, input)
+		}
+	}
+}
+
 func TestPRStep_OperatorAddress(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
@@ -158,6 +183,11 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 		want                  []string
 	}
 	cases := []renderCase{
+		{
+			name: "blockquote followed by thematic break",
+			body: "> Captain, quoted evidence\n---\nCaptain, next steps",
+			want: []string{"> Captain, quoted evidence\n---\nnext steps"},
+		},
 		{
 			name: "blockquote followed by heading and list",
 			body: "> Captain, quoted evidence\n## Captain, next steps\n- Captain: finish cleanup",

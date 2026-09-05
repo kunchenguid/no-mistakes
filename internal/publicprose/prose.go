@@ -19,6 +19,9 @@ var listMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`)
 // Headings and nonempty list items interrupt a quoted paragraph's lazy
 // continuation. Ordered lists can interrupt only when they start at one.
 var blockquoteBreak = regexp.MustCompile(`^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-+*]|1[.)])[ \t]+\S)`)
+
+// Thematic breaks also end lazy continuation, but quoted/fenced breaks stay literal.
+var thematicBreak = regexp.MustCompile(`(?m)^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})\r?$`)
 var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’]`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining
@@ -64,7 +67,7 @@ func Text(text string) string {
 		case strings.HasPrefix(trimmed, ">"):
 			blockquote = true
 			protect(offset, offset+len(line))
-		case trimmed == "" || blockquoteBreak.MatchString(line):
+		case trimmed == "" || blockquoteBreak.MatchString(line) || thematicBreak.MatchString(line):
 			blockquote = false
 		case blockquote, strings.HasPrefix(line, "    "), strings.HasPrefix(line, "\t"):
 			protect(offset, offset+len(line))
