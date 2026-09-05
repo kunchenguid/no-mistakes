@@ -1037,6 +1037,35 @@ func TestExtractCommitSummary_RejectsOversizedSummary(t *testing.T) {
 	}
 }
 
+// A quote pair that only wraps the agent's sentence is cosmetic and must not
+// reach the commit subject; one that keeps an operator address literal is
+// load-bearing and must survive, as must a quote on a single end.
+func TestExtractCommitSummary_UnwrapsOnlyCosmeticQuotes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, summary, want string }{
+		{"cosmetic single quotes", `'fix lint issues,'`, "fix lint issues"},
+		{"cosmetic double quotes", `"fix test failures."`, "fix test failures"},
+		{"load-bearing pair keeps address", `"Captain, ready"`, `"Captain, ready"`},
+		{"unpaired opening quote", `"Captain, ready" fixture restored`, `"Captain, ready" fixture restored`},
+		{"unquoted is unchanged", "plain summary.", "plain summary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raw, err := json.Marshal(commitSummary{Summary: tc.summary})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := extractCommitSummary(&agent.Result{Output: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("extractCommitSummary(%q) = %q, want %q", tc.summary, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExecuteFixMode_PreservesQuotedCommitText(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, summary, want string }{

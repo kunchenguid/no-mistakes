@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -254,10 +255,37 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 		return "", fmt.Errorf("%w: commit summary must not exceed %d bytes", errRejectedCommitSummary, config.MaxFixMessageSummaryBytes)
 	}
 	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
-	// Keep quote delimiters so RenderFixMessage can distinguish literal dialogue
-	// from operator address before publishing the summary as a commit subject.
+	// Strip a quote pair only when it wraps the WHOLE summary. strings.Trim
+	// treats each end independently, so a cutset containing quotes also eats a
+	// lone opening quote from text like `"Captain, ready" fixture restored`,
+	// destroying the boundary RenderFixMessage needs to tell literal dialogue
+	// from operator address. Unwrapping only a matched pair keeps both cases:
+	// `'fix lint issues,'` loses its wrapper, that summary keeps its quotes.
+	cleaned = strings.Trim(cleaned, " \t\r\n.;:,-")
+	cleaned = unwrapQuotedSummary(cleaned)
 	cleaned = strings.Trim(cleaned, " \t\r\n.;:,-")
 	return cleaned, nil
+}
+
+// unwrapQuotedSummary removes one surrounding quote pair when it is only
+// cosmetic. An agent that wraps its whole sentence ("'fix lint issues,'")
+// should not publish the wrapper, but a quote pair that makes the text literal
+// dialogue is load-bearing: dropping it would expose an operator address that
+// the quotes were protecting, so a wrapper whose contents the sanitizer would
+// change is kept. A quote on only one end is part of the text and is untouched.
+func unwrapQuotedSummary(summary string) string {
+	if len(summary) < 2 {
+		return summary
+	}
+	first, last := summary[0], summary[len(summary)-1]
+	if first != last || (first != '"' && first != '\'') {
+		return summary
+	}
+	inner := strings.TrimSpace(summary[1 : len(summary)-1])
+	if publicprose.Text(inner) != inner {
+		return summary
+	}
+	return inner
 }
 
 // executeFixMode runs the fix agent and commits any resulting changes. It
