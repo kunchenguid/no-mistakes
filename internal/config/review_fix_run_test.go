@@ -26,7 +26,6 @@ func TestReviewFixRunConfigPinsSelectionAndProfile(t *testing.T) {
 	}
 
 	recovered := &Config{
-		ReviewFixAgent:  types.AgentCodex,
 		ReviewFixAgents: []types.AgentName{types.AgentCodex},
 		ReviewFixAgentConfig: map[string]ReviewFixProfile{
 			"codex": {Profile: agentcfg.Profile{Model: "changed"}},
@@ -35,8 +34,8 @@ func TestReviewFixRunConfigPinsSelectionAndProfile(t *testing.T) {
 	if err := recovered.ApplyReviewFixRunConfig(encoded); err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ReviewFixAgent != types.AgentPi || len(recovered.ReviewFixAgents) != 1 {
-		t.Fatalf("restored fixer = %q %v", recovered.ReviewFixAgent, recovered.ReviewFixAgents)
+	if len(recovered.ReviewFixAgents) != 1 || recovered.ReviewFixAgents[0] != types.AgentPi {
+		t.Fatalf("restored fixer = %v", recovered.ReviewFixAgents)
 	}
 	got, ok := recovered.ReviewFixAgentConfig["pi"]
 	want := ReviewFixProfile{
@@ -50,10 +49,8 @@ func TestReviewFixRunConfigPinsSelectionAndProfile(t *testing.T) {
 
 func TestReviewFixRunConfigPinsEffectiveBaseProfileForSelectedFixer(t *testing.T) {
 	started := &Config{
-		Agent:           types.AgentClaude,
-		Agents:          []types.AgentName{types.AgentClaude},
-		ReviewFixAgent:  types.AgentPi,
-		ReviewFixAgents: []types.AgentName{types.AgentPi},
+		Agent:  types.AgentPi,
+		Agents: []types.AgentName{types.AgentPi},
 		AgentConfig: map[string]agentcfg.Profile{
 			"pi": {Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
 		},
@@ -96,7 +93,6 @@ func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
 		Agents:            []types.AgentName{types.AgentPi},
 		AgentConfig:       map[string]agentcfg.Profile{"codex": {Model: "changed"}},
 		AgentArgsOverride: map[string][]string{"codex": {"--thinking", "high"}},
-		ReviewFixAgent:    types.AgentPi,
 		ReviewFixAgents:   []types.AgentName{types.AgentPi},
 		ReviewFixAgentConfig: map[string]ReviewFixProfile{
 			"pi": {Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol"}, Fast: true},
@@ -105,8 +101,8 @@ func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
 	if err := recovered.ApplyReviewFixRunConfig(encoded); err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ReviewFixAgent != types.AgentCodex || len(recovered.ReviewFixAgents) != 1 || recovered.ReviewFixAgents[0] != types.AgentCodex {
-		t.Fatalf("restored inherited fixer = %q %v", recovered.ReviewFixAgent, recovered.ReviewFixAgents)
+	if len(recovered.ReviewFixAgents) != 1 || recovered.ReviewFixAgents[0] != types.AgentCodex {
+		t.Fatalf("restored inherited fixer = %v", recovered.ReviewFixAgents)
 	}
 	got, explicit := recovered.ReviewFixProfileFor(types.AgentCodex)
 	want := agentcfg.Profile{Model: "gpt-5.3-codex", Effort: agentcfg.EffortHigh}

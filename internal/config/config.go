@@ -121,16 +121,9 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	SourceYAML []byte            `yaml:"-"`
-	Agent      types.AgentName   `yaml:"agent"`
-	Agents     []types.AgentName `yaml:"-"`
-	// ReviewFixAgent is the optional global-only agent selection for turns that
-	// remediate Review findings. When absent, those turns use Agent exactly as
-	// they did before this field existed. It is machine-local because selecting
-	// a different adapter selects a process launched with the operator's
-	// credentials; repository config must never control it.
-	ReviewFixAgent       types.AgentName     `yaml:"review_fix_agent"`
-	ReviewFixAgents      []types.AgentName   `yaml:"-"`
+	SourceYAML           []byte              `yaml:"-"`
+	Agent                types.AgentName     `yaml:"agent"`
+	Agents               []types.AgentName   `yaml:"-"`
 	ACPXPath             string              `yaml:"acpx_path"`
 	ForgejoAXIPath       string              `yaml:"forgejo_axi_path"`
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
@@ -141,9 +134,8 @@ type GlobalConfig struct {
 	// to each harness's own mechanism by internal/agentcfg. A nested review_fix
 	// profile is resolved separately into ReviewFixAgentConfig. It is additive to
 	// agent_args_override, which still wins for any knob it already pins
-	// natively, so every configuration written before this field keeps its exact
-	// previous behavior. Global-only for the same reason as
-	// agent_args_override: it describes this machine's agent setup and decides
+	// natively. Global-only for the same reason as agent_args_override: it
+	// describes this machine's agent setup and decides
 	// which model runs with the operator's credentials, so no pushed branch may
 	// set it.
 	AgentConfig          map[string]agentcfg.Profile `yaml:"agent_config"`
@@ -197,7 +189,6 @@ type GlobalConfig struct {
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
 	Agent                   agentList                  `yaml:"agent"`
-	ReviewFixAgent          reviewFixAgentList         `yaml:"review_fix_agent"`
 	ACPXPath                string                     `yaml:"acpx_path"`
 	ForgejoAXIPath          string                     `yaml:"forgejo_axi_path"`
 	ACPRegistryOverrides    map[string]string          `yaml:"acp_registry_overrides"`
@@ -564,7 +555,6 @@ type Config struct {
 	CaptureEvalProvenance      bool
 	Agent                      types.AgentName
 	Agents                     []types.AgentName
-	ReviewFixAgent             types.AgentName
 	ReviewFixAgents            []types.AgentName
 	ACPXPath                   string
 	ForgejoAXIPath             string
@@ -817,19 +807,8 @@ type Intent struct {
 
 type agentList []types.AgentName
 
-type reviewFixAgentList []types.AgentName
-
 func (a *agentList) UnmarshalYAML(value *yaml.Node) error {
 	names, err := decodeAgentList(value, "agent")
-	if err != nil {
-		return err
-	}
-	*a = names
-	return nil
-}
-
-func (a *reviewFixAgentList) UnmarshalYAML(value *yaml.Node) error {
-	names, err := decodeAgentList(value, "review_fix_agent")
 	if err != nil {
 		return err
 	}
@@ -915,11 +894,6 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # "acp:cursor" also uses that Cursor default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
 agent: pi
-
-# Optional agent (or ordered fallback list) used only to fix Review findings.
-# When unset, Review fixes use agent. This is global-only: a repository cannot
-# select a process that runs with the operator's credentials.
-# review_fix_agent: pi
 
 # Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
 # acpx_path: acpx
@@ -1268,31 +1242,6 @@ func (c *Config) configuredAgents() []types.AgentName {
 	return []types.AgentName{types.AgentAuto}
 }
 
-// HasReviewFixAgentOverride reports whether global config selected a distinct
-// agent set for Review remediation turns. Absence is meaningful: it preserves
-// the effective agent selection, including a trusted repository override.
-func (c *Config) HasReviewFixAgentOverride() bool {
-	return c != nil && (c.ReviewFixAgent != "" || len(c.ReviewFixAgents) > 0)
-}
-
-// ResolveReviewFixAgent resolves the optional Review-fixer selection with the
-// same auto, availability, deduplication, and ordered-fallback semantics as
-// agent. It deliberately does nothing when the override is absent.
-func (c *Config) ResolveReviewFixAgent(ctx context.Context, lookPath func(string) (string, error)) error {
-	if !c.HasReviewFixAgentOverride() {
-		return nil
-	}
-	selection := *c
-	selection.Agent = c.ReviewFixAgent
-	selection.Agents = copyAgents(c.ReviewFixAgents)
-	if err := selection.resolveAgentSelection(ctx, lookPath, "review_fix_agent"); err != nil {
-		return err
-	}
-	c.ReviewFixAgent = selection.Agent
-	c.ReviewFixAgents = copyAgents(selection.Agents)
-	return nil
-}
-
 func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (string, error), field string) (types.AgentName, error) {
 	probed := make([]string, 0, len(nativeAgentProbeOrder)+len(types.ACPAliases())+1)
 	for _, name := range nativeAgentProbeOrder {
@@ -1374,13 +1323,6 @@ func noRunnableAgentError(configured []types.AgentName, probed []string, field s
 	names := make([]string, 0, len(configured))
 	for _, name := range configured {
 		names = append(names, string(name))
-	}
-	if field == "review_fix_agent" {
-		return fmt.Errorf(
-			"no runnable agent found for configured review_fix_agent %s (looked for: %s); install it or choose an available review_fix_agent in ~/.no-mistakes/config.yaml",
-			strings.Join(names, ", "),
-			strings.Join(probed, ", "),
-		)
 	}
 	return fmt.Errorf(
 		"no runnable agent found for configured agent %s (looked for: %s); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed",
@@ -2090,10 +2032,6 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
 		cfg.Agent = firstAgent(cfg.Agents)
-	}
-	if len(raw.ReviewFixAgent) > 0 {
-		cfg.ReviewFixAgents = copyAgents(raw.ReviewFixAgent)
-		cfg.ReviewFixAgent = firstAgent(cfg.ReviewFixAgents)
 	}
 	if raw.ACPXPath != "" {
 		cfg.ACPXPath = raw.ACPXPath
@@ -2895,8 +2833,6 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	cfg := &Config{
 		Agent:                 global.Agent,
 		Agents:                copyAgents(global.Agents),
-		ReviewFixAgent:        global.ReviewFixAgent,
-		ReviewFixAgents:       copyAgents(global.ReviewFixAgents),
 		ACPXPath:              global.ACPXPath,
 		ForgejoAXIPath:        global.ForgejoAXIPath,
 		ACPRegistryOverrides:  global.ACPRegistryOverrides,

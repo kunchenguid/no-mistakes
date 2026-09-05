@@ -10,9 +10,6 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 
 agent: pi
 
-# Optional when the fixer uses a different harness.
-# review_fix_agent: codex
-
 acpx_path: acpx
 
 forgejo_axi_path: forgejo-axi
@@ -121,7 +118,7 @@ providers:
 
 ### agent
 
-Default agent for all pipeline duties and setup-wizard suggestions. It is also the Review-fixer fallback when [`review_fix_agent`](#review_fix_agent) is unset. Can be overridden per-repo.
+Default agent for all pipeline duties and setup-wizard suggestions, including Review remediation. Can be overridden per-repo.
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -149,24 +146,6 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
-
-### review_fix_agent
-
-Optional agent used only to remediate findings from the Review step. It accepts the same single-agent and ordered-fallback-list forms as [`agent`](#agent), with the same availability checks, `auto` resolution, deduplication, and process-unavailable fallback behavior.
-
-|         |                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------- |
-| Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Unset (use the effective `agent`)                                                           |
-
-This override is narrowly scoped: initial Review and every rereview still use `agent`, as do Test, Document, Lint, Rebase, PR, and CI work. Only the turn that fixes Review findings uses `review_fix_agent`. Its durable fixer session, when enabled, is also created for this agent.
-
-`review_fix_agent` is global-only. A repository's `.no-mistakes.yaml` cannot select the credentialed process used for fixes. A trusted repository-level `agent` override still controls ordinary pipeline duties; when `review_fix_agent` is set globally it remains the Review fixer, and when it is absent the fixer follows that effective repository agent.
-
-Binary paths and raw arguments continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override) and [`agent_args_override`](#agent_args_override). Model, effort, and Pi fast mode use [`agent_config`](#agent_config); its nested `review_fix` block gives the selected fixer a role profile without introducing a second profile system. The resolved fixer selection and role profile are recorded before a new run starts. Editing global config therefore affects later runs only, including when a parked run resumes after a daemon restart. Historical runs created before this snapshot field retain the old recovery behavior.
-
-Both roles can use one harness with different provider, model, and effort settings. The [`agent_config`](#agent_config) example and field rules own that role-profile configuration.
 
 ### acpx_path
 
@@ -235,7 +214,7 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
+Model and reasoning effort per agent, in one common spelling. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
 |         |                                                                                                         |
 | ------- | ------------------------------------------------------------------------------------------------------- |
@@ -568,7 +547,7 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the review-fixer agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns. The review-fixer agent is the effective `agent`, or [`review_fix_agent`](#review_fix_agent) when configured, so its capability - not the default agent's - decides whether the session is reused.
+When enabled and the effective agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
 When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.

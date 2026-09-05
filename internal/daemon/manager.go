@@ -267,10 +267,6 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
-	if err := cfg.ResolveReviewFixAgent(ctx, lookPath); err != nil {
-		return nil, err
-	}
-
 	primary, err := newConfiguredAgentSet(cfg, cfg.Agents, evidenceRoot, environment, false)
 	if err != nil {
 		return nil, err

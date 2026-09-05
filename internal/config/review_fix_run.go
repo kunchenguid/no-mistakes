@@ -44,11 +44,8 @@ func (c *Config) ReviewFixAgentsForRun() []types.AgentName {
 	if c == nil {
 		return nil
 	}
-	if c.HasReviewFixAgentOverride() {
-		if len(c.ReviewFixAgents) > 0 {
-			return copyAgents(c.ReviewFixAgents)
-		}
-		return []types.AgentName{c.ReviewFixAgent}
+	if len(c.ReviewFixAgents) > 0 {
+		return copyAgents(c.ReviewFixAgents)
 	}
 	if len(c.Agents) > 0 {
 		return copyAgents(c.Agents)
@@ -99,7 +96,6 @@ func (c *Config) ApplyReviewFixRunConfig(encoded string) error {
 	if snapshot.Version != reviewFixRunConfigVersion {
 		return fmt.Errorf("restore review fixer: unsupported stored version %d", snapshot.Version)
 	}
-	c.ReviewFixAgent = ""
 	c.ReviewFixAgents = nil
 	c.ReviewFixAgentConfig = nil
 	c.ReviewFixAgentArgsOverride = nil
@@ -118,7 +114,6 @@ func (c *Config) ApplyReviewFixRunConfig(encoded string) error {
 		}
 	}
 	c.ReviewFixAgents = copyAgents(snapshot.Agents)
-	c.ReviewFixAgent = firstAgent(c.ReviewFixAgents)
 	c.ReviewFixAgentArgsOverride = make(map[string][]string, len(snapshot.Agents))
 	for _, name := range snapshot.Agents {
 		args, ok := snapshot.Args[string(name)]
