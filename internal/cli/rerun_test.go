@@ -58,13 +58,21 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				wantHead = ""
 			}
 			srv := ipc.NewServer()
+			commitDuringWait := make(chan struct{}, 1)
 			srv.Handle(ipc.MethodHealth, func(context.Context, json.RawMessage) (interface{}, error) {
 				return &ipc.HealthResult{Status: "ok"}, nil
 			})
 			srv.Handle(ipc.MethodGetRunsForHead, func(context.Context, json.RawMessage) (interface{}, error) {
 				return &ipc.GetRunsResult{}, nil
 			})
-			srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
+			srv.Handle(ipc.MethodGetActiveRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+				select {
+				case <-commitDuringWait:
+					if _, err := git.Run(ctx, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "concurrent local commit"); err != nil {
+						return nil, err
+					}
+				default:
+				}
 				return &ipc.GetActiveRunResult{}, nil
 			})
 			requests := make(chan map[string]string, 1)
@@ -130,6 +138,39 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 					t.Fatalf("AXI omitted known head: %v", params)
 				}
 				t.Logf("AXI no-op push fallback IPC request: %v; run_id=%s", params, runID)
+
+				for _, phase := range []string{"during_wait", "before_push"} {
+					t.Run("commit_"+phase, func(t *testing.T) {
+						// Advance HEAD during the first trigger's post-push wait.
+						// The next trigger starts with the same stale snapshot but
+						// pushes the already-advanced branch.
+						if phase == "during_wait" {
+							commitDuringWait <- struct{}{}
+						}
+						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+						defer cancel()
+						if _, err := triggerRun(ctx, env, "main", wantHead, nil, "keep the caller's changes", ""); err != nil {
+							t.Fatal(err)
+						}
+						params := <-requests
+						currentHead := cliGit(t, dir, "rev-parse", "HEAD")
+						if currentHead == wantHead {
+							t.Fatal("fixture did not advance the caller HEAD")
+						}
+						if params["caller_head_sha"] != currentHead {
+							t.Errorf("fallback sent stale caller head %s, want current clean head %s", params["caller_head_sha"], currentHead)
+						}
+						gateHead := cliGit(t, gateDir, "rev-parse", "refs/heads/main")
+						wantGate := wantHead
+						if phase == "before_push" {
+							wantGate = currentHead
+						}
+						if gateHead != wantGate {
+							t.Fatalf("gate head = %s, want %s", gateHead, wantGate)
+						}
+						t.Logf("startup=%s current=%s gate=%s request=%s", wantHead, currentHead, gateHead, params["caller_head_sha"])
+					})
+				}
 			}
 		})
 	}

@@ -42,18 +42,6 @@ func newRerunCmd() *cobra.Command {
 				if branch == "HEAD" {
 					return fmt.Errorf("not on a branch")
 				}
-				var callerHead string
-				dirty, err := git.HasUncommittedChanges(context.Background(), ".")
-				if err != nil {
-					return fmt.Errorf("check working tree: %w", err)
-				}
-				if !dirty {
-					callerHead, err = git.HeadSHA(context.Background(), ".")
-					if err != nil {
-						return fmt.Errorf("get caller head: %w", err)
-					}
-				}
-
 				if err := daemon.EnsureDaemon(p); err != nil {
 					return fmt.Errorf("start daemon: %w", err)
 				}
@@ -64,6 +52,10 @@ func newRerunCmd() *cobra.Command {
 				}
 				defer client.Close()
 
+				callerHead, err := rerunCallerHead(cmd.Context())
+				if err != nil {
+					return err
+				}
 				var result ipc.RerunResult
 				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, CallerHeadSHA: callerHead}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
@@ -77,4 +69,22 @@ func newRerunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch for the PR for this rerun only (overrides inherited per-run base branch)")
 	return cmd
+}
+
+// rerunCallerHead captures clean-head evidence at the request boundary, after
+// any daemon startup or post-push wait. Dirty callers retain the existing
+// behavior by omitting that evidence.
+func rerunCallerHead(ctx context.Context) (string, error) {
+	dirty, err := git.HasUncommittedChanges(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("check working tree: %w", err)
+	}
+	if dirty {
+		return "", nil
+	}
+	head, err := git.HeadSHA(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("get caller head: %w", err)
+	}
+	return head, nil
 }
