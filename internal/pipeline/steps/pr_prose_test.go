@@ -125,6 +125,9 @@ func TestPRStep_OperatorAddressTestingSummaryFences(t *testing.T) {
 		for _, tt := range []struct{ name, summary string }{
 			{"two fences", "Ran game tests:\n```text\nCaptain: ready\n```\nThen ship tests:\n```text\nCaptain: aboard\n```\n\nCaptain, checks passed"},
 			{"unclosed fence", "Captain, checks passed\n```text\nCaptain: ready\nCaptain: aboard"},
+			{"indented code", "Observed fixture:\n\n    Captain: ready\n    Captain: aboard\n\nCaptain, checks passed"},
+			{"tab code", "Observed fixture:\n\n\tCaptain: ready\n\tCaptain: aboard\n\nCaptain, checks passed"},
+			{"initial indented code", "    Captain: ready\n    Captain: aboard\n\nCaptain, checks passed"},
 		} {
 			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
 				dir, baseSHA, headSHA := setupGitRepo(t)
@@ -152,6 +155,40 @@ func TestPRStep_OperatorAddressTestingSummaryFences(t *testing.T) {
 	}
 }
 
+func TestPRStep_OperatorAddressBlockquoteHTML(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, boundary, tail string }{
+		{"div", "<div align=\"center\">note</div>", "guard stale wakes"},
+		{"table", "<table><tr><td>note</td></tr></table>", "guard stale wakes"},
+		{"unclosed div", "<div>", "guard stale wakes"},
+		{"comment", "<!-- note -->", "guard stale wakes"},
+		{"heading", "## Heading", "guard stale wakes"},
+		{"blank before html", "\n<div>note</div>", "guard stale wakes"},
+		{"type seven", "<custom-tag>", "Captain, guard stale wakes"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			const quoted = "> Captain, quoted dialogue"
+			ag := &mockAgent{name: "pr", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				raw, err := json.Marshal(prContent{
+					Title: "fix(pipeline): guard stale wakes",
+					Body:  "## What Changed\n\n" + quoted + "\n" + tt.boundary + "\nCaptain, guard stale wakes",
+				})
+				return &agent.Result{Output: raw}, err
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := quoted + "\n" + tt.boundary + "\n" + tt.tail
+			if !strings.Contains(content.Body, want) {
+				t.Errorf("rendered PR missing %q:\n%s", want, content.Body)
+			}
+		})
+	}
+}
+
 func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	t.Parallel()
 	type renderCase struct {
@@ -161,6 +198,21 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 		want                          []string
 	}
 	cases := []renderCase{
+		{
+			name:   "intent indented evidence",
+			intent: "Observed fixture:\n\n    Captain: ready\n\nCaptain, finish cleanup",
+			want:   []string{"## Intent\n\nObserved fixture:\n\nCaptain: ready\n\nfinish cleanup"},
+		},
+		{
+			name:   "intent initial indented evidence",
+			intent: "    Captain: ready\n\nCaptain, finish cleanup",
+			want:   []string{"## Intent\n\nCaptain: ready\n\nfinish cleanup"},
+		},
+		{
+			name: "inline tick before next paragraph",
+			body: "A literal ` character.\n\nCaptain, run `go test`.",
+			want: []string{"A literal ` character.\n\nrun `go test`."},
+		},
 		{
 			name:   "unbalanced intent quote before later blocks",
 			intent: "Fix the \"flaky test",
