@@ -216,8 +216,10 @@ func requireProviderModel(value string) error {
 	return nil
 }
 
-// SplitProviderModel splits opencode's provider/model spelling into the
-// providerID and modelID the session-message body requires.
+// SplitProviderModel splits a provider/model spelling into the providerID and
+// modelID. Opencode's session-message body requires that form, and eval replay
+// uses the same split to compare a qualified candidate against adapters that
+// report model and provider as separate fields.
 func SplitProviderModel(model string) (provider, id string, ok bool) {
 	provider, id, found := strings.Cut(strings.TrimSpace(model), "/")
 	provider = strings.TrimSpace(provider)
@@ -226,6 +228,39 @@ func SplitProviderModel(model string) (provider, id string, ok bool) {
 		return "", "", false
 	}
 	return provider, id, true
+}
+
+// ServedMatchesRequested reports whether an adapter's served model is the same
+// identity the operator requested. Pi reports a bare model id plus a separate
+// provider while candidates commonly use the provider/model spelling
+// (xai/grok-4.6). Exact string equality is the fallback so a bare request
+// still matches a bare report. A different model id or a different provider
+// is a mismatch; an empty provider cannot satisfy a qualified request.
+func ServedMatchesRequested(requested, served, servedProvider string) bool {
+	requested = strings.TrimSpace(requested)
+	served = strings.TrimSpace(served)
+	servedProvider = strings.TrimSpace(servedProvider)
+	if requested == "" || served == "" {
+		return requested == served
+	}
+	if served == requested {
+		return true
+	}
+	reqProvider, reqID, requestedQualified := SplitProviderModel(requested)
+	servedProviderFromModel, servedID, servedQualified := SplitProviderModel(served)
+	if requestedQualified {
+		if served == reqID && servedProvider == reqProvider {
+			return true
+		}
+		if servedQualified {
+			return servedProviderFromModel == reqProvider && servedID == reqID
+		}
+		return false
+	}
+	if servedQualified {
+		return servedID == requested
+	}
+	return false
 }
 
 // harnesses is the whole mapping. Every native flag here was read off the

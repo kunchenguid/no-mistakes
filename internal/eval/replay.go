@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
@@ -334,7 +335,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		evaluation.Model = observed.result.Model
 		if evaluation.Model == "" {
 			evaluation.Model = candidate.Model
-		} else if evaluation.Model != candidate.Model {
+		} else if !agentcfg.ServedMatchesRequested(candidate.Model, evaluation.Model, observed.result.ModelProvider) {
 			evaluation.Error = safeurl.RedactText(fmt.Sprintf("candidate served model %q, requested %q", evaluation.Model, candidate.Model))
 			return evaluation
 		}
