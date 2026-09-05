@@ -32,9 +32,19 @@ When a human resolves a findings gate with Approve, Skip, or Abort without selec
 
 Review, Test, Document, Lint, Rebase, and CI repair agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later human decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
-Recorded human choices to fix in the same run, including per-finding instructions, bind later fixes and Review's acceptance criteria. Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it. Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
+Recorded human choices to fix in the same run, including per-finding instructions, bind later fixes and Review's acceptance criteria.
+Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it.
+A selected finding ID that matches no finding in its round is logged and does not count as a recorded fix decision, so a typo or an ID from an earlier round never binds and never fails the run.
+Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
 
-When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance before the shared Test/Document/Lint commit, after Test's evidence agent, or before accepting a CI repair. Review uses its existing independent pass, which also follows Rebase. Runs without a positive human selection, and unchanged trees, incur no additional conformance-check invocation. A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision. An unreadable or oversized complete decision history, failed checker, or malformed checker output also stops the repair. Detection is model-based, not a deterministic semantic guarantee.
+When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance before the shared Test/Document/Lint commit, after Test's evidence agent, or before accepting a CI repair.
+Review uses its existing independent pass, which also follows Rebase.
+Runs without a positive human selection, and trees unchanged since the run's recorded head, incur no additional conformance-check invocation.
+When an operator resolves a decision-conflict gate with Approve, Skip, or Abort, the pipeline records the exact worktree content that check inspected, so a later boundary whose complete worktree content (staged, unstaged, and untracked files alike, including tracked files that match an ignore rule) is identical to that ruled-on content also skips the check.
+Any new change after the ruling is checked again.
+A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision.
+An unreadable complete decision history, one over its own 256 KB limit (separate from the bounded advisory sections, because the binding history never drops old lines), a failed checker, or malformed checker output also stops the repair.
+Detection is model-based, not a deterministic semantic guarantee.
 
 Declines retain their existing advisory semantics: agents may re-raise a declined finding when current code introduces a materially different problem. Earlier-run branch history remains bounded advisory context; it does not activate the additional same-run check.
 

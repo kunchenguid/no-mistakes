@@ -101,6 +101,7 @@ The combined document-and-lint housekeeping pass runs in the Document step, so i
 
 Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
 It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
+When the run holds a recorded human fix decision, the [finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) check also runs before that commit and refuses a repair that reverses the decision.
 
 The template does not control commits created by the Rebase or Push steps.
 The Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
