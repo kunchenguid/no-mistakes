@@ -15,6 +15,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+const piAnthropicVertexExtension = "npm:@twogiants/pi-anthropic-vertex@0.1.13"
+
 // piAgent spawns the pi CLI for each invocation. Pi reads its prompt from
 // stdin and emits JSONL on stdout when --mode json is set. The lifecycle is
 // codex-shaped: one process per Run, no managed server.
@@ -26,7 +28,8 @@ type piAgent struct {
 	disableProjectSettings bool
 	// fast installs a run-scoped trusted extension that sets OpenAI Codex's
 	// Responses service_tier to priority. Pi has no stock fast-mode flag.
-	fast bool
+	fast              bool
+	providerExtension string
 	subprocessContext
 }
 
@@ -180,6 +183,9 @@ const piFastExtension = `export default function (pi) {
 
 func (a *piAgent) buildRunArgs(session *SessionRef) ([]string, string, error) {
 	args := a.buildArgs(session)
+	if a.providerExtension != "" {
+		args = append(args, "--extension", a.providerExtension)
+	}
 	if !a.fast {
 		return args, "", nil
 	}
