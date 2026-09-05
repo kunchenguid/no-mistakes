@@ -272,6 +272,10 @@ type Options struct {
 	// harness on its own defaults, which is what every configuration that
 	// predates the common layer resolves to.
 	Profile agentcfg.Profile
+	// Fast requests the verified low-latency provider tier. It is currently
+	// supported only by Pi with an openai-codex model; callers must opt in from
+	// trusted role configuration rather than relying on ambient extensions.
+	Fast bool
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -1054,6 +1058,12 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	if err := agentcfg.Validate(name, opts.Profile); err != nil {
 		return nil, err
 	}
+	if opts.Fast {
+		provider, _, providerModel := agentcfg.SplitProviderModel(opts.Profile.Model)
+		if name != types.AgentPi || !providerModel || provider != "openai-codex" {
+			return nil, fmt.Errorf("fast requires agent pi with an openai-codex/<model> profile")
+		}
+	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
 		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, subprocessContext: newSubprocessContext(opts.Environment)}, nil
@@ -1084,6 +1094,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 			bin:                    bin,
 			extraArgs:              extraArgs,
 			disableProjectSettings: opts.DisableProjectSettings,
+			fast:                   opts.Fast,
 			subprocessContext:      newSubprocessContext(opts.Environment),
 		}, nil
 	case types.AgentCopilot:

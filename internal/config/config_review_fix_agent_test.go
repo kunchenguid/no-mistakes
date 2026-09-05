@@ -95,18 +95,55 @@ func TestResolveReviewFixAgentUsesAgentAvailabilitySemantics(t *testing.T) {
 
 func TestLoadGlobal_CaptainReviewAndFixPairing(t *testing.T) {
 	cfg := writeGlobalConfig(t, `
-agent: acp:omp
-review_fix_agent: pi
+agent: pi
 agent_config:
   pi:
-    model: openai-codex/gpt-5.6-sol
-    effort: low
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 `)
-	if cfg.Agent != types.AgentName("acp:omp") || cfg.ReviewFixAgent != types.AgentPi {
-		t.Fatalf("agent pairing = %q/%q, want acp:omp/pi", cfg.Agent, cfg.ReviewFixAgent)
+	if cfg.Agent != types.AgentPi || cfg.ReviewFixAgent != "" {
+		t.Fatalf("agent pairing = %q/%q, want pi with a role profile", cfg.Agent, cfg.ReviewFixAgent)
 	}
-	want := agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow}
-	if got := cfg.AgentConfig["pi"]; got != want {
-		t.Fatalf("Pi fixer profile = %#v, want %#v", got, want)
+	reviewer := agentcfg.Profile{Model: "anthropic-vertex/claude-opus-4-8", Effort: agentcfg.EffortXHigh}
+	if got := cfg.AgentConfig["pi"]; got != reviewer {
+		t.Fatalf("Pi reviewer profile = %#v, want %#v", got, reviewer)
+	}
+	fixer, ok := cfg.ReviewFixAgentConfig["pi"]
+	wantFixer := ReviewFixProfile{
+		Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+		Fast:    true,
+	}
+	if !ok || fixer != wantFixer {
+		t.Fatalf("Pi fixer profile = %#v, want %#v", fixer, wantFixer)
+	}
+}
+
+func TestLoadGlobal_ReviewFixProfileFastValidation(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "non Pi",
+			yaml: "agent_config:\n  codex:\n    review_fix:\n      model: gpt-5.6-sol\n      fast: true\n",
+			want: "fast is supported only by agent pi",
+		},
+		{
+			name: "non Codex provider",
+			yaml: "agent_config:\n  pi:\n    review_fix:\n      model: anthropic-vertex/claude-opus-4-8\n      fast: true\n",
+			want: "fast requires model: openai-codex/<model>",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := loadGlobalConfigError(t, tt.yaml)
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }

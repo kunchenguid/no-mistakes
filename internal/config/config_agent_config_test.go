@@ -195,6 +195,9 @@ func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
 	if !strings.Contains(defaultConfigYAML, "# agent_config:") {
 		t.Fatal("default config.yaml does not document agent_config")
 	}
+	if !strings.Contains(defaultConfigYAML, "#     review_fix:") || !strings.Contains(defaultConfigYAML, "#       fast: true") {
+		t.Fatal("default config.yaml does not document the Review-fix role profile")
+	}
 	for _, effort := range agentcfg.EffortNames() {
 		if !strings.Contains(defaultConfigYAML, effort) {
 			t.Errorf("default config.yaml does not list the %q effort level", effort)

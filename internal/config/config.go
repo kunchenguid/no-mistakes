@@ -138,14 +138,16 @@ type GlobalConfig struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	// AgentConfig is the harness-neutral per-agent tuning map (agent_config):
 	// model and reasoning effort stated once in a common spelling, mapped down
-	// to each harness's own mechanism by internal/agentcfg. It is additive to
+	// to each harness's own mechanism by internal/agentcfg. A nested review_fix
+	// profile is resolved separately into ReviewFixAgentConfig. It is additive to
 	// agent_args_override, which still wins for any knob it already pins
 	// natively, so every configuration written before this field keeps its exact
 	// previous behavior. Global-only for the same reason as
 	// agent_args_override: it describes this machine's agent setup and decides
 	// which model runs with the operator's credentials, so no pushed branch may
 	// set it.
-	AgentConfig map[string]agentcfg.Profile `yaml:"agent_config"`
+	AgentConfig          map[string]agentcfg.Profile `yaml:"agent_config"`
+	ReviewFixAgentConfig map[string]ReviewFixProfile `yaml:"-"`
 	// WorktreeRoots places a repository's pipeline run worktrees under a
 	// directory the operator chose instead of the default
 	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
@@ -570,6 +572,7 @@ type Config struct {
 	AgentPathOverride     map[string]string
 	AgentArgsOverride     map[string][]string
 	AgentConfig           map[string]agentcfg.Profile
+	ReviewFixAgentConfig  map[string]ReviewFixProfile
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	AgentTimeout          time.Duration
@@ -988,7 +991,9 @@ log_level: info
 #   grok: /Users/you/.grok/bin/grok
 
 # Model and reasoning effort per agent, in one common spelling (optional, global
-# only). no-mistakes maps these down to whatever the harness actually uses:
+# only). A nested review_fix profile tunes only Review remediation; when absent,
+# the fixer uses the ordinary profile. no-mistakes maps these down to whatever
+# the harness actually uses:
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
 # codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
 # session-message body for opencode (its model needs the provider/model form),
@@ -1006,6 +1011,13 @@ log_level: info
 #     effort: high
 #   opencode:
 #     model: openai/gpt-5
+#   pi:
+#     model: anthropic-vertex/claude-opus-4-8
+#     effort: xhigh
+#     review_fix:
+#       model: openai-codex/gpt-5.6-sol
+#       effort: low
+#       fast: true # verified service_tier=priority request injection
 #
 # Extra native agent CLI flags (optional, global only)
 # Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
@@ -1551,42 +1563,104 @@ func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
 	return c.AgentConfig[string(name)]
 }
 
+// ReviewFixProfile is the optional role-specific profile nested at
+// agent_config.<agent>.review_fix. Profile carries model and effort through the
+// common agentcfg mapping. Fast enables Pi's verified openai-codex priority
+// request mechanism.
+type ReviewFixProfile struct {
+	Profile agentcfg.Profile
+	Fast    bool
+}
+
+// ReviewFixProfileFor returns the role profile when present, otherwise the
+// agent's ordinary profile. The bool distinguishes an explicit zero role
+// profile from absence.
+func (c *Config) ReviewFixProfileFor(name types.AgentName) (ReviewFixProfile, bool) {
+	if c.ReviewFixAgentConfig != nil {
+		if profile, ok := c.ReviewFixAgentConfig[string(name)]; ok {
+			return profile, true
+		}
+	}
+	return ReviewFixProfile{Profile: c.AgentProfileFor(name)}, false
+}
+
 // agentProfileRaw is the on-disk YAML shape of one agent_config entry. Effort
 // is a string here so an invalid level is reported as a config error naming the
 // valid vocabulary rather than decoding into a value no harness accepts.
 type agentProfileRaw struct {
-	Model  string `yaml:"model"`
-	Effort string `yaml:"effort"`
+	Model     string                    `yaml:"model"`
+	Effort    string                    `yaml:"effort"`
+	ReviewFix *reviewFixAgentProfileRaw `yaml:"review_fix"`
 }
 
-// parseAgentConfig validates the agent_config map and resolves it to
-// harness-neutral profiles. Every knob is checked against what the named
-// harness can actually express, so an unmappable request fails at load rather
-// than being silently dropped at run time.
-func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, error) {
+type reviewFixAgentProfileRaw struct {
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
+	Fast   bool   `yaml:"fast"`
+}
+
+// parseAgentConfig validates the agent_config map and both profiles owned by
+// each entry. The nested Review-fix profile is independent: omitted knobs keep
+// the fixer harness's defaults rather than inheriting reviewer tuning.
+func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]ReviewFixProfile, error) {
 	profiles := make(map[string]agentcfg.Profile, len(raw))
+	fixProfiles := make(map[string]ReviewFixProfile)
 	for name, entry := range raw {
 		agentName := types.AgentName(name)
 		if !agentcfg.Known(agentName) {
-			return nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
+			return nil, nil, fmt.Errorf("invalid agent name in agent_config: %q (valid: %s, cursor, acp:<target>)", name, strings.Join(agentNamesText(agentcfg.Agents()), ", "))
 		}
-		effort, err := agentcfg.ParseEffort(entry.Effort)
+		profile, err := parseAgentProfile(agentName, entry.Model, entry.Effort, "agent_config."+name)
 		if err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+			return nil, nil, err
 		}
-		profile := agentcfg.Profile{Model: strings.TrimSpace(entry.Model), Effort: effort}
-		if err := agentcfg.Validate(agentName, profile); err != nil {
-			return nil, fmt.Errorf("invalid agent_config.%s: %w", name, err)
+		if !profile.IsZero() {
+			profiles[name] = profile
 		}
-		if profile.IsZero() {
-			continue
+		if entry.ReviewFix != nil {
+			fixProfile, err := parseAgentProfile(agentName, entry.ReviewFix.Model, entry.ReviewFix.Effort, "agent_config."+name+".review_fix")
+			if err != nil {
+				return nil, nil, err
+			}
+			resolved := ReviewFixProfile{Profile: fixProfile, Fast: entry.ReviewFix.Fast}
+			if err := validateReviewFixProfile(agentName, resolved); err != nil {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.review_fix: %w", name, err)
+			}
+			fixProfiles[name] = resolved
 		}
-		profiles[name] = profile
 	}
 	if len(profiles) == 0 {
-		return nil, nil
+		profiles = nil
 	}
-	return profiles, nil
+	if len(fixProfiles) == 0 {
+		fixProfiles = nil
+	}
+	return profiles, fixProfiles, nil
+}
+
+func parseAgentProfile(name types.AgentName, model, effortValue, field string) (agentcfg.Profile, error) {
+	effort, err := agentcfg.ParseEffort(effortValue)
+	if err != nil {
+		return agentcfg.Profile{}, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	profile := agentcfg.Profile{Model: strings.TrimSpace(model), Effort: effort}
+	if err := agentcfg.Validate(name, profile); err != nil {
+		return agentcfg.Profile{}, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return profile, nil
+}
+
+func validateReviewFixProfile(name types.AgentName, profile ReviewFixProfile) error {
+	if !profile.Fast {
+		return nil
+	}
+	if name != types.AgentPi {
+		return fmt.Errorf("fast is supported only by agent pi")
+	}
+	if !strings.HasPrefix(profile.Profile.Model, "openai-codex/") {
+		return fmt.Errorf("fast requires model: openai-codex/<model>")
+	}
+	return nil
 }
 
 func agentNamesText(names []types.AgentName) []string {
@@ -2023,11 +2097,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
 	}
 	if raw.AgentConfig != nil {
-		profiles, err := parseAgentConfig(raw.AgentConfig)
+		profiles, fixProfiles, err := parseAgentConfig(raw.AgentConfig)
 		if err != nil {
 			return nil, err
 		}
 		cfg.AgentConfig = profiles
+		cfg.ReviewFixAgentConfig = fixProfiles
 	}
 	if raw.WorktreeRoots != nil {
 		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
@@ -2811,6 +2886,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		AgentPathOverride:     global.AgentPathOverride,
 		AgentArgsOverride:     global.AgentArgsOverride,
 		AgentConfig:           global.AgentConfig,
+		ReviewFixAgentConfig:  global.ReviewFixAgentConfig,
 		CITimeout:             global.CITimeout,
 		StepQuietWarning:      global.StepQuietWarning,
 		AgentTimeout:          global.AgentTimeout,
