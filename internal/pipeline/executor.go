@@ -890,10 +890,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			outcome, err = refusal, nil
 		}
 		var conflict *DecisionConflictError
+		checkedTree := ""
 		if errors.As(err, &conflict) {
 			findings, marshalErr := types.MarshalFindingsJSON(conflict.Findings)
 			outcome = &StepOutcome{NeedsApproval: true, Findings: findings}
 			err = marshalErr
+			checkedTree = conflict.CheckedTreeSHA
 		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
@@ -963,6 +965,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		} else {
 			currentRoundID = roundInsertID(currentRoundID, inserted, nil)
+			if checkedTree != "" {
+				if dbErr := e.db.SetStepRoundCheckedTree(inserted.ID, checkedTree); dbErr != nil {
+					slog.Warn("failed to record checked tree", "step", stepName, "round", roundNum, "error", dbErr)
+				}
+			}
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.

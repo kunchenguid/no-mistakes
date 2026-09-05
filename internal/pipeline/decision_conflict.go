@@ -10,6 +10,8 @@ import (
 // existing approval gate. Local edits remain available for an explicit repair.
 type DecisionConflictError struct {
 	Findings types.Findings
+	// CheckedTreeSHA is the worktree tree the check inspected.
+	CheckedTreeSHA string
 }
 
 func (e *DecisionConflictError) Error() string {

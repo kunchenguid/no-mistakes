@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     selected_finding_ids TEXT,
     selection_source     TEXT,
     fix_summary          TEXT,
+    checked_tree_sha     TEXT,
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
@@ -208,6 +209,10 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN trusted_config_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN global_config_yaml BLOB`,
 	`ALTER TABLE step_rounds ADD COLUMN repo_config_yaml BLOB`,
+	// The worktree content a decision check inspected when it parked a round,
+	// so a later boundary can tell a human ruling on that exact content from a
+	// genuinely new change.
+	`ALTER TABLE step_rounds ADD COLUMN checked_tree_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
