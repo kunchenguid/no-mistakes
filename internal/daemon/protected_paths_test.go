@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,113 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type protectedPathPushRetryStep struct {
+	edited bool
+}
+
+func (s *protectedPathPushRetryStep) Name() types.StepName { return types.StepPush }
+func (s *protectedPathPushRetryStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if !s.edited {
+		s.edited = true
+		if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
+			return nil, err
+		}
+		return (protectedPathCommitStep{step: &steps.PushStep{}}).Execute(sctx)
+	}
+	return (&steps.PushStep{}).Execute(sctx)
+}
+
+func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&protectedPathPushRetryStep{}}
+	})
+	repo, headSHA := setupTestGitRepo(t, p, database, "protected-publication")
+	publicationDir := filepath.Join(t.TempDir(), "published.git")
+	gitCmd(t, "", "init", "--bare", publicationDir)
+	if _, err := database.UpdateRepoForkURL(repo.ID, publicationDir); err != nil {
+		t.Fatal(err)
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
+		Old: strings.Repeat("0", 40), New: headSHA,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	workDir := p.WorktreeDir(repo.ID, result.RunID)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		run, err := database.GetRun(result.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.AwaitingAgentSince != nil {
+			break
+		}
+		if run.Status.Terminal() || time.Now().After(deadline) {
+			t.Fatalf("refusal did not park: %+v", run)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	approvalErr := client.Call(ipc.MethodRespond, &ipc.RespondParams{
+		RunID: result.RunID, Step: types.StepPush, Action: types.ActionApprove,
+	}, nil)
+	if approvalErr == nil {
+		run := waitForRunTerminalState(t, database, result.RunID)
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(workDir); os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_, publicationErr := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/main")
+		_, worktreeErr := os.Stat(workDir)
+		t.Fatalf("approval bypassed refused Push: run=%s published=%v worktree_exists=%v", run.Status, publicationErr == nil, worktreeErr == nil)
+	}
+	if !strings.Contains(approvalErr.Error(), "protected") || !strings.Contains(approvalErr.Error(), "fix") {
+		t.Fatalf("approval refusal lacks retry guidance: %v", approvalErr)
+	}
+	if got := gitOutput(t, workDir, "show", ":test.txt"); got != "staged edit" {
+		t.Fatalf("approval changed the index: %q", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(workDir, "test.txt")); err != nil || string(got) != "unstaged edit\n" {
+		t.Fatalf("approval changed working files: %q, %v", got, err)
+	}
+	if _, err := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/main"); err == nil {
+		t.Fatal("unresolved protected edit was published")
+	}
+
+	// The operator resolves the protected edit, then explicitly retries Push.
+	gitCmd(t, workDir, "restore", "--source=HEAD", "--staged", "--worktree", "--", "test.txt")
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{
+		RunID: result.RunID, Step: types.StepPush, Action: types.ActionFix,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, database, result.RunID)
+	if run.Status != types.RunCompleted || run.LastPushedSHA == nil || *run.LastPushedSHA != headSHA {
+		t.Fatalf("retry did not complete publication: %+v", run)
+	}
+	if got := gitOutput(t, publicationDir, "rev-parse", "refs/heads/main"); got != headSHA {
+		t.Fatalf("published head = %s, want %s", got, headSHA)
+	}
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(workDir); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("clean worktree was not removed after successful publication")
+}
 
 type protectedPathCommitStep struct {
 	step pipeline.Step

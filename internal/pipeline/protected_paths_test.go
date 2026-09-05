@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,9 @@ func TestProtectedPathRefusalRequiresDecisionAcrossRecovery(t *testing.T) {
 			case <-parked:
 			case <-time.After(5 * time.Second):
 				t.Fatal("refusal did not park")
+			}
+			if err := exec.Respond(step.Name(), types.ActionApprove, nil); err == nil || !strings.Contains(err.Error(), "use fix") {
+				t.Fatalf("approval must preserve the refusal gate and explain how to retry: %v", err)
 			}
 			select {
 			case err := <-done:
