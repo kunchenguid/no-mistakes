@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -144,7 +145,9 @@ func TestAgentlessRunFailsBeforePipelineStarts(t *testing.T) {
 }
 
 func runHappyPath(t *testing.T, agentName string) {
-	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t)})
+	release := filepath.Join(t.TempDir(), "release-review")
+	defer func() { _ = os.WriteFile(release, nil, 0o600) }()
+	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t, release)})
 
 	assertRootVersion(t, h)
 	assertRootHelp(t, h)
@@ -213,6 +216,11 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertRunsActiveInDir(t, h, featureWorktree, activeRun)
 	assertRootNoActiveRunOnOtherBranch(t, h, activeRun)
 
+	// Release the actual review fixture only after every active-run assertion.
+	// A fixed delay lets fast fixtures finish between those sequential reads.
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
 	if run.Status != types.RunCompleted {
@@ -353,8 +361,12 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertGateRemoteAbsent(t, h)
 }
 
-func cleanReviewScenario(t *testing.T) string {
+func cleanReviewScenario(t *testing.T, releaseFiles ...string) string {
 	t.Helper()
+	release := ""
+	if len(releaseFiles) > 0 {
+		release = releaseFiles[0]
+	}
 	path := filepath.Join(t.TempDir(), "scenario.yaml")
 	content := `actions:
   - match: "report only what you could not resolve.\n\nContext:\n- branch: document-agent-error"
@@ -495,7 +507,7 @@ func cleanReviewScenario(t *testing.T) string {
       artifacts: []
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: feature/e2e"
     text: "looks good"
-    delay_ms: 1500
+    wait_for_file: ` + strconv.Quote(release) + `
     structured:
       findings:
         - id: "review-info"
