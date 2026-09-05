@@ -645,8 +645,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 // Recovery ends with persisted custody-return stamps on the recovered run or
 // stranded stack; inspection then reports custody_returned (never-pushed runs)
 // or the ordinary classification against the last push binding (pushed runs),
-// both pointing at run_pipeline as the next step. `no-mistakes rerun` remains the alternative
-// exit that resumes validating the preserved head instead of taking it back.
+// both pointing at run_pipeline as the next step.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
