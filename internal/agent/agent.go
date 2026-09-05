@@ -205,10 +205,12 @@ type Result struct {
 	// Resumed reports whether this invocation resumed opts.Session.ID.
 	Resumed bool
 	// Model is the model the adapter reported serving this invocation, when
-	// available. Instrumentation only.
+	// available. Instrumentation records it, and eval replay validates it
+	// against the requested candidate.
 	Model string
 	// ModelProvider is the provider that served the model (e.g. "openai",
-	// "anthropic"), when the adapter can report it. Instrumentation only.
+	// "anthropic"), when the adapter can report it. Eval replay uses it to
+	// normalize provider-qualified candidate identities.
 	ModelProvider string
 	// Provider is the adapter provider that served this invocation. It lets
 	// fallback wrappers persist a session against the provider that minted it.

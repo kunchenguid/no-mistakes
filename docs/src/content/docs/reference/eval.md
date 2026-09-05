@@ -116,6 +116,8 @@ no-mistakes eval run \
 
 A candidate is `agent,model=<model>[,effort=<level>]`. The fields are the same harness-neutral knobs [`agent_config`](/no-mistakes/reference/global-config/#agent_config) exposes to the pipeline, and they resolve through the same per-harness mapping, so a candidate can express exactly what a real run can. `model` is mandatory - a comparison that inherited whatever default the harness happened to resolve would not be reproducible - while `effort` is optional and one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
 
+When a harness reports the model it served, replay verifies that identity against the requested candidate. Provider-qualified identities are normalized across adapter reporting shapes: for example, Pi may report model `grok-4.6` and provider `xai` for a candidate requested as `xai/grok-4.6`. That is a match; a different model or provider fails the replay. Keep the provider-qualified candidate rather than reducing it to a bare-model workaround.
+
 Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
 
 The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
