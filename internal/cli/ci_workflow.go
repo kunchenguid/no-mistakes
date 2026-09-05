@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -157,10 +158,17 @@ func generateCIWorkflow(dir string, force bool) error {
 	return nil
 }
 
-// indentCommand indents each line of a command for use in a YAML block scalar.
-// It preserves the command's structure while ensuring proper YAML formatting.
+// ciWorkflowRunIndent matches the leading whitespace before the `%s` placeholder
+// in the run: | block scalars above, so a multi-line command's continuation
+// lines stay inside the scalar instead of dedenting out of it.
+const ciWorkflowRunIndent = "          "
+
+// indentCommand indents every line of cmd after the first so a multi-line
+// command stays inside the YAML block scalar it's substituted into.
 func indentCommand(cmd string) string {
-	// Block scalars are already indented by the template, so just use the command as-is.
-	// The template ensures proper indentation for the block scalar context.
-	return cmd
+	lines := strings.Split(cmd, "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = ciWorkflowRunIndent + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }

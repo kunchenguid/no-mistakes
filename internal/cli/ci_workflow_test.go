@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -53,7 +54,7 @@ func TestGenerateCIWorkflow(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "empty config",
+			name:       "empty config",
 			configYAML: ``,
 			wantErr:    true,
 		},
@@ -100,6 +101,21 @@ func TestGenerateCIWorkflow(t *testing.T) {
 				t.Helper()
 				verifyStepRunContains(t, workflow, "Lint", "gofmt")
 				verifyStepRunContains(t, workflow, "Test", "-race")
+			},
+		},
+		{
+			name: "multi-line test command stays inside the block scalar",
+			configYAML: `commands:
+  lint: "go vet ./..."
+  test: |-
+    go build ./...
+    go test ./... -race
+`,
+			wantErr: false,
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyStepRunContains(t, workflow, "Test", "go build ./...")
+				verifyStepRunContains(t, workflow, "Test", "go test ./... -race")
 			},
 		},
 	}
@@ -265,7 +281,7 @@ func verifyStepRunContains(t *testing.T, workflow map[string]interface{}, stepNa
 		}
 		if name, ok := step["name"].(string); ok && name == stepName {
 			if run, ok := step["run"].(string); ok {
-				if runContains(run, expectedText) {
+				if strings.Contains(run, expectedText) {
 					return
 				}
 			}
@@ -274,13 +290,4 @@ func verifyStepRunContains(t *testing.T, workflow map[string]interface{}, stepNa
 		}
 	}
 	t.Errorf("step %q not found", stepName)
-}
-
-func runContains(haystack, needle string) bool {
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
