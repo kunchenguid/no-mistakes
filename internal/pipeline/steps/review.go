@@ -421,6 +421,7 @@ Risk assessment (after listing all findings):
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
+		SkipRemaining: len(changed) == 0 && len(findings.Items) == 0,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	})

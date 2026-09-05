@@ -320,6 +320,127 @@ func TestRebaseStep_EmptyConflictResolutionStillReachesIndependentReview(t *test
 	}
 }
 
+func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testing.T) {
+	for _, validReview := range []bool{true, false} {
+		name := "accepted"
+		if !validReview {
+			name = "unusable_review"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, base, _ := setupGitRepo(t)
+			gitCmd(t, dir, "reset", "--hard", base)
+			gitCmd(t, dir, "rm", "base.txt")
+			gitCmd(t, dir, "commit", "-m", "remove superseded behavior")
+			head := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "checkout", "main")
+			if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("updated upstream behavior\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "update upstream behavior")
+			upstreamHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "checkout", "feature")
+
+			const instruction = "Accept upstream base.txt and drop the branch's removal"
+			decisionID := ""
+			reviews := 0
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if !strings.Contains(opts.Prompt, instruction) {
+					t.Fatal("agent did not receive the accepted upstream decision")
+				}
+				if opts.Purpose != "review" {
+					gitCmd(t, dir, "rebase", "--skip")
+					return &agent.Result{Output: json.RawMessage(`{"summary":"accept upstream behavior"}`)}, nil
+				}
+				reviews++
+				if opts.Session != nil || gitCmd(t, dir, "rev-parse", "HEAD") != upstreamHead {
+					t.Fatal("expected independent Review of HEAD equal to origin/main")
+				}
+				if !validReview {
+					return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
+				}
+				output, err := json.Marshal(cleanReviewFindings())
+				return &agent.Result{Output: output}, err
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			sctx.Repo.UpstreamURL = dir
+			var executor *pipeline.Executor
+			executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag,
+				[]pipeline.Step{&RebaseStep{}, &ReviewStep{}, &PushStep{}, &PRStep{}, &CIStep{}}, func(event ipc.Event) {
+					if event.StepName == nil {
+						return
+					}
+					if event.Type == ipc.EventStepStarted && *event.StepName != types.StepRebase && *event.StepName != types.StepReview {
+						t.Fatalf("empty Rebase reached publication step %s", *event.StepName)
+					}
+					if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+						return
+					}
+					if *event.StepName != types.StepRebase || decisionID != "" || event.Findings == nil {
+						t.Fatal("unexpected approval gate")
+					}
+					findings, err := types.ParseFindingsJSON(*event.Findings)
+					if err != nil || len(findings.Items) != 1 {
+						t.Fatalf("expected one removal conflict: %+v, %v", findings, err)
+					}
+					decisionID = findings.Items[0].ID
+					if err := executor.RespondWithOverrides(types.StepRebase, types.ActionFix, []string{decisionID}, map[string]string{decisionID: instruction}, nil); err != nil {
+						t.Fatal(err)
+					}
+				})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
+			if validReview && err != nil || !validReview && (err == nil || !strings.Contains(err.Error(), "missing risk assessment")) {
+				t.Fatalf("unexpected pipeline result: %v", err)
+			}
+			if decisionID == "" || reviews != 1 || len(ag.calls) != 2 {
+				t.Fatalf("missing independent Review after accepted Rebase: decision=%q reviews=%d calls=%d", decisionID, reviews, len(ag.calls))
+			}
+			run, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if validReview {
+				if run.Status != types.RunCompleted || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != upstreamHead {
+					t.Fatalf("accepted empty Review did not complete with its reviewed head: %+v", run)
+				}
+			} else if run.Status != types.RunFailed || run.ReviewApprovedHeadSHA != nil {
+				t.Fatalf("unusable Review certified the empty state: %+v", run)
+			}
+			if run.LastPushedSHA != nil || run.PRURL != nil {
+				t.Fatalf("empty Rebase changed publication state: %+v", run)
+			}
+			steps, err := sctx.DB.GetStepsByRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range steps {
+				if validReview && step.StepName != types.StepRebase && step.StepName != types.StepReview && step.Status != types.StepStatusSkipped {
+					t.Fatalf("publication step %s was not skipped: %s", step.StepName, step.Status)
+				}
+			}
+		})
+	}
+}
+
+func TestReviewStep_IgnoredChangesDoNotSkipPublication(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		output, err := json.Marshal(cleanReviewFindings())
+		return &agent.Result{Output: output}, err
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx.Config.IgnorePatterns = []string{"*.txt"}
+	recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil || outcome == nil || outcome.NeedsApproval || outcome.SkipRemaining || len(ag.calls) != 1 {
+		t.Fatalf("ignored changes were treated as an empty branch: outcome=%+v err=%v calls=%d", outcome, err, len(ag.calls))
+	}
+}
+
 func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
 	for _, tc := range []struct {
 		name, checks     string
