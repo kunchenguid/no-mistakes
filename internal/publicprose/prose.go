@@ -11,7 +11,7 @@ import (
 
 // Only the reported vocative forms at a prose boundary are removed. A domain
 // phrase such as "the captain, crew and ship" is not operator address.
-var address = regexp.MustCompile(`(?m)(^[^\pL\pN\r\n]*?|[.!?:][*_]*[ \t]+|[ \t]+-[ \t]+|>[ \t]*)([*_]*)(Captain[ \t]*)([:,])([*_]*)([ \t]*)`)
+var address = regexp.MustCompile(`(?m)(^[^\pL\pN\r\n]*?|^[ \t]*[0-9]+[.)][ \t]+|[.!?:][*_]*[ \t]+|[ \t]+-[ \t]+|>[ \t]*)([*_]*)(Captain[ \t]*)([:,])([*_]*)([ \t]*)`)
 
 var codeTokens = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|(?i:<pre\b[^>]*>.*?(?:</pre\s*>|$)|<code\b[^>]*>.*?(?:</code\s*>|$))|<[^>\n]*>|` + "`+")
 var listMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`)
@@ -23,6 +23,13 @@ var blockquoteBreak = regexp.MustCompile(`^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-+*]|1
 // Thematic breaks also end lazy continuation, but quoted/fenced breaks stay literal.
 var thematicBreak = regexp.MustCompile(`(?m)^ {0,3}(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})\r?$`)
 var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’]`)
+
+// Quotation pairing restarts at every block start, so an unbalanced quote
+// never protects a later block. A heading is a single-line block, so the
+// line after it starts a block too. HTML block starts follow CommonMark 4.6.
+var atxHeading = regexp.MustCompile(`^ {0,3}#{1,6}(?:[ \t\r\n]|$)`)
+var blockStart = regexp.MustCompile(`^(?: {0,3}(?:(?:[-+*]|[0-9]+[.)])[ \t]|>)|    |\t)`)
+var htmlBlockStart = regexp.MustCompile(`(?i)^ {0,3}<(?:!|\?|/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)(?:[ \t\r\n>]|/>|$)|/?[a-z][a-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t\r]*(?:\n|$))`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining
 // quoted text byte-for-byte. Callers must keep repository text and captured
@@ -55,23 +62,30 @@ func Text(text string) string {
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			marker = trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]
 		}
+		if fence == "" {
+			heading := atxHeading.MatchString(line)
+			if heading || trimmed == "" || marker != "" || blockStart.MatchString(line) || thematicBreak.MatchString(line) || htmlBlockStart.MatchString(line) {
+				blockStarts = append(blockStarts, offset)
+			}
+			if heading {
+				blockStarts = append(blockStarts, offset+len(line))
+			}
+		}
 		switch {
 		case fence != "":
 			protect(offset, offset+len(line))
 			if strings.HasPrefix(marker, fence) && strings.TrimSpace(strings.TrimPrefix(trimmed, marker)) == "" {
 				fence = ""
+				blockStarts = append(blockStarts, offset+len(line))
 			}
 		case marker != "":
-			blockStarts = append(blockStarts, offset)
 			blockquote = false
 			fence = marker
 			protect(offset, offset+len(line))
 		case strings.HasPrefix(trimmed, ">"):
-			blockStarts = append(blockStarts, offset)
 			blockquote = true
 			protect(offset, offset+len(line))
 		case trimmed == "" || blockquoteBreak.MatchString(line) || thematicBreak.MatchString(line):
-			blockStarts = append(blockStarts, offset)
 			blockquote = false
 		case blockquote, strings.HasPrefix(line, "    "), strings.HasPrefix(line, "\t"):
 			protect(offset, offset+len(line))

@@ -29,6 +29,8 @@ func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
 		{"bold label sentence", "**Note:** Captain, fix this", "**Note:** fix this"},
 		{"bold label testing", "**Testing:** Captain, ran the suite", "**Testing:** ran the suite"},
 		{"finding", "- ⚠️ Captain, guard stale wakes", "- ⚠️ guard stale wakes"},
+		{"ordered paren item", "1) Captain, guard stale wakes", "1) guard stale wakes"},
+		{"ordered dot item", "12. Captain, guard stale wakes", "12. guard stale wakes"},
 		{"sentences", "Tests passed. Captain, checks are complete.", "Tests passed. checks are complete."},
 		{"domain", "The captain, crew and ship remain unchanged.", "The captain, crew and ship remain unchanged."},
 		{"quoted", `Keep "Captain, ready" and 'Captain: ready' dialogue.`, `Keep "Captain, ready" and 'Captain: ready' dialogue.`},
@@ -90,8 +92,8 @@ func TestPRStep_EmptySanitizedTitleUsesFallback(t *testing.T) {
 			if content.Title != "chore: update pull request" {
 				t.Errorf("title = %q, want fallback title", content.Title)
 			}
-			if !strings.Contains(content.Body, "## What Changed") {
-				t.Errorf("body lost its summary:\n%s", content.Body)
+			if !strings.Contains(content.Body, "Final changed paths and statuses:") {
+				t.Errorf("body is not the fallback diff summary:\n%s", content.Body)
 			}
 		})
 	}
@@ -134,6 +136,45 @@ func TestRedactPRContent_OperatorAddressQuoteBlockBoundaries(t *testing.T) {
 		{"unbalanced quote before blockquote", "An odd \" mark\n> Captain, quoted\n\nCaptain, next \"x\"", "An odd \" mark\n> Captain, quoted\n\nnext \"x\""},
 		{"soft wrapped dialogue", "Keep \"Captain, ready\nand waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\nand waiting\" dialogue.\n\ndone"},
 		{"dialogue after reset", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. Captain, done", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. done"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
+				t.Errorf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedactPRContent_OperatorAddressQuoteBlockStarts(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, input, want string }{
+		{"blank line", "An odd \" mark\n\nCaptain, next \"x\"", "An odd \" mark\n\nnext \"x\""},
+		{"heading line", "An odd \" mark\n## Captain, next \"x\"", "An odd \" mark\n## next \"x\""},
+		{"line after heading", "## Odd \" heading\nCaptain, next \"x\"", "## Odd \" heading\nnext \"x\""},
+		{"line after indented heading", "   # Odd \" heading\nCaptain, next \"x\"", "   # Odd \" heading\nnext \"x\""},
+		{"dash bullet", "- Support 5\" displays\n- Captain, guard wakes. The \"foo\" helper. Captain, done", "- Support 5\" displays\n- guard wakes. The \"foo\" helper. done"},
+		{"plus bullet", "+ Support 5\" displays\n+ Captain, guard wakes. The \"foo\" helper. Captain, done", "+ Support 5\" displays\n+ guard wakes. The \"foo\" helper. done"},
+		{"star bullet", "* Support 5\" displays\n* Captain, guard wakes. The \"foo\" helper. Captain, done", "* Support 5\" displays\n* guard wakes. The \"foo\" helper. done"},
+		{"ordered dot", "1. Support 5\" displays\n2. Captain, guard wakes. The \"foo\" helper. Captain, done", "1. Support 5\" displays\n2. guard wakes. The \"foo\" helper. done"},
+		{"ordered paren", "1) Support 5\" displays\n2) Captain, guard wakes. The \"foo\" helper. Captain, done", "1) Support 5\" displays\n2) guard wakes. The \"foo\" helper. done"},
+		{"ordered high start", "9. Support 5\" displays\n10. Captain, guard wakes. The \"foo\" helper.", "9. Support 5\" displays\n10. guard wakes. The \"foo\" helper."},
+		{"indented bullet", "- Support 5\" displays\n   - Captain, guard wakes. The \"foo\" helper.", "- Support 5\" displays\n   - guard wakes. The \"foo\" helper."},
+		{"thematic break", "An odd \" mark\n***\nCaptain, next \"x\"", "An odd \" mark\n***\nnext \"x\""},
+		{"fence open", "An odd \" mark\n```text\nCaptain: literal\n```\nCaptain, next \"x\"", "An odd \" mark\n```text\nCaptain: literal\n```\nnext \"x\""},
+		{"fence close", "```text\nAn odd \" mark\n```\nCaptain, next \"x\"", "```text\nAn odd \" mark\n```\nnext \"x\""},
+		{"blockquote marker", "An odd \" mark\n> Captain, quoted\n\nCaptain, next \"x\"", "An odd \" mark\n> Captain, quoted\n\nnext \"x\""},
+		{"indented code", "An odd \" mark\n    Captain: literal\nCaptain, next \"x\"", "An odd \" mark\n    Captain: literal\nnext \"x\""},
+		{"tab indented code", "An odd \" mark\n\tCaptain: literal\nCaptain, next \"x\"", "An odd \" mark\n\tCaptain: literal\nnext \"x\""},
+		{"html block", "An odd \" mark\n<details>\nCaptain, next \"x\"", "An odd \" mark\n<details>\nnext \"x\""},
+		{"html block with content", "An odd \" mark\n<summary>Captain, next \"x\"</summary>", "An odd \" mark\n<summary>next \"x\"</summary>"},
+		{"html comment block", "An odd \" mark\n<!-- note -->\nCaptain, next \"x\"", "An odd \" mark\n<!-- note -->\nnext \"x\""},
+		{"lone tag line", "An odd \" mark\n<br>\nCaptain, next \"x\"", "An odd \" mark\n<br>\nnext \"x\""},
+		{"paragraph continuation", "Keep \"Captain, ready\nand waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\nand waiting\" dialogue.\n\ndone"},
+		{"single quoted continuation", "Keep 'Captain, ready\nand waiting' dialogue.\n\nCaptain, done", "Keep 'Captain, ready\nand waiting' dialogue.\n\ndone"},
+		{"inline tag continuation", "Keep \"Captain, ready\n<em>and</em> waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n<em>and</em> waiting\" dialogue.\n\ndone"},
+		{"number continuation", "Keep \"Captain, ready\n2024 was fine\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n2024 was fine\" dialogue.\n\ndone"},
+		{"hash continuation", "Keep \"Captain, ready\n#1 priority\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n#1 priority\" dialogue.\n\ndone"},
+		{"emphasis continuation", "Keep \"Captain, ready\n*and* waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n*and* waiting\" dialogue.\n\ndone"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
@@ -253,6 +294,18 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 			body: "- Support 5\" displays\n- Captain, guard wakes",
 			risk: "Captain, bounded. The \"foo\" helper.",
 			want: []string{"- Support 5\" displays\n- guard wakes", "✅ Low: bounded. The \"foo\" helper."},
+		},
+		{
+			name: "inch mark in ordered list",
+			body: "1. Support 5\" displays\n2. Captain, guard wakes. The \"foo\" helper.",
+			risk: "Captain, bounded. The \"bar\" helper.",
+			want: []string{"1. Support 5\" displays\n2. guard wakes. The \"foo\" helper.", "✅ Low: bounded. The \"bar\" helper."},
+		},
+		{
+			name: "odd quote in heading",
+			body: "## Odd \" heading\nCaptain, next \"steps\"",
+			risk: "Captain, bounded. The \"bar\" helper.",
+			want: []string{"## Odd \" heading\nnext \"steps\"", "✅ Low: bounded. The \"bar\" helper."},
 		},
 		{
 			name: "blockquote followed by thematic break",
