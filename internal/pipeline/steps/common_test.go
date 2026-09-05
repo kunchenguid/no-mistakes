@@ -709,6 +709,39 @@ func TestCommitPipelineCorrection_ReportsCleanupFailureWithoutMaskingCommit(t *t
 	}
 }
 
+func TestCommitPipelineCorrection_EmptyIndexIsSuccessfulNoOp(t *testing.T) {
+	t.Parallel()
+	dir, _, headSHA := setupGitRepo(t)
+
+	err := commitPipelineCorrection(context.Background(), dir, "no-mistakes: empty handoff", nil)
+	if err != nil {
+		t.Fatalf("empty-index correction must be a successful no-op: %v", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("empty-index correction moved HEAD to %s, want %s", got, headSHA)
+	}
+}
+
+func TestCommitPipelineCorrection_RealCommitFailureStillFails(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "staged.txt")
+	if err := os.WriteFile(filepath.Join(dir, ".git", "index.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := commitPipelineCorrection(context.Background(), dir, "no-mistakes: must fail", nil)
+	if err == nil {
+		t.Fatal("commit with a locked index unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "index.lock") {
+		t.Fatalf("commit failure lost its cause: %v", err)
+	}
+}
+
 func TestCommitAgentFixes_BypassesLegacyHuskyPrepareCommitMsgHook(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)

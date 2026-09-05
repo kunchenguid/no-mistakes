@@ -122,6 +122,32 @@ func runInDirWithEnvAndInputRaw(ctx context.Context, dir string, extraEnv []stri
 	return out, nil
 }
 
+// StablePatchID returns Git's stable patch identity for one file between two
+// commits. The file path is part of the diff, so the same-shaped edit to a
+// different file cannot prove content preservation.
+func StablePatchID(ctx context.Context, dir, from, to, path string) (string, error) {
+	diff, err := RunRaw(ctx, dir, "diff", "--no-ext-diff", "--binary", from, to, "--", path)
+	if err != nil {
+		return "", err
+	}
+	if len(diff) == 0 {
+		return "", nil
+	}
+	args := []string{"patch-id", "--stable"}
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
+	out, err := runInDirWithEnvAndInputRaw(ctx, dir, nil, string(diff), args...)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		return "", fmt.Errorf("git patch-id --stable returned no identity")
+	}
+	return fields[0], nil
+}
+
 // ValidateBareRepository verifies both the filesystem shape and Git's own bare
 // repository classification. The Git query is explicitly scoped with
 // --git-dir, so validation itself cannot discover an ancestor repository.

@@ -567,6 +567,23 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if err := stagePipelineChanges(sctx); err != nil {
 		return ciRepairResult{}, fmt.Errorf("stage CI changes: %w", err)
 	}
+	staged, err := stagedChangesPresent(func(args ...string) (string, error) {
+		return stepGitRun(sctx, args...)
+	})
+	if err != nil {
+		return ciRepairResult{}, fmt.Errorf("inspect staged CI changes: %w", err)
+	}
+	if !staged {
+		sctx.Log("no staged CI changes to commit")
+		headSHA, err := stepGitHeadSHA(sctx)
+		if err != nil {
+			return ciRepairResult{}, fmt.Errorf("resolve head after empty CI handoff: %w", err)
+		}
+		if headSHA != sctx.Run.HeadSHA {
+			return s.recordRepair(sctx, headSHA)
+		}
+		return ciRepairResult{}, nil
+	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
 		return ciRepairResult{}, fmt.Errorf("commit: %w", err)
 	}

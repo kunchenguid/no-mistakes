@@ -800,6 +800,9 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 
 	// Worktree produces a new non-fast-forward rebased head
 	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -824,6 +827,65 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != rebasedHead {
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
+	}
+}
+
+func TestPushStep_RefusesUniquePrivateMirrorCommitBeforeRemotePush(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "private-only.txt"), []byte("unique private work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "private-only.txt")
+	gitCmd(t, dir, "commit", "-m", "private-only trailer trim")
+	privateHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "reset", "--hard", submittedHead)
+	if err := os.WriteFile(filepath.Join(dir, "live-only.txt"), []byte("live branch work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "live-only.txt")
+	gitCmd(t, dir, "commit", "-m", "live branch work")
+	liveHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = liveHead
+	recordReviewApproval(t, sctx, liveHead)
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+	gitCmd(t, gateDir, "fetch", dir, privateHead+":refs/heads/feature")
+
+	_, err = (&PushStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("push overwrote a private mirror head with unique content")
+	}
+	if !strings.Contains(err.Error(), privateHead) || !strings.Contains(err.Error(), "private-only trailer trim") {
+		t.Fatalf("push refusal did not name the at-risk commit: %v", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != submittedHead {
+		t.Fatalf("remote moved to %s before private content was protected; want %s", got, submittedHead)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+		t.Fatalf("private mirror moved to %s, want unique head %s", got, privateHead)
 	}
 }
 
@@ -969,7 +1031,7 @@ func TestPushStep_SkipsWhenGateMirrorDirectoryMissing(t *testing.T) {
 	}
 }
 
-func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
+func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 
@@ -1023,17 +1085,16 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 	sctx.Run.HeadSHA = rebasedHead
 	recordReviewApproval(t, sctx, rebasedHead)
 
-	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("push step failed: %v", err)
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), interveningHead) || !strings.Contains(err.Error(), "intervening commit") {
+		t.Fatalf("push did not name the at-risk intervening commit: %v", err)
 	}
 
-	// Remote head should be updated to rebasedHead
+	// The refusal happens before the upstream or private refs move.
 	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
-	if remoteHead != rebasedHead {
-		t.Fatalf("expected remote head = %s, got %s", rebasedHead, remoteHead)
+	if remoteHead != submittedHead {
+		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
 	}
 
-	// Gate mirror ref must NOT be rewound to rebasedHead; it must remain at interveningHead
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != interveningHead {
 		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)

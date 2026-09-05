@@ -513,7 +513,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if opt := formatPRBaseBranchPushOption(baseBranch); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
+	observedHead, err := git.HeadSHA(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: resolve submission head: %w", branch, err)
+	}
+	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, observedHead)
 	if err != nil {
 		// An active run can still be found below. Without a baseline, however,
 		// a matching terminal run may predate this push, so do not attach to it.
@@ -522,7 +526,23 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
+	// The ownership lookup above is an IPC boundary. Preserve AXI's existing
+	// behavior of accepting a clean commit made while that lookup is in flight,
+	// then bind every later operation to the newly observed immutable commit.
+	submissionHead, err := git.HeadSHA(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: refresh submission head: %w", branch, err)
+	}
+	if submissionHead != observedHead {
+		priorRunIDs, err = runIDsForHead(env.client, env.repo.ID, branch, submissionHead)
+		if err != nil {
+			priorRunIDs = nil
+		}
+	}
+	if _, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead); err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, submissionHead, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
 		// Close the inspection-to-push race: if the pipeline advanced ownership
 		// after the pre-push check, preserve the structured branch-sync refusal
@@ -532,7 +552,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		}
 	}
 
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
+	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {

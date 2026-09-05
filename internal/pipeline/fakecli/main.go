@@ -62,6 +62,10 @@ func handleFakeCLI(mode string) {
 		fakeGitRequireNonInteractiveEnvHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
+	case "git-stale-dirty-status":
+		fakeGitStaleDirtyStatusHandler(args)
+	case "git-commit-error":
+		fakeGitCommitErrorHandler(args)
 	case "git-remote-error":
 		fakeGitRemoteErrorHandler(args)
 	case "ci-gh":
@@ -191,6 +195,23 @@ func fakeGitStatusErrorHandler(args []string) {
 		os.Exit(1)
 	}
 	fakeGitForward(args, realGit)
+}
+
+func fakeGitStaleDirtyStatusHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) >= 2 && args[0] == "status" && args[1] == "--porcelain" {
+		fmt.Println(" M feature.txt")
+		os.Exit(0)
+	}
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitCommitErrorHandler(args []string) {
+	if len(args) > 0 && args[0] == "commit" {
+		fmt.Fprintln(os.Stderr, "intentional commit failure")
+		os.Exit(1)
+	}
+	fakeGitForward(args, os.Getenv("FAKE_CLI_REAL_GIT"))
 }
 
 func fakeGitPassthroughHandler(args []string) {

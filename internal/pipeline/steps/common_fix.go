@@ -180,6 +180,15 @@ func commitPipelineCorrectionWithCleanup(
 	logf func(string),
 	cleanup func(string) error,
 ) error {
+	gitRun := func(args ...string) (string, error) { return git.Run(ctx, workDir, args...) }
+	staged, err := stagedChangesPresent(gitRun)
+	if err != nil {
+		return fmt.Errorf("inspect staged correction: %w", err)
+	}
+	if !staged {
+		return nil
+	}
+
 	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-correction-hooks-")
 	if err != nil {
 		return fmt.Errorf("prepare hook-free commit environment: %w", err)
@@ -193,6 +202,18 @@ func commitPipelineCorrectionWithCleanup(
 		}
 	}
 	return commitErr
+}
+
+// stagedChangesPresent is the handoff between catch-all staging and commit.
+// Worktree status can become stale when an agent completes a rebase itself, or
+// can report dirt that `git add -A` cannot put in the superproject index. Only
+// the staged index answers whether a correction commit is actually required.
+func stagedChangesPresent(gitRun gitRunner) (bool, error) {
+	staged, err := gitRun("diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return false, err
+	}
+	return staged != "", nil
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gatepkg "github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -133,6 +134,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
 		return err
 	}
+	if err := reconcileGateMirrorBeforePush(ctx, sctx, ref, branch, headBeingPushed); err != nil {
+		return err
+	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
 	// The lease is anchored to the remote-tracking ref the rebase step freshly
@@ -213,6 +217,23 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	return nil
 }
 
+func reconcileGateMirrorBeforePush(ctx context.Context, sctx *pipeline.StepContext, ref, branch, headBeingPushed string) error {
+	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
+		return nil
+	}
+	gateDir := strings.TrimSpace(sctx.GateDir)
+	if _, err := os.Stat(gateDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("update gate mirror ref %s before push: stat repository: %w", ref, err)
+	}
+	if _, err := gatepkg.ReconcileStaleBranch(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed); err != nil {
+		return fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
+	}
+	return nil
+}
+
 func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string) error {
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
 		return nil
@@ -227,6 +248,10 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
 	}
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	if _, err := gatepkg.ReconcileStaleBranch(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed); err != nil {
+		return fmt.Errorf("update gate mirror ref %s: %w", ref, err)
+	}
 
 	if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, headBeingPushed, headBeingPushed); fetchErr != nil {
 		return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
@@ -235,12 +260,7 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
 	gateTip = strings.TrimSpace(gateTip)
 
-	submittedHead := ""
-	if sctx.Run.SubmittedHeadSHA != nil {
-		submittedHead = strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
-	}
-
-	shouldUpdate := gateTip == "" || gateTip == headBeingPushed || (submittedHead != "" && gateTip == submittedHead)
+	shouldUpdate := gateTip == "" || gateTip == headBeingPushed
 	if !shouldUpdate {
 		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", headBeingPushed, gateTip); err == nil {
 			// Preserve a newer descendant.
