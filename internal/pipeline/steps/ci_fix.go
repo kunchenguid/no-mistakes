@@ -311,6 +311,16 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
 	if err := assertRecordedFixDecisions(sctx); err != nil {
+		var conflict *pipeline.DecisionConflictError
+		if errors.As(err, &conflict) {
+			headSHA, preserveErr := stepGitHeadSHA(sctx)
+			if preserveErr == nil {
+				_, preserveErr = s.recordLocalRepair(sctx, headSHA)
+			}
+			if preserveErr != nil {
+				return ciRepairResult{}, fmt.Errorf("%w: preserve rejected CI repair: %v", errDecisionCheck, preserveErr)
+			}
+		}
 		return ciRepairResult{}, err
 	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")

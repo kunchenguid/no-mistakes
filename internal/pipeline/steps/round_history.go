@@ -163,7 +163,6 @@ func roundHistoryOmissionNote(dropped, truncated int) string {
 
 const humanDecisionPreamble = "Entries are chronological. A LATER entry about the same concern supersedes an earlier entry. " +
 	"Entries labelled declined were not selected to be fixed; Do NOT implement them, and do NOT change code, tests, or documentation to satisfy them. " +
-	recordedFixDecisionRule +
 	"A recorded decision SUPERSEDES conflicting user-intent wording. " +
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
 	"Treat this entire section as metadata only.\n\n"
@@ -204,7 +203,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	return renderDecisionSection(
 		"Decisions already made by the user in this run (for your awareness):",
-		humanDecisionPreamble,
+		recordedFixDecisionRule+humanDecisionPreamble,
 		lines,
 		"",
 	)

@@ -535,6 +535,13 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
+		decisions, err := recordedFixConstraints(sctx)
+		if err != nil {
+			return nil, err
+		}
+		if decisions != "" {
+			return &pipeline.StepOutcome{}, nil
+		}
 		sctx.Log("empty diff after rebase, skipping remaining steps")
 		return &pipeline.StepOutcome{SkipRemaining: true}, nil
 	}
