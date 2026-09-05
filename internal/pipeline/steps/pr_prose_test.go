@@ -35,6 +35,9 @@ func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
 		{"html attribute", `<a title="Captain: fixture">link</a>`, `<a title="Captain: fixture">link</a>`},
 		{"html prose", "<details>\n<summary>Captain, fix summary</summary>\n\nCaptain, fixed\n</details>", "<details>\n<summary>fix summary</summary>\n\nfixed\n</details>"},
 		{"comment", "<!-- Captain: recorded -->\nCaptain, done", "<!-- Captain: recorded -->\ndone"},
+		{"unmatched tick in dialogue", "\"Captain, type a ` character.\"\n\nCaptain, done", "\"Captain, type a ` character.\"\n\ndone"},
+		{"markup in inline code", "`<code> Captain: literal`\n\nCaptain, done", "`<code> Captain: literal`\n\ndone"},
+		{"inline span cannot cross block code", "A lone ` precedes code.\n\n```text\n`Captain: literal\n```\nCaptain, done", "A lone ` precedes code.\n\n```text\n`Captain: literal\n```\ndone"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := redactPRContent(prContent{Body: tt.input}).Body
@@ -130,9 +133,29 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	type renderCase struct {
 		name, body, risk, fix string
 		descriptions, tested  []string
+		artifacts             []types.TestArtifact
 		want                  []string
 	}
 	cases := []renderCase{
+		{
+			name:         "markup inside captured output",
+			artifacts:    []types.TestArtifact{{Kind: "command-output", Label: "Captured output", Content: "<code>\nCaptain: literal output"}},
+			descriptions: []string{"Captain, retain errors"},
+			fix:          "Captain: finish cleanup",
+			want:         []string{"<code>\nCaptain: literal output", "`captain.go:1` - retain errors\n", "🔧 Fix: finish cleanup"},
+		},
+		{
+			name:         "backtick inside command evidence",
+			tested:       []string{"printf 'Captain: literal' # `"},
+			descriptions: []string{"Captain, retain errors"},
+			fix:          "Captain: finish cleanup",
+			want:         []string{"printf 'Captain: literal' # `", "`captain.go:1` - retain errors\n", "🔧 Fix: finish cleanup"},
+		},
+		{
+			name: "unmatched tick inside dialogue",
+			body: "\"Captain, type a ` character.\"\n\nCaptain, finish cleanup",
+			want: []string{"\"Captain, type a ` character.\"", "\n\nfinish cleanup"},
+		},
 		{
 			name:         "consecutive contractions",
 			descriptions: []string{"Don't skip cleanup", "Captain, don't swallow errors"},
@@ -208,14 +231,14 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{Tested: tt.tested}), "")
+				insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{Tested: tt.tested, Artifacts: tt.artifacts}), "")
 				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, provider, 0)
 				if err != nil {
 					t.Fatal(err)
 				}
 				for _, want := range tt.want {
 					if !strings.Contains(html.UnescapeString(content.Body), want) {
-						t.Errorf("rendered PR missing %q", want)
+						t.Errorf("rendered PR missing %q:\n%s", want, content.Body)
 					}
 				}
 				if !strings.Contains(content.Body, noMistakesPRSignature) {
