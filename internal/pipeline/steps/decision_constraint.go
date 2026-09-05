@@ -68,6 +68,7 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 					if err != nil {
 						return "", fmt.Errorf("read decision %s findings: %w", r.ID, err)
 					}
+					matched := make([]string, 0, len(ids))
 					for _, id := range ids {
 						found := false
 						for _, f := range findings.Items {
@@ -79,7 +80,18 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 							}
 							continue
 						}
-						hasFix = true
+						matched = append(matched, id)
+					}
+					hasFix = hasFix || len(matched) > 0
+					if len(matched) != len(ids) {
+						encoded, err := json.Marshal(matched)
+						if err != nil {
+							return "", fmt.Errorf("record decision %s selection: %w", r.ID, err)
+						}
+						bound := *r
+						selection := string(encoded)
+						bound.SelectedFindingIDs = &selection
+						r = &bound
 					}
 				}
 			}
