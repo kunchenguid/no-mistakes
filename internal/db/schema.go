@@ -272,6 +272,7 @@ var migrationStatements = []string{
 	// verified-green completion and a deliberate override survives daemon
 	// restart, resume, and axi status/logs on an already-terminal run.
 	`ALTER TABLE step_results ADD COLUMN override_reason TEXT`,
+	`ALTER TABLE step_results ADD COLUMN skip_reason TEXT`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,

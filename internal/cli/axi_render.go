@@ -35,6 +35,11 @@ type stepRow struct {
 	DurationMS int64  `toon:"duration_ms"`
 }
 
+type automaticSkipRow struct {
+	Step   string `toon:"step"`
+	Reason string `toon:"reason"`
+}
+
 type sharedWorkRow struct {
 	AttributedTo string `toon:"attributed_to"`
 	Scope        string `toon:"scope"`
@@ -98,6 +103,7 @@ type stepView struct {
 	AutoFixLimit     int
 	PendingFixSource string
 	QuietWarning     time.Duration
+	SkipReason       string
 }
 
 // runView is a render-ready view of a pipeline run.
@@ -149,6 +155,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			AutoFixLimit:     s.AutoFixLimit,
 			PendingFixSource: s.PendingFixSource,
 			WorkScope:        s.WorkScope,
+			SkipReason:       s.SkipReason,
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -186,6 +193,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		}
 		if s.AutoFixLimit != nil {
 			sv.AutoFixLimit = *s.AutoFixLimit
+		}
+		if s.SkipReason != nil {
+			sv.SkipReason = *s.SkipReason
 		}
 		if s.LastActivity != nil {
 			sv.LastActivity = *s.LastActivity
@@ -447,6 +457,7 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
+	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}
@@ -461,6 +472,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		}
 	}
 	fields = append(fields, toon.Field{Key: "steps", Value: rows})
+	if skips := rv.automaticSkips(); len(skips) > 0 {
+		fields = append(fields, toon.Field{Key: "automatic_skips", Value: skips})
+	}
 	if len(sharedRows) > 0 {
 		fields = append(fields, toon.Field{Key: "shared_work", Value: sharedRows})
 	}
@@ -468,6 +482,17 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		fields = append(fields, toon.Field{Key: "active_steps", Value: activeRows})
 	}
 	return toon.Field{Key: key, Value: toon.NewObject(fields...)}
+}
+
+func (rv runView) automaticSkips() []automaticSkipRow {
+	var rows []automaticSkipRow
+	for _, s := range rv.Steps {
+		if s.Status == string(types.StepStatusSkipped) && s.SkipReason != "" &&
+			(s.Name == string(types.StepPR) || s.Name == string(types.StepCI)) {
+			rows = append(rows, automaticSkipRow{Step: s.Name, Reason: s.SkipReason})
+		}
+	}
+	return rows
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings
