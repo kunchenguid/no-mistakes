@@ -166,21 +166,7 @@ This override is narrowly scoped: initial Review and every rereview still use `a
 
 Binary paths and raw arguments continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override) and [`agent_args_override`](#agent_args_override). Model, effort, and Pi fast mode use [`agent_config`](#agent_config); its nested `review_fix` block gives the selected fixer a role profile without introducing a second profile system. The resolved fixer selection and role profile are recorded before a new run starts. Editing global config therefore affects later runs only, including when a parked run resumes after a daemon restart. Historical runs created before this snapshot field retain the old recovery behavior.
 
-For example, both roles can use Pi while selecting different providers and models. This exact configuration runs Review through Vertex AI Claude Opus 4.8 with xhigh reasoning, then runs only Review remediation through OpenAI GPT-5.6 Sol with low reasoning and priority processing:
-
-```yaml
-agent: pi
-agent_config:
-  pi:
-    model: anthropic-vertex/claude-opus-4-8
-    effort: xhigh
-    review_fix:
-      model: openai-codex/gpt-5.6-sol
-      effort: low
-      fast: true
-```
-
-no-mistakes maps the reviewer to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh` and the fixer to `--model openai-codex/gpt-5.6-sol --thinking low`. Pi has no stock fast-mode flag, so `fast: true` loads a trusted run-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests and terminates the invocation if the effective provider, API, or payload shape does not match. It does not depend on an ambient user extension or launcher-specific environment variable.
+Both roles can use one harness with different provider, model, and effort settings. The [`agent_config`](#agent_config) example and field rules own that role-profile configuration.
 
 ### acpx_path
 
@@ -251,11 +237,11 @@ Default native binary names when no override is set:
 
 Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
-|         |                                                                                     |
-| ------- | ----------------------------------------------------------------------------------- |
-| Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                     |
+|         |                                                                                                         |
+| ------- | ------------------------------------------------------------------------------------------------------- |
+| Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                                         |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Pi reviewer and Review-fix profiles shown below                                     |
+| Default | Built-in Pi profiles shown below when the global config file is absent; otherwise empty when omitted     |
 
 ```yaml
 agent_config:
@@ -278,23 +264,25 @@ agent_config:
       fast: true
 ```
 
-The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes. `fast` is accepted only in a Pi `review_fix` profile whose model uses `openai-codex/<model>`; other combinations fail config loading with a concise correction. It injects `service_tier: priority` through a run-scoped Pi extension because Pi does not expose a native fast flag.
+The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes.
+
+`fast` is accepted only in a Pi `review_fix` profile whose model uses `openai-codex/<model>`; other combinations fail config loading with a concise correction. Because Pi has no stock fast-mode flag, no-mistakes loads a trusted invocation-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests and terminates the invocation if the effective provider, API, or payload shape does not match. It does not depend on an ambient user extension or launcher-specific environment variable.
 
 `effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
 
 How each field maps:
 
-| Agent             | `model`                                       | `effort`                          | Accepted effort levels                              |
-| ----------------- | --------------------------------------------- | --------------------------------- | --------------------------------------------------- |
-| `claude`          | `--model`                                     | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
-| `codex`           | `-m`                                          | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
-| `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
-| `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
-| `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
-| `rovodev`         | not expressible                               | not expressible                   | -                                                   |
-| `antigravity`     | not expressible                               | not expressible                   | -                                                   |
+| Agent             | `model`                                          | `effort`                          | Accepted effort levels                              |
+| ----------------- | ------------------------------------------------ | --------------------------------- | --------------------------------------------------- |
+| `claude`          | `--model`                                        | `--effort`                        | `low`, `medium`, `high`, `xhigh`, `max`             |
+| `codex`           | `-m`                                             | `-c model_reasoning_effort="…"`   | `minimal`, `low`, `medium`, `high`                  |
+| `grok`            | `--model`                                        | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
+| `copilot`         | `--model`                                        | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `pi`              | `--model`                                        | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`         | provider-specific                                   |
+| `cursor`, `acp:*` | `acpx --model`                                   | not expressible                   | -                                                   |
+| `rovodev`         | not expressible                                  | not expressible                   | -                                                   |
+| `antigravity`     | not expressible                                  | not expressible                   | -                                                   |
 
 `opencode` needs the `provider/model` form (for example `openai/gpt-5`) because its session API takes the provider and the model as separate fields; a bare model name is refused at config load rather than dropped. Both of its knobs travel in the session message, not in the launch command, because `opencode serve` exits with usage on an unknown flag.
 
