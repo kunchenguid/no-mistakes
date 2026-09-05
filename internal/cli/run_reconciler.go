@@ -20,10 +20,11 @@ const (
 	defaultGetRunTimeout   = 30 * time.Second
 )
 
-// driveGetRunTimeoutNS is the per-attempt get_run read deadline in
-// nanoseconds. A live daemon that takes longer than this to answer is slow,
-// not dead: Reconcile classifies that timeout, probes health, and retries.
-// Tests shorten it so a fake slow daemon can be proven without waiting 30s.
+// driveGetRunTimeoutNS is the shared per-attempt deadline for run-state IPC
+// reads, including get_run reconciliation and pre-drive get_active_run lookup.
+// A live daemon that takes longer to answer is slow, not dead: callers classify
+// that timeout, probe health, and retry. Tests shorten it so a fake slow daemon
+// can be proven without waiting 30s.
 var driveGetRunTimeoutNS atomic.Int64
 
 func init() {
