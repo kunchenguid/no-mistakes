@@ -966,8 +966,8 @@ log_level: info
 #   grok: /Users/you/.grok/bin/grok
 
 # Model and reasoning effort per agent, in one common spelling (optional, global
-# only). A nested review_fix profile tunes only Review remediation; when absent,
-# the fixer uses the ordinary profile. no-mistakes maps these down to whatever
+# only). Pi's nested review_fix profile tunes only Review remediation; when
+# absent, the fixer uses the ordinary profile. no-mistakes maps these down to whatever
 # the harness actually uses:
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
 # codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
@@ -1513,8 +1513,8 @@ func (c *Config) AgentProfileFor(name types.AgentName) agentcfg.Profile {
 	return c.AgentConfig[string(name)]
 }
 
-// ReviewFixProfile is the optional role-specific profile nested at
-// agent_config.<agent>.review_fix. Profile carries model and effort through the
+// ReviewFixProfile is Pi's optional role-specific profile nested at
+// agent_config.pi.review_fix. Profile carries model and effort through the
 // common agentcfg mapping. Fast enables Pi's verified openai-codex priority
 // request mechanism.
 type ReviewFixProfile struct {
@@ -1549,9 +1549,9 @@ type reviewFixAgentProfileRaw struct {
 	Fast   bool   `yaml:"fast"`
 }
 
-// parseAgentConfig validates the agent_config map and both profiles owned by
-// each entry. The nested Review-fix profile is independent: omitted knobs keep
-// the fixer harness's defaults rather than inheriting reviewer tuning.
+// parseAgentConfig validates the agent_config map and Pi's role profile. The
+// nested Review-fix profile is independent: omitted knobs keep Pi's defaults
+// rather than inheriting reviewer tuning.
 func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profile, map[string]ReviewFixProfile, error) {
 	profiles := make(map[string]agentcfg.Profile, len(raw))
 	fixProfiles := make(map[string]ReviewFixProfile)
@@ -1568,6 +1568,9 @@ func parseAgentConfig(raw map[string]agentProfileRaw) (map[string]agentcfg.Profi
 			profiles[name] = profile
 		}
 		if entry.ReviewFix != nil {
+			if agentName != types.AgentPi {
+				return nil, nil, fmt.Errorf("invalid agent_config.%s.review_fix: review_fix is supported only by agent pi", name)
+			}
 			fixProfile, err := parseAgentProfile(agentName, entry.ReviewFix.Model, entry.ReviewFix.Effort, "agent_config."+name+".review_fix")
 			if err != nil {
 				return nil, nil, err

@@ -44,7 +44,7 @@ agent_config:
 	}
 }
 
-func TestLoadGlobal_ReviewFixProfileFastValidation(t *testing.T) {
+func TestLoadGlobal_ReviewFixProfileValidation(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		yaml string
@@ -52,8 +52,8 @@ func TestLoadGlobal_ReviewFixProfileFastValidation(t *testing.T) {
 	}{
 		{
 			name: "non Pi",
-			yaml: "agent_config:\n  codex:\n    review_fix:\n      model: gpt-5.6-sol\n      fast: true\n",
-			want: "fast is supported only by agent pi",
+			yaml: "agent_config:\n  codex:\n    review_fix:\n      model: gpt-5.6-sol\n      effort: low\n",
+			want: "review_fix is supported only by agent pi",
 		},
 		{
 			name: "non Codex provider",

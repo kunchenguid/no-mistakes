@@ -214,7 +214,7 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
+Model and reasoning effort per agent, in one common spelling. Pi's optional nested `review_fix` profile replaces its ordinary profile only for Review remediation; other agents reject `review_fix`. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
 |         |                                                                                                         |
 | ------- | ------------------------------------------------------------------------------------------------------- |
@@ -287,7 +287,7 @@ agent_args_override:
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.<agent>.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
+Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.pi.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
 
 |         |                                                           |
 | ------- | --------------------------------------------------------- |

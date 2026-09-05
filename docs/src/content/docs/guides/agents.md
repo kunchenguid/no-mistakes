@@ -29,7 +29,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 - Keep the default Pi role setup when Pi and its configured providers are available.
 - Set `agent: auto` if you prefer automatic selection of another installed agent.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
-- Use `agent_config.<agent>.review_fix` when Review remediation needs a different profile on the same harness; every other duty uses the ordinary agent profile.
+- Use `agent_config.pi.review_fix` when Pi Review remediation needs a different profile; every other duty uses the ordinary agent profile.
 - Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable.
 - Set explicit `commands.lint` and a **targeted** `commands.test` if you want deterministic local baseline command execution regardless of agent choice; leave `commands.test` empty for agent-selected smallest relevant checks. Do not configure a complete-suite walk as local Test - remote CI owns broad regression.
 
@@ -122,7 +122,7 @@ agent: [codex, grok]
 
 ### Separate Review fixer profile
 
-Use `agent_config.<agent>.review_fix` for different fixer tuning on the same harness. The [`agent_config`](/no-mistakes/reference/global-config/#agent_config) reference owns the exact defaults, scope, precedence, and Pi fast-mode behavior.
+Use `agent_config.pi.review_fix` for different Pi fixer tuning. The [`agent_config`](/no-mistakes/reference/global-config/#agent_config) reference owns the exact defaults, scope, precedence, and fast-mode behavior.
 
 ### Optional ACP target
 
@@ -203,7 +203,7 @@ If native agent discovery does not resolve the binary you expect, check `~/.no-m
 Seven global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
-- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, plus the nested Review-fix role profile and Pi fast mode, mapped down to each harness's verified mechanism with explicit precedence against raw flags.
+- [`agent_config`](/no-mistakes/reference/global-config/#agent_config) - model and reasoning effort per agent in one common spelling, plus Pi's nested Review-fix role profile and fast mode, mapped down to each harness's verified mechanism with explicit precedence against raw flags.
 - [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for anything `agent_config` does not cover, such as permission mode or a general service tier, including the reserved-flag rules and smart defaults. Keep both global-only; they reflect your local agent setup rather than repo policy.
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
