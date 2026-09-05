@@ -302,12 +302,13 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	return redactPRContent(content), nil
 }
 
-// redactPRContent removes home paths and known operator address from public
-// prose. Address removal preserves quotes/code; home-path redaction covers
-// all content. Both only shorten text, so the preceding length caps still hold.
+// redactPRContent removes home paths from the content about to be published
+// and known operator address from the title. Body prose is sanitized field by
+// field before rendering. Both only shorten text, so the preceding length caps
+// still hold.
 func redactPRContent(content prContent) prContent {
 	content.Title = safepath.RedactText(publicprose.Text(content.Title))
-	content.Body = safepath.RedactText(publicprose.Text(content.Body))
+	content.Body = safepath.RedactText(content.Body)
 	return content
 }
 
@@ -364,6 +365,7 @@ Final diff paths and statuses:
 			content.Body = strings.TrimSpace(content.Body)
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
+			content.Body = publicprose.Text(content.Body)
 			content.Body = neutralizeAttestationMarkers(content.Body)
 			title := conventional.TightenTitle(publicprose.Text(content.Title))
 			if title != "" && content.Body != "" {
@@ -518,9 +520,7 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
-	// Neutralized for the same reason as in prependIntentSection: intent is
-	// agent-extracted text placed ahead of the pipeline section.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := publicUserIntent(sctx)
 	if cleaned == "" {
 		return sections
 	}
@@ -1269,16 +1269,21 @@ func isGeneratedSectionHeading(line string) bool {
 	}
 }
 
+// publicUserIntent is the intent as published in the PR body. It is
+// agent-extracted text placed ahead of the pipeline section, so it could
+// shadow the real attestation the same way the Testing section can; see
+// appendGeneratedSectionsToCleanBodyWithinLimit.
+func publicUserIntent(sctx *pipeline.StepContext) string {
+	return neutralizeAttestationMarkers(publicprose.Text(cleanedUserIntent(sctx)))
+}
+
 // prependIntentSection prepends a "## Intent" section sourced from the
 // already-extracted user intent. The intent text is reused verbatim (after
 // the same secret/adversarial scrubbing the agent prompt path applies)
 // rather than being paraphrased by the agent. Returns body unchanged when
 // no intent is available.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
-	// Intent is agent-extracted text that lands ahead of the pipeline section,
-	// so it can shadow the real attestation the same way the Testing section
-	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := publicUserIntent(sctx)
 	if cleaned == "" {
 		return body
 	}
