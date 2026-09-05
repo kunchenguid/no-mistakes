@@ -1286,3 +1286,117 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 		t.Error("mock step was never executed")
 	}
 }
+
+func TestProofLaunchFallbackReturnsReusedWhenObserverClaimsDuringSetup(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		close(entered)
+		<-release
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	defer unblock()
+	repo, head := setupTestGitRepo(t, p, d, "claim-during-setup")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	const intent = "claim while the fallback initializes"
+	var fresh ipc.StartFreshRunResult
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+			RepoID: repo.ID, Branch: "main", HeadSHA: head, Intent: intent,
+			LaunchNonce: "setup-nonce", ValidationGeneration: "generation",
+		}, &fresh)
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("launch returned before setup: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("launch did not reach setup")
+	}
+	observer, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	var first ipc.ClaimLaunchReceiptResult
+	if err := observer.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repo.ID, Branch: "main", SubmittedHeadSHA: head,
+		LaunchNonce: "setup-nonce", ValidationGeneration: "generation", IntentDigest: digestIntent(intent),
+	}, &first); err != nil {
+		t.Fatal(err)
+	}
+	if first.Receipt == nil || first.Receipt.Disposition != "created" {
+		t.Fatalf("first observer = %+v", first)
+	}
+	unblock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Receipt.RunID != first.Receipt.RunID || fresh.Receipt.Disposition != "reused" {
+		t.Fatalf("fallback receipt = %+v, first = %+v", fresh.Receipt, first.Receipt)
+	}
+	run := waitForRunTerminalState(t, d, fresh.Receipt.RunID)
+	if run.Status != types.RunCompleted || run.LaunchReceiptClaimedAt == nil {
+		t.Fatalf("claimed run = %+v", run)
+	}
+}
+
+func TestProofLaunchFallbackInheritsOnlyLivePRIdentity(t *testing.T) {
+	for _, state := range []string{"", "open", "closed", "merged"} {
+		t.Run("state="+state, func(t *testing.T) {
+			p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+			})
+			repo, head := setupTestGitRepo(t, p, d, "proof-pr-inheritance")
+			gitCmd(t, repo.WorkingPath, "branch", "review/base")
+			gitCmd(t, repo.WorkingPath, "push", "gate", "review/base:refs/heads/review/base")
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			launch := func(nonce, base string) *db.Run {
+				t.Helper()
+				var result ipc.StartFreshRunResult
+				if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+					RepoID: repo.ID, Branch: "main", HeadSHA: head, Intent: "preserve existing PR",
+					LaunchNonce: nonce, ValidationGeneration: "generation", PRBaseBranch: base,
+				}, &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.Receipt.Disposition != "created" {
+					t.Fatalf("new nonce receipt = %+v", result.Receipt)
+				}
+				return waitForRunTerminalState(t, d, result.Receipt.RunID)
+			}
+			prior := launch("prior-nonce", "")
+			const prURL = "https://github.com/test/repo/pull/42"
+			if err := d.UpdateRunPRURL(prior.ID, prURL); err != nil {
+				t.Fatal(err)
+			}
+			if state != "" {
+				if err := d.UpdateRunPRState(prior.ID, state); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := launch("new-nonce", " review/base ")
+			if got.ID == prior.ID || got.Status != types.RunCompleted || got.PRBaseBranch == nil || *got.PRBaseBranch != "review/base" {
+				t.Fatalf("fresh retargeted run = %+v", got)
+			}
+			if state == "closed" || state == "merged" {
+				if got.PRURL != nil && *got.PRURL != "" {
+					t.Fatalf("inherited retired PR: %s", *got.PRURL)
+				}
+			} else if got.PRURL == nil || *got.PRURL != prURL {
+				t.Fatalf("lost existing PR identity: %+v", got)
+			}
+		})
+	}
+}

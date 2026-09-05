@@ -816,6 +816,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 		if gateHead != headSHA {
 			return "", fmt.Errorf("launch context drift: gate branch %q is at %s, not requested %s", branch, gateHead, headSHA)
 		}
+		inheritedPRURL := ""
 		if baseSHA == "" {
 			runs, err := m.db.GetRunsByRepoHead(repo.ID, branch, headSHA)
 			if err != nil {
@@ -824,9 +825,10 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			baseSHA = headSHA
 			if len(runs) > 0 {
 				baseSHA = runs[0].BaseSHA
+				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, "")
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, inheritedPRURL)
 		if err != nil {
 			return "", err
 		}
@@ -844,14 +846,14 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 			if err != nil {
 				return "", err
 			}
-			if claimedRun == nil || !claimed {
+			if claimedRun == nil {
 				return "", fmt.Errorf("claim newly created launch receipt")
 			}
 			if !launchPRBaseBranchMatches(claimedRun, storedPRBaseBranch) {
 				return "", conflictingLaunchPRBaseBranch(launchNonce)
 			}
 
-			receipt, err = receiptForRun(claimedRun, true)
+			receipt, err = receiptForRun(claimedRun, claimed)
 			if err != nil {
 				return "", err
 			}
@@ -1021,18 +1023,21 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	if storedPRBaseBranch == "" && selectedRun.PRBaseBranch != nil {
 		storedPRBaseBranch = strings.TrimSpace(*selectedRun.PRBaseBranch)
 	}
-	inheritedPRURL := ""
-	if selectedRun.PRURL != nil {
-		state := ""
-		if selectedRun.PRState != nil {
-			state = strings.ToLower(strings.TrimSpace(*selectedRun.PRState))
-		}
-		if state != "merged" && state != "closed" {
-			inheritedPRURL = strings.TrimSpace(*selectedRun.PRURL)
-		}
-	}
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritablePRURL(selectedRun))
+}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritedPRURL)
+func inheritablePRURL(run *db.Run) string {
+	if run.PRURL == nil {
+		return ""
+	}
+	state := ""
+	if run.PRState != nil {
+		state = strings.ToLower(strings.TrimSpace(*run.PRState))
+	}
+	if state == "merged" || state == "closed" {
+		return ""
+	}
+	return strings.TrimSpace(*run.PRURL)
 }
 
 func resolveRerunHead(ctx context.Context, gateDir, branch string, latest *db.Run) (string, error) {
