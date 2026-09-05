@@ -253,11 +253,15 @@ func (s *Store) Respond(id, action string) (*Verdict, error) {
 	return s.Get(id)
 }
 
+// StatusCancelled marks a verdict an operator aborted on the LAN portal. It
+// changes the rendered run outcome; it never changes the GitHub conclusion.
+const StatusCancelled = "cancelled"
+
 func (s *Store) Abort(id string) (*Verdict, error) {
 	if _, err := s.Get(id); err != nil {
 		return nil, err
 	}
-	_, err := s.sql.Exec(`UPDATE verdicts SET status = 'cancelled', updated_at = ? WHERE id = ?`, time.Now().Unix(), id)
+	_, err := s.sql.Exec(`UPDATE verdicts SET status = ?, updated_at = ? WHERE id = ?`, StatusCancelled, time.Now().Unix(), id)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +319,10 @@ func (v *Verdict) AxiRun() AxiRun {
 		})
 	}
 	stepStatus := "completed"
-	if v.Conclusion != "success" {
+	switch {
+	case v.Status == StatusCancelled:
+		stepStatus = StatusCancelled
+	case v.Conclusion != "success":
 		stepStatus = "failed"
 	}
 	run := AxiRun{
@@ -331,9 +338,16 @@ func (v *Verdict) AxiRun() AxiRun {
 			Items:    items,
 		}},
 	}
-	if v.Conclusion == "success" {
+	switch {
+	case v.Status == StatusCancelled:
+		run.Outcome = StatusCancelled
+		run.Help = []string{
+			"Aborted on the LAN portal; no operator decision is pending",
+			"The GitHub check keeps its recorded conclusion until a new head SHA is scanned",
+		}
+	case v.Conclusion == "success":
 		run.Outcome = "passed"
-	} else {
+	default:
 		run.Outcome = "failed"
 		run.Gate = &AxiGate{
 			Step:     "publish-firewall",

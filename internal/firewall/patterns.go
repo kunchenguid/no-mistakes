@@ -20,11 +20,15 @@ var (
 	// Site/facility labels with a delimiter. SITE01 is the documented
 	// placeholder and is allowlisted. Three-letter tokens without a delimiter
 	// are not matched (the abbreviation trap).
-	siteCode    = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_][a-z0-9]{2,}\b`)
-	serialKw    = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,}\b`)
-	firmwareKw  = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9._+-]{2,}\b`)
-	gpsKw       = regexp.MustCompile(`(?i)\b(?:gps|lat(?:itude)?|lon(?:gitude)?|coord(?:inates)?)\b`)
-	gpsPair     = regexp.MustCompile(`-?\d{1,3}\.\d{3,},\s*-?\d{1,3}\.\d{3,}`)
+	siteCode   = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_][a-z0-9]{2,}\b`)
+	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,}\b`)
+	firmwareKw = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._+-]{2,})\b`)
+	gpsKw      = regexp.MustCompile(`(?i)\b(?:gps|lat(?:itude)?|lon(?:gitude)?|coord(?:inates)?)\b`)
+	gpsPair    = regexp.MustCompile(`-?\d{1,3}\.\d{3,},\s*-?\d{1,3}\.\d{3,}`)
+	// A lat/lon keyword carrying one coordinate-shaped value. The dominant
+	// serialization splits the pair across lines, so a single assigned
+	// coordinate is the hit; a bare float with no keyword is not.
+	gpsAssign   = regexp.MustCompile(`(?i)\b(?:latitude|longitude|coordinates|coord|gps|lat|lon|lng)["']?\s*[:=]\s*["'\[\s]*(-?\d{1,3}\.\d{3,})`)
 	k8sAssign   = regexp.MustCompile(`(?i)\b(?:namespace|cluster(?:\s*name)?|tenant(?:\s*id)?|workspace)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
 	policyKw    = regexp.MustCompile(`(?i)\b(?:ssid|vlan|radius(?:\s*policy)?|802\.1x|aaa\s*policy|firewall(?:\s*rule)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
 	sessionKw   = regexp.MustCompile(`(?i)\b(?:session[_-]?id|jsessionid|connect\.sid|trace[_-]?id|x-request-id)\s*[:=]\s*["']?[A-Za-z0-9._-]{8,}`)
@@ -83,6 +87,92 @@ var docSiteTokens = map[string]struct{}{
 	"dc01":       {},
 	"example":    {},
 	"test":       {},
+}
+
+var (
+	uuidValue     = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	numericValue  = regexp.MustCompile(`^\d+$`)
+	digitRunValue = regexp.MustCompile(`\d{2,}`)
+	versionValue  = regexp.MustCompile(`\d+\.\d+`)
+	buildIDValue  = regexp.MustCompile(`(?i)^[a-z]*\d{4,}[a-z0-9._+-]*$`)
+)
+
+// genericValues are literals and environment words that name a role rather
+// than an instance. A key such as `namespace` or `firewall` assigned one of
+// them is ordinary configuration, not a captured live-system identifier.
+var genericValues = map[string]struct{}{
+	"true": {}, "false": {}, "yes": {}, "no": {}, "on": {}, "off": {},
+	"enabled": {}, "disabled": {}, "none": {}, "null": {}, "nil": {},
+	"auto": {}, "default": {}, "demo": {}, "example": {}, "test": {},
+	"local": {}, "dev": {}, "development": {}, "stage": {}, "staging": {},
+	"prod": {}, "production": {}, "qa": {}, "sandbox": {}, "system": {},
+	"main": {}, "master": {}, "global": {}, "shared": {}, "common": {},
+}
+
+// infraQualifiers are deployment-topology words, not organization names. A
+// compound value built from one of them names a live environment; a plain
+// project label such as `no-mistakes` does not.
+var infraQualifiers = map[string]struct{}{
+	"prod": {}, "production": {}, "stage": {}, "staging": {}, "corp": {},
+	"core": {}, "edge": {}, "dmz": {}, "dc": {}, "datacenter": {},
+	"site": {}, "facility": {}, "tenant": {}, "customer": {}, "cust": {},
+	"campus": {}, "branch": {}, "guest": {}, "iot": {}, "ics": {},
+	"wifi": {}, "wlan": {}, "wan": {}, "lan": {}, "mgmt": {}, "oob": {},
+	"uplink": {}, "spine": {}, "leaf": {}, "rack": {}, "region": {},
+	"zone": {}, "lab": {},
+}
+
+// isLiveShaped reports whether an assigned value fingerprints a live
+// deployment. The Hard Rules forbid these classes "when they are real", so a
+// keyword alone is not a hit: the value must carry an instance identity.
+func isLiveShaped(v string) bool {
+	v = strings.Trim(strings.TrimSpace(v), `"'`)
+	if v == "" || numericValue.MatchString(v) {
+		return false
+	}
+	low := strings.ToLower(v)
+	if _, ok := genericValues[low]; ok {
+		return false
+	}
+	if uuidValue.MatchString(v) || siteCode.MatchString(v) {
+		return true
+	}
+	if strings.Count(v, ".") >= 2 || digitRunValue.MatchString(v) {
+		return true
+	}
+	parts := identifierParts(low)
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts {
+		if _, ok := infraQualifiers[p]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// isVersionShaped reports whether a firmware/build value is a real revision
+// rather than a flag or a toolchain name.
+func isVersionShaped(v string) bool {
+	v = strings.Trim(strings.TrimSpace(v), `"'`)
+	return versionValue.MatchString(v) || buildIDValue.MatchString(v)
+}
+
+func identifierParts(low string) []string {
+	return strings.FieldsFunc(low, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+}
+
+// isDocCoordinate allows the 0.0 placeholder and rejects values outside the
+// coordinate range, which are ordinary numbers rather than a location.
+func isDocCoordinate(v string) bool {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return true
+	}
+	return f == 0 || f < -180 || f > 180
 }
 
 func mustCIDRs(cidrs ...string) []*net.IPNet {

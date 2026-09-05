@@ -29,6 +29,13 @@ kubectl apply -f deploy/no-mistakes/runner.yaml
 Fill `github-runner` and `firewall-ingest` secrets before the runner
 Deployment will start. Image tags are operator-owned.
 
+`portal.yaml` claims a `ReadWriteOnce` PersistentVolumeClaim for
+`/var/lib/no-mistakes`. The verdict store is the only place match details
+exist, and the portal URL printed in the public GitHub check must still
+resolve after a restart or rollout, so it must not be ephemeral. Set
+`storageClassName` if the cluster has no default class; the Deployment uses
+the `Recreate` strategy because the claim is single-writer.
+
 Configured public product repositories are listed in the ConfigMap
 (`carverauto/serviceradar` first; add SDK and others there). Each repository
 still needs a ruleset requiring the `publish-policy` check pinned at a

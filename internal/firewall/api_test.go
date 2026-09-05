@@ -126,6 +126,51 @@ func TestIngest_ScansWhenFindingsOmitted(t *testing.T) {
 	}
 }
 
+func TestAbort_ChangesRenderedOutcomeAndClearsGate(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "firewall.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	in := Input{Diff: unified("cfg.txt", []string{"bind 10.0.0.5"}), Branch: "fm/example", HeadSHA: "abc"}
+	v, err := store.Insert(in, Scan(in), "http://portal.lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before := v.AxiRun(); before.Outcome != "failed" || before.Gate == nil {
+		t.Fatalf("pre-abort run should be a failed gate: %+v", before)
+	}
+
+	srv := &Server{Store: store, PortalBase: "http://portal.lan"}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	resp := postJSON(t, ts.URL+"/v1/axi/runs/"+v.ID+"/abort", map[string]string{})
+	run, ok := resp["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("abort response: %v", resp)
+	}
+	if run["outcome"] != StatusCancelled {
+		t.Fatalf("abort must change the rendered outcome, got %v", run["outcome"])
+	}
+	if run["gate"] != nil {
+		t.Fatalf("aborted run must not still be awaiting approval: %v", run["gate"])
+	}
+
+	got, err := store.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := got.AxiRun(); after.Outcome != StatusCancelled || after.Gate != nil {
+		t.Fatalf("cancelled status not durable in the rendered run: %+v", after)
+	}
+	if got.Conclusion != "failure" {
+		t.Fatalf("abort must not change the GitHub conclusion, got %s", got.Conclusion)
+	}
+}
+
 func TestDefaultListenIsLoopback(t *testing.T) {
 	if !strings.HasPrefix(DefaultListen, "127.0.0.1:") {
 		t.Fatalf("default listen must be loopback, got %s", DefaultListen)

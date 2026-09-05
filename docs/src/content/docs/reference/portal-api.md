@@ -28,7 +28,7 @@ must not.
 | GET | `/v1/axi/runs/{id}` | Axi-shaped status (LAN details) |
 | GET | `/v1/axi/runs/{id}/logs` | Generic log lines only |
 | POST | `/v1/axi/runs/{id}/respond` | `{ "action": "acknowledge" }` — does not pass the GitHub check |
-| POST | `/v1/axi/runs/{id}/abort` | Marks the LAN record cancelled |
+| POST | `/v1/axi/runs/{id}/abort` | Cancels the LAN record: `run.outcome` becomes `cancelled` and the gate clears |
 | POST | `/v1/firewall/verdicts` | Ingest from the self-hosted runner |
 | GET | `/v1/firewall/verdicts/{id}/public` | Generic summary + class counts |
 | GET | `/v1/firewall/verdicts/{id}/notice` | Discord-safe payload |

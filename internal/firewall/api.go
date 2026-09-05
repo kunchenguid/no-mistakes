@@ -28,8 +28,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/axi/runs/{id}/logs", s.getLogs)
 	mux.HandleFunc("POST /v1/axi/runs/{id}/respond", s.postRespond)
 	mux.HandleFunc("POST /v1/axi/runs/{id}/abort", s.postAbort)
-	mux.HandleFunc("GET /v1/firewall/verdicts", s.listVerdicts)
-	mux.HandleFunc("GET /v1/firewall/verdicts/{id}", s.getRun)
 	mux.HandleFunc("GET /v1/firewall/verdicts/{id}/public", s.getPublic)
 	mux.HandleFunc("GET /v1/firewall/verdicts/{id}/notice", s.getNotice)
 	mux.HandleFunc("POST /v1/firewall/verdicts", s.postIngest)
@@ -189,15 +187,6 @@ func (s *Server) postAbort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": v.AxiRun(), "aborted": true})
-}
-
-func (s *Server) listVerdicts(w http.ResponseWriter, r *http.Request) {
-	list, err := s.Store.List(50)
-	if err != nil {
-		http.Error(w, "list", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"verdicts": list})
 }
 
 func (s *Server) getPublic(w http.ResponseWriter, r *http.Request) {

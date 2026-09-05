@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: no-mistakes-portal-data
+  namespace: no-mistakes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,6 +17,8 @@ metadata:
   namespace: no-mistakes
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: no-mistakes-portal
@@ -40,7 +54,8 @@ spec:
               mountPath: /var/lib/no-mistakes
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: no-mistakes-portal-data
 ---
 apiVersion: v1
 kind: Service

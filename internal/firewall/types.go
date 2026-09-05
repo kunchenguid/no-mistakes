@@ -67,14 +67,6 @@ func (r Result) Conclusion() string {
 	return "success"
 }
 
-func (r Result) ClassCounts() map[string]int {
-	counts := map[string]int{}
-	for _, f := range r.Findings {
-		counts[string(f.Class)]++
-	}
-	return counts
-}
-
 // PublicPhrase is the only violation sentence allowed on GitHub, Discord,
 // commit messages, and PR titles produced by this package.
 const PublicPhrase = "publish-policy violation"

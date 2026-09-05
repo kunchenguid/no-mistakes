@@ -123,7 +123,7 @@ func TestPublicText_OmitsSnippets(t *testing.T) {
 	if !strings.Contains(text, PublicPhrase) {
 		t.Fatalf("missing generic phrase: %q", text)
 	}
-	if ContainsForbiddenPublic(text, res.Findings) {
+	if containsForbiddenPublic(text, res.Findings) {
 		t.Fatalf("public text leaked a match: %q findings=%+v", text, res.Findings)
 	}
 	if strings.Contains(text, "10.0.0.5") {
@@ -138,11 +138,114 @@ func TestNotice_OmitsSnippets(t *testing.T) {
 	res := Scan(Input{Diff: unified("cfg.txt", []string{"bind 10.0.0.5"})})
 	n := NewNotice("carverauto/serviceradar", "https://github.com/carverauto/serviceradar/pull/1", "http://portal.lan/v1/axi/runs/01", res.Conclusion())
 	blob := n.Kind + n.Repo + n.PRURL + n.PortalURL + n.Conclusion
-	if ContainsForbiddenPublic(blob, res.Findings) {
+	if containsForbiddenPublic(blob, res.Findings) {
 		t.Fatalf("notice leaked: %+v", n)
 	}
 	if n.Kind != "publish-policy-violation" {
 		t.Fatalf("kind=%s", n.Kind)
+	}
+}
+
+// containsForbiddenPublic reports whether s includes a match snippet from
+// findings. It proves GitHub / notice output stays generic.
+func containsForbiddenPublic(s string, findings []Finding) bool {
+	lower := strings.ToLower(s)
+	if strings.Contains(lower, "@") && strings.Contains(lower, ".") {
+		// Email-shaped text is never allowed on a public surface.
+		if emailCandidate.FindString(s) != "" {
+			return true
+		}
+	}
+	for _, f := range findings {
+		if f.File != "" && strings.Contains(s, f.File) {
+			return true
+		}
+		if f.Description != "" {
+			// Description is LAN-private; any copy into public text is a leak.
+			snip := f.Description
+			if i := strings.LastIndex(snip, ": "); i >= 0 {
+				snip = snip[i+2:]
+			}
+			if snip != "" && strings.Contains(s, snip) {
+				return true
+			}
+		}
+	}
+	return ipv4Candidate.FindString(s) != "" || macCandidate.FindString(s) != ""
+}
+
+func TestScan_GPSSplitAcrossLines(t *testing.T) {
+	res := Scan(Input{Diff: unified("site.json", []string{
+		`  "site": {`,
+		`    "latitude": 37.774929,`,
+		`    "longitude": -122.419416`,
+		"  }",
+	})})
+	if !hasClass(res, ClassGPS) {
+		t.Fatalf("multi-line coordinates not flagged: %+v", classes(res))
+	}
+}
+
+func TestScan_BarePairNeedsAnAdjacentKeyword(t *testing.T) {
+	near := Scan(Input{Diff: unified("site.csv", []string{
+		"# gps fix",
+		"37.774929, -122.419416",
+	})})
+	if !hasClass(near, ClassGPS) {
+		t.Fatalf("pair under a gps keyword not flagged: %+v", classes(near))
+	}
+	far := Scan(Input{Diff: unified("bench.txt", []string{
+		"p99 latency budget",
+		"37.774929, -122.419416",
+	})})
+	if hasClass(far, ClassGPS) {
+		t.Fatalf("pair with no gps keyword flagged: %+v", classes(far))
+	}
+}
+
+func TestScan_UnpairedOrdinaryFloatsAreNotGPS(t *testing.T) {
+	res := Scan(Input{Diff: unified("bench.go", []string{
+		"timeout := 30.500",
+		"ratio = 1.2345",
+		"threshold: 99.999",
+	})})
+	if hasClass(res, ClassGPS) {
+		t.Fatalf("ordinary floats flagged as coordinates: %+v", classes(res))
+	}
+}
+
+func TestScan_OrdinaryConfigValuesAreNotLiveIdentifiers(t *testing.T) {
+	res := Scan(Input{Diff: unified("deploy/portal.yaml", []string{
+		"  namespace: no-mistakes",
+		"  cluster: staging",
+		"  build: true",
+		"  vlan: 100",
+		"  firewall: enabled",
+		"Namespace: metav1.ObjectMeta{Namespace: srQL}",
+	})})
+	if len(res.Findings) != 0 {
+		t.Fatalf("ordinary manifest and Go values flagged: %+v", res.Findings)
+	}
+}
+
+func TestScan_LiveShapedIdentifiersStillFail(t *testing.T) {
+	cases := []struct {
+		name  string
+		line  string
+		class Class
+	}{
+		{"tenant-compound", "namespace: prod-tenant-a", ClassK8s},
+		{"instance-number", "cluster: eks-cluster07", ClassK8s},
+		{"ssid", "ssid: corp-guest", ClassPolicyName},
+		{"firmware-version", "firmware: 17.9.4a", ClassFirmware},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(Input{Diff: unified("cfg.txt", []string{tc.line})})
+			if !hasClass(res, tc.class) {
+				t.Fatalf("want %s for %q, got %+v", tc.class, tc.line, classes(res))
+			}
+		})
 	}
 }
 

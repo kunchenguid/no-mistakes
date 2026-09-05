@@ -32,10 +32,12 @@ func newFindingID() string {
 
 // Scan inspects every counted surface. It never logs match text.
 func Scan(in Input) Result {
+	all := surfaces(in)
 	var hits []Finding
-	for _, s := range surfaces(in) {
+	for _, s := range all {
 		hits = append(hits, detect(s)...)
 	}
+	hits = append(hits, detectGPS(all)...)
 	return Result{Findings: hits}
 }
 
@@ -125,7 +127,6 @@ func detect(s surface) []Finding {
 	hits = append(hits, detectSiteCodes(s)...)
 	hits = append(hits, detectSerials(s)...)
 	hits = append(hits, detectFirmware(s)...)
-	hits = append(hits, detectGPS(s)...)
 	hits = append(hits, detectK8s(s)...)
 	hits = append(hits, detectPolicy(s)...)
 	hits = append(hits, detectCaptures(s)...)
@@ -257,30 +258,83 @@ func detectSerials(s surface) []Finding {
 
 func detectFirmware(s surface) []Finding {
 	var hits []Finding
-	for _, tok := range firmwareKw.FindAllString(s.text, -1) {
-		hits = append(hits, hit(s, ClassFirmware, tok))
+	for _, m := range firmwareKw.FindAllStringSubmatch(s.text, -1) {
+		if len(m) < 2 || !isVersionShaped(m[1]) {
+			continue
+		}
+		hits = append(hits, hit(s, ClassFirmware, m[0]))
 	}
 	return hits
 }
 
-func detectGPS(s surface) []Finding {
-	if !gpsKw.MatchString(s.text) {
-		return nil
-	}
+// detectGPS reads the whole surface list because a coordinate pair is
+// routinely serialized one component per line. A keyword assigned a single
+// coordinate is a hit on its own line; a bare pair needs a keyword on its own
+// or an adjacent diff line.
+func detectGPS(all []surface) []Finding {
 	var hits []Finding
-	for _, tok := range gpsPair.FindAllString(s.text, -1) {
-		if isDocGPS(tok) {
+	for i := range all {
+		s := all[i]
+		assigned := gpsAssign.FindAllStringSubmatchIndex(s.text, -1)
+		for _, m := range assigned {
+			if isDocCoordinate(s.text[m[2]:m[3]]) {
+				continue
+			}
+			hits = append(hits, hit(s, ClassGPS, s.text[m[0]:m[1]]))
+		}
+		if !gpsKeywordNear(all, i) {
 			continue
 		}
-		hits = append(hits, hit(s, ClassGPS, tok))
+		for _, loc := range gpsPair.FindAllStringIndex(s.text, -1) {
+			if overlapsMatch(loc, assigned) {
+				continue
+			}
+			tok := s.text[loc[0]:loc[1]]
+			if isDocGPS(tok) {
+				continue
+			}
+			hits = append(hits, hit(s, ClassGPS, tok))
+		}
 	}
 	return hits
+}
+
+func gpsKeywordNear(all []surface, i int) bool {
+	if gpsKw.MatchString(all[i].text) {
+		return true
+	}
+	for _, j := range []int{i - 1, i + 1} {
+		if j < 0 || j >= len(all) {
+			continue
+		}
+		if adjacentContent(all[i], all[j]) && gpsKw.MatchString(all[j].text) {
+			return true
+		}
+	}
+	return false
+}
+
+func adjacentContent(a, b surface) bool {
+	return a.file == b.file && isContentKind(a.kind) && isContentKind(b.kind)
+}
+
+func isContentKind(kind string) bool {
+	return kind == "added" || kind == "removed"
+}
+
+func overlapsMatch(loc []int, matches [][]int) bool {
+	for _, m := range matches {
+		if loc[0] < m[1] && m[0] < loc[1] {
+			return true
+		}
+	}
+	return false
 }
 
 func detectK8s(s surface) []Finding {
 	var hits []Finding
 	for _, m := range k8sAssign.FindAllStringSubmatch(s.text, -1) {
-		if len(m) < 2 || isDocK8s(m[1]) {
+		if len(m) < 2 || isDocK8s(m[1]) || !isLiveShaped(m[1]) {
 			continue
 		}
 		hits = append(hits, hit(s, ClassK8s, m[0]))
@@ -291,11 +345,7 @@ func detectK8s(s surface) []Finding {
 func detectPolicy(s surface) []Finding {
 	var hits []Finding
 	for _, m := range policyKw.FindAllStringSubmatch(s.text, -1) {
-		if len(m) < 2 {
-			continue
-		}
-		name := strings.ToLower(m[1])
-		if name == "example" || name == "test" || name == "demo" {
+		if len(m) < 2 || !isLiveShaped(m[1]) {
 			continue
 		}
 		hits = append(hits, hit(s, ClassPolicyName, m[0]))

@@ -36,6 +36,14 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 - **WHEN** the diff contains `192.0.2.1`, `2001:db8::1`, `user@example.com`, and `555-0100`
 - **THEN** the scanner reports no findings for those values
 
+#### Scenario: Ordinary configuration values are not live identifiers
+- **WHEN** the diff contains `namespace: no-mistakes`, `cluster: staging`, `build: true`, or `vlan: 100`
+- **THEN** the scanner reports no findings, because the keyword alone is not a hit and none of those values carries an instance identity
+
+#### Scenario: Coordinates split across lines still fail
+- **WHEN** a diff serializes `"latitude": 37.774929,` and `"longitude": -122.419416` on separate lines
+- **THEN** the scanner reports a GPS finding, and an ordinary float with no lat/lon keyword nearby reports none
+
 ### Requirement: Surfaces that count
 
 The scanner SHALL inspect added and removed unified-diff lines, changed filenames, the pull request title, commit messages, and the pull request body.
