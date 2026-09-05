@@ -141,11 +141,12 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 
 				for _, phase := range []string{"during_wait", "before_push"} {
 					t.Run("commit_"+phase, func(t *testing.T) {
-						// Advance HEAD during the first trigger's post-push wait.
-						// The next trigger starts with the same stale snapshot but
-						// pushes the already-advanced branch.
+						// Change HEAD on either side of the push without changing
+						// the startup snapshot passed to triggerRun.
 						if phase == "during_wait" {
 							commitDuringWait <- struct{}{}
+						} else {
+							cliGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "commit before push")
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
