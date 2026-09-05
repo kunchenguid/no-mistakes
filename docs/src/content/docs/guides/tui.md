@@ -77,6 +77,7 @@ Step status icons:
 | `✗` | Failed |
 
 Completed steps show their duration.
+When no lint command is configured, the Document row is labeled `Document + Lint housekeeping`; its duration is the shared documentation-and-lint agent invocation, while Lint shows only its cached-result handoff duration.
 Steps with fixed findings, and steps currently fixing reported findings, show a right-aligned count such as `2/3 fixed` or `0/3 fixed`.
 The first number counts completed fixes, not findings selected for an in-progress fix.
 Connectors (`│`) between steps are hidden when the terminal height is under 30 lines.
@@ -143,7 +144,7 @@ When a clean strict-behind relation is eligible, or a diverged relation may be e
 Pressing `u` explicitly refreshes the configured upstream or fork target, then opens a confirmation with both full SHAs, the exact target ref, and the clean-worktree proof.
 Confirm with `u` or Enter, or cancel with Escape.
 The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward or anchored equivalent-diverged advance as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
-When the owning run ended without publishing its pipeline commits, the same box offers `u recover custody` instead: `u` opens a confirmation naming the terminal status, the local head, and the preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
+When the owning run ended without publishing its pipeline commits, the same box offers `u recover custody` instead: `u` opens a confirmation naming the terminal status, the local head, and the preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync). When the structured proof is a bound archive for divergent later work, the confirmation also names the archive and required head, and `u` uses the keep-local recovery so the archived head is never selected. If the preserved head is unavailable, the box instead tells you to keep the current local head; complete that missing-head recovery through the AXI path documented in the linked reference, because the TUI action does not discard a missing head.
 
 ### Footer
 
@@ -215,6 +216,7 @@ Press `e` to add or edit extra guidance for the current finding. Press `+` to ad
 Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
 Yolo fixes gates with `auto-fix` and `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.
 It approves gates with no findings or only `action: no-op` findings as-is, and fixes each step at most once so unresolved findings do not loop forever.
+The [`protected_paths` refusal rules](/no-mistakes/reference/repo-config/#protected_paths) are an exception to this automatic handling.
 
 ## Outcome banner
 

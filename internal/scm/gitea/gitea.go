@@ -15,10 +15,11 @@
 // (GET /repos/{owner}/{repo}/actions/runs/{run}/jobs) does carry a `status` +
 // `conclusion` pair (mirroring GitHub Actions' schema) and is reachable
 // through `tea api`, which reuses tea's own stored login/token - no separate
-// HTTP client or token configuration is needed. GetChecks and
-// FetchFailedCheckLogs therefore go through `tea api` for job-level detail
-// while every other operation (PR lifecycle, auth, run discovery) uses tea's
-// own porcelain subcommands.
+// HTTP client or token configuration is needed. GetChecks,
+// FetchFailedCheckLogs, and SetPRBaseBranch therefore go through `tea api`
+// (the last because `tea pulls edit` has no `--base` flag) while every other
+// operation (PR lifecycle, auth, run discovery) uses tea's own porcelain
+// subcommands.
 package gitea
 
 import (
@@ -141,7 +142,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if base != "" && item.Base != base {
 			continue
 		}
-		return &scm.PR{Number: item.Index, URL: item.URL}, nil
+		return &scm.PR{Number: item.Index, URL: item.URL, BaseBranch: strings.TrimSpace(item.Base)}, nil
 	}
 	return nil, nil
 }
@@ -200,6 +201,41 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		return nil, fmt.Errorf("tea pulls edit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return pr, nil
+}
+
+// SetPRBaseBranch retargets an existing PR. `tea pulls edit` (tea 0.15.1) has
+// no `--base` flag even though `tea pulls create` does; inventing one would
+// fail closed at the CLI. The Gitea REST edit-pull endpoint accepts `base`,
+// and `tea api --method PATCH --field` reuses the stored login the same way
+// job lookups do. `--method PATCH` is required: a body without an explicit
+// method defaults tea api to POST.
+func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
+	id, err := giteaPRNumber(pr)
+	if err != nil {
+		return err
+	}
+	owner, repo, ok := splitOwnerRepo(h.repoSlug)
+	if !ok {
+		return fmt.Errorf("gitea: invalid repo slug %q", h.repoSlug)
+	}
+	endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%s", owner, repo, id)
+	args := []string{"api", "--login", h.login, "--method", "PATCH", "--field", "base=" + baseBranch, endpoint}
+	if out, err := h.cmd(ctx, "tea", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("tea api pull edit --base: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func giteaPRNumber(pr *scm.PR) (string, error) {
+	if pr != nil {
+		if id := strings.TrimSpace(pr.Number); id != "" {
+			return id, nil
+		}
+		if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
+			return num, nil
+		}
+	}
+	return "", fmt.Errorf("pull request identity is required to retarget")
 }
 
 type giteaPRView struct {

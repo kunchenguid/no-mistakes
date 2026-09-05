@@ -207,7 +207,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |
-| `worktrees/<repoID>/<runID>/`    | Disposable worktrees (cleaned up after each run); [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) can place a repository's elsewhere |
+| `worktrees/<repoID>/<runID>/`    | Run worktrees, subject to [cleanup and retention rules](/no-mistakes/concepts/daemon/#what-it-does); [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) can place a repository's elsewhere |
 | `logs/<runID>/<step>.log`        | Per-step log files                                                                                                      |
 | `logs/daemon.log`                | Bounded daemon lifecycle log                                                                                            |
 | `logs/daemon-bootstrap.log`      | Bounded pre-logger bootstrap and direct crash output                                                                    |

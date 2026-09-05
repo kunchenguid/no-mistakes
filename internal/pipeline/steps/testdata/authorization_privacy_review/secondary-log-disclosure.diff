@@ -1,0 +1,10 @@
+diff --git a/password/reset.go b/password/reset.go
+index 1111111..2222222 100644
+--- a/password/reset.go
++++ b/password/reset.go
+@@ -12,4 +12,5 @@ func SendReset(ctx context.Context, user User) error {
+ 	token, err := issueResetToken(ctx, user.ID)
+ 	if err != nil { return err }
++	log.Printf("issuing password reset user=%s token=%s", user.ID, token)
+ 	return mailer.Send(user.Email, resetURL(token))
+ }

@@ -129,9 +129,18 @@ CI logs:
 	if reviewCommentsSection != "" {
 		prompt += reviewCommentsSection
 	}
+	// Recorded human decisions, before the user intent and in the same order
+	// every other fix-capable step composes them. The intent is frozen at run
+	// start, so it always predates any decision a human made at a later gate;
+	// without this section a CI repair could only satisfy the pre-decision
+	// wording and would re-apply exactly what the human ruled against - for a
+	// decision made at an earlier gate, at an earlier run on this branch, or
+	// at the CI step's own gate. The rows are already loaded onto this context
+	// by pipeline.BindBranchDecisions, which the executor runs for every step.
+	prompt += roundHistoryPromptSection(sctx)
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
-	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
+	prompt = fixerPrompt(testguidance.LateRepairPrompt(string(s.Name()), prompt))
 
 	sctx.Log("running agent to fix CI issues...")
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
@@ -149,6 +158,14 @@ CI logs:
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary)
+	var refusal *pipeline.ProtectedPathError
+	if errors.As(err, &refusal) {
+		head, recordErr := stepGitHeadSHA(sctx)
+		if recordErr == nil && head != sctx.Run.HeadSHA {
+			_, recordErr = s.recordLocalRepair(sctx, head)
+		}
+		return repair, errors.Join(err, recordErr)
+	}
 	if err != nil || repair.HeadAdvanced {
 		return repair, err
 	}
@@ -275,6 +292,23 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 	return s.commitRepair(sctx, "")
 }
 
+func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairResult, error) {
+	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
+		return ciRepairResult{}, err
+	}
+	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
+	sctx.Log("retrying retained CI repair after protected-path refusal")
+	repair, err := s.commitRepair(sctx, "")
+	if err != nil || repair.HeadAdvanced {
+		return repair, err
+	}
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return ciRepairResult{}, err
+	}
+	return s.recordRepair(sctx, head)
+}
+
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
@@ -296,7 +330,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("render CI repair commit message: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+	if err := stagePipelineChanges(sctx); err != nil {
 		return ciRepairResult{}, fmt.Errorf("stage CI changes: %w", err)
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {

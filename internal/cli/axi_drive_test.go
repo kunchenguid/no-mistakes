@@ -17,6 +17,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -365,6 +366,78 @@ func TestCIReadyToMerge(t *testing.T) {
 			if got := ciReadyToMerge(tt.rv); got != tt.wantStop {
 				t.Errorf("ciReadyToMerge() = %v, want %v", got, tt.wantStop)
 			}
+		})
+	}
+}
+
+func TestDriveRun_YesLeavesProtectedPathRefusalAwaitingResponse(t *testing.T) {
+	socketPath := filepath.Join(makeSocketSafeTempDir(t), "protected-path.sock")
+	srv := ipc.NewServer()
+	var responses atomic.Int32
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses.Add(1)
+		return nil, errors.New("unexpected automatic response to protected-path refusal")
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(socketPath) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("IPC server did not stop")
+		}
+	})
+	var client *ipc.Client
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		client, err = ipc.Dial(socketPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if client == nil {
+		t.Fatal("IPC server did not become ready")
+	}
+	defer client.Close()
+
+	refusal := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "package.lock", Rule: "*.lock"})
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			parked := &ipc.RunInfo{
+				ID: "run-1", Status: types.RunRunning,
+				Steps: []ipc.StepResultInfo{{StepName: types.StepCI, Status: status, FindingsJSON: &refusal.Findings}},
+			}
+			source := &scriptedRunStateSource{
+				subscriptions: []scriptedSubscription{{events: make(chan ipc.Event)}},
+				runs:          []*ipc.RunInfo{parked},
+			}
+			reconciler := newRunReconciler(source, parked.ID)
+			defer reconciler.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var progress bytes.Buffer
+			run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
+			if err != nil || run != parked || ciReady || responses.Load() != 0 {
+				t.Fatalf("--yes resolved a protected-path refusal: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+			}
+			if !strings.Contains(progress.String(), "explicit response") {
+				t.Fatalf("missing explicit-response guidance: %s", progress.String())
+			}
+			var output bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&output)
+			if err := renderDriveResult(cmd, run, ciReady); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"gate:", "1 awaiting", "package.lock", string(status)} {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("parked output missing %q: %s", want, output.String())
+				}
+			}
+			t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load(), progress.String(), output.String())
 		})
 	}
 }

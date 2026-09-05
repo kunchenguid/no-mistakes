@@ -293,6 +293,17 @@ type PRBaseBranchReader interface {
 	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
 }
 
+// PRBaseRetargeter is implemented by providers that can change an existing
+// PR's target branch. The PR step uses it when a per-run --base-branch override
+// disagrees with the live forge base of an already-open PR. A host that does
+// not implement this, including when the live base is unread, must fail closed
+// rather than rewrite title and body against a base it did not move. A
+// repo-config pr.base_branch change still does not retarget; that path updates
+// title and body only so a still-open PR is not orphaned behind a duplicate.
+type PRBaseRetargeter interface {
+	SetPRBaseBranch(ctx context.Context, pr *PR, baseBranch string) error
+}
+
 // PreRunFailureDetector reports which failed checks the provider failed before
 // the repository's own steps ran - a setup/action-resolution outcome (for GitHub
 // Actions, an action-download outage) rather than a verdict on the code. It

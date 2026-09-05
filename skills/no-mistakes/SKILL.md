@@ -222,26 +222,39 @@ Run the pipeline and decide on its findings as they come up:
      check list without that declaration is not ready. no-mistakes keeps
      monitoring the PR in the background until it is merged, closed, or its
      configured idle timeout elapses, so a human can watch it in the TUI.
-   - `passed` - the changes cleared the gate and the PR was merged or closed.
+   - `passed` - the pipeline completed under the requested steps, including any
+     explicit per-run skips. This alone is not evidence that a PR was merged.
+   - `passed-with-skips` - publication or CI verification automatically skipped.
+     Report the missing evidence and its cause from `run.automatic_skips`,
+     bound to the full `run.head_sha`. This is neither CI readiness nor a
+     failing code verdict. Explicit per-run skips retain their existing behavior.
    - `failed` or `cancelled` - they did not; read the output and address it.
-     Fix whatever the output points at (a failing test, a lint error, a finding
-     you skipped), commit the fix on the same feature branch, then drive the
-     pipeline again - `no-mistakes axi run --intent "..."` starts a fresh run,
-     or `no-mistakes rerun` re-runs the pipeline for the current branch. This
-     is the right place to start over: a fresh run or `rerun` is a
+     Follow the custody guidance below before fixing whatever the output
+     points at (a failing test, a lint error, a finding you skipped). Commit the
+     fix on the same feature branch, then submit it with
+     `no-mistakes axi run --intent "..."`. A fresh run or `rerun` is a
      *between-runs* action, correct only after a terminal outcome like this -
      never mid-run to circumvent a gate. Do not leave the user at a `failed`
      outcome without either retrying or explaining what blocks it.
+
+`no-mistakes rerun` keeps its existing head selection: the gate head, or the
+latest terminal run's verified unpublished preserved head while custody remains
+outstanding. If a known clean caller `HEAD` differs from that selected head,
+it refuses before starting or superseding any run and reports both full SHAs.
+It never substitutes the caller head or moves either branch to make them match.
+On refusal, inspect `no-mistakes axi status` and follow the custody guidance
+below. Dirty callers and callers without clean-head evidence retain existing
+selection behavior.
 
 Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
 If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and take the preserved head, or `no-mistakes rerun` to resume validating it instead.
-Recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
-That proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+When `next_action.code` is `recover_custody`, run its exact `next_action.command` rather than reconstructing one. That is `no-mistakes axi sync --recover` to take a still-available preserved pipeline head, or `no-mistakes axi sync --recover --keep-local` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain `--recover` or `rerun` for a reported keep-local action. `no-mistakes rerun` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
+Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
+The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
-A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
+A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`. The same flag is the recovery when an accessible gate confirms that the verified preserved head is missing and recovery refs are compatible: it returns custody at the current local head without requiring that object.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
 This preserves every prior gate-fix commit regardless of its configured subject.
@@ -261,8 +274,9 @@ the branch through Push**; a PR that is merely behind but still clean needs noth
 either, since the platform merges it. The one exception is when that monitor is
 no longer running - the PR was closed, the run was aborted or superseded, it
 idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
-with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full
-pipeline including a deterministic rebase step. Do **not** reach for
+with `no-mistakes rerun`, subject to the clean-head check above. An accepted
+rerun cancels the stale monitor and re-runs the full pipeline including a
+deterministic rebase step. Do **not** reach for
 `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
@@ -291,16 +305,23 @@ it to the user before you respond:
   `respond` call: `--action fix` (pass their guidance through
   `--instructions`), `--action approve`, or `--action skip`.
 
-The one exception is `--yes` (below): it is the user's standing consent to
-drive every gate unattended, so under `--yes` you resolve `ask-user`
-findings automatically instead of stopping to ask.
+The exception is `--yes` (below): it is the user's standing consent to
+drive eligible gates unattended, so under `--yes` you resolve ordinary
+`ask-user` findings automatically instead of stopping to ask.
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
-or `axi respond`. It treats every actionable finding - `auto-fix` and
+or `axi respond`. For eligible gates, it treats actionable findings - `auto-fix` and
 `ask-user` alike - as consent to fix it, selects every current finding for one
 fix round, accepts the resulting fix review, and approves gates with only
 `no-op` findings. Only use it when the user has asked you to drive the whole
 run without checking back.
+
+A `protected-path-refusal` gate still requires an explicit operator response
+under `--yes`. Relay its path and rule; do not automatically fix, approve,
+or skip it. Approval is rejected. Have the operator inspect and resolve the
+reported edit, then send `--action fix` to retry the unfinished step.
+The [protected-path reference](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#protected_paths)
+owns the staging guard's scope and limitations.
 
 ## Inspecting state
 
@@ -346,6 +367,6 @@ Read the `action` column per row: decide `r1` (auto-fix) on your own
 judgment - `respond --action fix --findings r1` hands it to the pipeline to
 fix - but stop and escalate `r2` (ask-user) to the user before responding. A
 final state
-instead shows `outcome: <checks-passed|passed|failed|cancelled>` with no
+instead shows `outcome: <checks-passed|passed|passed-with-skips|failed|cancelled>` with no
 `findings` table. Field names and exact columns can vary by step and version,
 so read the actual `findings` header rather than assuming this layout.

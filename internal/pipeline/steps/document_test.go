@@ -310,7 +310,7 @@ func TestDocumentStep_NoChanges_SkipsAgent(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_MalformedOutput_CommitsAndRequiresApproval(t *testing.T) {
+func TestDocumentStep_MalformedOutput_CommitsAndFailsClosed(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -329,24 +329,11 @@ func TestDocumentStep_MalformedOutput_CommitsAndRequiresApproval(t *testing.T) {
 
 	step := &DocumentStep{}
 	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "validate document analyzer findings") {
+		t.Fatalf("Execute() error = %v, want malformed document analyzer output", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected malformed output to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected malformed output not to trigger an auto-fix loop")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected 1 finding, got %+v", findings.Items)
-	}
-	if findings.Items[0].Action != types.ActionAskUser {
-		t.Error("expected malformed output finding to require human review")
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
 	}
 	// Any edits the agent made should still be committed.
 	if status := gitStatusPorcelain(t, dir); status != "" {
@@ -354,7 +341,7 @@ func TestDocumentStep_MalformedOutput_CommitsAndRequiresApproval(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_NoStructuredOutput_RequiresApproval(t *testing.T) {
+func TestDocumentStep_NoStructuredOutput_FailsClosed(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -368,21 +355,11 @@ func TestDocumentStep_NoStructuredOutput_RequiresApproval(t *testing.T) {
 
 	step := &DocumentStep{}
 	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "document analyzer returned no structured findings") {
+		t.Fatalf("Execute() error = %v, want missing document analyzer output", err)
 	}
-	if !outcome.NeedsApproval {
-		t.Fatal("expected missing structured output to require approval")
-	}
-	if outcome.AutoFixable {
-		t.Fatal("expected missing structured output not to trigger an auto-fix loop")
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("unmarshal findings: %v", err)
-	}
-	if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
-		t.Fatalf("expected 1 ask-user finding, got %+v", findings.Items)
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
 	}
 }
 

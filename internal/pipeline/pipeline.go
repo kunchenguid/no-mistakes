@@ -103,6 +103,7 @@ type StepOutcome struct {
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
 	Skipped       bool   // mark the step as skipped without failing the run
+	SkipReason    string // automatic PR/CI skip cause; explicit per-run skips leave it empty
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// RestartFrom asks the executor to re-run validation from this earlier step.
 	// CI repairs use it when policy requires revalidation or continuity cannot be
@@ -142,4 +143,30 @@ type Step interface {
 // leaves the gate parked. Implementations must be read-only and fail closed.
 type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
+}
+
+// ApprovalOverrideVerifier is implemented by a step whose approval gate exists
+// because of a live, re-checkable external condition (currently: the CI
+// step's failing checks). The executor calls it once, synchronously, at the
+// moment a human answers ActionApprove - never for Skip, Abort, or Fix, which
+// do not claim the step passed. A human's approval always proceeds (this
+// never blocks a deliberate operator decision), but when the condition is
+// still unresolved the executor records the completion as an explicit
+// override (StepResult.OverrideReason, via db.SetStepOverrideReason) instead
+// of silently reporting the same "outcome=passed" a genuinely green run
+// produces. See docs/... incident: an operator approved a CI gate while a
+// stale, already-superseded check-run replay still showed a live failure, and
+// the run reported outcome=passed with no trace of the override.
+//
+// unresolved is a short human-readable reason (e.g. naming the still-failing
+// check) when the condition has not cleared, and "" when it has (the executor
+// then records a plain, unqualified completion exactly as before). err is
+// reserved for a verification failure distinct from "still unresolved" (e.g.
+// the provider could not be reached); implementations should fail closed by
+// treating err as if it were an unresolved condition described by err, and
+// callers do the same rather than silently completing on error, but the
+// approval itself still proceeds either way - this interface only decides
+// how the completion is recorded, never whether it happens.
+type ApprovalOverrideVerifier interface {
+	VerifyApprovalOverride(sctx *StepContext) (unresolved string, err error)
 }

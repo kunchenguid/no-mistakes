@@ -43,6 +43,15 @@ type commitSummary struct {
 
 var errRejectedCommitSummary = errors.New("rejected commit summary")
 
+const fixerRemovalRule = `
+
+Removal-first rule:
+- When a problem can be solved by removing a code path that is not strictly required to satisfy the intent - an extra acceptance or matching branch, a fallback, an alias, a second definition of something the code already defines once, or handling for an input nobody intends - fix it by removing that path, not by validating, hardening, or documenting it. Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose. Removal is the smallest fix for such a path: hardening it leaves the unrequired path in place for the next review to find another hole in.`
+
+func fixerPrompt(prompt string) string {
+	return prompt + fixerRemovalRule
+}
+
 var commitSummarySchema = json.RawMessage(fmt.Sprintf(`{
 	"type": "object",
 	"properties": {
@@ -180,7 +189,10 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("check %s changes: %w", stepName, err)
+	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no agent changes to commit")
 		return nil
@@ -195,7 +207,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	if err := stagePipelineChanges(sctx); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
@@ -265,7 +277,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		purpose = string(stepName) + "-fix"
 	}
 	runOpts := agent.RunOpts{
-		Prompt:     opts.Prompt,
+		Prompt:     fixerPrompt(opts.Prompt),
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,
 		OnChunk:    sctx.LogChunk,

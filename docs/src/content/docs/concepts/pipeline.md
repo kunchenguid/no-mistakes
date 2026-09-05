@@ -78,7 +78,7 @@ You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
 - Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
-- Store test evidence locally by default or, on a supported provider, opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
+- Store test evidence locally, upload GitHub.com/GHEC image/video attachments at PR time, and optionally publish an orphan evidence branch with `test.evidence`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.

@@ -56,6 +56,22 @@ inputs:
       'release-please--*'.
     required: false
     default: ""
+  github-token:
+    description: >-
+      Token used to read the PR's live body and head SHA from the GitHub API,
+      so a rerun of an old job can't resurrect a stale attestation verdict with
+      a fresh timestamp (see verify.py's module docstring). Defaults to the
+      job's own ambient token; forwarding it does not by itself grant any
+      permission. Requires the caller's `permissions:` to include
+      `pull-requests: read` unless explicit pr-body/pr-head-sha inputs are
+      forwarded instead - without one of those two, the live lookup 403s and
+      the action FAILS THE WHOLE GATE CLOSED rather than falling back to the
+      event payload, because evaluating compliance against that cached
+      payload is exactly the staleness hole this input exists to close. Never
+      broadens `contents:` beyond read; this action still never checks out or
+      executes repository code.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   compliant:
@@ -83,6 +99,7 @@ runs:
         NM_EXEMPT_AUTHORS: ${{ inputs.exempt-authors }}
         NM_EXEMPT_BOT_AUTHORS: ${{ inputs.exempt-bot-authors }}
         NM_EXEMPT_HEAD_BRANCHES: ${{ inputs.exempt-head-branches }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
         set -eu
         if command -v python3 >/dev/null 2>&1; then

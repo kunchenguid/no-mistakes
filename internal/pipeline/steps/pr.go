@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,7 +19,12 @@ import (
 )
 
 // PRStep creates or updates a pull request via the provider CLI or API.
-type PRStep struct{}
+type PRStep struct {
+	// mediaUploader uploads image/video evidence at PR render time. Nil uses
+	// the GitHub host's user-attachments client. Tests inject a stub so they
+	// never talk to live GitHub.
+	mediaUploader userAssetUploader
+}
 
 type prContent struct {
 	Title string `json:"title"`
@@ -61,10 +67,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	baseBranch := sctx.Repo.DefaultBranch
-	if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
-		baseBranch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
-	}
+	baseBranch := effectivePRBaseBranch(sctx)
 	if branch == baseBranch {
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
@@ -73,11 +76,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
@@ -92,8 +95,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, err
+	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			return nil, err
+		}
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
@@ -121,6 +131,142 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// retargetExistingPRIfNeeded moves an already-open PR onto a per-run
+// --base-branch override when the live forge base disagrees. Repo-config
+// pr.base_branch changes still do not retarget: requested is empty in that
+// path, so title and body update in place and CI keeps following the live
+// forge base.
+func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, existing *scm.PR, requested string) error {
+	requested = strings.TrimSpace(requested)
+	if requested == "" || existing == nil {
+		return nil
+	}
+	actual := strings.TrimSpace(existing.BaseBranch)
+	if actual == requested {
+		return nil
+	}
+	if err := requireOwnedPRIdentity(sctx, existing); err != nil {
+		return err
+	}
+	retargeter, ok := host.(scm.PRBaseRetargeter)
+	if !ok {
+		if actual == "" {
+			return fmt.Errorf("existing pull request %s has no readable base branch, and this provider cannot retarget it to %s", describePR(existing), requested)
+		}
+		return fmt.Errorf("existing pull request %s targets %s, not %s, and this provider cannot retarget it", describePR(existing), actual, requested)
+	}
+	from := actual
+	if from == "" {
+		from = "its current base"
+	}
+	sctx.Log(fmt.Sprintf("retargeting existing pull request %s from %s to %s", describePR(existing), from, requested))
+	if err := retargeter.SetPRBaseBranch(sctx.Ctx, existing, requested); err != nil {
+		return fmt.Errorf("retarget pull request to %s: %w", requested, err)
+	}
+	existing.BaseBranch = requested
+	return nil
+}
+
+// bindExistingPR prefers the run's persisted PR URL over a branch-only
+// FindPR hit after GetPRState proves that identity is still open. A closed
+// or merged persisted PR is stale: title/body update the discovered PR, and
+// a per-run --base-branch retarget is refused rather than moving either
+// object. First-attach (no persisted URL) keeps the discovered PR.
+func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, error) {
+	owned := runPRURL(sctx)
+	if owned == "" {
+		return discovered, nil
+	}
+	if host == nil {
+		return nil, fmt.Errorf("read persisted pull request %s state: host unavailable", owned)
+	}
+	ownedPR := discovered
+	if !samePRIdentity(owned, discovered) {
+		ownedPR = prFromOwnedURL(owned)
+	}
+	ctx := context.Background()
+	if sctx != nil && sctx.Ctx != nil {
+		ctx = sctx.Ctx
+	}
+	state, err := host.GetPRState(ctx, ownedPR)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
+	}
+	if state != scm.PRStateOpen {
+		if runPRBaseBranch(sctx) != "" {
+			return nil, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
+		}
+		return discovered, nil
+	}
+	existing := discovered
+	if !samePRIdentity(owned, discovered) {
+		existing = ownedPR
+		if sctx != nil && sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("using persisted pull request %s instead of discovered %s", owned, describePR(discovered)))
+		}
+	}
+	if strings.TrimSpace(existing.BaseBranch) != "" {
+		return existing, nil
+	}
+	reader, ok := host.(scm.PRBaseBranchReader)
+	if !ok {
+		return existing, nil
+	}
+	base, err := reader.GetPRBaseBranch(ctx, existing)
+	if err != nil {
+		return nil, fmt.Errorf("read persisted pull request %s: %w", owned, err)
+	}
+	existing.BaseBranch = strings.TrimSpace(base)
+	return existing, nil
+}
+
+func prFromOwnedURL(owned string) *scm.PR {
+	pr := &scm.PR{URL: owned}
+	if n, err := scm.ExtractPRNumber(owned); err == nil {
+		pr.Number = n
+	}
+	return pr
+}
+
+// requireOwnedPRIdentity fails closed unless the PR about to be mutated is
+// proven to be the run's persisted review object. Retarget uses this before
+// any base move. Title/body update of a first-attach FindPR hit (no
+// persisted URL) still proceeds so a later pr.base_branch change updates
+// the open PR instead of opening a duplicate.
+func requireOwnedPRIdentity(sctx *pipeline.StepContext, existing *scm.PR) error {
+	owned := runPRURL(sctx)
+	if owned == "" {
+		return fmt.Errorf("refusing to retarget pull request %s: this run has no persisted PR identity", describePR(existing))
+	}
+	if samePRIdentity(owned, existing) {
+		return nil
+	}
+	return fmt.Errorf("discovered pull request %s does not match this run's persisted pull request %s", describePR(existing), owned)
+}
+
+func runPRURL(sctx *pipeline.StepContext) string {
+	if sctx == nil || sctx.Run == nil || sctx.Run.PRURL == nil {
+		return ""
+	}
+	return strings.TrimSpace(*sctx.Run.PRURL)
+}
+
+func samePRIdentity(ownedURL string, discovered *scm.PR) bool {
+	ownedURL = strings.TrimRight(strings.TrimSpace(ownedURL), "/")
+	if ownedURL == "" || discovered == nil {
+		return false
+	}
+	discoveredURL := strings.TrimRight(strings.TrimSpace(discovered.URL), "/")
+	if discoveredURL != "" {
+		return strings.EqualFold(ownedURL, discoveredURL)
+	}
+	ownedNum, err := scm.ExtractPRNumber(ownedURL)
+	if err != nil || ownedNum == "" {
+		return false
+	}
+	return discovered.Number != "" && discovered.Number == ownedNum
 }
 
 func describePR(pr *scm.PR) string {
@@ -260,7 +406,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 	}
 
 	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
-	testingMD = BuildTestingSummaryForPRWithProvider(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider)
+	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD
 }
 

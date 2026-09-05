@@ -67,6 +67,12 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		if event.PRURL != nil {
 			m.run.PRURL = event.PRURL
 		}
+		// Carry the CI approval override onto the model so renderOutcomeBanner
+		// shows "passed with override" on the live event path, not just after a
+		// snapshot. Without this the banner disagrees with axi's outcome word.
+		if event.CIOverrideReason != nil {
+			m.run.CIOverrideReason = *event.CIOverrideReason
+		}
 		if m.syntheticSteps {
 			m.steps = nil
 			m.run.Steps = nil
@@ -98,6 +104,9 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		}
 		if event.StepName != nil && event.ReportedFindings != nil {
 			m.setStepReportedFindings(*event.StepName, *event.ReportedFindings)
+		}
+		if event.StepName != nil && event.WorkScope != "" {
+			m.setStepWorkScope(*event.StepName, event.WorkScope)
 		}
 		// Persist duration so the step continues to display its elapsed time.
 		// Prefer the event's execution-only duration; fall back to local timing.
@@ -396,6 +405,15 @@ func (m *Model) setStepDuration(name types.StepName, durationMS *int64) {
 	for i := range m.steps {
 		if m.steps[i].StepName == name {
 			m.steps[i].DurationMS = durationMS
+			return
+		}
+	}
+}
+
+func (m *Model) setStepWorkScope(name types.StepName, workScope string) {
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			m.steps[i].WorkScope = workScope
 			return
 		}
 	}

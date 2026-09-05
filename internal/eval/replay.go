@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
@@ -56,8 +57,9 @@ const (
 
 // Replay runs exactly the captured review pass. It does not start a daemon or
 // use the production NM_HOME: every case is restored into a fresh temp gate and
-// worktree. Push, PR, CI, and all fix loops are intentionally absent from the
-// MVP subject under test.
+// worktree. Candidates inherit the caller's HOME so harness sign-in matches
+// an ordinary pipeline agent spawn. Push, PR, CI, and all fix loops are
+// intentionally absent from the MVP subject under test.
 func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []Evaluation, error) {
 	if store == nil {
 		return Session{}, nil, fmt.Errorf("eval replay requires a store")
@@ -229,12 +231,6 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		evaluation.CompletedAt = time.Now().Unix()
 		return evaluation
 	}
-	isolatedHome := filepath.Join(root, "home")
-	if err := os.MkdirAll(isolatedHome, 0o755); err != nil {
-		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create isolated eval home: %v", err))
-		evaluation.CompletedAt = time.Now().Unix()
-		return evaluation
-	}
 	ownership, err := e2edaemon.Acquire(isolatedPaths.Root(), "", 2*time.Minute)
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(fmt.Sprintf("acquire isolated eval ownership: %v", err))
@@ -316,12 +312,17 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		SkipFixExecution:      fixing,
 		ReviewStartingHeadSHA: startingHeadSHA,
 		PreviousFindings:      previousFindings,
-		Env:                   []string{"NM_HOME=" + isolatedPaths.Root(), "HOME=" + isolatedHome},
-		Log:                   func(string) {},
-		LogChunk:              func(string) {},
-		LogFile:               func(string) {},
-		UserIntent:            c.Intent,
-		IntentSource:          c.IntentSource,
+		// Keep NM_HOME on the nested sandbox so replay cannot see or mutate
+		// production pipeline/eval state. Do not rewrite HOME: candidates use
+		// the same harness sign-in and user settings as an ordinary pipeline
+		// agent spawn. That is not a security sandbox; a candidate may still
+		// read and write ordinary HOME-relative agent files.
+		Env:          []string{"NM_HOME=" + isolatedPaths.Root()},
+		Log:          func(string) {},
+		LogChunk:     func(string) {},
+		LogFile:      func(string) {},
+		UserIntent:   c.Intent,
+		IntentSource: c.IntentSource,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
 	// agent-invocation metric rather than charging case restoration setup.
@@ -334,7 +335,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		evaluation.Model = observed.result.Model
 		if evaluation.Model == "" {
 			evaluation.Model = candidate.Model
-		} else if evaluation.Model != candidate.Model {
+		} else if !agentcfg.ServedMatchesRequested(candidate.Model, evaluation.Model, observed.result.ModelProvider) {
 			evaluation.Error = safeurl.RedactText(fmt.Sprintf("candidate served model %q, requested %q", evaluation.Model, candidate.Model))
 			return evaluation
 		}

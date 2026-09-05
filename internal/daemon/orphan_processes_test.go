@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +16,110 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestProtectedPathRefusalRetainsWorktreeButReapsProcessesAndEvidence(t *testing.T) {
+	orig := orphanProcessMinAge
+	orphanProcessMinAge = 0
+	t.Cleanup(func() { orphanProcessMinAge = orig })
+	t.Setenv("TMPDIR", t.TempDir())
+
+	for _, placement := range []string{"default", "recorded"} {
+		t.Run(placement, func(t *testing.T) {
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			repo, head := setupTestGitRepo(t, p, database, "protected-reaping")
+			run, err := database.InsertRun(repo.ID, "main", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workDir := p.WorktreeDir(repo.ID, run.ID)
+			if placement == "recorded" {
+				workDir = filepath.Join(t.TempDir(), run.ID)
+			}
+			if err := database.SetRunWorktreeDir(run.ID, workDir); err != nil {
+				t.Fatal(err)
+			}
+			if err := git.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), workDir, head); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			sr, err := database.InsertStepResult(run.ID, types.StepPush)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(sr.ID); err != nil {
+				t.Fatal(err)
+			}
+			sctx := &pipeline.StepContext{Ctx: context.Background(), WorkDir: workDir, Run: run, DB: database, Config: config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{}), Log: func(string) {}}
+			_, refusal := (protectedPathCommitStep{step: &steps.PushStep{}}).Execute(sctx)
+			outcome := pipeline.ProtectedPathOutcome(refusal)
+			if outcome == nil {
+				t.Fatalf("expected protected-path refusal: %v", refusal)
+			}
+			if _, err := database.InsertStepRound(sr.ID, 1, "initial", &outcome.Findings, nil, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.ParkStepForApproval(run.ID, sr.ID, types.StepStatusAwaitingApproval, 1, &outcome.Findings); err != nil {
+				t.Fatal(err)
+			}
+			evidenceDir := filepath.Join(p.EvidenceRoot(""), run.ID)
+			if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(evidenceDir, "output.txt"), []byte("test output"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			expired := time.Now().Add(-config.DefaultEvidenceRetention - time.Hour)
+			if err := os.Chtimes(evidenceDir, expired, expired); err != nil {
+				t.Fatal(err)
+			}
+			leakedPID := startOrphanInWorktree(t, workDir)
+			gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable.git"))
+			mgr := NewRunManager(database, p, func() []pipeline.Step { return []pipeline.Step{&steps.PushStep{}} })
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := mgr.prepareRecoveredRun(context.Background(), run); err == nil || !strings.Contains(err.Error(), "disable_project_settings") {
+				t.Fatalf("recovery must fail closed at trusted config: %v", err)
+			}
+			layout, err := validatedWorktreeLayout(database, p, config.DefaultGlobalConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			recoverOnStartup(database, p, mgr, layout)
+			run, err = database.GetRun(run.ID)
+			if err != nil || run.Status != types.RunFailed || len(mgr.executors) != 0 {
+				t.Fatalf("trusted-config recovery did not fail closed: run=%+v err=%v", run, err)
+			}
+			assertProtectedWorktreePreserved(t, workDir, head)
+			if _, err := os.Stat(evidenceDir); !os.IsNotExist(err) {
+				t.Errorf("expired evidence of the terminal refused run survived: %v", err)
+			}
+			if !pidGoneWithin(leakedPID, 10*time.Second) {
+				t.Errorf("orphan %d in the terminal refused run survived the startup sweep", leakedPID)
+			}
+			_, evidenceErr := os.Stat(evidenceDir)
+			t.Logf("after failed trusted-config recovery: run=%s executors=%d orphan_alive=%t evidence_exists=%t", run.Status, len(mgr.executors), processIsAlive(leakedPID), !os.IsNotExist(evidenceErr))
+		})
+	}
+}
 
 // TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne is the daemon
 // wiring for the leaked-process class: a predecessor daemon that died mid-run

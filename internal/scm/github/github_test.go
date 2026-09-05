@@ -852,6 +852,29 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- open as draft"
+	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/draft --base main --repo test/repo --draft --title fix: draft --body-file -": {
+			stdout:    "https://github.com/test/repo/pull/7\n",
+			wantStdin: body,
+		},
+	}), nil, "", "test/repo", "", true)
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "7" {
+		t.Fatalf("CreatePR() PR = %+v, want #7", pr)
+	}
+}
+
 func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	t.Parallel()
 
@@ -938,6 +961,49 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
 		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
 	}
+}
+
+func TestSetPRBaseBranchTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{URL: prURL}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if selector := got[3]; selector != prURL {
+		t.Fatalf("edit selector = %q, want the known PR URL %q", selector, prURL)
+	}
+	if !containsArg(got, "--base") || !containsArg(got, "epic/feature") {
+		t.Fatalf("expected --base epic/feature, got %v", got)
+	}
+}
+
+func TestSetPRBaseBranchFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{}, "epic/feature"); err == nil {
+		t.Fatal("SetPRBaseBranch() with no PR identity: expected error, got nil")
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
@@ -1399,7 +1465,7 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
 				`]` + "\n",
 		},
-	}), nil, "", "parent/repo", "fork-owner/repo")
+	}), nil, "", "parent/repo", "fork-owner/repo", false)
 
 	pr, err := host.FindPR(context.Background(), branch, "main")
 	if err != nil {
@@ -1519,7 +1585,7 @@ func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
 				"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
 					stdout: tc.output + "\n",
 				},
-			}), nil, "", "parent/repo", "fork-owner/repo")
+			}), nil, "", "parent/repo", "fork-owner/repo", false)
 
 			pr, err := host.FindPR(context.Background(), branch, "main")
 			if err == nil {

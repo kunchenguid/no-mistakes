@@ -175,6 +175,49 @@ func TestEffectiveRepoConfig_NilPushedSafeDefaults(t *testing.T) {
 	}
 }
 
+func TestEffectiveRepoConfig_ProvidersUsePushedValues(t *testing.T) {
+	truthy := true
+	falsy := false
+	for _, tc := range []struct {
+		name    string
+		pushed  *bool
+		trusted *bool
+	}{
+		{name: "enabled", pushed: &truthy, trusted: &falsy},
+		{name: "disabled", pushed: &falsy, trusted: &truthy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pushed := &RepoConfig{Providers: ProvidersRaw{
+				GitHub:      GitHubProviderRaw{DraftPullRequests: tc.pushed},
+				GitLab:      GitLabProviderRaw{DraftPullRequests: tc.pushed},
+				Bitbucket:   BitbucketProviderRaw{DraftPullRequests: tc.pushed},
+				AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: tc.pushed},
+			}}
+			trusted := &RepoConfig{Providers: ProvidersRaw{
+				GitHub:      GitHubProviderRaw{DraftPullRequests: tc.trusted},
+				GitLab:      GitLabProviderRaw{DraftPullRequests: tc.trusted},
+				Bitbucket:   BitbucketProviderRaw{DraftPullRequests: tc.trusted},
+				AzureDevOps: AzureDevOpsProviderRaw{DraftPullRequests: tc.trusted},
+			}}
+
+			for _, allowRepoCommands := range []bool{false, true} {
+				got := EffectiveRepoConfig(pushed, trusted, allowRepoCommands)
+				providers := map[string]*bool{
+					"github":      got.Providers.GitHub.DraftPullRequests,
+					"gitlab":      got.Providers.GitLab.DraftPullRequests,
+					"bitbucket":   got.Providers.Bitbucket.DraftPullRequests,
+					"azuredevops": got.Providers.AzureDevOps.DraftPullRequests,
+				}
+				for provider, draft := range providers {
+					if draft == nil || *draft != *tc.pushed {
+						t.Errorf("allowRepoCommands=%v: providers.%s.draft_pull_requests = %v, want pushed %v", allowRepoCommands, provider, draft, *tc.pushed)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestLoadRepo_AllowRepoCommands proves the per-repo opt-in is read from the
 // repo config (the trusted default-branch copy), replacing the former coarse
 // global flag. It defaults false.

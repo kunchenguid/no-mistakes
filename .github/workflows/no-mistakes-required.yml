@@ -25,6 +25,12 @@ on:
 
 permissions:
   contents: read
+  # Lets require-no-mistakes read this PR's LIVE body/head SHA instead of the
+  # workflow's own cached event payload, which a job rerun replays verbatim
+  # from its original trigger. Without this the gate fails closed rather than
+  # certifying from the possibly-stale event payload. See
+  # .github/actions/require-no-mistakes/README.md.
+  pull-requests: read
 
 # GitHub concurrency groups retain at most one pending run, replacing older
 # pending runs even when cancel-in-progress is false. Give body-bearing events

@@ -18,6 +18,23 @@ It verifies, in order:
 Missing or unparseable attestation reports the no-mistakes `>= 1.46.0` floor;
 a missing signature reports the not-raised-via-no-mistakes guidance.
 
+Step 3's body/head SHA are read **live from the GitHub API** whenever a token
+and PR number are available, not from the workflow's cached event payload.
+A GitHub Actions job *rerun* replays the event payload archived at the run's
+*original* trigger rather than delivering a fresh one, so re-running an old,
+already-superseded failed run reproduces its stale verdict with a brand-new
+timestamp - which both GitHub's own required-check view and this repository's
+`collapseLatestByName` check-collapsing treat as the current state, pinning a
+stale FAILURE next to an already-green commit with no clean recovery short of
+a new SHA. See `verify.py`'s module docstring for the full incident this
+guards against. When a live lookup is required (no explicit `pr-body`/
+`pr-head-sha` input was forwarded - the default zero-input integration) and it
+is not possible (no `pull-requests: read`, no token, or the API call fails),
+the action **fails the whole gate closed** instead of falling back to the
+event payload: evaluating compliance against that cached payload is the exact
+staleness hole described above, so a lookup failure must never itself become
+a route to a passing verdict on stale data.
+
 ## Usage
 
 Consumers pin a release tag or a commit SHA. Never `@main`: `main` is editable
@@ -32,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read # required unless the caller forwards explicit pr-body/pr-head-sha: the gate fails closed without it
 
 jobs:
   check:
@@ -62,7 +80,8 @@ event payload. Pass the `pr-*` inputs only when driving it from another event.
 | `exempt-authors` | `""` | Newline- or comma-separated author logins that bypass the gate (automation accounts that cannot be routed through the pipeline). |
 | `exempt-bot-authors` | `false` | When true, every `*[bot]` author bypasses the gate. |
 | `exempt-head-branches` | `""` | Glob patterns; a matching head branch bypasses the gate, for structural automation branches such as `release-please--*`. |
-| `pr-body`, `pr-head-sha`, `pr-head-ref`, `pr-author`, `pr-number` | `""` | Override the corresponding event-payload fact. |
+| `pr-body`, `pr-head-sha`, `pr-head-ref`, `pr-author`, `pr-number` | `""` | Override the corresponding fact and skip the live lookup for `pr-body`/`pr-head-sha` (see below); always take precedence. |
+| `github-token` | `${{ github.token }}` | Token for the live body/head-SHA lookup. Forwarding the ambient token grants nothing extra; it can only use whatever the caller's own `permissions:` already allows. |
 
 Which steps are required is deliberately **not** an input. A caller configures
 who is exempt, never what the gate certifies, so no repository can weaken the
@@ -80,7 +99,13 @@ check while still reporting the same name.
 
 The action never checks out or executes repository code, so it is safe on
 `pull_request` runs from forks. Callers should keep `permissions: contents: read`
-and stay on `pull_request` rather than `pull_request_target`.
+and stay on `pull_request` rather than `pull_request_target`. The live lookup
+only ever reads (`GET /repos/{owner}/{repo}/pulls/{number}`) with whatever
+token the caller forwards; it never requests or requires write access. A
+caller that omits `pull-requests: read` and forwards no explicit `pr-body`/
+`pr-head-sha` fails the gate closed on every run - it never silently falls
+back to a less-protected mode - so grant the permission, or forward those
+explicit inputs, rather than relying on the default zero-input integration.
 
 An exemption is trusted outer-repository policy supplied by the caller's pinned
 workflow. It does not claim that no-mistakes ran: exempt PRs report
@@ -132,4 +157,4 @@ tag or a commit SHA, never `@main`.
 
 `require_no_mistakes_action_test.go` in the repository root executes
 `verify.py` the way a runner does and covers every verdict, the exemption
-surface, and the event-payload fallback.
+surface, and the live-lookup-failure fail-closed path.

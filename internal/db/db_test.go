@@ -75,10 +75,13 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
+	if err := d.sql.QueryRow("SELECT count(*) FROM recovery_archives").Scan(&count); err != nil {
+		t.Fatalf("recovery_archives table missing: %v", err)
+	}
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
-	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "launch_nonce", "launch_validation_generation", "launch_intent_digest", "launch_receipt_claimed_at"} {
+	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "launch_nonce", "launch_validation_generation", "launch_intent_digest", "launch_receipt_claimed_at", "pr_base_branch"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}
@@ -130,8 +133,12 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
 	}
-	if run.LaunchNonce != nil || run.LaunchValidationGeneration != nil || run.LaunchIntentDigest != nil || run.LaunchReceiptClaimedAt != nil {
+	if run.LaunchNonce != nil || run.LaunchValidationGeneration != nil || run.LaunchIntentDigest != nil || run.LaunchReceiptClaimedAt != nil || run.PRBaseBranch != nil {
 		t.Fatalf("legacy run gained a launch proof binding: %#v", run)
+	}
+	var archiveCount int
+	if err := d.sql.QueryRow("SELECT count(*) FROM recovery_archives").Scan(&archiveCount); err != nil || archiveCount != 0 {
+		t.Fatalf("recovery archive migration = count %d, error %v", archiveCount, err)
 	}
 	// Placement cannot be recovered for a row written before it was recorded,
 	// so it reads back as unknown rather than as a guessed directory; callers

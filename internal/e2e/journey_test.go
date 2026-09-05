@@ -394,10 +394,13 @@ func cleanReviewScenario(t *testing.T) string {
         - severity: warning
           description: "README missing new CLI flag"
       summary: "README needs updating"
-  - match: "branch: document-missing-findings"
+  - match: "report only what you could not resolve.\n\nContext:\n- branch: document-missing-findings"
     text: "documentation missing findings field"
     structured:
       summary: "docs status unavailable"
+      risk_level: low
+      risk_rationale: "documentation status only"
+      risk_scope: source-or-external
   - match: "branch: document-info"
     text: "documentation info finding"
     structured:
@@ -411,6 +414,7 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "README needs updating"
       risk_level: low
       risk_rationale: "documentation-only follow-up"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
@@ -430,6 +434,7 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      risk_scope: source-or-external
   - match: "branch: agent-edits"
     text: "agent edited a file"
     edits:
@@ -531,9 +536,11 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -1429,35 +1436,19 @@ func assertDocumentMissingFindingsRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-missing-findings", "document-missing-findings.txt", "document missing findings\n", "add document missing findings")
 	h.PushToGate("document-missing-findings")
-	run := waitForStepStatus(t, h, "document-missing-findings", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-findings", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-findings run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-findings run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing findings fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing findings fallback: %v", err)
-	}
-	if findings.Summary != "docs status unavailable" {
-		t.Fatalf("document missing findings summary = %q, want docs status unavailable", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "docs status unavailable" {
-		t.Fatalf("fallback documentation finding description = %q, want docs status unavailable", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-findings", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-findings run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: missing findings array") {
+		t.Fatalf("document step error = %q, want missing findings array", deref(documentStep.Error))
 	}
 }
 
@@ -1465,35 +1456,19 @@ func assertDocumentMalformedFindingRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-malformed-finding", "document-malformed-finding.txt", "document malformed finding\n", "add document malformed finding")
 	h.PushToGate("document-malformed-finding")
-	run := waitForStepStatus(t, h, "document-malformed-finding", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-malformed-finding", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-malformed-finding run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-malformed-finding run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document malformed finding fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document malformed finding fallback: %v", err)
-	}
-	if findings.Summary != "README needs updating" {
-		t.Fatalf("document malformed finding summary = %q, want README needs updating", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "README needs updating" {
-		t.Fatalf("fallback documentation finding description = %q, want README needs updating", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-malformed-finding", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-malformed-finding run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: finding 0 missing action") {
+		t.Fatalf("document step error = %q, want missing finding action", deref(documentStep.Error))
 	}
 }
 
@@ -1533,35 +1508,19 @@ func assertDocumentMissingSummaryRun(t *testing.T, h *Harness) {
 	t.Helper()
 	h.CommitChange("document-missing-summary", "document-missing-summary.txt", "document missing summary\n", "add document missing summary")
 	h.PushToGate("document-missing-summary")
-	run := waitForStepStatus(t, h, "document-missing-summary", types.StepDocument, types.StepStatusAwaitingApproval, 60*time.Second)
+	run := h.WaitForRun("document-missing-summary", 60*time.Second)
+	if run.Status != types.RunFailed {
+		t.Fatalf("document-missing-summary run status = %s, want failed", run.Status)
+	}
 	documentStep, ok := findStep(run.Steps, types.StepDocument)
 	if !ok {
 		t.Fatal("expected document step in document-missing-summary run")
 	}
-	if documentStep.FindingsJSON == nil {
-		t.Fatal("expected document missing summary fallback to record findings JSON")
+	if documentStep.Status != types.StepStatusFailed {
+		t.Fatalf("document step status = %s, want failed", documentStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*documentStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse document missing summary fallback: %v", err)
-	}
-	if findings.Summary != "agent returned no structured output" {
-		t.Fatalf("document missing summary fallback summary = %q, want agent returned no structured output", findings.Summary)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one fallback documentation finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("expected missing-summary fallback documentation finding to ask user, got action %q", item.Action)
-	}
-	if item.Description != "agent returned no structured output" {
-		t.Fatalf("missing-summary fallback description = %q, want agent returned no structured output", item.Description)
-	}
-	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
-	completed := h.WaitForRun("document-missing-summary", 60*time.Second)
-	if completed.Status != types.RunFailed {
-		t.Fatalf("document-missing-summary run status after abort = %s, want failed", completed.Status)
+	if documentStep.Error == nil || !strings.Contains(*documentStep.Error, "validate document analyzer findings: missing summary") {
+		t.Fatalf("document step error = %q, want missing summary", deref(documentStep.Error))
 	}
 }
 
@@ -1678,22 +1637,18 @@ func assertTestMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	h.CommitChange("test-malformed-structured-output", "test-malformed-structured-output.txt", "test malformed structured output\n", "add test malformed structured output")
 	h.PushToGate("test-malformed-structured-output")
 	run := h.WaitForRun("test-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("test-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("test-malformed-structured-output run status=%s error=%v, want failed: malformed analyzer output must not pass the Test step", run.Status, deref(run.Error))
 	}
 	testStep, ok := findStep(run.Steps, types.StepTest)
 	if !ok {
 		t.Fatal("expected test step in test-malformed-structured-output run")
 	}
-	if testStep.FindingsJSON == nil {
-		t.Fatal("expected malformed test structured output fallback to record findings JSON")
+	if testStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected test step to fail on malformed analyzer output, got %s", testStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed test output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "tests found some issues") {
-		t.Fatalf("malformed test output fallback summary = %q, want tests found some issues", findings.Summary)
+	if testStep.Error == nil || !strings.Contains(*testStep.Error, "validate test analyzer findings") {
+		t.Fatalf("expected test step error to name the analyzer output contract, got %q", deref(testStep.Error))
 	}
 }
 
@@ -1702,22 +1657,18 @@ func assertLintMalformedStructuredOutputRun(t *testing.T, h *Harness) {
 	h.CommitChange("lint-malformed-structured-output", "lint-malformed-structured-output.generated.go", "lint malformed structured output\n", "add lint malformed structured output")
 	h.PushToGate("lint-malformed-structured-output")
 	run := h.WaitForRun("lint-malformed-structured-output", 60*time.Second)
-	if run.Status != types.RunCompleted {
-		t.Fatalf("lint-malformed-structured-output run status=%s error=%v", run.Status, deref(run.Error))
+	if run.Status != types.RunFailed {
+		t.Fatalf("lint-malformed-structured-output run status=%s error=%v, want failed: malformed analyzer output must not pass the Lint step", run.Status, deref(run.Error))
 	}
 	lintStep, ok := findStep(run.Steps, types.StepLint)
 	if !ok {
 		t.Fatal("expected lint step in lint-malformed-structured-output run")
 	}
-	if lintStep.FindingsJSON == nil {
-		t.Fatal("expected malformed lint structured output fallback to record findings JSON")
+	if lintStep.Status != types.StepStatusFailed {
+		t.Fatalf("expected lint step to fail on malformed analyzer output, got %s", lintStep.Status)
 	}
-	findings, err := types.ParseFindingsJSON(*lintStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse malformed lint output fallback findings: %v", err)
-	}
-	if !strings.Contains(findings.Summary, "lint found some issues") {
-		t.Fatalf("malformed lint output fallback summary = %q, want lint found some issues", findings.Summary)
+	if lintStep.Error == nil || !strings.Contains(*lintStep.Error, "validate lint analyzer findings") {
+		t.Fatalf("expected lint step error to name the analyzer output contract, got %q", deref(lintStep.Error))
 	}
 }
 

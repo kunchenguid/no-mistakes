@@ -15,11 +15,13 @@ import (
 type Host struct {
 	client *Client
 	repo   RepoRef
+	draft  bool // open created PRs as drafts ("draft": true in the create body)
 }
 
 // NewHost builds a Host from an API client and a parsed repository reference.
-func NewHost(client *Client, repo RepoRef) *Host {
-	return &Host{client: client, repo: repo}
+// When draft is true, created PRs are opened as drafts.
+func NewHost(client *Client, repo RepoRef, draft bool) *Host {
+	return &Host{client: client, repo: repo, draft: draft}
 }
 
 func (h *Host) Provider() scm.Provider { return scm.ProviderBitbucket }
@@ -49,7 +51,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	pr, err := h.client.CreatePR(ctx, h.repo, branch, base, content.Title, content.Body)
+	pr, err := h.client.CreatePR(ctx, h.repo, branch, base, content.Title, content.Body, h.draft)
 	if err != nil {
 		return nil, err
 	}

@@ -116,6 +116,8 @@ no-mistakes eval run \
 
 A candidate is `agent,model=<model>[,effort=<level>]`. The fields are the same harness-neutral knobs [`agent_config`](/no-mistakes/reference/global-config/#agent_config) exposes to the pipeline, and they resolve through the same per-harness mapping, so a candidate can express exactly what a real run can. `model` is mandatory - a comparison that inherited whatever default the harness happened to resolve would not be reproducible - while `effort` is optional and one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
 
+When a harness reports the model it served, replay verifies that identity against the requested candidate. Provider-qualified identities are normalized across adapter reporting shapes: for example, Pi may report model `grok-4.6` and provider `xai` for a candidate requested as `xai/grok-4.6`. That is a match; a different model or provider fails the replay. Keep the provider-qualified candidate rather than reducing it to a bare-model workaround.
+
 Effort is part of the candidate identity, so `codex,model=gpt-5.4,effort=low` and `codex,model=gpt-5.4,effort=high` are reported as two candidates rather than collapsing into one.
 
 The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
@@ -135,7 +137,7 @@ The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F
 
 The replay never inherits this machine's own harness pins: capture strips `agent`, `agent_args_override`, and `agent_config` from the configuration it freezes, so the candidate is the only thing that decides what the harness runs as.
 
-The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+The earlier `agent+model` candidate spelling was replaced by the key=value form and is no longer accepted; evaluations recorded under it keep their old candidate string and are reported as their own group. Replays are intentionally isolated from the production `NM_HOME` and restore each case into a throwaway worktree; they do not contact the shared no-mistakes daemon. The selected agent uses the operator's normal local harness settings and sign-in (the same HOME-based credential discovery a pipeline run uses) and still communicates with its configured model provider in the normal way. That is not a security sandbox: a candidate may read and write ordinary user-level agent files under HOME, including credential refresh and caches. Review replay stays session-free.
 
 The command streams one scored progress line per replay as it completes, then renders the session's score summary in the same dashboard style as `eval sets` and `stats`, followed by the session identifier. Re-running the same `eval run` is additive by design - each invocation records a fresh measurement session - but it is safe: identical inputs land in the same cohort so the report aggregates the samples instead of fragmenting into a new comparison group, while captured labels and manifests remain unchanged.
 

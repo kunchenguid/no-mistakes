@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -27,6 +28,12 @@ type Host struct {
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
 	forkOwner    string // fork owner for cross-repository PR heads
+	draft        bool   // open created PRs as drafts (gh pr create --draft)
+	// assetHTTP and assetUploadPrefix override the unofficial user-attachments
+	// upload transport in tests. Production leaves both nil/empty and uses
+	// http.DefaultClient against uploads.github.com (or uploads.<ghec-host>).
+	assetHTTP         *http.Client
+	assetUploadPrefix string
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -51,10 +58,11 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 // NewWithFork builds a Host that opens PRs on repo using forkRepo as the head
 // repository owner. forkRepo is an "owner/name" slug; only the owner is needed
 // because gh pr create expects --head <owner>:<branch>. host is optional; see
-// New for its role in scoping the auth check.
-func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string) *Host {
+// New for its role in scoping the auth check. draft opens created PRs as drafts.
+func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string, draft bool) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	h.draft = draft
 	return h
 }
 
@@ -322,6 +330,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--head", h.headRef(branch),
 		"--base", base,
 	}, h.repoArgs()...)
+	if h.draft {
+		args = append(args, "--draft")
+	}
 	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
@@ -376,6 +387,20 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 		return scm.PRContent{}, fmt.Errorf("parse gh pr view: %w", err)
 	}
 	return scm.PRContent{Title: parsed.Title, Body: parsed.Body}, nil
+}
+
+func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
+	args = append(args, "--base", baseBranch)
+	cmd := h.cmd(ctx, "gh", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh pr edit --base: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {

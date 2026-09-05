@@ -1,0 +1,13 @@
+diff --git a/profile/http.go b/profile/http.go
+index 1111111..2222222 100644
+--- a/profile/http.go
++++ b/profile/http.go
+@@ -2,0 +2,8 @@ package profile
++type publicProfile struct {
++	ID          string `json:"id"`
++	DisplayName string `json:"display_name"`
++}
++
++func publicView(p Profile) publicProfile {
++	return publicProfile{ID: p.ID, DisplayName: p.DisplayName}
++}

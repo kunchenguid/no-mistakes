@@ -117,6 +117,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if (launchNonce == "") != (validationGeneration == "") {
 				return fmt.Errorf("launch_nonce and validation_generation push options must be supplied together")
 			}
+			prBaseBranch, err := parsePRBaseBranchPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -143,6 +147,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				Intent:               intent,
 				LaunchNonce:          launchNonce,
 				ValidationGeneration: validationGeneration,
+				PRBaseBranch:         prBaseBranch,
 			}, &result)
 		},
 	}
@@ -257,6 +262,9 @@ func parseOpaquePushOptions(options []string, prefix, label string) (string, err
 	return value, nil
 }
 
+// prBaseBranchPushOptionPrefix carries a per-run PR base branch through a git push.
+const prBaseBranchPushOptionPrefix = "no-mistakes.pr-base-branch="
+
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
 func formatIntentPushOption(intent string) string {
@@ -282,6 +290,33 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// formatPRBaseBranchPushOption encodes a per-run PR base branch as a push
+// option, or returns "" when unset.
+func formatPRBaseBranchPushOption(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return ""
+	}
+	return prBaseBranchPushOptionPrefix + branch
+}
+
+// parsePRBaseBranchPushOptions extracts the per-run PR base branch push option,
+// if any. The last occurrence wins.
+func parsePRBaseBranchPushOptions(options []string) (string, error) {
+	branch := ""
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, prBaseBranchPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("pr base branch push option must not be empty")
+		}
+		branch = value
+	}
+	return branch, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

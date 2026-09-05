@@ -30,8 +30,9 @@ type evidenceLinks struct {
 // publishRunEvidence copies this run's evidence directory onto the repository's
 // orphan evidence branch and returns the links the PR body should use. It
 // returns nil whenever evidence is not opted in, there is nothing to publish,
-// or publication failed - in which case artifacts keep rendering as local
-// paths rather than as links that would not resolve.
+// or publication failed. The renderer then omits evidence-branch links that
+// would not resolve; it may still use an uploaded media attachment, otherwise
+// the artifact keeps its local-path rendering.
 func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	if sctx == nil || sctx.Config == nil || sctx.Repo == nil || sctx.Run == nil || !sctx.Config.Test.Evidence.StoreInRepo {
 		return nil

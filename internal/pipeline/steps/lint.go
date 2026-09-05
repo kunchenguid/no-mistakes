@@ -70,7 +70,7 @@ Previous lint findings to address:
 ` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		}
 		result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
-			Prompt:     prompt,
+			Prompt:     fixerPrompt(prompt),
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
 			OnChunk:    sctx.LogChunk,
@@ -81,11 +81,11 @@ Previous lint findings to address:
 		}
 
 		var findings Findings
-		if result.Output != nil {
-			if err := json.Unmarshal(result.Output, &findings); err != nil {
-				sctx.Log("could not parse structured output, using text response")
-				findings = Findings{Summary: result.Text}
-			}
+		if result.Output == nil {
+			return nil, errors.New("lint analyzer returned no structured findings")
+		}
+		if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
+			return nil, fmt.Errorf("validate lint analyzer findings: %w", err)
 		}
 		summary, err := extractCommitSummary(result)
 		if err != nil {
@@ -189,11 +189,7 @@ Previous lint findings to address:
 func lintOutcomeFromHousekeeping(sctx *pipeline.StepContext, stash pipeline.HousekeepingLintResult) (*pipeline.StepOutcome, error) {
 	findings, err := types.ParseFindingsJSON(stash.FindingsJSON)
 	if err != nil {
-		// A malformed stash means the combined result cannot be trusted;
-		// this should be unreachable (the document step marshalled it), but
-		// fail safe by parking for a human rather than passing silently.
-		sctx.Log("could not parse combined housekeeping lint result, requiring approval")
-		return documentApprovalOutcome("combined housekeeping lint result unreadable"), nil
+		return nil, fmt.Errorf("validate combined housekeeping lint result: %w", err)
 	}
 	sctx.Log(fmt.Sprintf("lint assessed in the combined document+lint housekeeping pass: %d unresolved items", len(findings.Items)))
 	return &pipeline.StepOutcome{

@@ -182,6 +182,8 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	repo, headSHA := setupTestGitRepo(t, p, d, "proof-push-repo")
 	const generation = "generation-push-001"
 	const intent = "opaque push intent"
+	gitCmd(t, repo.WorkingPath, "branch", "review/base")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "review/base:refs/heads/review/base")
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -193,6 +195,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
 		Old: "0000000000000000000000000000000000000000", New: headSHA,
 		Intent: intent, LaunchNonce: "push-nonce", ValidationGeneration: generation,
+		PRBaseBranch: " review/base ",
 	}, &pushed); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +204,28 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	}
 	if stored, err := d.GetRun(pushed.RunID); err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("push receipt claim state = %#v, err=%v", stored, err)
+	}
+	var freshMismatch ipc.StartFreshRunResult
+	err = client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
+		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
+		LaunchNonce: "push-nonce", ValidationGeneration: generation, PRBaseBranch: "other/base",
+	}, &freshMismatch)
+	if err == nil || !strings.Contains(err.Error(), "different pr base branch") {
+		t.Fatalf("mismatched fresh launch err = %v, want base mismatch", err)
+	}
+
+	var mismatched ipc.ClaimLaunchReceiptResult
+	err = client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
+		RepoID: repo.ID, Branch: "main", LaunchNonce: "push-nonce",
+		SubmittedHeadSHA: headSHA, ValidationGeneration: generation, IntentDigest: digestIntent(intent),
+		PRBaseBranch: "other/base",
+	}, &mismatched)
+	if err == nil || !strings.Contains(err.Error(), "different pr base branch") {
+		t.Fatalf("mismatched base claim err = %v, want base mismatch", err)
+	}
+	stored, err := d.GetRun(pushed.RunID)
+	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
+		t.Fatalf("mismatched base claim consumed first receipt: run=%#v err=%v", stored, err)
 	}
 
 	const callers = 4
@@ -247,11 +272,16 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	if err := client.Call(ipc.MethodStartFreshRun, &ipc.StartFreshRunParams{
 		RepoID: repo.ID, Branch: "main", HeadSHA: headSHA, Intent: intent,
 		LaunchNonce: "push-nonce", ValidationGeneration: generation,
+		PRBaseBranch: " review/base ",
 	}, &replay); err != nil {
 		t.Fatal(err)
 	}
 	if replay.Receipt.HeadSHA != headSHA || replay.Receipt.SubmittedHeadSHA != headSHA || replay.Receipt.Disposition != "reused" {
 		t.Fatalf("immutable replay receipt = %#v, want submitted head %q", replay.Receipt, headSHA)
+	}
+	stored, err = d.GetRun(pushed.RunID)
+	if err != nil || stored == nil || stored.PRBaseBranch == nil || *stored.PRBaseBranch != "review/base" {
+		t.Fatalf("persisted proof base branch = %#v, err=%v", stored, err)
 	}
 }
 
@@ -810,7 +840,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		Summary: "newer unrelated requirements",
 		Source:  db.RunIntentSourceAgent,
 		Score:   1,
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,6 +863,152 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+}
+
+func TestRerunInheritsPRBaseBranchFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "pr-base-rerun-repo")
+	workDir := repo.WorkingPath
+	gitCmd(t, workDir, "checkout", "-b", "epic/feature")
+	if err := os.WriteFile(filepath.Join(workDir, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", "epic.txt")
+	gitCmd(t, workDir, "commit", "-m", "epic")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/epic/feature")
+	gitCmd(t, workDir, "checkout", "main")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:         p.RepoDir("pr-base-rerun-repo"),
+		Ref:          "refs/heads/main",
+		Old:          "0000000000000000000000000000000000000000",
+		New:          headSHA,
+		PRBaseBranch: "epic/feature",
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun := waitForRunTerminalState(t, d, first.RunID)
+	if firstRun.PRBaseBranch == nil || *firstRun.PRBaseBranch != "epic/feature" {
+		t.Fatalf("first run PRBaseBranch = %#v, want epic/feature", firstRun.PRBaseBranch)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "pr-base-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRBaseBranch == nil || *got.PRBaseBranch != "epic/feature" {
+		t.Fatalf("rerun PRBaseBranch = %#v, want inherited epic/feature", got.PRBaseBranch)
+	}
+}
+
+func TestRerunInheritsPRURLFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "pr-url-rerun-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("pr-url-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+	prURL := "https://github.com/test/repo/pull/42"
+	if err := d.UpdateRunPRURL(first.RunID, prURL); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "pr-url-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL == nil || *got.PRURL != prURL {
+		t.Fatalf("rerun PRURL = %#v, want inherited %s", got.PRURL, prURL)
+	}
+}
+
+func TestRerunDoesNotInheritClosedPRURL(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "closed-pr-url-rerun-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("closed-pr-url-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+	if err := d.UpdateRunPRURL(first.RunID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRState(first.RunID, "closed"); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "closed-pr-url-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.PRURL != nil && *got.PRURL != "" {
+		t.Fatalf("rerun PRURL = %#v, want no inherit of a closed PR", got.PRURL)
 	}
 }
 

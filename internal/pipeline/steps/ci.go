@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -155,6 +156,57 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	}
 }
 
+// VerifyApprovalOverride implements pipeline.ApprovalOverrideVerifier. It
+// re-polls the live checks once, synchronously, at the moment a human answers
+// ActionApprove on a CI gate raised by ciFailureOutcome, so an approval over
+// checks that are not genuinely all green can never be silently reported as a
+// plain "outcome=passed" - see the interface doc for the incident this exists
+// for. Resolution uses allChecksPassed - the same trusted all-green semantics
+// the CI step's own polling loop uses (see its allChecksPassed callsite) -
+// rather than the narrower !hasFailingChecks, because an empty check list or
+// a check still pending/cancelled/otherwise unresolved is not evidence of a
+// clean pass either; !hasFailingChecks previously treated all of those as
+// clean. Read-only: unlike Execute and ReconcileApprovalGate, it never fixes,
+// reruns, or pushes anything, and it never blocks the approval itself - it
+// only decides how the resulting completion is recorded.
+func (s *CIStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
+	ctx := sctx.Ctx
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	provider := resolvedProvider(sctx)
+	host, skipReason := buildHost(sctx, provider)
+	if host == nil {
+		return fmt.Sprintf("could not verify live CI state: %s", skipReason), nil
+	}
+	if err := host.Available(ctx); err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+
+	prURL := ""
+	if sctx.Run.PRURL != nil {
+		prURL = strings.TrimSpace(*sctx.Run.PRURL)
+	}
+	if prURL == "" {
+		return "could not verify live CI state: run has no PR URL", nil
+	}
+	prNumber, err := scm.ExtractPRNumber(prURL)
+	if err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: prNumber, URL: prURL})
+	if err != nil {
+		return fmt.Sprintf("could not verify live CI state: %v", err), nil
+	}
+	if allChecksPassed(checks) {
+		return "", nil
+	}
+	if len(checks) == 0 {
+		return fmt.Sprintf("live checks for %s: no checks reported", prURL), nil
+	}
+	return fmt.Sprintf("live checks for %s not all passed: %s", prURL, strings.Join(unresolvedCheckNames(checks), ", ")), nil
+}
+
 func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedHead string) error {
 	if !host.Capabilities().MergedProof {
 		return nil
@@ -179,18 +231,42 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 	return nil
 }
 
-func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
-		return nil, err
-	}
+func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
+	refusalFindings := ""
 	if sctx.StepResultID != "" {
 		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
 		if err != nil {
-			return nil, fmt.Errorf("restore CI auto-fix attempts: %w", err)
+			return nil, fmt.Errorf("restore CI auto-fix attempts and refusal: %w", err)
 		}
 		if stepResult != nil {
 			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
+			if stepResult.FindingsJSON != nil {
+				refusalFindings = *stepResult.FindingsJSON
+			}
 		}
+	}
+	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
+	manualFixAttempted := retryRefusal
+	defer func() {
+		if !retryRefusal {
+			return
+		}
+		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
+			outcome, err = refusal, nil
+			return
+		}
+		findings, _ := types.ParseFindingsJSON(refusalFindings)
+		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
+		if err != nil {
+			findings.Summary += ": " + safeurl.RedactText(err.Error())
+		} else if outcome != nil && outcome.SkipReason != "" {
+			findings.Summary += ": " + safeurl.RedactText(outcome.SkipReason)
+		}
+		encoded, _ := types.MarshalFindingsJSON(findings)
+		outcome, err = &pipeline.StepOutcome{NeedsApproval: true, Findings: encoded}, nil
+	}()
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
 	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the
@@ -204,11 +280,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
 	}
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
 
 	// Get PR URL from run record
@@ -226,7 +302,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if prURL == "" {
 		sctx.Log("no PR URL found, skipping CI")
-		return &pipeline.StepOutcome{Skipped: true}, nil
+		return &pipeline.StepOutcome{Skipped: true, SkipReason: "no PR URL found"}, nil
 	}
 
 	prNumber, err := scm.ExtractPRNumber(prURL)
@@ -234,6 +310,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	if retryRefusal {
+		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+			return nil, err
+		}
+		repair, err := s.retryProtectedPathRepair(sctx)
+		if err != nil {
+			return nil, err
+		}
+		retryRefusal = false
+		if repair.Revalidate {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+	}
 	baseBranch := effectivePRBaseBranch(sctx)
 	// A resumed run may have a different trusted configuration than the run
 	// that created this PR. Re-read the forge record without a base filter so
@@ -282,7 +371,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	// poll-interval and grace-period pacing are unaffected by re-arming.
 	timeoutAnchor := started
 	lastBaseTip := ""
-	manualFixAttempted := false
 	mergeabilityBlockedReason := ""
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
@@ -579,6 +667,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+						return outcome, nil
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
@@ -625,6 +716,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+						return outcome, nil
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}

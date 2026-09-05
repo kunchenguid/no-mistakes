@@ -161,6 +161,22 @@ func TestSyncConfirmationEscapeNeverApplies(t *testing.T) {
 	}
 }
 
+func TestMissingPreservedHeadStatusShowsKeepLocalRecoveryCommand(t *testing.T) {
+	state := branchsync.State{
+		State:  branchsync.StatePipelineOwned,
+		Safety: "blocked_recover_preserved_head_missing",
+		NextAction: &branchsync.NextAction{
+			Code:    "recover_custody",
+			Command: "no-mistakes axi sync --recover --keep-local",
+		},
+	}
+
+	view := stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "no-mistakes axi sync --recover --keep-local") {
+		t.Fatalf("missing-head status did not show its recovery command:\n%s", view)
+	}
+}
+
 // TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService covers
 // the TUI half of the guarded custody recovery: a terminal pre-push
 // pipeline_owned state renders the recovery offer, `u` opens an explicit
@@ -184,7 +200,10 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	}
 
 	recoverCalls := 0
-	m.syncRecover = func() branchsync.State {
+	m.syncRecover = func(keepLocal bool) branchsync.State {
+		if keepLocal {
+			t.Fatal("ordinary recovery unexpectedly selected keep-local")
+		}
 		recoverCalls++
 		recovered := stranded
 		recovered.State = branchsync.StateCustodyReturned
@@ -202,7 +221,7 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 		t.Fatalf("u must open confirmation without acting: confirm=%v calls=%d", m.recoverConfirm, recoverCalls)
 	}
 	plain := stripANSI(m.View())
-	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter recover", "--keep-local", "rerun"} {
+	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter recover", "--keep-local"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("recover confirmation missing %q:\n%s", want, plain)
 		}
@@ -228,6 +247,64 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	}
 }
 
+func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-archive", Branch: "feature", Status: types.RunCancelled}
+	m := NewModel("socket", nil, run)
+	stranded := branchsync.State{
+		State: branchsync.StatePipelineOwned, Relation: branchsync.RelationDiverged, Safety: "blocked_pipeline_owned_recoverable",
+		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{RunID: run.ID, Status: "cancelled", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+		Recovery: &branchsync.RecoveryEvidence{
+			Source: "bound_archive", RepositoryID: "repo-1", RunID: run.ID, Branch: "feature",
+			RequiredHead: strings.Repeat("a", 40), PreservedHead: strings.Repeat("c", 40),
+			ArchiveRef: "refs/heads/archive/run-archive", KeepLocal: true, Proof: "verified",
+		},
+		NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"},
+	}
+	m.branchSync = &stranded
+	called := false
+	m.syncRecover = func(keepLocal bool) branchsync.State {
+		called = true
+		if !keepLocal {
+			t.Fatal("archive recovery did not use keep-local")
+		}
+		recovered := stranded
+		recovered.State = branchsync.StateSynchronized
+		recovered.Safety = "already_synchronized"
+		recovered.Recovered = true
+		recovered.Changed = false
+		return recovered
+	}
+
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"verified archive", "exact required local head", "u recover custody"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("archive status missing %q:\n%s", want, view)
+		}
+	}
+	next, cmd := m.handleKey(keyMsg("u"))
+	m = next.(Model)
+	if cmd != nil || !m.recoverConfirm {
+		t.Fatal("archive recovery did not open confirmation")
+	}
+	confirmation := stripANSI(m.View())
+	for _, want := range []string{"never selects or replays the archive", stranded.Recovery.ArchiveRef, stranded.Recovery.RequiredHead} {
+		if !strings.Contains(confirmation, want) {
+			t.Errorf("archive confirmation missing %q:\n%s", want, confirmation)
+		}
+	}
+	next, cmd = m.handleKey(keyMsg("enter"))
+	m = next.(Model)
+	if cmd == nil || called {
+		t.Fatal("archive recovery did not wait for its command")
+	}
+	next, _ = m.Update(cmd())
+	m = next.(Model)
+	if !called || !m.branchSync.Recovered || m.branchSync.Changed {
+		t.Fatalf("archive recovery result = %#v", m.branchSync)
+	}
+}
+
 // TestActivePipelineOwnedStateOffersNoRecoveryAction pins that the recovery
 // affordance never appears while the owning run is still active.
 func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
@@ -238,7 +315,7 @@ func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
 		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
 		Pipeline: branchsync.PipelineState{RunID: "run-1", Status: "running", Phase: "pre_push"},
 	}
-	m.syncRecover = func() branchsync.State {
+	m.syncRecover = func(bool) branchsync.State {
 		t.Fatal("recover service must not be reachable for an active run")
 		return branchsync.State{}
 	}

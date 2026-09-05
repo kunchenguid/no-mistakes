@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +95,31 @@ type actionRun struct {
 	exemptBots  string
 	exemptRefs  string
 	eventPath   string
+	githubToken string // set (with githubAPI/githubRepo) to attempt the live PR lookup; when body/headSHA are also empty, an unset or failing live lookup now fails the gate closed rather than falling back to the event payload
+	githubAPI   string // GITHUB_API_URL override, normally a local httptest.Server for tests
+	githubRepo  string // GITHUB_REPOSITORY, e.g. "owner/name"
+}
+
+// filterEnv returns env with any entry whose key is in drop removed, so a
+// caller can then append its own deterministic values for those keys without
+// depending on whichever match exec.Cmd's environment lookup happens to use
+// when a key appears twice.
+func filterEnv(env []string, drop ...string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		keep := true
+		for _, d := range drop {
+			if key == d {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 type actionResult struct {
@@ -109,7 +137,16 @@ func runRequireAction(t *testing.T, run actionRun) actionResult {
 	}
 
 	cmd := exec.Command(python, requireActionScript)
-	cmd.Env = append(os.Environ(),
+	// Strip the three ambient live-lookup vars from the inherited environment
+	// before setting our own: this test binary itself normally runs inside a
+	// real GitHub Actions job, which already has a real GITHUB_TOKEN/
+	// GITHUB_REPOSITORY/GITHUB_API_URL set. Without stripping them, a test case
+	// that means to exercise the event-payload fallback (empty githubToken)
+	// would instead silently attempt a live call against the real GitHub API
+	// using this job's own token - flaky, unintended network access, and not
+	// what the test asked for. Explicitly setting all three (even to "") makes
+	// every case deterministic regardless of the ambient CI environment.
+	cmd.Env = append(filterEnv(os.Environ(), "GITHUB_TOKEN", "GITHUB_API_URL", "GITHUB_REPOSITORY"),
 		"PR_BODY="+run.body,
 		"PR_HEAD_SHA="+run.headSHA,
 		"PR_HEAD_REF="+run.headRef,
@@ -120,6 +157,9 @@ func runRequireAction(t *testing.T, run actionRun) actionResult {
 		"NM_EXEMPT_HEAD_BRANCHES="+run.exemptRefs,
 		"GITHUB_EVENT_PATH="+run.eventPath,
 		"GITHUB_OUTPUT="+outputFile,
+		"GITHUB_TOKEN="+run.githubToken,
+		"GITHUB_API_URL="+run.githubAPI,
+		"GITHUB_REPOSITORY="+run.githubRepo,
 	)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -409,28 +449,262 @@ func TestRequireActionReadsTheEventPayloadWhenInputsAreOmitted(t *testing.T) {
 	if err := os.WriteFile(eventPath, []byte(payload), 0o644); err != nil {
 		t.Fatalf("write event payload: %v", err)
 	}
+	// The live lookup is the only source once no explicit pr-body/pr-head-sha
+	// is forwarded (see TestRequireActionFailsClosedWhenLiveLookupUnavailable
+	// for the case where it is not configured at all) - so this test serves
+	// the event payload's OWN current values back from the stub live API,
+	// proving the compliant read and the head-bind check both still apply on
+	// the live path exactly as they did on the payload path before this fix.
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, compliant, requiredWorkflowTestHeadSHA)
 
-	got := runRequireAction(t, actionRun{eventPath: eventPath})
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
 	if got.conclusion != "success" {
 		t.Fatalf("conclusion = %q, want success\n%s", got.conclusion, got.output)
 	}
 	if !strings.Contains(got.output, "PR #812") {
 		t.Errorf("output does not name the PR from the event payload:\n%s", got.output)
 	}
+}
 
-	// The same payload with a head the attestation does not cover must fail, so
-	// the payload path is genuinely bound and not merely tolerated.
-	moved := strings.Replace(payload, requiredWorkflowTestHeadSHA, "ffffffffffffffffffffffffffffffffffffffff", 1)
-	movedPath := filepath.Join(t.TempDir(), "event.json")
-	if err := os.WriteFile(movedPath, []byte(moved), 0o644); err != nil {
-		t.Fatalf("write moved event payload: %v", err)
-	}
-	got = runRequireAction(t, actionRun{eventPath: movedPath})
+// TestRequireActionLiveLookupHeadBindStillApplies covers the head-bind check
+// on the live-lookup path specifically: the live PR body is otherwise
+// compliant, but its live head SHA has moved past what the attestation
+// covers (a push landed after the attestation was written, before this job
+// polled). The gate must still fail exactly as it does on the explicit-input
+// and payload-fallback paths - the live source does not get a weaker check.
+func TestRequireActionLiveLookupHeadBindStillApplies(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
+	movedHead := "ffffffffffffffffffffffffffffffffffffffff"
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, compliant, movedHead)
+
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
 	if got.conclusion != "failure" {
-		t.Fatalf("conclusion = %q, want failure after the head moved\n%s", got.conclusion, got.output)
+		t.Fatalf("conclusion = %q, want failure after the live head moved past the attestation\n%s", got.conclusion, got.output)
 	}
 	if !strings.Contains(got.output, "does not match") {
 		t.Errorf("output does not report the head_sha bind failure:\n%s", got.output)
+	}
+}
+
+// stubPullsAPI serves exactly one GET /repos/{repo}/pulls/{number} response,
+// standing in for the real GitHub API in the live-lookup tests below. It
+// fails the test if called for any other path or method, or more than once.
+func stubPullsAPI(t *testing.T, repo, number string, status int, body string, headSHA string) *httptest.Server {
+	t.Helper()
+	wantPath := "/repos/" + repo + "/pulls/" + number
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if called {
+			t.Errorf("live PR lookup called more than once")
+		}
+		called = true
+		if r.Method != http.MethodGet || r.URL.Path != wantPath {
+			t.Errorf("live PR lookup request = %s %s, want GET %s", r.Method, r.URL.Path, wantPath)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("live PR lookup Authorization = %q, want Bearer test-token", got)
+		}
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			payload := map[string]any{
+				"body": body,
+				"head": map[string]string{"sha": headSHA},
+			}
+			if err := json.NewEncoder(w).Encode(payload); err != nil {
+				t.Errorf("encode stub PR payload: %v", err)
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// writeEventPayload writes a pull_request event payload fixture matching the
+// shape GitHub actually delivers, so the archived-payload tests below exercise
+// the exact fields Facts.__init__ reads.
+func writeEventPayload(t *testing.T, number int, body, headSHA string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "event.json")
+	payload := fmt.Sprintf(
+		`{"pull_request":{"number":%d,"body":%s,"head":{"sha":%q,"ref":"fm/example"},"user":{"login":"kunchenguid"}}}`,
+		number, mustJSONString(t, body), headSHA,
+	)
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write event payload: %v", err)
+	}
+	return path
+}
+
+// TestRequireActionLiveLookupOverridesStaleArchivedEvent reproduces the exact
+// incident this fix exists for: a GitHub Actions job RERUN replays the event
+// payload archived at its ORIGINAL trigger, which can carry an attestation
+// bound to an already-superseded head. Without a live lookup this reruns a
+// stale FAILURE with a fresh timestamp on top of an otherwise-green commit
+// (see verify.py's module docstring). The live PR body/head SHA must win.
+func TestRequireActionLiveLookupOverridesStaleArchivedEvent(t *testing.T) {
+	staleHead := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	currentHead := requiredWorkflowTestHeadSHA
+	staleBody := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	staleBody = strings.Replace(staleBody, currentHead, staleHead, 1)
+	currentBody := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+
+	eventPath := writeEventPayload(t, 812, staleBody, currentHead)
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, currentBody, currentHead)
+
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
+	if got.conclusion != "success" {
+		t.Fatalf("conclusion = %q, want success (live data is current, only the archived event is stale)\n%s", got.conclusion, got.output)
+	}
+	if got.outputs["compliant"] != "true" {
+		t.Errorf("compliant output = %q, want true", got.outputs["compliant"])
+	}
+	if strings.Contains(got.output, "Could not verify") {
+		t.Errorf("output claims the live lookup failed, but it should have succeeded:\n%s", got.output)
+	}
+}
+
+// TestRequireActionLiveLookupGovernsFailureToo proves the live PR state
+// governs the verdict in the failing direction as well, not merely when it
+// happens to agree with a compliant archived payload: the archived event
+// shows a fully compliant PR, but the PR's live body no longer carries the
+// no-mistakes signature at all (e.g. edited between the original event and a
+// later rerun). The live state must win and the check must fail.
+func TestRequireActionLiveLookupGovernsFailureToo(t *testing.T) {
+	currentHead := requiredWorkflowTestHeadSHA
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeEventPayload(t, 812, compliant, currentHead)
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusOK, "an edited, non-compliant body", currentHead)
+
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
+	if got.conclusion != "failure" {
+		t.Fatalf("conclusion = %q, want failure (live body is non-compliant even though the archived event looked fine)\n%s", got.conclusion, got.output)
+	}
+	if !strings.Contains(got.output, "This PR was not raised through no-mistakes.") {
+		t.Errorf("output does not report the live non-compliant body:\n%s", got.output)
+	}
+}
+
+// TestRequireActionFailsClosedWhenLiveLookupUnavailable is the P1 regression
+// for the upstream review of PR 923 ("lookup failure restores stale
+// verdicts"): before this fix, no token (or an unreachable API) fell back to
+// evaluating the workflow's own cached event payload and still emitted a
+// compliance verdict from it - exactly the staleness hole a rerun of an old
+// job could exploit (see the module docstring). It must instead fail the
+// whole gate closed, with no compliance verdict at all, and a clear error
+// naming both remediations (grant pull-requests: read, or forward explicit
+// pr-body/pr-head-sha).
+func TestRequireActionFailsClosedWhenLiveLookupUnavailable(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
+
+	cases := []struct {
+		name string
+		run  actionRun
+	}{
+		{"no token", actionRun{eventPath: eventPath, githubRepo: "kunchenguid/no-mistakes"}},
+		{"no repo", actionRun{eventPath: eventPath, githubToken: "test-token"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runRequireAction(t, tc.run)
+			if got.conclusion != "failure" {
+				t.Fatalf("conclusion = %q, want failure (fail closed, never certify from the cached event payload)\n%s", got.conclusion, got.output)
+			}
+			if got.outputs["compliant"] != "false" {
+				t.Errorf("compliant output = %q, want false - a lookup failure must never emit a verdict at all", got.outputs["compliant"])
+			}
+			if !strings.Contains(got.output, "::error::Could not verify this PR's live body/head") {
+				t.Errorf("output does not report the live lookup failure as an error:\n%s", got.output)
+			}
+			if !strings.Contains(got.output, "pull-requests: read") {
+				t.Errorf("error does not name the missing-permission remediation:\n%s", got.output)
+			}
+			if !strings.Contains(got.output, "pr-body") || !strings.Contains(got.output, "pr-head-sha") {
+				t.Errorf("error does not name the explicit-inputs remediation:\n%s", got.output)
+			}
+			// The compliant-looking event payload must never be evaluated:
+			// none of the checks it would have passed appear in the output.
+			if strings.Contains(got.output, "Found no-mistakes signature") {
+				t.Errorf("output evaluated the cached event payload instead of failing closed:\n%s", got.output)
+			}
+		})
+	}
+}
+
+// TestRequireActionFailsClosedWhenLiveAPICallFails is the same P1 regression
+// as TestRequireActionFailsClosedWhenLiveLookupUnavailable, for a token and
+// repo both present but the API call itself failing (non-200): infrastructure
+// noise must fail the gate closed, not fall back to the event payload.
+func TestRequireActionFailsClosedWhenLiveAPICallFails(t *testing.T) {
+	compliant := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	eventPath := writeEventPayload(t, 812, compliant, requiredWorkflowTestHeadSHA)
+	server := stubPullsAPI(t, "kunchenguid/no-mistakes", "812", http.StatusForbidden, "", "")
+
+	got := runRequireAction(t, actionRun{
+		eventPath:   eventPath,
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
+	if got.conclusion != "failure" {
+		t.Fatalf("conclusion = %q, want failure after a 403 (fail closed, never certify from the cached event payload)\n%s", got.conclusion, got.output)
+	}
+	if got.outputs["compliant"] != "false" {
+		t.Errorf("compliant output = %q, want false", got.outputs["compliant"])
+	}
+	if !strings.Contains(got.output, "::error::Could not verify this PR's live body/head") {
+		t.Errorf("output does not report the live lookup failure as an error:\n%s", got.output)
+	}
+}
+
+// TestRequireActionExplicitInputsSkipLiveLookup pins the documented
+// precedence: pr-body/pr-head-sha explicit inputs (a caller driving this from
+// a non-pull_request event) are never second-guessed against a live lookup,
+// even when one is configured and available.
+func TestRequireActionExplicitInputsSkipLiveLookup(t *testing.T) {
+	explicitBody := pipelineSummaryWithStatuses(t, types.StepStatusCompleted, types.StepStatusCompleted, types.StepStatusCompleted)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("live PR lookup must not be called when explicit pr-body/pr-head-sha inputs are set")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	got := runRequireAction(t, actionRun{
+		body:        explicitBody,
+		headSHA:     requiredWorkflowTestHeadSHA,
+		number:      "812",
+		githubToken: "test-token",
+		githubAPI:   server.URL,
+		githubRepo:  "kunchenguid/no-mistakes",
+	})
+	if got.conclusion != "success" {
+		t.Fatalf("conclusion = %q, want success from the explicit inputs\n%s", got.conclusion, got.output)
+	}
+	if strings.Contains(got.output, "::warning::Could not verify") {
+		t.Errorf("output warns about the live lookup, but it should never have been attempted:\n%s", got.output)
 	}
 }
 

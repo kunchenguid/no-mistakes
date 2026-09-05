@@ -46,6 +46,8 @@ pushes to the configured target:
 - fetch failing job logs for the CI auto-fix loop when the provider exposes them
 - on GitHub, GitLab, Forgejo, and Azure DevOps, watch mergeability and fix merge conflicts when possible
 
+Draft PR and MR creation is configurable for supported providers. The [global](/no-mistakes/reference/global-config/#providersgithubdraft_pull_requests) and [per-repo](/no-mistakes/reference/repo-config/#providersgithubdraft_pull_requests) config references own provider support and behavior.
+
 ## GitHub
 
 Install the GitHub CLI and authenticate:
@@ -118,6 +120,8 @@ glab auth login
 - CI pipeline status polling until the merge request is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
+
+When no-mistakes updates an existing merge request, it reads the live title and preserves any GitLab draft marker. If `glab mr view` fails or returns an empty title, the update stops instead of risking a change from draft to ready.
 
 ## Forgejo
 

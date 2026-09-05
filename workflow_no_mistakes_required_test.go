@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -491,6 +492,20 @@ func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event 
 		t.Fatalf("write event payload: %v", err)
 	}
 
+	// This workflow forwards no explicit pr-body/pr-head-sha (the ordinary
+	// pull_request-triggered caller, see the workflow's own comment on
+	// PR_BODY/PR_HEAD_SHA), so verify.py now requires the live lookup to
+	// reach any verdict at all - a lookup failure fails the whole gate closed
+	// rather than falling back to the event payload (the fix this test suite
+	// exercises for the wiring surface; the verdict surface itself is owned
+	// by require_no_mistakes_action_test.go). Stub the live API to echo back
+	// this same event's body/head, so these wiring tests keep exercising the
+	// identical verdict logic they always have, just reached via the live
+	// path instead of the archived one - matching what a real runner with
+	// this workflow's `permissions: pull-requests: read` actually does.
+	requiredWorkflowTestRepo := "kunchenguid/no-mistakes"
+	liveServer := stubPullsAPI(t, requiredWorkflowTestRepo, strconv.FormatInt(prNumber, 10), http.StatusOK, event.Body, headSHA)
+
 	action := loadRequireAction(t, actionPath)
 	if action.Runs.Using != "composite" {
 		t.Fatalf("action runs.using = %q, want composite", action.Runs.Using)
@@ -544,11 +559,22 @@ func runRequiredWorkflowCheckJob(t *testing.T, workflow requiredWorkflow, event 
 	}
 
 	cmd := exec.Command(bash, "-c", compositeStep.Run)
-	cmd.Env = append(os.Environ(), env...)
+	// The composite action's own env mapping resolves an unset github-token
+	// `with:` to its action.yml default, the literal unresolved expression
+	// text "${{ github.token }}" - this offline harness has no Actions
+	// runner to evaluate that against, so it is never a usable token. Strip
+	// it (and any ambient GITHUB_API_URL/GITHUB_REPOSITORY this test binary
+	// happens to inherit) and set the three deterministically to the stub
+	// server above instead, exactly as runRequireAction does for the same
+	// reason.
+	cmd.Env = append(filterEnv(os.Environ(), "GITHUB_TOKEN", "GITHUB_API_URL", "GITHUB_REPOSITORY"), env...)
 	cmd.Env = append(cmd.Env,
 		"GITHUB_ACTION_PATH="+actionDir,
 		"GITHUB_EVENT_PATH="+eventPath,
 		"GITHUB_OUTPUT="+outputPath,
+		"GITHUB_TOKEN=test-token",
+		"GITHUB_API_URL="+liveServer.URL,
+		"GITHUB_REPOSITORY="+requiredWorkflowTestRepo,
 	)
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

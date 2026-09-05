@@ -302,6 +302,33 @@ func TestSplitProviderModel(t *testing.T) {
 	}
 }
 
+func TestServedMatchesRequested(t *testing.T) {
+	tests := []struct {
+		name           string
+		requested      string
+		served         string
+		servedProvider string
+		want           bool
+	}{
+		{name: "bare request matches bare served", requested: "grok-4.6", served: "grok-4.6", servedProvider: "xai", want: true},
+		{name: "qualified request matches pi split fields", requested: "xai/grok-4.6", served: "grok-4.6", servedProvider: "xai", want: true},
+		{name: "true mismatch different model", requested: "xai/grok-4.6", served: "grok-4.5", servedProvider: "xai", want: false},
+		{name: "true mismatch different provider", requested: "openai/grok-4.6", served: "grok-4.6", servedProvider: "xai", want: false},
+		{name: "qualified request rejects empty provider", requested: "xai/grok-4.6", served: "grok-4.6", servedProvider: "", want: false},
+		{name: "qualified served matches qualified request", requested: "xai/grok-4.6", served: "xai/grok-4.6", want: true},
+		{name: "qualified served rejects contradictory provider metadata", requested: "xai/grok-4.6", served: "xai/grok-4.6", servedProvider: "openai", want: false},
+		{name: "bare request matches qualified served id", requested: "grok-4.6", served: "xai/grok-4.6", want: true},
+		{name: "bare request rejects contradictory provider metadata", requested: "grok-4.6", served: "xai/grok-4.6", servedProvider: "openai", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ServedMatchesRequested(tt.requested, tt.served, tt.servedProvider); got != tt.want {
+				t.Fatalf("ServedMatchesRequested(%q, %q, %q) = %v, want %v", tt.requested, tt.served, tt.servedProvider, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestEverySupportedAgentHasAMapping keeps a newly added agent from silently
 // inheriting "unknown agent" behavior instead of a deliberate decision.
 func TestEverySupportedAgentHasAMapping(t *testing.T) {

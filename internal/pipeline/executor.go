@@ -60,10 +60,11 @@ type Executor struct {
 	shared   *RunShared
 	workDir  string
 
-	mu          sync.Mutex
-	approvalCh  chan approvalResponse // buffered channel for approval responses
-	waiting     bool                  // true when blocked on approval
-	waitingStep types.StepName        // which step is currently awaiting approval
+	mu                   sync.Mutex
+	approvalCh           chan approvalResponse // buffered channel for approval responses
+	waiting              bool                  // true when blocked on approval
+	waitingStep          types.StepName        // which step is currently awaiting approval
+	waitingProtectedPath bool                  // approval would skip work refused by protected_paths
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -169,6 +170,10 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if step != e.waitingStep {
 		e.mu.Unlock()
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
+	}
+	if action == types.ActionApprove && e.waitingProtectedPath {
+		e.mu.Unlock()
+		return fmt.Errorf("cannot approve a protected-path refusal: resolve the reported edit, then use fix to retry %s; approval would skip unfinished work", step)
 	}
 	e.waiting = false
 	e.mu.Unlock()
@@ -402,7 +407,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogFile:    func(string) {},
 		OnPRMerged: e.onPRMerged,
 	}
-	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
+	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx, gate.findings); reconciled {
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
 		}
@@ -424,6 +429,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.mu.Lock()
 	e.waiting = true
 	e.waitingStep = gate.step.Name()
+	e.waitingProtectedPath = HasProtectedPathRefusal(gate.findings)
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
@@ -436,7 +442,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		gate.stepResult.DurationMS,
 	)
 
-	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
+	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 	}
@@ -466,6 +472,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
+		if err := e.applyApprovalOverride(gate.step, reconcileCtx, gate.stepResult.ID); err != nil {
+			return e.failRun(run, repo, err, ctx)
+		}
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
@@ -867,6 +876,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	skipRemaining := false
 	stepSkipped := false
+	var skipReason string
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
 	var restartFrom types.StepName
@@ -876,6 +886,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
 		outcome, err := step.Execute(sctx)
+		if refusal := ProtectedPathOutcome(err); refusal != nil {
+			outcome, err = refusal, nil
+		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
@@ -990,6 +1003,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// are acceptable and don't block the pipeline.
 			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
+			skipReason = safeurl.RedactText(outcome.SkipReason)
 			break
 		}
 
@@ -1013,6 +1027,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.mu.Lock()
 		e.waiting = true
 		e.waitingStep = stepName
+		e.waitingProtectedPath = HasProtectedPathRefusal(outcome.Findings)
 		e.mu.Unlock()
 
 		// Parking starts before the gate becomes observable. This includes the
@@ -1033,7 +1048,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
 
-		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, true)
+		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, outcome.Findings, true)
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}
@@ -1067,6 +1082,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
+			if err := e.applyApprovalOverride(step, sctx, sr.ID); err != nil {
+				return false, "", err
+			}
 			phaseStart = time.Now()
 			goto done
 
@@ -1140,6 +1158,10 @@ done:
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+	} else if stepSkipped {
+		if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, durationMS, logPath, skipReason); err != nil {
+			return false, "", fmt.Errorf("complete skipped step %s: %w", stepName, err)
+		}
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
@@ -1164,6 +1186,45 @@ done:
 //
 // Best effort by design. This is advisory prompt context for later steps, so a
 // failed write degrades to today's behavior and must never fail the run.
+// applyApprovalOverride is the single place both ActionApprove sites (the
+// live wait in executeStep and the daemon-restart recovery path in Resume)
+// route through before completing a step on approval. If step raised its gate
+// over a live, re-checkable condition (ApprovalOverrideVerifier), this
+// re-checks it once and, only when it is still unresolved, records the
+// upcoming completion as an explicit override (db.SetStepOverrideReason)
+// instead of a silent plain pass - see ApprovalOverrideVerifier's doc for the
+// incident this exists to make impossible. It never blocks or changes the
+// approval itself: a human's ActionApprove always proceeds, and a step that
+// does not implement the interface (every step but CI today) is completely
+// unaffected. A verification error fails closed - it is recorded as an
+// unresolved condition, not silently treated as clear - but still never stops
+// the approval, only what it gets recorded as.
+//
+// Persisting that override marker is itself fail-closed: every downstream
+// surface (outcomeForRun, the run_completed CIOverrideReason delta, the TUI
+// banner) derives override status solely from step_results.override_reason, so
+// a swallowed write failure would complete the step as an ordinary clean pass -
+// the exact false-green this feature exists to prevent. When the marker cannot
+// be written this returns the error so the caller fails the run closed instead
+// of recording that plain pass.
+func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID string) error {
+	verifier, ok := step.(ApprovalOverrideVerifier)
+	if !ok {
+		return nil
+	}
+	unresolved, err := verifier.VerifyApprovalOverride(sctx)
+	if err != nil {
+		unresolved = fmt.Sprintf("could not verify: %v", err)
+	}
+	if unresolved == "" {
+		return nil
+	}
+	if dbErr := e.db.SetStepOverrideReason(stepResultID, unresolved); dbErr != nil {
+		return fmt.Errorf("record approval override reason for step %s: %w", step.Name(), dbErr)
+	}
+	return nil
+}
+
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
 	if e == nil || e.db == nil || roundID == "" {
 		return
@@ -1302,7 +1363,7 @@ func pluralize(n int, singular, plural string) string {
 // cancelled. Reconciliation runs synchronously under a bounded child context,
 // so no watcher goroutine can outlive approval, cancellation, or shutdown.
 // The caller must set e.waiting and e.waitingStep before calling this method.
-func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sctx *StepContext, immediate bool) (approvalResponse, bool, error) {
+func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sctx *StepContext, findings string, immediate bool) (approvalResponse, bool, error) {
 	defer func() {
 		e.mu.Lock()
 		e.waiting = false
@@ -1338,7 +1399,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		case <-ctx.Done():
 			return approvalResponse{}, false, context.Cause(ctx)
 		case <-timer.C:
-			resolved, err := e.reconcileApprovalGate(ctx, step, sctx)
+			resolved, err := e.reconcileApprovalGate(ctx, step, sctx, findings)
 			if resolved {
 				if e.claimGateReconciliation() {
 					return approvalResponse{}, true, nil
@@ -1371,9 +1432,12 @@ func (e *Executor) claimGateReconciliation() bool {
 	return true
 }
 
-func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *StepContext) (bool, error) {
+func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *StepContext, findingsJSON string) (bool, error) {
 	reconciler, ok := step.(ApprovalGateReconciler)
 	if !ok {
+		return false, nil
+	}
+	if HasProtectedPathRefusal(findingsJSON) {
 		return false, nil
 	}
 	timeout := e.gateReconcileTimeout
@@ -1515,7 +1579,33 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		Error:  run.Error,
 		PRURL:  run.PRURL,
 	}
+	// A completed run may have passed with a CI approval override; the TUI
+	// banner reads the reason off the delta (like PRURL) so it never needs a
+	// snapshot to distinguish it from a genuinely green run. Derived from step
+	// rows so both ActionApprove sites (live wait and Resume) are covered.
+	// Gated on the terminal status, not the event type: errorRun emits the same
+	// event for failed/cancelled runs, whose banner never reads it.
+	if run.Status == types.RunCompleted {
+		if reason := e.runOverrideReason(run.ID); reason != "" {
+			event.CIOverrideReason = &reason
+		}
+	}
 	e.onEvent(event)
+}
+
+// runOverrideReason returns the first step OverrideReason recorded for the run,
+// deriving the run-level CI override reason the same way daemon.runToInfo does.
+func (e *Executor) runOverrideReason(runID string) string {
+	steps, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return ""
+	}
+	for _, s := range steps {
+		if s.OverrideReason != nil && *s.OverrideReason != "" {
+			return *s.OverrideReason
+		}
+	}
+	return ""
 }
 
 func (e *Executor) emitCIReadinessEvent(run *db.Run, repo *db.Repo, ready, declaredNoCI bool) {
@@ -1545,6 +1635,15 @@ func (e *Executor) emitStepEventWithFindingsAndError(eventType ipc.EventType, ru
 		StepName:   &stepName,
 		Status:     &status,
 		DurationMS: durationMS,
+	}
+	// The combined housekeeping invocation is recorded under Document because
+	// that is where it executes. Carry its broader scope on completion so an
+	// attached TUI does not temporarily present the shared wall time as
+	// documentation-only work while waiting for another snapshot.
+	if stepName == types.StepDocument {
+		if combined, err := e.db.HasAgentInvocationPurpose(run.ID, string(stepName), "housekeeping"); err == nil && combined {
+			event.WorkScope = ipc.WorkScopeDocumentLintHousekeeping
+		}
 	}
 	stats := e.findingStatsForStep(run.ID, stepName)
 	if stats.ReportedFindings > 0 || stats.FixedFindings > 0 {

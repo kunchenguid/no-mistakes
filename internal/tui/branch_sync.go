@@ -21,8 +21,14 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		switch state.State {
 		case branchsync.StatePipelineOwned:
 			if recoverableBranchSync(state) {
-				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
+				if archiveKeepLocalRecovery(state) {
+					message = "Later pipeline work is preserved by a verified archive. Recover custody while keeping the exact required local head."
+				} else {
+					message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
+				}
 				footer = "u recover custody"
+			} else if state.NextAction != nil && state.NextAction.Code == "recover_custody" {
+				message = "Run ended without a recoverable preserved head. Keep the current local head and return custody with `no-mistakes axi sync --recover --keep-local`."
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
@@ -106,18 +112,35 @@ func recoverableBranchSync(state *branchsync.State) bool {
 	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 }
 
+func archiveKeepLocalRecovery(state *branchsync.State) bool {
+	return state != nil && state.Recovery != nil && state.Recovery.Source == "bound_archive" && state.Recovery.KeepLocal && state.Recovery.Proof == "verified"
+}
+
 func renderRecoverConfirmation(state branchsync.State, width int) string {
 	if width < 40 {
 		width = 80
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits. Recovery returns\n", state.Pipeline.Status)
-	fmt.Fprintf(&b, "custody by fast-forwarding a clean behind worktree, or by adopting a diverged\n")
-	fmt.Fprintf(&b, "preserved head only when it is proven to carry every local change.\n\n")
+	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits.\n", state.Pipeline.Status)
+	if archiveKeepLocalRecovery(&state) {
+		fmt.Fprintf(&b, "A verified archive preserves the divergent later head. Recovery keeps the\n")
+		fmt.Fprintf(&b, "working branch at the exact required head and returns custody through the\n")
+		fmt.Fprintf(&b, "guarded keep-local path. It never selects or replays the archive.\n\n")
+	} else {
+		fmt.Fprintf(&b, "Recovery returns custody by fast-forwarding a clean behind worktree, or by\n")
+		fmt.Fprintf(&b, "adopting a diverged preserved head only when it is proven to carry every\n")
+		fmt.Fprintf(&b, "local change.\n\n")
+	}
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
-	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
-	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
+	fmt.Fprintf(&b, "Preserved HEAD: %s\n", state.Pipeline.CurrentHead)
+	if archiveKeepLocalRecovery(&state) {
+		fmt.Fprintf(&b, "Archive ref:    %s\n", state.Recovery.ArchiveRef)
+		fmt.Fprintf(&b, "Required HEAD:  %s\n\n", state.Recovery.RequiredHead)
+		b.WriteString("Any changed archive, head, branch, run, repository, or gate evidence makes recovery refuse without selecting the divergent head.")
+	} else {
+		b.WriteString("\nDirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead.")
+	}
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 

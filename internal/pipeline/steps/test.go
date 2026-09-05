@@ -215,11 +215,11 @@ Rules:
 		}
 
 		var findings Findings
-		if result.Output != nil {
-			if err := json.Unmarshal(result.Output, &findings); err != nil {
-				sctx.Log("could not parse structured output, using text response")
-				findings = Findings{Summary: result.Text}
-			}
+		if result.Output == nil {
+			return nil, errors.New("test analyzer returned no structured findings")
+		}
+		if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
+			return nil, fmt.Errorf("validate test analyzer findings: %w", err)
 		}
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)

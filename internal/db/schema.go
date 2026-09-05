@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_validation_generation TEXT,
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
+    pr_base_branch       TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -63,7 +64,8 @@ CREATE TABLE IF NOT EXISTS step_results (
     last_activity    TEXT,
     agent_pid        INTEGER,
     auto_fix_limit              INTEGER,
-    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0
+    ci_fix_attempts             INTEGER NOT NULL DEFAULT 0,
+    override_reason             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS step_rounds (
@@ -128,6 +130,26 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
     ON agent_invocations (run_id, started_at, id);
 
+-- A recovery archive is an append-only provenance snapshot binding one exact
+-- existing archive ref to the terminal run whose later head it preserves.
+-- owner_run_id is the lookup association; run_id is deliberately repeated in
+-- the immutable evidence so malformed or cross-bound records fail closed.
+CREATE TABLE IF NOT EXISTS recovery_archives (
+    id                 TEXT PRIMARY KEY,
+    owner_run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    run_id             TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    required_head_sha  TEXT NOT NULL,
+    preserved_head_sha TEXT NOT NULL,
+    archive_ref        TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    UNIQUE (owner_run_id, archive_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_archives_owner_created_id
+    ON recovery_archives (owner_run_id, created_at, id);
+
 CREATE TABLE IF NOT EXISTS run_agent_sessions (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     role       TEXT NOT NULL,
@@ -136,6 +158,20 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (run_id, role)
+);
+
+-- User-attachment URLs are durable for the life of a run so restarting the
+-- pipeline from Review can render the same evidence without uploading another
+-- orphaned GitHub asset. The digest prevents reuse if a file is overwritten at
+-- the same path during a repair.
+CREATE TABLE IF NOT EXISTS run_media_attachments (
+    run_id    TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    path      TEXT NOT NULL,
+    digest    TEXT NOT NULL,
+    url       TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, path)
 );
 
 CREATE TABLE IF NOT EXISTS intent_cache (
@@ -234,11 +270,23 @@ var migrationStatements = []string{
 	// The first successful conditional update marks the sole `created`
 	// observer; all later claims are durable replays.
 	`ALTER TABLE runs ADD COLUMN launch_receipt_claimed_at INTEGER`,
+	// Per-run PR target branch chosen by the operator (e.g. axi run
+	// --base-branch). Nullable: absent means fall back to repo config and the
+	// forge default branch.
+	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN ci_fix_attempts INTEGER NOT NULL DEFAULT 0`,
+	// Non-nil exactly when a human answered ActionApprove on a step whose gate
+	// existed because of an unresolved external condition (currently: the CI
+	// step's live checks were still failing) - see
+	// pipeline.ApprovalOverrideVerifier. Durable so the distinction between a
+	// verified-green completion and a deliberate override survives daemon
+	// restart, resume, and axi status/logs on an already-terminal run.
+	`ALTER TABLE step_results ADD COLUMN override_reason TEXT`,
+	`ALTER TABLE step_results ADD COLUMN skip_reason TEXT`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,
