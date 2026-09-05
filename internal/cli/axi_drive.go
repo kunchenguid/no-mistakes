@@ -420,7 +420,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
+	pushErr := git.PushWithOptionsSkippingHooks(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
 		// Close the inspection-to-push race: if the pipeline advanced ownership
 		// after the pre-push check, preserve the structured branch-sync refusal
