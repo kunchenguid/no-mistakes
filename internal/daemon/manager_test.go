@@ -168,6 +168,7 @@ func TestProofLaunchReceiptBindsIndependentGenerationAndFirstObserver(t *testing
 	if replay.Receipt.RunID != first.Receipt.RunID || replay.Receipt.Disposition != "reused" {
 		t.Fatalf("replay receipt = %#v, first = %#v", replay.Receipt, first.Receipt)
 	}
+	logLaunchEvidence(t, "first-and-replay", []ipc.LaunchReceipt{first.Receipt, replay.Receipt})
 	if _, err := call("nonce-1", "generation-002", intent); err == nil {
 		t.Fatal("changed validation generation reused a nonce")
 	}
@@ -223,6 +224,7 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	if err == nil || !strings.Contains(err.Error(), "different pr base branch") {
 		t.Fatalf("mismatched base claim err = %v, want base mismatch", err)
 	}
+	logLaunchEvidence(t, "base-conflict", err.Error())
 	stored, err := d.GetRun(pushed.RunID)
 	if err != nil || stored == nil || stored.LaunchReceiptClaimedAt != nil {
 		t.Fatalf("mismatched base claim consumed first receipt: run=%#v err=%v", stored, err)
@@ -283,6 +285,8 @@ func TestProofLaunchReceiptPushCrashWindowConcurrentClaimsAndImmutableReplay(t *
 	if err != nil || stored == nil || stored.PRBaseBranch == nil || *stored.PRBaseBranch != "review/base" {
 		t.Fatalf("persisted proof base branch = %#v, err=%v", stored, err)
 	}
+	logLaunchEvidence(t, "advanced-head-replay", replay.Receipt)
+	logLaunchEvidence(t, "persisted-base", *stored.PRBaseBranch)
 }
 
 func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
@@ -1346,6 +1350,7 @@ func TestProofLaunchFallbackReturnsReusedWhenObserverClaimsDuringSetup(t *testin
 	if run.Status != types.RunCompleted || run.LaunchReceiptClaimedAt == nil {
 		t.Fatalf("claimed run = %+v", run)
 	}
+	logLaunchEvidence(t, "observer-and-fallback", []ipc.LaunchReceipt{*first.Receipt, fresh.Receipt})
 }
 
 func TestProofLaunchFallbackInheritsOnlyLivePRIdentity(t *testing.T) {
@@ -1397,6 +1402,20 @@ func TestProofLaunchFallbackInheritsOnlyLivePRIdentity(t *testing.T) {
 			} else if got.PRURL == nil || *got.PRURL != prURL {
 				t.Fatalf("lost existing PR identity: %+v", got)
 			}
+			logLaunchEvidence(t, "persisted-pr-inheritance", map[string]any{
+				"prior_run_id": prior.ID, "prior_pr_state": state,
+				"new_run_id": got.ID, "pr_url": got.PRURL, "pr_base_branch": got.PRBaseBranch,
+			})
 		})
 	}
+}
+
+// Record only the public receipt and selected persisted launch state, never intent.
+func logLaunchEvidence(t *testing.T, label string, value any) {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("launch-evidence %s: %s", label, encoded)
 }

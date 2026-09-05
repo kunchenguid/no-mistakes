@@ -698,8 +698,8 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 }
 
 // HandlePushReceived processes a push notification from the post-receive hook.
-// A proof-mode push creates an unclaimed row: the initiating caller receives
-// the sole `created` disposition by atomically claiming it after observation.
+// A proof-mode push creates an unclaimed row: the first matching observer
+// receives the sole `created` disposition by atomically claiming it.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
@@ -786,7 +786,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				return "", fmt.Errorf("conflicting launch_nonce %q is already bound to a different validation generation, submitted head, or intent", launchNonce)
 			}
 			// Duplicate hook delivery is not observation: preserve an
-			// unclaimed push row for the caller that initiated the push.
+			// unclaimed push row for the first matching receipt observer.
 			if trigger == "push" {
 				receipt = replayed
 				return existing.ID, nil
