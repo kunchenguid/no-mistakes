@@ -1,0 +1,13 @@
+=== RUN   TestReplayPiModelIdentityComparison
+=== RUN   TestReplayPiModelIdentityComparison/bare_request
+    replay_model_test.go:58: requested="grok-4.6" served="grok-4.6" provider="xai" status="completed" error=""
+=== RUN   TestReplayPiModelIdentityComparison/qualified_request
+    replay_model_test.go:58: requested="xai/grok-4.6" served="grok-4.6" provider="xai" status="completed" error=""
+=== RUN   TestReplayPiModelIdentityComparison/true_mismatch
+    replay_model_test.go:58: requested="openai/gpt-5" served="grok-4.6" provider="xai" status="failed" error="candidate served model \"grok-4.6\", requested \"openai/gpt-5\""
+--- PASS: TestReplayPiModelIdentityComparison (0.76s)
+    --- PASS: TestReplayPiModelIdentityComparison/bare_request (0.22s)
+    --- PASS: TestReplayPiModelIdentityComparison/qualified_request (0.11s)
+    --- PASS: TestReplayPiModelIdentityComparison/true_mismatch (0.10s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/eval	1.082s

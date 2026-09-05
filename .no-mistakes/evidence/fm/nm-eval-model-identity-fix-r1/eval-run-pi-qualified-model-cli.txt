@@ -1,0 +1,27 @@
+=== RUN   TestEvidenceEvalRunPiQualifiedModel
+    eval_model_evidence_test.go:51: End-user command: no-mistakes eval run --cases labeled --candidate pi,model=xai/grok-4.6,effort=high --repeats 1
+    eval_model_evidence_test.go:52: CLI output:
+        replaying 1 case(s) x 1 repeat(s) with pi,model=xai/grok-4.6,effort=high on labeled (cohort bc3d369725a14b6c)
+        
+          ✓ 1/1  01M1RA82BQ3PEMD28YB2QN6DNX-01M1RA82BRSE1EYHG470BB7GZR repeat 1  TP 1 · FN 0 · FP 0 · pending 0  200ms
+        
+        ╭─ eval run ──────────────────────────────────────────────────────────────────╮
+        │                                                                             │
+        │   Candidate                pi,model=xai/grok-4.6,effort=high                │
+        │   Case set                 labeled · cohort bc3d369725a14b6c                │
+        │   Replays              1   1 case(s) x 1 repeat(s) · 0 failure(s)           │
+        │   Labeled              1   replay(s) of cases with finding-level gold       │
+        │                                                                             │
+        │   Recall            100%   ████████████████████  1/1 true issues            │
+        │   Precision        100%-100%   pending counted as FP in the lower bound     │
+        │   F1                   -   withheld (no false-positive gold)                │
+        │                                                                             │
+        │   Tokens               -   unknown (not reported for every replay)          │
+        │   Wall time        200ms   average per replay                               │
+        │                                                                             │
+        ╰─────────────────────────────────────────────────────────────────────────────╯
+        local eval session 1788596193790740000-a445b21b028a6689: 1 replay(s), candidate pi,model=xai/grok-4.6,effort=high, repeats 1
+        
+--- PASS: TestEvidenceEvalRunPiQualifiedModel (0.66s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/cli	1.087s
