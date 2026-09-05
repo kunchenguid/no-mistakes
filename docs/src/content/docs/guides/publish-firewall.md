@@ -24,6 +24,12 @@ Documentation ranges (`192.0.2.0/24`, `example.com`, `555-0100`, IANA
 documentation MACs, `SITE01`) are allowed. RFC1918 and other non-documentation
 addresses fail closed.
 
+Keyword-anchored classes (k8s identifiers, network policy names, serials,
+session and trace IDs, firmware builds, GPS) match on the assigned value, not
+the keyword. `namespace: staging` and `serialNumber: row.SerialNumber` are
+configuration and code; `namespace: prod-tenant-a`, `serial: SN9F3K21AB`, and
+`firmware: 17.9.4a` are captured values.
+
 ## Public vs LAN
 
 | Surface | Content |

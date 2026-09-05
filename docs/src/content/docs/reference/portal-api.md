@@ -12,10 +12,16 @@ firstmate-notify owns the LiveView. This repository owns the HTTP contract.
 
 ## Records
 
-JSON field names match `no-mistakes axi`: `run.id`, `run.branch`, `run.status`,
-`run.head`, `run.pr`, `steps[]` (`step`, `status`, `findings`), `findings[]`
-(`id`, `severity`, `file`, `action`, `description`), plus firewall fields
-`conclusion`, `public_summary`, and `portal_url`.
+JSON field names match `no-mistakes axi`. `GET /v1/axi/runs/{id}` returns
+`{ "run": ... }`; ingest replies `201` with the same run object unwrapped. A run
+carries `id`, `branch`, `status`, `head`, `pr`, `outcome`, `steps[]` (`step`,
+`status`, `findings`, `items[]`) and, while a violation is open, `gate` plus
+`help[]`. Finding objects (`steps[].items[]` and `gate.findings[]`) carry `id`,
+`severity`, `file`, `line`, `action`, `class`, and `description`.
+
+The verdict's `conclusion` is returned by `/respond` and `/notice`, and its
+`portal_url` by `/notice`. The stored `public_summary` is the LAN copy of the
+generic GitHub text and no route serves it.
 
 LAN `description` values may include a snippet. The notice payload must not.
 
