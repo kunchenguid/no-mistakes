@@ -39,7 +39,7 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 			diff, err := readDiffFlag(diffFile, cmd.InOrStdin())
 			if err != nil {
 				fmt.Fprint(cmd.OutOrStdout(), firewall.PublicText(portalURL, true))
-				return &exitError{code: 1, err: err}
+				return &exitError{code: firewall.ExitError, err: err}
 			}
 			title, _ := readOptional(titleFile)
 			body, _ := readOptional(bodyFile)
@@ -54,7 +54,7 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 				p, err := paths.New()
 				if err != nil {
 					fmt.Fprint(cmd.OutOrStdout(), firewall.PublicText("", true))
-					return &exitError{code: 1, err: err}
+					return &exitError{code: firewall.ExitError, err: err}
 				}
 				opts.StorePath = p.FirewallDB()
 			}
@@ -71,11 +71,11 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 				Branch:         branch,
 			}, opts)
 			fmt.Fprint(cmd.OutOrStdout(), stdout)
-			if err != nil {
-				return &exitError{code: 1}
-			}
 			if exit != 0 {
 				return &exitError{code: exit}
+			}
+			if err != nil {
+				return &exitError{code: firewall.ExitError}
 			}
 			return nil
 		},

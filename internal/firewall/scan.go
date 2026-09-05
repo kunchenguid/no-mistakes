@@ -240,7 +240,7 @@ func detectHosts(s surface) []Finding {
 func detectSiteCodes(s surface) []Finding {
 	var hits []Finding
 	for _, tok := range siteCode.FindAllString(s.text, -1) {
-		if isDocSite(tok) {
+		if !isSiteCode(tok) {
 			continue
 		}
 		hits = append(hits, hit(s, ClassSiteCode, tok))

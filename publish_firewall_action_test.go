@@ -150,6 +150,10 @@ func TestPublishFirewallAction_FailsClosed(t *testing.T) {
 		{name: "base sha unknown to git", scanExit: 0, env: map[string]string{"NM_BASE_SHA": "0000000000000000000000000000000000000000"}, conclusion: "error"},
 		{name: "no base or head sha", scanExit: 0, env: map[string]string{"NM_BASE_SHA": "", "NM_HEAD_SHA": ""}, conclusion: "error"},
 		{name: "scanner reports a violation", scanExit: 1, conclusion: "failure"},
+		// A clean scan the firewall could not record (a refused or unreachable
+		// LAN portal) still blocks the merge, but it is an error rather than a
+		// Hard Rules verdict the scanner actually reached.
+		{name: "scanner cannot record the verdict", scanExit: 2, conclusion: "error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -440,7 +444,7 @@ fi
 if [ ` + strconv.Itoa(exit) + ` -ne 0 ]; then
   printf 'publish-policy violation\n'
   if [ -n "${NM_PORTAL_URL:-}" ]; then printf '%s\n' "${NM_PORTAL_URL}"; fi
-  exit 1
+  exit ` + strconv.Itoa(exit) + `
 fi
 printf 'publish-policy ok\n'
 `

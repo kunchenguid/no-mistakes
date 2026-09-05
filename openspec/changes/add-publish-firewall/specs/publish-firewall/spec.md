@@ -14,7 +14,7 @@ The system SHALL provide a reusable GitHub composite action that scans a pull re
 
 #### Scenario: Scanner error fails closed
 - **WHEN** the diff cannot be read, the scanner errors, or portal ingest is configured and fails
-- **THEN** the check concludes failure and MUST NOT conclude success
+- **THEN** the check concludes `error`, blocks the merge, and MUST NOT conclude success; `failure` is reserved for a Hard Rules verdict the scanner actually reached, so a portal problem on a clean pull request is never reported as a violation
 
 ### Requirement: Generic public check text
 
@@ -39,6 +39,10 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 #### Scenario: Ordinary configuration values are not live identifiers
 - **WHEN** the diff contains `namespace: no-mistakes`, `cluster: staging`, `build: true`, or `vlan: 100`
 - **THEN** the scanner reports no findings, because the keyword alone is not a hit and none of those values carries an instance identity
+
+#### Scenario: Site and facility field names are not site codes
+- **WHEN** the diff contains `site_id`, `site_name`, `facility_id`, `dc_name`, or `site-packages`
+- **THEN** the scanner reports no findings, because a site code numbers one facility; `facility-west12` and `dc-east-01` still fail closed
 
 #### Scenario: An opaque token without digits is still a capture
 - **WHEN** the diff contains `jsessionid=ABCDEFGHIJKLMNOP` or `serial: ABCDEFGH`

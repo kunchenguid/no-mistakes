@@ -487,6 +487,8 @@ no-mistakes firewall serve --listen 127.0.0.1:8787
 
 `github-check` prints only `publish-policy ok` or `publish-policy violation` plus an optional LAN portal URL. It never prints match snippets; there is deliberately no subcommand that prints them to stdout. Full detail goes to `--private-json` and the LAN portal. `serve` does not start the pipeline daemon.
 
+Exit `0` is a clean scan, `1` is a Hard Rules verdict, and `2` is a failure to judge or record one — an unreadable diff, or a portal that refused or could not be reached. Both non-zero codes fail closed; the composite action reports them as the `failure` and `error` conclusions so a portal problem is not published as a violation.
+
 ## no-mistakes axi firewall
 
 Axi-shaped LAN records for firewall verdicts.

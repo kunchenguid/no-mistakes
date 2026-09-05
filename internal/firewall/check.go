@@ -20,9 +20,19 @@ type CheckOptions struct {
 	HTTPClient  *http.Client
 }
 
+// Exit codes. Both non-zero codes fail closed; they differ only in what the
+// caller may claim about the pull request. ExitViolation is a Hard Rules
+// verdict the scanner actually reached. ExitError is the firewall failing to
+// judge or to record a verdict - an unreadable diff, a refused or unreachable
+// portal - which must not be reported as a violation of the Hard Rules.
+const (
+	ExitViolation = 1
+	ExitError     = 2
+)
+
 // GitHubCheck scans, writes only generic stdout, optionally stores and ingests.
-// Exit 0 is a clean scan. Any finding, scan error, or configured ingest failure
-// returns 1 (fail closed). Stdout never includes match snippets.
+// Exit 0 is a clean scan, ExitViolation is a finding, and ExitError is any
+// failure to judge or record one. Stdout never includes match snippets.
 func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err error) {
 	res := Scan(in)
 	failed := res.Failed()
@@ -31,12 +41,12 @@ func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err erro
 	if opts.StorePath != "" {
 		store, openErr := OpenStore(opts.StorePath)
 		if openErr != nil {
-			return PublicText(opts.PortalURL, true), 1, fmt.Errorf("open store: %w", openErr)
+			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("open store: %w", openErr)
 		}
 		defer store.Close()
 		stored, openErr = store.Insert(in, res, opts.PortalURL)
 		if openErr != nil {
-			return PublicText(opts.PortalURL, true), 1, fmt.Errorf("store verdict: %w", openErr)
+			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("store verdict: %w", openErr)
 		}
 	}
 
@@ -67,17 +77,17 @@ func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err erro
 		}
 		b, mErr := json.MarshalIndent(payload, "", "  ")
 		if mErr != nil {
-			return PublicText(opts.PortalURL, true), 1, mErr
+			return PublicText(opts.PortalURL, true), ExitError, mErr
 		}
 		if wErr := os.WriteFile(opts.PrivateJSON, b, 0o600); wErr != nil {
-			return PublicText(opts.PortalURL, true), 1, wErr
+			return PublicText(opts.PortalURL, true), ExitError, wErr
 		}
 	}
 
 	if strings.TrimSpace(opts.PortalURL) != "" {
 		ingested, iErr := ingest(opts, in, res)
 		if iErr != nil {
-			return PublicText(opts.PortalURL, true), 1, fmt.Errorf("portal ingest: %w", iErr)
+			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("portal ingest: %w", iErr)
 		}
 		if ingested != "" {
 			portalShown = ingested
@@ -87,7 +97,7 @@ func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err erro
 	stdout = PublicText(portalShown, failed)
 
 	if failed {
-		return stdout, 1, nil
+		return stdout, ExitViolation, nil
 	}
 	return stdout, 0, nil
 }

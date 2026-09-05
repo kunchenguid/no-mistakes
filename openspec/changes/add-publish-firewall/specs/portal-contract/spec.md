@@ -36,6 +36,18 @@ POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT ch
 - **WHEN** an operator responds with action `acknowledge` on a failing verdict
 - **THEN** the stored conclusion remains `failure` and a response row is recorded
 
+#### Scenario: A later reader can see the verdict was reviewed
+- **WHEN** a second operator GETs `/v1/axi/runs/{id}` after an acknowledgement
+- **THEN** the run renders `responses[]` and its gate status is `acknowledged` rather than `awaiting_approval`, while the gate and `outcome: failed` remain because the violation is still open
+
+### Requirement: An ingest the portal refuses is not a verdict
+
+The portal SHALL bound the ingest body and answer an oversized request `413` rather than truncating it into a malformed document. The runner SHALL report a refused or unreachable portal as an `error` conclusion, never as a Hard Rules `failure`.
+
+#### Scenario: An oversized ingest is rejected as too large
+- **WHEN** the runner posts a well-formed ingest for a large but clean pull request that exceeds the body limit
+- **THEN** the portal answers `413`, stores no verdict, and the check concludes `error` rather than reporting a publish-policy violation on a clean diff
+
 ### Requirement: Mutating portal routes are authorized
 
 When an ingest token is configured, every portal request that mutates stored verdict state (ingest, respond, abort) SHALL require it. Read routes stay open on the LAN.

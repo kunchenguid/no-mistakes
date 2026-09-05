@@ -277,7 +277,10 @@ type AxiRun struct {
 	Outcome string    `json:"outcome,omitempty"`
 	Steps   []AxiStep `json:"steps"`
 	Gate    *AxiGate  `json:"gate,omitempty"`
-	Help    []string  `json:"help,omitempty"`
+	// Responses is the durable acknowledgement trail. Every read surface
+	// renders it, so a second operator can tell the verdict was already seen.
+	Responses []Response `json:"responses,omitempty"`
+	Help      []string   `json:"help,omitempty"`
 }
 
 type AxiStep struct {
@@ -336,6 +339,7 @@ func (v *Verdict) AxiRun() AxiRun {
 			Findings: len(items),
 			Items:    items,
 		}},
+		Responses: v.Responses,
 	}
 	switch {
 	case v.Status == StatusCancelled:
@@ -348,17 +352,35 @@ func (v *Verdict) AxiRun() AxiRun {
 		run.Outcome = "passed"
 	default:
 		run.Outcome = "failed"
+		gateStatus := "awaiting_approval"
+		acknowledgement := "Respond with action acknowledge to record that an operator saw the verdict; the GitHub check stays failed until a new head SHA is scanned"
+		if last := v.lastResponse(); last != nil {
+			gateStatus = StatusAcknowledged
+			acknowledgement = "An operator already recorded " + last.Action + "; the GitHub check stays failed until a new head SHA is scanned"
+		}
 		run.Gate = &AxiGate{
 			Step:     "publish-firewall",
-			Status:   "awaiting_approval",
+			Status:   gateStatus,
 			Findings: items,
 		}
 		run.Help = []string{
 			"Public GitHub output is generic; match details stay on this LAN record",
-			"Respond with action acknowledge to record that an operator saw the verdict; the GitHub check stays failed until a new head SHA is scanned",
+			acknowledgement,
 		}
 	}
 	return run
+}
+
+// StatusAcknowledged is the gate status once an operator has responded. The
+// violation stays open, so the gate is still rendered; what changes is that
+// the next reader can see it was already reviewed.
+const StatusAcknowledged = "acknowledged"
+
+func (v *Verdict) lastResponse() *Response {
+	if len(v.Responses) == 0 {
+		return nil
+	}
+	return &v.Responses[len(v.Responses)-1]
 }
 
 func (v *Verdict) Notice() Notice {

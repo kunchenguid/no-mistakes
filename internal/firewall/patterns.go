@@ -17,10 +17,11 @@ var (
 	// NANP with optional country code. 555-01xx is allowlisted in isDocPhone.
 	phoneCandidate = regexp.MustCompile(`(?i)(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}\b`)
 	internalHost   = regexp.MustCompile(`(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:internal|corp|lan|intra|private|localdomain)\b`)
-	// Site/facility labels with a delimiter. SITE01 is the documented
-	// placeholder and is allowlisted. Three-letter tokens without a delimiter
-	// are not matched (the abbreviation trap).
-	siteCode   = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_][a-z0-9]{2,}\b`)
+	// Site/facility labels with a delimiter, capturing the whole label so
+	// dc-east-01 is one code rather than the prefix dc-east. SITE01 is the
+	// documented placeholder and is allowlisted. Three-letter tokens without a
+	// delimiter are not matched (the abbreviation trap).
+	siteCode   = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_]([a-z0-9]{2,}(?:[-_][a-z0-9]+)*)\b`)
 	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._:-]{3,})\b`)
 	firmwareKw = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._+-]{2,})\b`)
 	gpsKw      = regexp.MustCompile(`(?i)\b(?:gps|lat(?:itude)?|lon(?:gitude)?|coord(?:inates)?)\b`)
@@ -143,7 +144,7 @@ func isLiveShaped(v string) bool {
 	if _, ok := genericValues[low]; ok {
 		return false
 	}
-	if uuidValue.MatchString(v) || siteCode.MatchString(v) {
+	if uuidValue.MatchString(v) || isSiteCode(v) {
 		return true
 	}
 	if strings.Count(v, ".") >= 2 || digitRunValue.MatchString(v) {
@@ -345,6 +346,19 @@ func isDocGPS(pair string) bool {
 func isDocSite(tok string) bool {
 	_, ok := docSiteTokens[strings.ToLower(tok)]
 	return ok
+}
+
+// isSiteCode reports whether a delimited site/facility label names one real
+// facility. The Hard Rules forbid site codes "when they are real", and a code
+// identifies an instance, so its label is numbered: facility-west12,
+// dc-east-01. A bare structural suffix - site_id, site_name, dc_name,
+// site-packages - is a schema field or a package name, not a location.
+func isSiteCode(label string) bool {
+	m := siteCode.FindStringSubmatch(label)
+	if m == nil || isDocSite(m[0]) {
+		return false
+	}
+	return digitInValue.MatchString(m[1])
 }
 
 func isDocK8s(name string) bool {

@@ -19,6 +19,11 @@ carries `id`, `branch`, `status`, `head`, `pr`, `outcome`, `steps[]` (`step`,
 `help[]`. Finding objects (`steps[].items[]` and `gate.findings[]`) carry `id`,
 `severity`, `file`, `line`, `action`, `class`, and `description`.
 
+Acknowledgements are rendered on every later read: `responses[]` (`id`,
+`action`, `created_at`) is the durable trail, and once an operator has
+responded, `gate.status` is `acknowledged` rather than `awaiting_approval`.
+The violation is still open, so the gate and `outcome: failed` remain.
+
 The verdict's `conclusion` is returned by `/respond` and `/notice`, and its
 `portal_url` by `/notice`. The stored `public_summary` is the LAN copy of the
 generic GitHub text and no route serves it.
@@ -45,6 +50,10 @@ reported.
 Every `POST` mutates stored state and is gated by
 `NO_MISTAKES_FIREWALL_INGEST_TOKEN` when the operator sets one. `GET` routes
 are open on the LAN.
+
+Ingest bodies are bounded at 8 MiB. An oversized body is answered `413`, never
+truncated into a `400 invalid json`, so the runner can report a refused ingest
+as an error instead of a Hard Rules violation.
 
 Off-LAN notifiers, including Discord, MUST use `/notice`. That object has
 `kind`, `repo`, `pr_url`, `portal_url`, and `conclusion` only.

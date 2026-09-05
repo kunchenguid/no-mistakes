@@ -30,6 +30,10 @@ the keyword. `namespace: staging` and `serialNumber: row.SerialNumber` are
 configuration and code; `namespace: prod-tenant-a`, `serial: SN9F3K21AB`, and
 `firmware: 17.9.4a` are captured values.
 
+Site and facility codes follow the same rule: a code numbers one facility, so
+`facility-west12` and `dc-east-01` are hits while the bare schema and package
+identifiers `site_id`, `site_name`, `dc_name`, and `site-packages` are not.
+
 ## Public vs LAN
 
 | Surface | Content |

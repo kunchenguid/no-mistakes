@@ -315,6 +315,35 @@ func TestScan_OpaqueTokensWithoutDigitsStillFail(t *testing.T) {
 	}
 }
 
+// TestScan_SchemaFieldNamesAreNotSiteCodes pins the gate on the site class:
+// the keyword prefix alone is not a code, so a product schema that carries
+// site/facility columns does not turn a required check permanently red.
+func TestScan_SchemaFieldNamesAreNotSiteCodes(t *testing.T) {
+	res := Scan(Input{Diff: unified("internal/db/schema.sql", []string{
+		"  site_id TEXT NOT NULL,",
+		"  site_name TEXT,",
+		"  facility_id INTEGER,",
+		"  dc_name TEXT,",
+		`ClassSiteCode Class = "site_code"`,
+		"venv/lib/python3.12/site-packages",
+		"<div class=\"site-header\">",
+	})})
+	if hasClass(res, ClassSiteCode) {
+		t.Fatalf("ordinary schema and package identifiers flagged as site codes: %+v", res.Findings)
+	}
+}
+
+func TestScan_NumberedSiteCodesStillFail(t *testing.T) {
+	for _, line := range []string{"facility-west12", "dc-east-01", "site_north7", "datacenter-02"} {
+		t.Run(line, func(t *testing.T) {
+			res := Scan(Input{Diff: unified("inventory.yaml", []string{"  location: " + line})})
+			if !hasClass(res, ClassSiteCode) {
+				t.Fatalf("numbered site code %q not flagged: %+v", line, classes(res))
+			}
+		})
+	}
+}
+
 func unified(file string, added []string) string {
 	var b strings.Builder
 	b.WriteString("diff --git a/" + file + " b/" + file + "\n")

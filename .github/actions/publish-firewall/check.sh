@@ -115,5 +115,12 @@ if [ "$status" -eq 0 ]; then
   echo "conclusion=success" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
-echo "conclusion=failure" >> "${GITHUB_OUTPUT:-/dev/null}"
+# Exit 1 is a Hard Rules verdict the scanner reached. Any other non-zero exit
+# is the firewall failing to judge or record one, which is an error rather
+# than a violation. Both fail closed; only the reported conclusion differs.
+if [ "$status" -eq 1 ]; then
+  echo "conclusion=failure" >> "${GITHUB_OUTPUT:-/dev/null}"
+else
+  echo "conclusion=error" >> "${GITHUB_OUTPUT:-/dev/null}"
+fi
 exit 1

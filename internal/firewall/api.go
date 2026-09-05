@@ -13,6 +13,11 @@ import (
 
 const DefaultListen = "127.0.0.1:8787"
 
+// MaxIngestBytes bounds one ingest body. An oversized body is answered 413 so
+// a payload the portal refused is never mistaken for malformed JSON, and the
+// runner can report it as an error rather than a Hard Rules verdict.
+const MaxIngestBytes = 8 << 20
+
 type Server struct {
 	Store      *Store
 	PortalBase string
@@ -69,7 +74,12 @@ func (s *Server) postIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxIngestBytes))
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return

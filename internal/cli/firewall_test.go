@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +69,40 @@ func TestFirewallGitHubCheck_CleanDiffPasses(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "publish-policy ok") {
 		t.Fatalf("stdout=%q", out.String())
+	}
+}
+
+// TestFirewallGitHubCheck_RefusedIngestIsAnErrorNotAViolation covers a large
+// but clean pull request whose ingest the portal refuses: the check still
+// fails closed, but with the exit code the action reports as `error`, so the
+// author is not told their diff carries a Hard Rules value that it does not.
+func TestFirewallGitHubCheck_RefusedIngestIsAnErrorNotAViolation(t *testing.T) {
+	t.Setenv("NM_HOME", t.TempDir())
+	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+	}))
+	t.Cleanup(portal.Close)
+
+	diff := filepath.Join(t.TempDir(), "d.diff")
+	content := "diff --git a/docs.md b/docs.md\n--- a/docs.md\n+++ b/docs.md\n@@ -0,0 +1 @@\n+use 192.0.2.1\n"
+	if err := os.WriteFile(diff, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"firewall", "github-check", "--diff", diff, "--portal-url", portal.URL})
+
+	err := root.Execute()
+	var exit *exitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("want a non-zero exit, got %v stdout=%q", err, out.String())
+	}
+	if exit.code != firewall.ExitError {
+		t.Fatalf("exit=%d, want %d (error, not a Hard Rules violation)", exit.code, firewall.ExitError)
+	}
+	if strings.Contains(out.String(), "192.0.2.1") {
+		t.Fatalf("stdout leaked scanned content: %q", out.String())
 	}
 }
 
