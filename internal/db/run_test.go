@@ -34,6 +34,29 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 }
 
+func TestSetRunReviewFixConfigRecordsSnapshot(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ReviewFixConfigJSON != nil {
+		t.Fatalf("new run snapshot = %v, want nil before setup", run.ReviewFixConfigJSON)
+	}
+	const snapshot = `{"version":1,"enabled":false}`
+	if err := d.SetRunReviewFixConfig(run.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ReviewFixConfigJSON == nil || *stored.ReviewFixConfigJSON != snapshot {
+		t.Fatalf("stored snapshot = %v, want %s", stored.ReviewFixConfigJSON, snapshot)
+	}
+}
+
 func TestRunInsertAndUpdatePreserveBuildIdentity(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
