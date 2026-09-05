@@ -124,7 +124,7 @@ func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	checksJSON := `[
 		{"name":"build","state":"SUCCESS","bucket":"pass"},
 		{"name":"test","state":"FAILURE","bucket":"fail"},
-		{"name":"lint","state":"ACTION_REQUIRED","bucket":"fail"},
+		{"name":"lint","state":"FAILURE","bucket":"fail"},
 		{"name":"deploy","state":"NEUTRAL"}
 	]`
 	env := fakeCIGH(t, "OPEN", checksJSON)

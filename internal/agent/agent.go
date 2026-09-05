@@ -24,6 +24,24 @@ type Agent interface {
 	Close() error
 }
 
+// configurationValidator is an optional adapter preflight for configuration
+// that only the installed harness can resolve, such as a model id against its
+// own resolution in the run's worktree. Pipeline setup invokes it with the
+// worktree the steps will execute in, before any step runs.
+type configurationValidator interface {
+	ValidateConfiguration(ctx context.Context, workDir string) error
+}
+
+// ValidateConfiguration runs an adapter's optional startup preflight against
+// the given run worktree.
+func ValidateConfiguration(ctx context.Context, a Agent, workDir string) error {
+	validator, ok := a.(configurationValidator)
+	if !ok {
+		return nil
+	}
+	return validator.ValidateConfiguration(ctx, workDir)
+}
+
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt string
@@ -286,11 +304,28 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
+		return nil, &malformedAgentOutputError{agent: agentName, cause: err, snippet: outputSnippet(text)}
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 }
+
+// malformedAgentOutputError marks a successful agent process whose final
+// payload could not satisfy the requested structured-output boundary. Keeping
+// this typed lets the Pi adapter treat such a payload as terminal even when
+// its text mentions a transient-looking status (for example "503"), while
+// every other adapter keeps the shared prose-retry behavior.
+type malformedAgentOutputError struct {
+	agent   string
+	cause   error
+	snippet string
+}
+
+func (e *malformedAgentOutputError) Error() string {
+	return fmt.Sprintf("%s output parse: %v (output snippet: %q)", e.agent, e.cause, e.snippet)
+}
+
+func (e *malformedAgentOutputError) Unwrap() error { return e.cause }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for
 // inclusion in parse-failure errors. Without it, errors like "invalid
@@ -1060,6 +1095,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
 		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
+	rawExtraArgs := extraArgs
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob
 	// the raw args already pin natively is not emitted at all (see agentcfg),
@@ -1082,9 +1118,16 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentPi:
+		modelSource := ""
+		if piFlagValue(rawExtraArgs, "--model") != "" {
+			modelSource = "agent_args_override.pi"
+		} else if opts.Profile.Model != "" {
+			modelSource = "agent_config.pi.model"
+		}
 		return &piAgent{
 			bin:                    bin,
 			extraArgs:              extraArgs,
+			modelSource:            modelSource,
 			disableProjectSettings: opts.DisableProjectSettings,
 			subprocessContext:      newSubprocessContext(opts.Environment),
 		}, nil

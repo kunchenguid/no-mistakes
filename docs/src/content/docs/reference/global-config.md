@@ -142,6 +142,7 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
+A configuration preflight failure during agent creation (currently Pi's model validation, which only the installed harness can resolve) also fails the gate before its first pipeline step rather than falling back, because the harness-specific configuration it checks does not transfer to another entry.
 
 ### acpx_path
 

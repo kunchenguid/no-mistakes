@@ -2,15 +2,24 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"testing"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
@@ -20,6 +29,9 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// modelSource names the no-mistakes setting that supplied --model. Empty
+	// means Pi's own settings.json default is authoritative when present.
+	modelSource string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
@@ -34,6 +46,447 @@ func (a *piAgent) SupportsSessionResume() bool { return true }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
 
+// ValidateConfiguration checks the configured Pi model inside the run worktree
+// before pipeline steps start, using the resolution semantics Pi applies to
+// each source. An explicit --model pattern is resolved by Pi's own CLI
+// resolver (exact ids, case-insensitive substrings, display-name matches,
+// aliases, and deterministic latest-version ambiguity) through a throwaway RPC
+// session with no prompt. Pi is probed against its offline catalogue first so
+// a cached answer costs no network access; an offline miss is re-probed
+// through Pi's online resolution, and setup fails only when pi's model
+// catalogue is reachable and pi still rejects the pattern there, because an
+// unreachable catalogue means the probe cannot verify the model at all. A
+// settings default instead follows Pi's provider-plus-model startup path,
+// which silently falls back on anything it cannot use, so a default that is
+// absent, inert, or missing from Pi's catalogue only produces a warning naming
+// the settings file. Project packages and extensions that register models are
+// part of checks run in the worktree unless the trusted project-settings
+// opt-out suppresses them for both preflight and the later agent turn.
+func (a *piAgent) ValidateConfiguration(ctx context.Context, workDir string) error {
+	model := piFlagValue(a.extraArgs, "--model")
+	provider := piFlagValue(a.extraArgs, "--provider")
+	source := a.modelSource
+	explicit := model != ""
+	if explicit && source == "" {
+		source = "Pi --model option"
+	}
+	if !explicit {
+		selection, trust := piSettingsModel(workDir, a.extraArgs, a.overlay())
+		if selection.model == "" {
+			return nil
+		}
+		if selection.project && trust == piTrustUndetermined {
+			slog.Warn("pi project settings default may be inert: Pi has not recorded a trust decision for this worktree and may ignore the project copy and fall back to another model",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
+		}
+		catalogue, catalogueErr := a.piModelCatalogue(ctx, workDir)
+		switch {
+		case catalogueErr != nil:
+			slog.Warn("pi model catalogue could not be produced; the settings default was not verified",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model), "error", catalogueErr.Error())
+		case piCatalogueHasModel(selection.provider, selection.model, catalogue):
+			return nil
+		default:
+			slog.Warn("pi settings default model was not found in pi's cached offline catalogue; the online catalogue was not checked, and pi will try to refresh it at startup before choosing a fallback",
+				"file", selection.source, "model", piQualifiedModel(selection.provider, selection.model))
+		}
+		return nil
+	}
+
+	// Pi's offline catalogue is only a cache: an online run refreshes it from
+	// the network and falls back silently when that is impossible. Probe
+	// offline first so a cached answer costs no network access, then let pi's
+	// online resolution own the verdict: an offline miss can be a stale cache,
+	// and an inconclusive probe on either side is not evidence about the model.
+	offline := a.probeModelResolution(ctx, workDir, true)
+	if offline.resolved {
+		return nil
+	}
+	online := a.probeModelResolution(ctx, workDir, false)
+	if online.resolved {
+		return nil
+	}
+	if online.rejected && piCatalogReachable() {
+		return fmt.Errorf("validate pi model %q from %s: %s", piQualifiedModel(provider, model), source, online.detail)
+	}
+	slog.Warn("pi model catalogue verification was not possible; continuing without rejecting the model",
+		"model", piQualifiedModel(provider, model), "source", source, "detail", online.detail)
+	return nil
+}
+
+// piProbeOutcome classifies one model-resolution probe. Only a clean non-zero
+// exit from pi itself is its verdict; a probe that could not run is not
+// evidence about the model.
+type piProbeOutcome struct {
+	resolved bool
+	rejected bool
+	detail   string
+}
+
+// probeModelResolution runs one throwaway pi session that resolves the
+// configured model and exits once stdin closes.
+func (a *piAgent) probeModelResolution(ctx context.Context, workDir string, offline bool) piProbeOutcome {
+	probeCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
+	defer cancel()
+	args := a.invocationArgs()
+	if offline {
+		args = append(args, "--offline")
+	}
+	args = append(args, "--mode", "rpc", "--no-session")
+	cmd := exec.CommandContext(probeCtx, a.bin, args...)
+	cmd.Dir = workDir
+	cmd.Env = a.overlay().Apply(nil)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	shellenv.ConfigureShellCommand(cmd)
+	if err := shellenv.RunShellCommand(cmd); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		// A killed probe reports like a non-zero exit, so the deadline is
+		// checked first: a probe that never finished is inconclusive evidence.
+		if probeCtx.Err() != nil {
+			return piProbeOutcome{detail: fmt.Sprintf("pi model probe did not finish: %v", probeCtx.Err())}
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.Exited() {
+			if detail == "" {
+				detail = exitErr.String()
+			}
+			return piProbeOutcome{rejected: true, detail: detail}
+		}
+		return piProbeOutcome{detail: err.Error()}
+	}
+	return piProbeOutcome{resolved: true}
+}
+
+// piProbeTimeout bounds one model-resolution probe. The real run has no such
+// cap, so an expiry is an inconclusive probe, never a model verdict.
+var piProbeTimeout = 20 * time.Second
+
+// piCatalogEndpoint is pi's default model-catalog host. pi refreshes its
+// catalogue from there at online startup and falls back to its cache without
+// saying so, so only a reachable catalog makes an online rejection trustworthy.
+var piCatalogEndpoint = "pi.dev:443"
+
+// SetPiCatalogEndpointForTest points the catalogue reachability check at a
+// local listener (reachable) or a closed port (unreachable) so tests outside
+// this package never dial the real catalog host.
+func SetPiCatalogEndpointForTest(t *testing.T, reachable bool) {
+	t.Helper()
+	previous := piCatalogEndpoint
+	t.Cleanup(func() { piCatalogEndpoint = previous })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reachable {
+		t.Cleanup(func() { listener.Close() })
+		piCatalogEndpoint = listener.Addr().String()
+		return
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	piCatalogEndpoint = addr
+}
+
+func piCatalogReachable() bool {
+	conn, err := net.DialTimeout("tcp", piCatalogEndpoint, 3*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+type piModelSelection struct {
+	provider string
+	model    string
+	source   string
+	// project reports whether the model value itself came from the run
+	// worktree's project settings, whose copy Pi honors only for a project it
+	// trusts.
+	project bool
+}
+
+// piTrustState classifies whether Pi would honor the worktree's project
+// settings for a trusted project.
+type piTrustState int
+
+const (
+	piTrustUndetermined piTrustState = iota
+	piTrustTrusted
+	piTrustUntrusted
+)
+
+// piSettingsModel reads Pi's configured default model the way Pi merges its
+// settings: the project's .pi/settings.json overrides the global agent
+// settings.json per key. Pi's startup path resolves that default by exact
+// provider and model id and silently falls back whenever the file cannot be
+// loaded, the project copy is untrusted, or either key is missing, so every
+// such case is reported as a warning naming the file and yields no model to
+// validate instead of failing setup. The returned trust state says whether Pi
+// would honor the project copy, so the caller can explain a project default
+// that may be inert.
+func piSettingsModel(workDir string, extraArgs []string, overlay runenv.Overlay) (piModelSelection, piTrustState) {
+	read := func(path string) (string, string, string, error) {
+		var settings struct {
+			DefaultProvider     string `json:"defaultProvider"`
+			DefaultModel        string `json:"defaultModel"`
+			DefaultProjectTrust string `json:"defaultProjectTrust"`
+		}
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", "", nil
+		}
+		if err != nil {
+			return "", "", "", fmt.Errorf("read Pi model setting from %s: %w", path, err)
+		}
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return "", "", "", fmt.Errorf("parse Pi model setting from %s: %w", path, err)
+		}
+		return strings.TrimSpace(settings.DefaultProvider), strings.TrimSpace(settings.DefaultModel), strings.TrimSpace(settings.DefaultProjectTrust), nil
+	}
+
+	globalPath := piGlobalSettingsPath(overlay)
+	globalProvider, globalModel, defaultProjectTrust, err := read(globalPath)
+	if err != nil {
+		slog.Warn("ignoring Pi global settings Pi cannot load; pi proceeds with its own model fallback", "file", globalPath, "error", err)
+		globalProvider, globalModel, defaultProjectTrust = "", "", ""
+	}
+	trust := piProjectTrust(workDir, extraArgs, overlay, defaultProjectTrust)
+
+	projectPath := filepath.Join(workDir, ".pi", "settings.json")
+	projectProvider, projectModel, _, projectErr := read(projectPath)
+	if projectErr != nil {
+		slog.Warn("ignoring Pi project settings Pi cannot load; the file is inert", "file", projectPath, "error", projectErr)
+		projectProvider, projectModel = "", ""
+	} else if trust == piTrustUntrusted {
+		slog.Warn("ignoring Pi project settings: Pi does not trust this project, so the file is inert", "file", projectPath)
+		projectProvider, projectModel = "", ""
+	}
+
+	model, provider := globalModel, globalProvider
+	source := globalPath + " (defaultProvider/defaultModel)"
+	project := false
+	if projectModel != "" {
+		model = projectModel
+		source = projectPath + " (defaultProvider/defaultModel)"
+		project = true
+	}
+	if projectProvider != "" {
+		provider = projectProvider
+	}
+	if model == "" {
+		return piModelSelection{}, trust
+	}
+	if provider == "" {
+		// Pi's startup path uses defaultProvider and defaultModel together and
+		// falls back to its first available model when either is missing.
+		slog.Warn("ignoring Pi defaultModel without defaultProvider; pi will fall back to its first available model", "file", source, "model", model)
+		return piModelSelection{}, trust
+	}
+	return piModelSelection{provider: provider, model: model, source: source, project: project}, trust
+}
+
+// piModelCatalogue lists the provider and model id columns of pi --list-models
+// from inside the run worktree, where project packages and extensions can
+// register additional models. A listing that cannot be produced is reported as
+// an error so the caller can treat the check as undetermined instead of
+// claiming the model is absent.
+func (a *piAgent) piModelCatalogue(ctx context.Context, workDir string) ([]string, error) {
+	catalogueCtx, cancel := context.WithTimeout(ctx, piProbeTimeout)
+	defer cancel()
+	args := a.invocationArgs()
+	args = append(args, "--offline", "--list-models")
+	cmd := exec.CommandContext(catalogueCtx, a.bin, args...)
+	cmd.Dir = workDir
+	cmd.Env = a.overlay().Apply(nil)
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
+	if err != nil {
+		if catalogueCtx.Err() != nil {
+			return nil, fmt.Errorf("pi model catalogue listing did not finish: %w", catalogueCtx.Err())
+		}
+		return nil, err
+	}
+	var models []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.EqualFold(fields[0], "provider") {
+			continue
+		}
+		models = append(models, fields[0]+"/"+fields[1])
+	}
+	return models, nil
+}
+
+// piCatalogueHasModel reports whether Pi's catalogue contains the exact
+// provider and model id pair its startup default lookup requires.
+func piCatalogueHasModel(provider, model string, catalogue []string) bool {
+	for _, entry := range catalogue {
+		if entry == provider+"/"+model {
+			return true
+		}
+	}
+	return false
+}
+
+// piProjectTrust classifies whether Pi would honor the worktree's project
+// settings for a trusted project, mirroring Pi's own resolution order for a
+// non-interactive run: the --approve/--no-approve override (last occurrence
+// wins), the recorded decision for the worktree or its nearest ancestor in the
+// agent trust store, and finally the global defaultProjectTrust setting. With
+// none of those recorded, Pi's outcome depends on its trust prompt or project
+// extensions, so trust is undetermined.
+func piProjectTrust(workDir string, extraArgs []string, overlay runenv.Overlay, defaultProjectTrust string) piTrustState {
+	override := piTrustUndetermined
+	for i := 0; i < len(extraArgs); i++ {
+		switch extraArgs[i] {
+		case "--approve", "-a":
+			override = piTrustTrusted
+		case "--no-approve", "-na":
+			override = piTrustUntrusted
+		}
+		if piArgTakesValue(extraArgs[i]) {
+			i++
+		}
+	}
+	if override != piTrustUndetermined {
+		return override
+	}
+	if decision, ok := piTrustStoreDecision(piAgentDir(overlay), workDir); ok {
+		if decision {
+			return piTrustTrusted
+		}
+		return piTrustUntrusted
+	}
+	switch defaultProjectTrust {
+	case "always":
+		return piTrustTrusted
+	case "never":
+		return piTrustUntrusted
+	}
+	return piTrustUndetermined
+}
+
+// piTrustStoreDecision reads Pi's agent trust store (trust.json mapping
+// canonical project paths to trust decisions) and reports the recorded
+// decision for the worktree or its nearest ancestor. A store that cannot be
+// read or parsed leaves the outcome undetermined.
+func piTrustStoreDecision(agentDir, workDir string) (bool, bool) {
+	data, err := os.ReadFile(filepath.Join(agentDir, "trust.json"))
+	if err != nil {
+		return false, false
+	}
+	var entries map[string]*bool
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return false, false
+	}
+	cwd, err := filepath.Abs(workDir)
+	if err != nil {
+		return false, false
+	}
+	if resolved, linkErr := filepath.EvalSymlinks(cwd); linkErr == nil {
+		cwd = resolved
+	}
+	for {
+		if decision, ok := entries[cwd]; ok && decision != nil {
+			return *decision, true
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			return false, false
+		}
+		cwd = parent
+	}
+}
+
+func piGlobalSettingsPath(overlay runenv.Overlay) string {
+	return filepath.Join(piAgentDir(overlay), "settings.json")
+}
+
+func piAgentDir(overlay runenv.Overlay) string {
+	agentDir := strings.TrimSpace(piEnvironmentValue(overlay, "PI_CODING_AGENT_DIR"))
+	if agentDir == "" {
+		home := strings.TrimSpace(piEnvironmentValue(overlay, "HOME"))
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		agentDir = filepath.Join(home, ".pi", "agent")
+	} else if strings.HasPrefix(agentDir, "~"+string(filepath.Separator)) {
+		home := strings.TrimSpace(piEnvironmentValue(overlay, "HOME"))
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		agentDir = filepath.Join(home, strings.TrimPrefix(agentDir, "~"+string(filepath.Separator)))
+	}
+	return agentDir
+}
+
+func piEnvironmentValue(overlay runenv.Overlay, key string) string {
+	for configuredKey, value := range overlay.Set {
+		if piEnvironmentKeysEqual(configuredKey, key) {
+			return value
+		}
+	}
+	for _, unset := range overlay.Unset {
+		if piEnvironmentKeysEqual(unset, key) {
+			return ""
+		}
+	}
+	return os.Getenv(key)
+}
+
+// Match runenv.Overlay.Apply: Windows environment keys are case-insensitive,
+// while Unix keys with different casing are distinct variables.
+func piEnvironmentKeysEqual(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func piFlagValue(args []string, flag string) string {
+	value := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == flag && i+1 < len(args) {
+			value = strings.TrimSpace(args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, flag+"=") {
+			value = strings.TrimSpace(strings.TrimPrefix(arg, flag+"="))
+			continue
+		}
+		if piArgTakesValue(arg) {
+			i++
+		}
+	}
+	return value
+}
+
+func piQualifiedModel(provider, model string) string {
+	model = strings.TrimSpace(model)
+	provider = strings.TrimSpace(provider)
+	if provider == "" || strings.HasPrefix(model, provider+"/") {
+		return model
+	}
+	return provider + "/" + model
+}
+
+// piClassifyTransient keeps a clean Pi payload that failed the
+// structured-output boundary terminal: that payload is the evidence to
+// diagnose, and its own text (for example a quoted "503") must not be mistaken
+// for a transport failure and replayed. Pi is the only adapter with this
+// suppression; every other adapter keeps the shared prose-retry behavior.
+func piClassifyTransient(err error) (string, bool) {
+	var malformed *malformedAgentOutputError
+	if errors.As(err, &malformed) {
+		return "", false
+	}
+	return classifyTransient(err)
+}
+
 // NeutralizesGateInstructions reports whether pi is currently launched with the
 // target repo's project agent-instruction files suppressed. It is meaningful
 // only under the opt-out (disableProjectSettings): the gate only consults it
@@ -47,7 +500,7 @@ func (a *piAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
+	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, piClassifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
 }
@@ -168,7 +621,23 @@ func piStdinError(err error) error {
 // Under the project-settings opt-out, the context-file suppression flag comes
 // first. User extras otherwise precede managed JSON/session flags.
 func (a *piAgent) buildArgs(session *SessionRef) []string {
-	args := make([]string, 0, len(a.extraArgs)+5)
+	args := a.invocationArgs()
+	args = append(args, "--mode", "json")
+	switch {
+	case session == nil:
+		args = append(args, "--no-session")
+	case session.ID != "":
+		args = append(args, "--session", session.ID)
+	}
+	return args
+}
+
+// invocationArgs applies the trusted project-settings policy to every Pi
+// process, including setup preflight. Suppression must be first so a pushed
+// worktree cannot load project instructions, packages, or extensions before
+// the neutralized agent turn begins.
+func (a *piAgent) invocationArgs() []string {
+	args := make([]string, 0, len(a.extraArgs)+1)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
 	// (firstmate) cannot install a fleet-captain identity on the gate agent.
@@ -188,13 +657,6 @@ func (a *piAgent) buildArgs(session *SessionRef) []string {
 		if i != pinIndex {
 			args = append(args, arg)
 		}
-	}
-	args = append(args, "--mode", "json")
-	switch {
-	case session == nil:
-		args = append(args, "--no-session")
-	case session.ID != "":
-		args = append(args, "--session", session.ID)
 	}
 	return args
 }

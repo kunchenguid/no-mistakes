@@ -2137,6 +2137,61 @@ func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *te
 	}
 }
 
+// A fork workflow held for maintainer approval never ran repository code. Even
+// with both retry and CI auto-fix budgets available, the monitor must park with
+// that diagnosis instead of spending either budget on a nonexistent failure.
+func TestCIStep_ActionRequiredParksWithoutRerunOrAutoFix(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	held := `[{"name":"PR must be raised via no-mistakes","state":"ACTION_REQUIRED","bucket":"fail","link":"https://github.com/test/repo/actions/runs/3332"}]`
+	env, logFile := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{held}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/3332"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	outcome, err := (&steps.CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("action_required outcome = %+v, want non-auto-fixable approval", outcome)
+	}
+	if len(ag.Calls) != 0 {
+		t.Fatalf("action_required launched %d fix-agent rounds, want none", len(ag.Calls))
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("action_required triggered a provider rerun, gh log:\n%s", ghLog(t, logFile))
+	}
+
+	var findings types.Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if findings.Summary != "CI workflows are waiting for maintainer approval" || len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want one maintainer-approval diagnosis", findings)
+	}
+	description := findings.Items[0].Description
+	if !strings.Contains(description, "did not run") || !strings.Contains(description, "waiting for a maintainer") {
+		t.Fatalf("description = %q, want explicit not-run maintainer diagnosis", description)
+	}
+
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("action_required must not mark the PR ready to merge")
+	}
+}
+
 // Incident replay (firstmate PR 1495, 2026-08-02): the pipeline pushed its fix
 // commits, GitHub ran the resulting workflow, every job finished, and one of
 // them ended CANCELLED (GitHub reports a job that exceeds its timeout-minutes

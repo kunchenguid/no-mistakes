@@ -111,6 +111,8 @@ Symptom: `doctor` reports that gate validation is unavailable, or a run fails be
 This is a hard failure, not a degraded validation mode.
 `no-mistakes` will not silently skip review, test evidence, documentation, or agent-assisted lint and report the remaining work as a passed gate.
 
+A second hard failure at the same point is an agent configuration preflight, currently Pi's model validation (`validate agent pi configuration` in the run error); the [Pi section](/no-mistakes/guides/agents/#pi) owns what is checked and when setup fails versus continues.
+
 ### Check PATH
 
 The daemon uses the same binary-discovery order described in [Choosing an Agent](/no-mistakes/guides/agents/). When it's running through a managed service, it reloads `PATH` from your login shell on macOS and Linux and appends common install locations such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.

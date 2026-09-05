@@ -31,6 +31,9 @@ const (
 	// this version does not recognize. It never earns a rerun: an
 	// indeterminate state is not evidence of a transient one.
 	classUnknown failureClass = "unknown"
+	// classManual is a provider hold that never ran repository code and only a
+	// human can release. It is neither a job failure nor a rerun candidate.
+	classManual failureClass = "manual"
 )
 
 // classifyCheckFailure maps a check to the class that decides whether a
@@ -64,7 +67,9 @@ func classifyCheckFailure(check scm.Check) failureClass {
 	switch strings.ToUpper(strings.TrimSpace(check.State)) {
 	case "CANCELLED", "CANCELED":
 		return classTransient
-	case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE":
+	case "ACTION_REQUIRED":
+		return classManual
+	case "FAILURE", "FAILED", "ERROR", "TIMED_OUT", "STARTUP_FAILURE":
 		return classGenuine
 	default:
 		// Includes the empty state: a provider that reported a failed bucket
@@ -692,16 +697,20 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 func ciUnresolvedCancelledOutcome(names []string, checks []scm.Check, reruns func(string) int) *pipeline.StepOutcome {
 	unresolved := unresolvedTransientChecks(names, checks)
 	preRunCount := 0
+	actionRequiredCount := 0
 	for _, check := range unresolved {
 		if check.PreRunFailure {
 			preRunCount++
 		}
+		if classifyCheckFailure(check) == classManual {
+			actionRequiredCount++
+		}
 	}
-	findings := Findings{Summary: unresolvedTransientSummary(len(unresolved), preRunCount)}
+	findings := Findings{Summary: unresolvedTransientSummary(len(unresolved), preRunCount, actionRequiredCount)}
 	for _, check := range unresolved {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
-			Description: unresolvedTransientDescription(check.Name, reruns(check.Name), check.PreRunFailure),
+			Description: unresolvedTransientDescription(check, reruns(check.Name)),
 			Action:      types.ActionAskUser,
 		})
 	}
@@ -735,8 +744,10 @@ func unresolvedTransientChecks(names []string, checks []scm.Check) []scm.Check {
 	return unresolved
 }
 
-func unresolvedTransientSummary(total, preRun int) string {
+func unresolvedTransientSummary(total, preRun, actionRequired int) string {
 	switch {
+	case total > 0 && actionRequired == total:
+		return "CI workflows are waiting for maintainer approval"
 	case total > 0 && preRun == total:
 		return "CI checks failed before repository steps ran"
 	case preRun > 0:
@@ -746,17 +757,20 @@ func unresolvedTransientSummary(total, preRun int) string {
 	}
 }
 
-func unresolvedTransientDescription(name string, reruns int, preRunFailure bool) string {
-	if preRunFailure {
+func unresolvedTransientDescription(check scm.Check, reruns int) string {
+	if classifyCheckFailure(check) == classManual {
+		return fmt.Sprintf("CI workflow did not run: %s - the provider reported action_required, so it is waiting for a maintainer rather than a code fix", check.Name)
+	}
+	if check.PreRunFailure {
 		if reruns > 0 {
-			return fmt.Sprintf("CI check failed during setup again after its rerun: %s - repository steps never ran, so it needs a decision rather than a code fix", name)
+			return fmt.Sprintf("CI check failed during setup again after its rerun: %s - repository steps never ran, so it needs a decision rather than a code fix", check.Name)
 		}
-		return fmt.Sprintf("CI check failed during setup before repository steps ran: %s - no rerun is outstanding to replace that result, so it needs a decision rather than a code fix", name)
+		return fmt.Sprintf("CI check failed during setup before repository steps ran: %s - no rerun is outstanding to replace that result, so it needs a decision rather than a code fix", check.Name)
 	}
 	if reruns > 0 {
-		return fmt.Sprintf("CI check cancelled again after its rerun: %s - the provider cancelled it rather than reporting a job failure, so it needs a decision rather than a code fix", name)
+		return fmt.Sprintf("CI check cancelled again after its rerun: %s - the provider cancelled it rather than reporting a job failure, so it needs a decision rather than a code fix", check.Name)
 	}
-	return fmt.Sprintf("CI check cancelled without a verdict: %s - the provider cancelled it rather than reporting a job failure, and no rerun is outstanding to replace that result, so it needs a decision rather than a code fix", name)
+	return fmt.Sprintf("CI check cancelled without a verdict: %s - the provider cancelled it rather than reporting a job failure, and no rerun is outstanding to replace that result, so it needs a decision rather than a code fix", check.Name)
 }
 
 func ciRerunHeadMismatchOutcome(expected, observed string) *pipeline.StepOutcome {
