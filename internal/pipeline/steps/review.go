@@ -17,32 +17,14 @@ import (
 )
 
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
-type ReviewStep struct{}
+type ReviewStep struct {
+	now func() time.Time
+}
 
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	var cancel context.CancelFunc
-	var timeout time.Duration
-	var restoreContext func()
-	startReviewTimeout := func() {
-		if cancel != nil {
-			return
-		}
-		parentCtx := sctx.Ctx
-		ctx, cancel, timeout = reviewAgentContext(sctx)
-		sctx.Ctx = ctx
-		restoreContext = func() {
-			cancel()
-			sctx.Ctx = parentCtx
-		}
-	}
-	defer func() {
-		if restoreContext != nil {
-			restoreContext()
-		}
-	}()
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -104,7 +86,6 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// unresolved.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
-		startReviewTimeout()
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -144,7 +125,11 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
-		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		// Every logical agent turn owns a fresh hard wall-clock limit. The
+		// fixer keeps the step parent for synchronous preparation and commit
+		// work, so the independent rereviewer cannot inherit its spent
+		// deadline.
+		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
 			LogMessage:              "asking agent to fix identified issues...",
@@ -156,7 +141,7 @@ Previous review findings to address:
 			Workload:                workload,
 		})
 		if err != nil {
-			return nil, reviewAgentError(ctx, timeout, "agent fix", err)
+			return nil, err
 		}
 		fixSummary = summary
 	}
@@ -191,9 +176,10 @@ Previous review findings to address:
 		})
 	}
 
-	// Ask agent to review
+	// Ask agent to review. This fresh deadline is invocation-owned: a
+	// successful fixer above cannot consume any of this independent,
+	// session-free turn's review_agent_timeout allowance.
 	sctx.Log("reviewing changes...")
-	startReviewTimeout()
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -344,7 +330,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+	result, err := s.runReviewAgent(sctx, "agent review", "", agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -354,7 +340,7 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	})
 	if err != nil {
-		return nil, reviewAgentError(ctx, timeout, "agent review", err)
+		return nil, err
 	}
 
 	// Parse structured findings. A review that produced no structured output,
@@ -517,24 +503,47 @@ func sanitizePromptMultilineText(text string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func reviewAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
-	timeout := config.DefaultReviewAgentTimeout
-	if sctx != nil && sctx.Config != nil && sctx.Config.ReviewAgentTimeout > 0 {
-		timeout = sctx.Config.ReviewAgentTimeout
+func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
+	role := opts.SessionRole
+	prefix := opts.ErrorPrefix
+	opts.ErrorPrefix = ""
+	opts.RunAgent = func(runOpts agent.RunOpts) (*agent.Result, error) {
+		return s.runReviewAgent(sctx, prefix, role, runOpts)
 	}
-	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errReviewAgentTimeout)
+	return executeFixMode(sctx, stepName, opts)
+}
+
+func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+	ctx, cancel, timeout := s.reviewAgentContext(sctx.Ctx, sctx.Config)
+	defer cancel()
+	result, err := sctx.RunAgentSessionContext(ctx, role, opts)
+	if err != nil {
+		err = reviewAgentError(ctx, timeout, prefix, err)
+	}
+	return result, err
+}
+
+func (s *ReviewStep) reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := config.DefaultReviewAgentTimeout
+	if cfg != nil && cfg.ReviewAgentTimeout > 0 {
+		timeout = cfg.ReviewAgentTimeout
+	}
+	now := time.Now()
+	if s != nil && s.now != nil {
+		now = s.now()
+	}
+	ctx, cancel := context.WithDeadlineCause(parent, now.Add(timeout), errReviewAgentTimeout)
 	return ctx, cancel, timeout
 }
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
-// reviewAgentError renders a review-round budget expiry. The measured activity
-// evidence comes from the shared agent-run seam; the budget is never restated
-// as if it were the silence, because the two are different facts and only one
-// of them was observed.
+// reviewAgentError renders one review invocation's absolute wall-clock expiry.
+// The measured activity evidence comes from the shared agent-run seam; the hard
+// limit is never restated as inactivity because activity does not reset it.
 func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
+		return fmt.Errorf("%s reached its absolute wall-clock limit after %s: %w", prefix, timeout, err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }
