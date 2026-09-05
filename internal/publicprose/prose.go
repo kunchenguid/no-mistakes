@@ -15,6 +15,10 @@ var address = regexp.MustCompile(`(?im)(^[^\pL\pN\r\n]*?|[.!?:][ \t]+|[ \t]+-[ \
 
 var codeTokens = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|(?i:<pre\b[^>]*>.*?(?:</pre\s*>|$)|<code\b[^>]*>.*?(?:</code\s*>|$))|<[^>\n]*>|` + "`+")
 var listMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`)
+
+// Headings and nonempty list items interrupt a quoted paragraph's lazy
+// continuation. Ordered lists can interrupt only when they start at one.
+var blockquoteBreak = regexp.MustCompile(`^ {0,3}(?:#{1,6}(?:[ \t]|$)|(?:[-+*]|1[.)])[ \t]+\S)`)
 var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’]`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining
@@ -54,12 +58,13 @@ func Text(text string) string {
 				fence = ""
 			}
 		case marker != "":
+			blockquote = false
 			fence = marker
 			protect(offset, offset+len(line))
 		case strings.HasPrefix(trimmed, ">"):
 			blockquote = true
 			protect(offset, offset+len(line))
-		case trimmed == "":
+		case trimmed == "" || blockquoteBreak.MatchString(line):
 			blockquote = false
 		case blockquote, strings.HasPrefix(line, "    "), strings.HasPrefix(line, "\t"):
 			protect(offset, offset+len(line))

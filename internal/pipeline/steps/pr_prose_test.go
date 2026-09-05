@@ -64,6 +64,27 @@ func TestPRStep_OperatorAddressBeforeTitleInference(t *testing.T) {
 	}
 }
 
+func TestRedactPRContent_OperatorAddressBlockquoteBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, input, want string }{
+		{"reported heading", "> note\n## Captain, next steps", "> note\n## next steps"},
+		{"heading and following prose", "> Captain, quoted\n## Captain, next steps\nCaptain: finish cleanup", "> Captain, quoted\n## next steps\nfinish cleanup"},
+		{"bullet list", "> Captain, quoted\n- Captain, next steps", "> Captain, quoted\n- next steps"},
+		{"ordered list", "> Captain, quoted\n1. Captain, next steps", "> Captain, quoted\n1. next steps"},
+		{"fence and following prose", "> note\n```text\nCaptain, literal\n```\nCaptain: finish cleanup", "> note\n```text\nCaptain, literal\n```\nfinish cleanup"},
+		{"paragraph continuation", "> Captain, quoted\nCaptain: continued quote", "> Captain, quoted\nCaptain: continued quote"},
+		{"explicit quoted blocks", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item"},
+		{"noninterrupting number", "> note\n2. Captain, quoted continuation", "> note\n2. Captain, quoted continuation"},
+		{"nonheading hash", "> note\n##Captain, quoted continuation", "> note\n##Captain, quoted continuation"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
+				t.Errorf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRStep_OperatorAddress(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
@@ -137,6 +158,11 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 		want                  []string
 	}
 	cases := []renderCase{
+		{
+			name: "blockquote followed by heading and list",
+			body: "> Captain, quoted evidence\n## Captain, next steps\n- Captain: finish cleanup",
+			want: []string{"> Captain, quoted evidence\n## next steps\n- finish cleanup"},
+		},
 		{
 			name:         "markup inside captured output",
 			artifacts:    []types.TestArtifact{{Kind: "command-output", Label: "Captured output", Content: "<code>\nCaptain: literal output"}},
