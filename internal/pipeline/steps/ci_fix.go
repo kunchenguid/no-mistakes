@@ -129,6 +129,15 @@ CI logs:
 	if reviewCommentsSection != "" {
 		prompt += reviewCommentsSection
 	}
+	// Recorded human decisions, before the user intent and in the same order
+	// every other fix-capable step composes them. The intent is frozen at run
+	// start, so it always predates any decision a human made at a later gate;
+	// without this section a CI repair could only satisfy the pre-decision
+	// wording and would re-apply exactly what the human ruled against - for a
+	// decision made at an earlier gate, at an earlier run on this branch, or
+	// at the CI step's own gate. The rows are already loaded onto this context
+	// by pipeline.BindBranchDecisions, which the executor runs for every step.
+	prompt += roundHistoryPromptSection(sctx)
 	prompt += userIntentPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = fixerPrompt(testguidance.LateRepairPrompt(string(s.Name()), prompt))
