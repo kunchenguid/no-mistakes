@@ -326,6 +326,7 @@ type StepResultInfo struct {
 	// step's live checks were still failing). See
 	// pipeline.ApprovalOverrideVerifier and db.StepResult.OverrideReason.
 	OverrideReason string `json:"override_reason,omitempty"`
+	SkipReason     string `json:"skip_reason,omitempty"`
 }
 
 // --- Events (for subscribe stream) ---

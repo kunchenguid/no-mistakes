@@ -57,17 +57,16 @@ func outcomeFor(status string) string {
 	}
 }
 
-// outcomeForRun wraps outcomeFor with the one qualification a plain status
-// can't express: a human approved past a live check that was still failing
-// (rv.CIOverrideReason, see pipeline.ApprovalOverrideVerifier). Without this,
-// "outcome=passed" reads identically whether every check genuinely went green
-// or an operator deliberately overrode a red one - the exact ambiguity this
-// fix exists to remove. Only RunCompleted is qualified: a failed, cancelled,
-// or interrupted run already reads as non-clean and needs no further marker.
+// outcomeForRun qualifies completed runs whose external checks were overridden
+// or whose publication/verification automatically skipped. Explicit per-run
+// skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
 	word := outcomeFor(rv.Status)
 	if word == "passed" && rv.CIOverrideReason != "" {
 		return "passed-with-override"
+	}
+	if word == "passed" && len(rv.automaticSkips()) > 0 {
+		return "passed-with-skips"
 	}
 	return word
 }
@@ -755,6 +754,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		var help []string
 		if rv.CIOverrideReason != "" {
 			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+		}
+		if len(rv.automaticSkips()) > 0 {
+			help = append(help, "Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.")
 		}
 		if rv.PRURL != "" {
 			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))

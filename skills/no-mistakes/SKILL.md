@@ -222,7 +222,12 @@ Run the pipeline and decide on its findings as they come up:
      check list without that declaration is not ready. no-mistakes keeps
      monitoring the PR in the background until it is merged, closed, or its
      configured idle timeout elapses, so a human can watch it in the TUI.
-   - `passed` - the changes cleared the gate and the PR was merged or closed.
+   - `passed` - the pipeline completed under the requested steps, including any
+     explicit per-run skips. This alone is not evidence that a PR was merged.
+   - `passed-with-skips` - publication or CI verification automatically skipped.
+     Report the missing evidence and its cause from `run.automatic_skips`,
+     bound to the full `run.head_sha`. This is neither CI readiness nor a
+     failing code verdict. Explicit per-run skips retain their existing behavior.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Follow the custody guidance below before fixing whatever the output
      points at (a failing test, a lint error, a finding you skipped). Commit the
@@ -355,6 +360,6 @@ Read the `action` column per row: decide `r1` (auto-fix) on your own
 judgment - `respond --action fix --findings r1` hands it to the pipeline to
 fix - but stop and escalate `r2` (ask-user) to the user before responding. A
 final state
-instead shows `outcome: <checks-passed|passed|failed|cancelled>` with no
+instead shows `outcome: <checks-passed|passed|passed-with-skips|failed|cancelled>` with no
 `findings` table. Field names and exact columns can vary by step and version,
 so read the actual `findings` header rather than assuming this layout.

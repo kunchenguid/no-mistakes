@@ -134,8 +134,9 @@ Treat that as the agent stopping point: ask the user to review and merge the PR 
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push; a PR that is merely behind but clean needs no command.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
-Successful outcomes (`checks-passed`, `passed`, and `passed-with-override`) also carry `help` instructions telling the agent to summarize the run.
+Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
 `passed-with-override` is a completed run whose CI approval gate was approved by a human while a live check was still failing; it stays a success but reads distinctly from a genuinely green `passed`, and its `help` names the failure the operator approved past.
+`passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL. It retains exit code 0: missing verification is not a failing code verdict. `run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`. Report that missing evidence; this outcome does not establish CI readiness or a merge. Explicit per-run skips retain their existing behavior. If the run also has a CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible. Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ## no-mistakes axi respond

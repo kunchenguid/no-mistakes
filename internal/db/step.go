@@ -31,6 +31,9 @@ type StepResult struct {
 	// the CI step's live checks were still failing). See
 	// pipeline.ApprovalOverrideVerifier and Executor's two ActionApprove sites.
 	OverrideReason *string
+	// SkipReason records an automatic PR/CI skip, distinct from an explicit
+	// per-run skip. Legacy rows have no recorded reason.
+	SkipReason *string
 }
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
@@ -46,6 +49,11 @@ func (d *DB) readableStepResultColumns() string {
 		columns += ", override_reason"
 	} else {
 		columns += ", NULL AS override_reason"
+	}
+	if d.hasColumn("step_results", "skip_reason") {
+		columns += ", skip_reason"
+	} else {
+		columns += ", NULL AS skip_reason"
 	}
 	return columns
 }
@@ -74,7 +82,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,7 +104,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -239,9 +247,18 @@ func (d *DB) CompleteStep(id string, exitCode int, durationMS int64, logPath str
 
 // CompleteStepWithStatus marks a step as finished with timing and result info.
 func (d *DB) CompleteStepWithStatus(id string, status types.StepStatus, exitCode int, durationMS int64, logPath string) error {
+	return d.completeStep(id, status, exitCode, durationMS, logPath, "")
+}
+
+// CompleteSkippedStep atomically preserves the automatic skip cause with its status.
+func (d *DB) CompleteSkippedStep(id string, exitCode int, durationMS int64, logPath, reason string) error {
+	return d.completeStep(id, types.StepStatusSkipped, exitCode, durationMS, logPath, reason)
+}
+
+func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, durationMS int64, logPath, skipReason string) error {
 	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`,
-		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), id,
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, '') WHERE id = ?`,
+		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, id,
 	)
 	if err != nil {
 		return fmt.Errorf("complete step: %w", err)

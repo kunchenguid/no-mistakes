@@ -870,6 +870,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	skipRemaining := false
 	stepSkipped := false
+	var skipReason string
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
 	var restartFrom types.StepName
@@ -993,6 +994,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// are acceptable and don't block the pipeline.
 			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
+			skipReason = safeurl.RedactText(outcome.SkipReason)
 			break
 		}
 
@@ -1146,6 +1148,10 @@ done:
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+	} else if stepSkipped {
+		if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, durationMS, logPath, skipReason); err != nil {
+			return false, "", fmt.Errorf("complete skipped step %s: %w", stepName, err)
+		}
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
