@@ -58,13 +58,15 @@ func Text(text string) string {
 		trimmed := strings.TrimSpace(line)
 		leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 		indent := len(leading) + 3*strings.Count(leading, "\t")
+		rule := thematicBreak.MatchString(line)
 		if fence == "" {
 			trimmed = listMarker.ReplaceAllString(trimmed, "")
 			item := listMarker.FindString(line[len(leading):])
-			if item != "" && indent < listContent+4 {
-				listContent = indent + len(item)
-			} else if trimmed != "" && indent == 0 {
+			switch {
+			case rule, trimmed != "" && indent == 0 && item == "":
 				listContent = 0
+			case item != "" && indent < listContent+4:
+				listContent = indent + len(item)
 			}
 		}
 		marker := ""
@@ -73,7 +75,7 @@ func Text(text string) string {
 		}
 		if fence == "" {
 			heading := atxHeading.MatchString(line)
-			if heading || trimmed == "" || marker != "" || blockStart.MatchString(line) || thematicBreak.MatchString(line) || htmlBlockStart.MatchString(line) {
+			if heading || rule || trimmed == "" || marker != "" || blockStart.MatchString(line) || htmlBlockStart.MatchString(line) {
 				blockStarts = append(blockStarts, offset)
 			}
 			if heading {
@@ -94,7 +96,7 @@ func Text(text string) string {
 		case strings.HasPrefix(trimmed, ">"):
 			blockquote = true
 			protect(offset, offset+len(line))
-		case trimmed == "" || blockquoteBreak.MatchString(line) || thematicBreak.MatchString(line):
+		case rule, trimmed == "", blockquoteBreak.MatchString(line):
 			blockquote = false
 		case blockquote, indent >= listContent+4:
 			protect(offset, offset+len(line))
