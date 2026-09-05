@@ -9,6 +9,17 @@ import (
 
 const protectedPathFindingID = "protected-path-refusal"
 
+// HasProtectedPathRefusal identifies gates that require an explicit response.
+func HasProtectedPathRefusal(findingsJSON string) bool {
+	findings, _ := types.ParseFindingsJSON(findingsJSON)
+	for _, finding := range findings.Items {
+		if finding.ID == protectedPathFindingID {
+			return true
+		}
+	}
+	return false
+}
+
 type ProtectedPathError struct {
 	Path string
 	Rule string

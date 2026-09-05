@@ -1430,11 +1430,8 @@ func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *S
 	if !ok {
 		return false, nil
 	}
-	findings, _ := types.ParseFindingsJSON(findingsJSON)
-	for _, finding := range findings.Items {
-		if finding.ID == protectedPathFindingID {
-			return false, nil
-		}
+	if HasProtectedPathRefusal(findingsJSON) {
+		return false, nil
 	}
 	timeout := e.gateReconcileTimeout
 	if timeout <= 0 {

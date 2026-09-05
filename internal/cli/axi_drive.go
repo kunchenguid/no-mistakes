@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -536,7 +537,8 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, base
 // findings is fixed (every finding selected), and the resulting fix_review is
 // accepted; gates with only non-actionable findings are approved. Each step is
 // fixed at most once so a finding the fix cannot clear converges to an approval
-// instead of looping forever.
+// instead of looping forever. Protected-path refusals always return their gate
+// for an explicit response, including under --yes.
 //
 // The CI step monitors an open PR until a human merges or closes it (a live
 // status the TUI shows), so it never reaches a terminal state on its own. An
@@ -569,6 +571,10 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 		}
 		if gate, ok := rv.awaitingStep(); ok {
 			if !autoApprove {
+				return run, false, nil
+			}
+			if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
+				fmt.Fprintf(progress, "%s: protected-path refusal requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
 			gateKey := gate.Name + "\x00" + gate.Status
