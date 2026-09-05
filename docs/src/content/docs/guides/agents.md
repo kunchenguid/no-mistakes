@@ -6,7 +6,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 `no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
 It is not runner-free.
 Every validation run requires a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`.
-The default `agent: auto` setting picks the first supported native agent or ACP alias available on your system.
+The default uses Pi, with Vertex AI Claude Opus 4.8 at xhigh reasoning for Review and OpenAI GPT-5.6 Sol at low reasoning with priority processing for Review fixes.
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
 Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
@@ -26,7 +26,8 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 ## How to choose quickly
 
-- Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
+- Keep the default Pi role profiles when Pi and both configured providers are available.
+- Set `agent: auto` if you prefer automatic selection of another installed agent.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
 - Set global [`review_fix_agent`](/no-mistakes/reference/global-config/#review_fix_agent) when Review remediation needs a different harness. For a different profile on the same harness, use `agent_config.<agent>.review_fix`; every other duty stays on `agent`.
 - Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable.
@@ -98,7 +99,15 @@ If the calling environment exposes neither a supported native CLI nor a working 
 
 ```yaml
 # ~/.no-mistakes/config.yaml
-agent: auto
+agent: pi
+agent_config:
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 ```
 
 ### Per-repo override

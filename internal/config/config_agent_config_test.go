@@ -179,24 +179,21 @@ func TestRepoConfigCannotSetAgentConfig(t *testing.T) {
 	}
 }
 
-// TestDefaultConfigYAML_DocumentsAgentConfig keeps the shipped config commentary
-// honest about the field that replaces knowing each harness's own flag.
-func TestDefaultConfigYAML_DocumentsAgentConfig(t *testing.T) {
+func TestDefaultConfigYAML_ActivatesPiRoleProfiles(t *testing.T) {
 	cfg, err := LoadGlobalFromBytes([]byte(defaultConfigYAML))
 	if err != nil {
 		t.Fatalf("default config does not load: %v", err)
 	}
-	if cfg.AgentConfig != nil {
-		t.Fatalf("default config activates agent_config: %#v", cfg.AgentConfig)
+	if cfg.Agent != types.AgentPi || len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentPi {
+		t.Fatalf("default agent = %q %v, want pi", cfg.Agent, cfg.Agents)
 	}
-	if !strings.Contains(defaultConfigYAML, "# review_fix_agent:") {
-		t.Fatal("default config.yaml does not document review_fix_agent")
+	reviewer := cfg.AgentConfig["pi"]
+	if reviewer.Model != "anthropic-vertex/claude-opus-4-8" || reviewer.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("default Review profile = %#v", reviewer)
 	}
-	if !strings.Contains(defaultConfigYAML, "# agent_config:") {
-		t.Fatal("default config.yaml does not document agent_config")
-	}
-	if !strings.Contains(defaultConfigYAML, "#     review_fix:") || !strings.Contains(defaultConfigYAML, "#       fast: true") {
-		t.Fatal("default config.yaml does not document the Review-fix role profile")
+	fixer, ok := cfg.ReviewFixAgentConfig["pi"]
+	if !ok || fixer.Profile.Model != "openai-codex/gpt-5.6-sol" || fixer.Profile.Effort != agentcfg.EffortLow || !fixer.Fast {
+		t.Fatalf("default Review-fix profile = %#v, explicit=%v", fixer, ok)
 	}
 	for _, effort := range agentcfg.EffortNames() {
 		if !strings.Contains(defaultConfigYAML, effort) {

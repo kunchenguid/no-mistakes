@@ -28,6 +28,7 @@ type fakeSessionAgent struct {
 	nextID       int
 	failResumes  map[string]error // session id -> error returned when resumed
 	failNext     error            // error returned on the next call regardless
+	failAlways   error
 	supportsFlag bool
 }
 
@@ -55,6 +56,9 @@ func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Re
 		err := f.failNext
 		f.failNext = nil
 		return nil, err
+	}
+	if f.failAlways != nil {
+		return nil, f.failAlways
 	}
 
 	if opts.Session == nil {
@@ -333,6 +337,34 @@ func TestRunSessions_PersistsAcrossManagers(t *testing.T) {
 	third := fake.calls[len(fake.calls)-1]
 	if third.session == nil || third.session.ID != "" {
 		t.Fatalf("different run must start its own session, got %+v", third.session)
+	}
+}
+
+func TestRunSessions_ResumeFailureRetainsFreshFallbackCandidates(t *testing.T) {
+	d, run := sessionTestDB(t)
+	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "codex", "codex-session"); err != nil {
+		t.Fatal(err)
+	}
+	codex := newFakeSessionAgent()
+	codex.name = "codex"
+	codex.failAlways = errors.New("codex start: executable unavailable")
+	pi := newFakeSessionAgent()
+	pi.name = "pi"
+	fallback := agent.NewFallback([]agent.Agent{codex, pi})
+
+	rs := NewRunSessions(d, run.ID, fallback, true)
+	result, err := rs.Run(context.Background(), fallback, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil)
+	if err != nil {
+		t.Fatalf("fixer fallback: %v", err)
+	}
+	if result.Provider != "pi" {
+		t.Fatalf("fresh fallback provider = %q, want pi", result.Provider)
+	}
+	if len(codex.calls) != 2 || codex.calls[0].session == nil || codex.calls[0].session.ID != "codex-session" || codex.calls[1].session == nil || codex.calls[1].session.ID != "" {
+		t.Fatalf("codex calls = %+v, want stored resume then fresh attempt", codex.calls)
+	}
+	if len(pi.calls) != 1 || pi.calls[0].session == nil || pi.calls[0].session.ID != "" {
+		t.Fatalf("pi calls = %+v, want one fresh fallback", pi.calls)
 	}
 }
 

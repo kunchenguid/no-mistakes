@@ -170,7 +170,8 @@ const piFastExtension = `export default function (pi) {
     if (ctx.model?.provider !== "openai-codex" ||
         ctx.model?.api !== "openai-codex-responses" ||
         event.payload === null || typeof event.payload !== "object" || Array.isArray(event.payload)) {
-      throw new Error("no-mistakes fast mode requires Pi's openai-codex Responses provider");
+      process.stderr.write("no-mistakes fast mode requires Pi's openai-codex Responses provider\n");
+      process.exit(78);
     }
     return { ...event.payload, service_tier: "priority" };
   });
