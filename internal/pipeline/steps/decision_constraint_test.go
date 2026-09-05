@@ -322,13 +322,14 @@ func TestRebaseStep_EmptyConflictResolutionStillReachesIndependentReview(t *test
 
 func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
 	for _, tc := range []struct {
-		name, checks string
-		noChange     bool
+		name, checks     string
+		noChange, closed bool
 	}{
-		{"failing", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`, false},
-		{"green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, false},
-		{"pending", `[{"name":"test","state":"PENDING","bucket":"pending"}]`, false},
-		{"no_change_green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, true},
+		{"failing", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`, false, false},
+		{"green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, false, false},
+		{"pending", `[{"name":"test","state":"PENDING","bucket":"pending"}]`, false, false},
+		{"no_change_green", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, true, false},
+		{"closed", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCIRepairFixture(t, false, nil)
@@ -426,15 +427,24 @@ func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
 			if err := f.sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &userFindings); err != nil {
 				t.Fatal(err)
 			}
-			f.sctx.Env = fakeCIGH(t, "OPEN", tc.checks)
+			prState := "OPEN"
+			if tc.closed {
+				prState = "CLOSED"
+			}
+			f.sctx.Env = fakeCIGH(t, prState, tc.checks)
 			f.sctx.Fixing = true
 			f.sctx.PreviousFindings = userFindings
 			outcome, err := step.Execute(f.sctx)
 			wantCalls := 4
+			wantRestart := types.StepReview
+			if tc.closed {
+				wantCalls = 2
+				wantRestart = ""
+			}
 			if tc.noChange {
 				wantCalls = 3
 			}
-			if err != nil || outcome == nil || outcome.RestartFrom != types.StepReview || calls != wantCalls {
+			if err != nil || outcome == nil || outcome.RestartFrom != wantRestart || calls != wantCalls {
 				t.Fatalf("Fix re-entry failed to return the corrected repair to Review: outcome=%+v err=%v calls=%d", outcome, err, calls)
 			}
 			run, err = f.sctx.DB.GetRun(f.sctx.Run.ID)
