@@ -1,0 +1,37 @@
+## ADDED Requirements
+
+### Requirement: Axi-shaped records
+
+The LAN portal API SHALL expose run, step, finding, and respond records using the same field names as `no-mistakes axi` (id, branch, status, head, pr, steps, findings, action, description) plus firewall verdict fields (conclusion, public_summary, portal_url, class counts).
+
+#### Scenario: Status looks like axi
+- **WHEN** a client GET `/v1/axi/runs/{id}` for a firewall scan
+- **THEN** the JSON includes `run.id`, `run.branch`, `run.status`, `run.head`, `steps`, and `findings` with `id`, `severity`, `file`, `action`, and `description`
+
+### Requirement: LAN details vs public notice
+
+LAN finding descriptions MAY include file, line, class, and snippet. Public verdict and notice payloads MUST NOT include snippets, filenames, hostnames, IPs, names, or customer identifiers. Discord and other off-LAN notifiers MUST use the notice payload.
+
+#### Scenario: Notice has no match text
+- **WHEN** a verdict has a finding whose description includes a matched address
+- **THEN** GET `/v1/firewall/verdicts/{id}/notice` omits that address and any snippet
+
+#### Scenario: LAN status keeps details
+- **WHEN** the same verdict is fetched from GET `/v1/axi/runs/{id}`
+- **THEN** the finding description still includes the class and location needed to fix the diff
+
+### Requirement: Respond does not green the check
+
+POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT change the GitHub check conclusion. A new head SHA is required to pass.
+
+#### Scenario: Acknowledge leaves conclusion failed
+- **WHEN** an operator responds with action `acknowledge` on a failing verdict
+- **THEN** the stored conclusion remains `failure` and a response row is recorded
+
+### Requirement: Firewall serve is not the Mac daemon
+
+`no-mistakes firewall serve` SHALL bind a configurable listen address (default loopback) and use `$NM_HOME/firewall.sqlite`. It MUST NOT start, stop, or relocate the pipeline daemon.
+
+#### Scenario: Default listen is loopback
+- **WHEN** `firewall serve` is started with no listen flag
+- **THEN** it listens on `127.0.0.1` and opens `firewall.sqlite` under `NM_HOME`

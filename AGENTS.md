@@ -3,8 +3,12 @@
 This file is for agentic coding tools working in this repo.
 
 This repository is a Go CLI app named `no-mistakes`.
-The binary entrypoint is `cmd/no-mistakes`; implementation code lives under `internal/`, and the package names there are the layout map (CLI in `internal/cli`, daemon in `internal/daemon`, pipeline and steps in `internal/pipeline`, agent adapters in `internal/agent`, terminal UI in `internal/tui`, shared infrastructure in `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`).
+The binary entrypoint is `cmd/no-mistakes`; implementation code lives under `internal/`, and the package names there are the layout map (CLI in `internal/cli`, daemon in `internal/daemon`, pipeline and steps in `internal/pipeline`, agent adapters in `internal/agent`, terminal UI in `internal/tui`, publish firewall in `internal/firewall`, shared infrastructure in `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`).
 Build, test, and release commands are owned by the `Makefile`; read it for the full target list instead of relying on a copy here.
+
+**Detached fork.** `origin` is `mfreeman451/no-mistakes`. `upstream` is `kunchenguid/no-mistakes`. Open PRs against origin only; sync by fetching upstream. Guide: `docs/src/content/docs/guides/detached-fork.md`.
+
+**Publish firewall.** Required GitHub check `publish-policy` for configured public product repos (first: `carverauto/serviceradar`). Scanner and public-text rules live in `internal/firewall` (package comment owns the Hard Rules rationale). Public GitHub/Discord output is the generic phrase `publish-policy violation` plus a LAN portal URL — never snippets. Self-hosted runners in namespace `no-mistakes`; ClusterIP portal; do not relocate the Mac `~/.no-mistakes` daemon. Action: `.github/actions/publish-firewall`. Cluster: `deploy/no-mistakes/`. Regressions: `internal/firewall/*_test.go`, `internal/cli/firewall_test.go`, `publish_firewall_action_test.go`.
 
 Safest local verification sequence after non-trivial changes:
 

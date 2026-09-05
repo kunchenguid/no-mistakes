@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-mistakes-gha-runner
+  namespace: no-mistakes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: no-mistakes-gha-runner
+  template:
+    metadata:
+      labels:
+        app: no-mistakes-gha-runner
+    spec:
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:latest
+          env:
+            - name: RUNNER_LABELS
+              value: "self-hosted,no-mistakes"
+            - name: NM_HOME
+              value: /var/lib/no-mistakes
+            - name: NO_MISTAKES_FIREWALL_PORTAL_URL
+              value: http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787
+            - name: NO_MISTAKES_FIREWALL_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: firewall-ingest
+                  key: token
+                  optional: true
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner
+                  key: token
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/no-mistakes
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-runner
+  namespace: no-mistakes
+type: Opaque
+stringData:
+  token: ""

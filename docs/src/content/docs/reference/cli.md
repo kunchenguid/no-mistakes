@@ -476,6 +476,31 @@ Each validation run performs the authoritative agent resolution again after appl
 
 `tea` stays docs-only like `glab`, `forgejo-axi`, and Bitbucket's env vars, rather than an active `doctor` check like `gh`/`az`: Gitea is almost always self-hosted, so a bare "`tea` not found" row would be a near-universal, low-value warning for the vast majority of users who have no Gitea instance at all.
 
+## no-mistakes firewall
+
+Publish-policy scanner and LAN portal. See the [publish firewall guide](/no-mistakes/guides/publish-firewall/).
+
+```sh
+no-mistakes firewall scan --diff pr.diff
+no-mistakes firewall github-check --diff pr.diff --private-json /tmp/verdict.json
+no-mistakes firewall serve --listen 127.0.0.1:8787
+```
+
+`github-check` prints only `publish-policy ok` or `publish-policy violation` plus an optional LAN portal URL. It never prints match snippets. `scan` is LAN-only and may print findings. `serve` does not start the pipeline daemon.
+
+## no-mistakes axi firewall
+
+Axi-shaped LAN records for firewall verdicts.
+
+```sh
+no-mistakes axi firewall status
+no-mistakes axi firewall status --run <id>
+no-mistakes axi firewall logs --run <id>
+no-mistakes axi firewall respond --run <id> --action acknowledge
+```
+
+`respond` records acknowledgement only. It does not pass the GitHub check.
+
 ## no-mistakes update
 
 Update the installed binary and reset the daemon.

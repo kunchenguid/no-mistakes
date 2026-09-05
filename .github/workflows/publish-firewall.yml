@@ -1,0 +1,25 @@
+name: Publish firewall
+# Example caller for operators. It is workflow_dispatch only so it does not
+# judge this fork's pull requests. Product repos copy the job, pin
+# mfreeman451/no-mistakes/.github/actions/publish-firewall at a commit SHA
+# (never @main), and require the check named publish-policy.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  publish-policy:
+    name: publish-policy
+    runs-on: [self-hosted, no-mistakes]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan publish policy
+        uses: ./.github/actions/publish-firewall
+        with:
+          portal-url: ${{ vars.NO_MISTAKES_FIREWALL_PORTAL_URL }}

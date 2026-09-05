@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-mistakes-portal
+  namespace: no-mistakes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: no-mistakes-portal
+  template:
+    metadata:
+      labels:
+        app: no-mistakes-portal
+    spec:
+      containers:
+        - name: portal
+          image: ghcr.io/mfreeman451/no-mistakes:firewall
+          args:
+            - firewall
+            - serve
+            - --listen
+            - 0.0.0.0:8787
+            - --portal-url
+            - http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787
+          env:
+            - name: NM_HOME
+              value: /var/lib/no-mistakes
+            - name: NO_MISTAKES_FIREWALL_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: firewall-ingest
+                  key: token
+                  optional: true
+          ports:
+            - containerPort: 8787
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/no-mistakes
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: no-mistakes-portal
+  namespace: no-mistakes
+spec:
+  type: ClusterIP
+  selector:
+    app: no-mistakes-portal
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
