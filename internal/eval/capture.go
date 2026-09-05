@@ -322,7 +322,6 @@ func agentNeutralGlobalConfig(data []byte) ([]byte, error) {
 	// accidentally inherit a captured default model, effort, or agent list into
 	// a comparison: every channel that can pin a harness knob is stripped.
 	delete(raw, "agent")
-	delete(raw, "review_fix_agent")
 	delete(raw, "agent_args_override")
 	delete(raw, "agent_config")
 	out, err := yaml.Marshal(raw)

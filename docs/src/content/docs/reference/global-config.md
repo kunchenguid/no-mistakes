@@ -10,9 +10,6 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 
 agent: pi
 
-# Optional when the fixer uses a different harness.
-# review_fix_agent: codex
-
 acpx_path: acpx
 
 forgejo_axi_path: forgejo-axi
@@ -121,7 +118,7 @@ providers:
 
 ### agent
 
-Default agent for all pipeline duties and setup-wizard suggestions. It is also the Review-fixer fallback when [`review_fix_agent`](#review_fix_agent) is unset. Can be overridden per-repo.
+Default agent for all pipeline duties and setup-wizard suggestions, including Review remediation. Can be overridden per-repo.
 
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
@@ -149,24 +146,6 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
-
-### review_fix_agent
-
-Optional agent used only to remediate findings from the Review step. It accepts the same single-agent and ordered-fallback-list forms as [`agent`](#agent), with the same availability checks, `auto` resolution, deduplication, and process-unavailable fallback behavior.
-
-|         |                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------- |
-| Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Unset (use the effective `agent`)                                                           |
-
-This override is narrowly scoped: initial Review and every rereview still use `agent`, as do Test, Document, Lint, Rebase, PR, and CI work. Only the turn that fixes Review findings uses `review_fix_agent`. Its durable fixer session, when enabled, is also created for this agent.
-
-`review_fix_agent` is global-only. A repository's `.no-mistakes.yaml` cannot select the credentialed process used for fixes. A trusted repository-level `agent` override still controls ordinary pipeline duties; when `review_fix_agent` is set globally it remains the Review fixer, and when it is absent the fixer follows that effective repository agent.
-
-Binary paths and raw arguments continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override) and [`agent_args_override`](#agent_args_override). Model, effort, and Pi fast mode use [`agent_config`](#agent_config); its nested `review_fix` block gives the selected fixer a role profile without introducing a second profile system. The resolved fixer selection and role profile are recorded before a new run starts. Editing global config therefore affects later runs only, including when a parked run resumes after a daemon restart. Historical runs created before this snapshot field retain the old recovery behavior.
-
-Both roles can use one harness with different provider, model, and effort settings. The [`agent_config`](#agent_config) example and field rules own that role-profile configuration.
 
 ### acpx_path
 
@@ -235,13 +214,13 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
+Model and reasoning effort per agent, in one common spelling. Pi's optional nested `review_fix` profile replaces its ordinary profile only for Review remediation; other agents reject `review_fix`. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
 |         |                                                                                                         |
 | ------- | ------------------------------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                                         |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Built-in Pi profiles shown below when the global config file is absent; otherwise empty when omitted     |
+| Default | Built-in Pi profiles shown below when `agent_config.pi` is omitted                                     |
 
 ```yaml
 agent_config:
@@ -264,7 +243,11 @@ agent_config:
       fast: true
 ```
 
-The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes.
+The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. Those defaults remain active when `agent_config` contains only other agents; an explicit `agent_config.pi` entry replaces both Pi defaults, and omitting its `review_fix` block makes remediation use that explicit ordinary Pi profile. For an `anthropic-vertex` profile, no-mistakes loads the pinned `@twogiants/pi-anthropic-vertex` package for that invocation; configure Google Cloud Application Default Credentials, enable the Claude model in Vertex AI Model Garden, and set `GOOGLE_CLOUD_PROJECT` (plus `GOOGLE_CLOUD_LOCATION` when needed) in the daemon environment. Pi installs this invocation-scoped package into temporary storage for each agent process: no-mistakes does not persist or reuse it, so repeated Review invocations incur package-install startup latency and require network access even after an earlier invocation succeeded. An unavailable package registry or offline daemon therefore prevents the Vertex-backed Review from starting.
+
+Each new run records its effective Review-remediation agent candidates, profiles, and native argument overrides before execution. Recovery restores that snapshot, so later global config edits affect later runs without retargeting an in-flight run's fixer; runs created by older versions without a snapshot retain the legacy recovery selection.
+
+The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes.
 
 `fast` is accepted only in a Pi `review_fix` profile whose model uses `openai-codex/<model>`; other combinations fail config loading with a concise correction. Because Pi has no stock fast-mode flag, no-mistakes loads a trusted invocation-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests and terminates the invocation if the effective provider, API, or payload shape does not match. It does not depend on an ambient user extension or launcher-specific environment variable.
 
@@ -306,7 +289,7 @@ agent_args_override:
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.<agent>.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
+Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.pi.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
 
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
@@ -566,7 +549,7 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the review-fixer agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns. The review-fixer agent is the effective `agent`, or [`review_fix_agent`](#review_fix_agent) when configured, so its capability - not the default agent's - decides whether the session is reused.
+When enabled and the effective agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
 When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.

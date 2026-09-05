@@ -8,13 +8,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const reviewFixRunConfigVersion = 1
+const reviewFixRunConfigVersion = 2
 
 type reviewFixRunConfig struct {
 	Version  int                                `json:"version"`
-	Enabled  bool                               `json:"enabled"`
 	Agents   []types.AgentName                  `json:"agents,omitempty"`
 	Profiles map[string]reviewFixRunProfileJSON `json:"profiles,omitempty"`
+	Args     map[string][]string                `json:"args"`
 }
 
 type reviewFixRunProfileJSON struct {
@@ -44,11 +44,8 @@ func (c *Config) ReviewFixAgentsForRun() []types.AgentName {
 	if c == nil {
 		return nil
 	}
-	if c.HasReviewFixAgentOverride() {
-		if len(c.ReviewFixAgents) > 0 {
-			return copyAgents(c.ReviewFixAgents)
-		}
-		return []types.AgentName{c.ReviewFixAgent}
+	if len(c.ReviewFixAgents) > 0 {
+		return copyAgents(c.ReviewFixAgents)
 	}
 	if len(c.Agents) > 0 {
 		return copyAgents(c.Agents)
@@ -57,26 +54,26 @@ func (c *Config) ReviewFixAgentsForRun() []types.AgentName {
 }
 
 // MarshalReviewFixRunConfig snapshots the resolved, global-only fixer routing
-// onto a new run. Even the disabled shape is written so adding an override
-// later cannot change a run that was already parked.
+// onto a new run.
 func (c *Config) MarshalReviewFixRunConfig() (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("snapshot review fixer: configuration is missing")
 	}
 	names := c.ReviewFixAgentsForRun()
-	enabled := c.HasReviewFixAgentOverride() || c.HasReviewFixProfileFor(names)
-	snapshot := reviewFixRunConfig{Version: reviewFixRunConfigVersion, Enabled: enabled}
-	if enabled {
-		snapshot.Agents = names
-		snapshot.Profiles = make(map[string]reviewFixRunProfileJSON, len(names))
-		for _, name := range names {
-			profile, _ := c.ReviewFixProfileFor(name)
-			snapshot.Profiles[string(name)] = reviewFixRunProfileJSON{
-				Model:  profile.Profile.Model,
-				Effort: profile.Profile.Effort,
-				Fast:   profile.Fast,
-			}
+	snapshot := reviewFixRunConfig{
+		Version:  reviewFixRunConfigVersion,
+		Agents:   names,
+		Profiles: make(map[string]reviewFixRunProfileJSON, len(names)),
+		Args:     make(map[string][]string, len(names)),
+	}
+	for _, name := range names {
+		profile, _ := c.ReviewFixProfileFor(name)
+		snapshot.Profiles[string(name)] = reviewFixRunProfileJSON{
+			Model:  profile.Profile.Model,
+			Effort: profile.Profile.Effort,
+			Fast:   profile.Fast,
 		}
+		snapshot.Args[string(name)] = append([]string(nil), c.AgentArgsFor(name)...)
 	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -99,17 +96,32 @@ func (c *Config) ApplyReviewFixRunConfig(encoded string) error {
 	if snapshot.Version != reviewFixRunConfigVersion {
 		return fmt.Errorf("restore review fixer: unsupported stored version %d", snapshot.Version)
 	}
-	c.ReviewFixAgent = ""
 	c.ReviewFixAgents = nil
 	c.ReviewFixAgentConfig = nil
-	if !snapshot.Enabled {
-		return nil
-	}
+	c.ReviewFixAgentArgsOverride = nil
 	if len(snapshot.Agents) == 0 {
 		return fmt.Errorf("restore review fixer: stored agent list is empty")
 	}
+	if snapshot.Args == nil {
+		return fmt.Errorf("restore review fixer: stored argument map is missing")
+	}
+	for name, args := range snapshot.Args {
+		if len(args) == 0 {
+			continue
+		}
+		if err := validateAgentArgsOverride(map[string][]string{name: args}); err != nil {
+			return fmt.Errorf("restore review fixer: %w", err)
+		}
+	}
 	c.ReviewFixAgents = copyAgents(snapshot.Agents)
-	c.ReviewFixAgent = firstAgent(c.ReviewFixAgents)
+	c.ReviewFixAgentArgsOverride = make(map[string][]string, len(snapshot.Agents))
+	for _, name := range snapshot.Agents {
+		args, ok := snapshot.Args[string(name)]
+		if !ok {
+			return fmt.Errorf("restore review fixer: stored arguments for %s are missing", name)
+		}
+		c.ReviewFixAgentArgsOverride[string(name)] = append([]string(nil), args...)
+	}
 	if len(snapshot.Profiles) == 0 {
 		return nil
 	}

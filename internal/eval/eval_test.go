@@ -330,16 +330,15 @@ func TestReplayPinsCandidateModelAndEffortOnTheHarness(t *testing.T) {
 }
 
 // TestCaptureStripsEveryHarnessPinFromThePinnedConfig keeps a replay from
-// inheriting the capturing machine's own agent selection, including its
-// Review-fixer override, model, or effort: the candidate is the only thing
-// that may decide what the harness runs as.
+// inheriting the capturing machine's own agent selection, model, or effort:
+// the candidate is the only thing that may decide what the harness runs as.
 func TestCaptureStripsEveryHarnessPinFromThePinnedConfig(t *testing.T) {
-	pinned := []byte("agent: codex\nreview_fix_agent: pi\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\nagent_config:\n  codex:\n    model: gpt-5.4\n    effort: high\nlog_level: warn\n")
+	pinned := []byte("agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\nagent_config:\n  codex:\n    model: gpt-5.4\n    effort: high\nlog_level: warn\n")
 	neutral, err := agentNeutralGlobalConfig(pinned)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"agent:", "review_fix_agent", "agent_args_override", "agent_config"} {
+	for _, key := range []string{"agent:", "agent_args_override", "agent_config"} {
 		if strings.Contains(string(neutral), key) {
 			t.Errorf("pinned config still carries %q: %s", key, neutral)
 		}
@@ -351,8 +350,11 @@ func TestCaptureStripsEveryHarnessPinFromThePinnedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AgentConfig != nil {
-		t.Fatalf("neutral config resolves an agent profile: %#v", cfg.AgentConfig)
+	if got := cfg.AgentConfig["codex"]; !got.IsZero() {
+		t.Fatalf("neutral config retained captured profile: %#v", got)
+	}
+	if cfg.AgentArgsOverride != nil {
+		t.Fatalf("neutral config retained captured args: %#v", cfg.AgentArgsOverride)
 	}
 }
 

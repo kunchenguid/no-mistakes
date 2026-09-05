@@ -1090,11 +1090,16 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentPi:
+		providerExtension := ""
+		if provider, _, ok := agentcfg.SplitProviderModel(opts.Profile.Model); ok && provider == "anthropic-vertex" {
+			providerExtension = piAnthropicVertexExtension
+		}
 		return &piAgent{
 			bin:                    bin,
 			extraArgs:              extraArgs,
 			disableProjectSettings: opts.DisableProjectSettings,
 			fast:                   opts.Fast,
+			providerExtension:      providerExtension,
 			subprocessContext:      newSubprocessContext(opts.Environment),
 		}, nil
 	case types.AgentCopilot:

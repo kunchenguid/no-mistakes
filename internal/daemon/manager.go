@@ -267,10 +267,6 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
-	if err := cfg.ResolveReviewFixAgent(ctx, lookPath); err != nil {
-		return nil, err
-	}
-
 	primary, err := newConfiguredAgentSet(cfg, cfg.Agents, evidenceRoot, environment, false)
 	if err != nil {
 		return nil, err
@@ -307,7 +303,11 @@ func newConfiguredAgentSet(cfg *config.Config, names []types.AgentName, evidence
 		if reviewFix {
 			profile, _ = cfg.ReviewFixProfileFor(name)
 		}
-		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
+		args := cfg.AgentArgsFor(name)
+		if reviewFix {
+			args = cfg.ReviewFixAgentArgsFor(name)
+		}
+		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), args, agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
 			Profile:                profile.Profile,

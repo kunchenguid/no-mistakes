@@ -120,6 +120,32 @@ func TestNewWithOptions_FastIsPiOpenAICodexOnly(t *testing.T) {
 	}
 }
 
+func TestNewWithOptions_AnthropicVertexProfileLoadsProvider(t *testing.T) {
+	ag, err := NewWithOptions(types.AgentPi, "pi", nil, Options{
+		Profile: agentcfg.Profile{Model: "anthropic-vertex/claude-opus-4-8", Effort: agentcfg.EffortXHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ag.Close()
+
+	args, extensionPath, err := ag.(*piAgent).buildRunArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extensionPath != "" {
+		t.Fatalf("temporary extension path = %q", extensionPath)
+	}
+	want := []string{
+		"--model", "anthropic-vertex/claude-opus-4-8", "--thinking", "xhigh",
+		"--mode", "json", "--no-session",
+		"--extension", piAnthropicVertexExtension,
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("Pi argv = %v, want %v", args, want)
+	}
+}
+
 func TestNewWithOptions_ZeroProfileLeavesArgvUntouched(t *testing.T) {
 	raw := []string{"-c", `service_tier="priority"`}
 	ag, err := NewWithOptions(types.AgentCodex, "bin", raw, Options{})
