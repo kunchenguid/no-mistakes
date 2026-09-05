@@ -185,8 +185,8 @@ func logDecisionState(t *testing.T, sctx *pipeline.StepContext, stage string, ob
 	}
 	encoded, err := json.Marshal(map[string]any{
 		"stage": stage, "run": run, "steps": steps, "rounds": rounds,
-		"git_head": gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD"),
-		"git_status": gitCmd(t, sctx.WorkDir, "status", "--porcelain"),
+		"git_head":    gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD"),
+		"git_status":  gitCmd(t, sctx.WorkDir, "status", "--porcelain"),
 		"observation": observation,
 	})
 	if err != nil {
