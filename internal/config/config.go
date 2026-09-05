@@ -292,6 +292,30 @@ type RepoConfig struct {
 	// registered pending or failing check. No inference from workflow files,
 	// prior history, branch names, or grace-period expiry.
 	NoCI bool `yaml:"no_ci"`
+	// TestCommandSufficient declares that a successful commands.test run is by
+	// itself sufficient local validation, so the test step completes without
+	// launching the evidence agent even when user intent is present. Default
+	// false preserves today's behavior exactly: the agent still runs after a
+	// passing command whenever intent is available.
+	//
+	// It is gate-control configuration - it permits omission of an agent gate -
+	// so it is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig). A contributor's pushed
+	// branch must not be able to declare its own test sufficient and suppress
+	// the evidence gathering that gates it.
+	//
+	// Unlike the other trusted-only fields it is additionally DROPPED when
+	// allow_repo_commands is enabled, rather than merely being sourced from the
+	// trusted copy. Sufficiency is a statement about a specific command, and it
+	// cannot outlive the trust of the command it describes: under that opt-in
+	// commands.test comes from the pushed branch, so honoring a trusted
+	// sufficiency declaration would let a branch swap in a trivially passing
+	// command and inherit permission to skip its own evidence gate.
+	//
+	// An empty commands.test alongside a true declaration is a configuration
+	// error (see validateRepoConfig): the combination must never be read as
+	// permission to skip Test.
+	TestCommandSufficient bool `yaml:"test_command_sufficient"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -444,6 +468,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Review                 ReviewRaw    `yaml:"review"`
 		DisableProjectSettings bool         `yaml:"disable_project_settings"`
 		NoCI                   bool         `yaml:"no_ci"`
+		TestCommandSufficient  bool         `yaml:"test_command_sufficient"`
 		Providers              ProvidersRaw `yaml:"providers"`
 	}
 	var raw repoConfigRaw
@@ -465,6 +490,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	c.NoCI = raw.NoCI
+	c.TestCommandSufficient = raw.TestCommandSufficient
 	c.Providers = raw.Providers
 	return nil
 }
@@ -590,6 +616,12 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+	// TestCommandSufficient is the resolved, trusted-only declaration that a
+	// successful Commands.Test run is by itself sufficient local validation
+	// (see the RepoConfig field). When true, the test step does not launch the
+	// evidence agent after the command passes, even when user intent is
+	// present. An empty Commands.Test still launches the agent.
+	TestCommandSufficient bool
 	// Providers holds the resolved provider-specific settings.
 	Providers Providers
 }
@@ -2181,6 +2213,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateTestCommandSufficient(cfg); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
 	if err := validatePRRaw(cfg.PR); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
@@ -2190,6 +2225,26 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// validateTestCommandSufficient fails the config closed when a repository
+// declares its test command sufficient without providing one. The combination
+// is the single way the new field could be read as "skip Test", so it is
+// rejected at parse time - before any agent or shell command starts - rather
+// than resolved at run time into a silently agent-free, command-free step.
+//
+// Like validateTestRaw's branch check this deliberately also runs on the PUSHED
+// copy even though the field is honored only from the trusted default branch: a
+// branch carrying a self-contradictory value has to fail before it merges.
+// Whitespace is not a command, so it is treated as empty.
+func validateTestCommandSufficient(cfg *RepoConfig) error {
+	if !cfg.TestCommandSufficient {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Commands.Test) == "" {
+		return fmt.Errorf("test_command_sufficient: requires a non-empty commands.test; a sufficient test command must exist before it can replace the evidence agent")
+	}
+	return nil
 }
 
 // validatePRRaw fails the config closed on a pr.base_branch value Git would
@@ -2326,6 +2381,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// default-branch copy so a pushed branch cannot self-declare no-CI and
 		// bypass checks that the default branch still expects.
 		effective.NoCI = trusted.NoCI
+		// test_command_sufficient permits omission of an agent gate, so it is
+		// trusted-only for the same reason: a pushed branch must not declare
+		// its own test sufficient and suppress the evidence agent that gates
+		// it. (It is additionally dropped under allow_repo_commands below.)
+		effective.TestCommandSufficient = trusted.TestCommandSufficient
 		// The whole ci block is trusted-only. ci.rerun_transient spends the
 		// maintainer's resources rather than the contributor's: every rerun is
 		// another provider-side workflow run billed to the repository, so a
@@ -2356,12 +2416,21 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
 		effective.CI = CIRaw{}
+		effective.TestCommandSufficient = false
 		effective.Test.Evidence.Branch = nil
 		if !allowRepoCommands {
 			effective.PR = PRRaw{}
 		}
 	}
 	if allowRepoCommands {
+		// Sufficiency describes a specific command and cannot outlive the trust
+		// of the command it describes. Under this opt-in commands.test is taken
+		// from the pushed branch, so a trusted "the test command is sufficient"
+		// declaration would otherwise transfer to a command the contributor
+		// chose - letting a branch pair a trivially passing command with
+		// inherited permission to skip its own evidence gate. Drop it and fall
+		// back to the evidence agent instead.
+		effective.TestCommandSufficient = false
 		return &effective
 	}
 	if trusted != nil {
@@ -2765,6 +2834,12 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
 		NoCI:                   repo.NoCI,
+		// repo is the EffectiveRepoConfig result, so this is already
+		// trusted-only and already dropped under allow_repo_commands. It is
+		// deliberately not settable from GlobalConfig: whether a command proves
+		// a change is a per-repository product judgement, not a machine-wide
+		// operator default that would silently apply to every repo on the host.
+		TestCommandSufficient: repo.TestCommandSufficient,
 	}
 
 	if repo.Agent != "" {

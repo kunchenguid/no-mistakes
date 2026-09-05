@@ -1,10 +1,22 @@
 # no-mistakes' own dogfood config.
-# Local Test is intentionally empty: the Test step is targeted validation of the
-# requested intent (agent-driven smallest relevant checks + evidence), never a
-# repository-wide regression suite. Broad race-enabled Go coverage stays in
-# remote CI (`go test -race ./...` in .github/workflows/ci.yml) and remains
-# mandatory before a PR is ready. See docs/src/content/docs/reference/repo-config.md
-# (commands.test) and docs/src/content/docs/reference/pipeline-steps.md (Test).
+#
+# Local Test is currently empty here, which leaves the Test step agent-driven.
+# That is this repository's present choice, not a claim that agent-driven Test is
+# the right default everywhere: a declared `commands.test` plus
+# `test_command_sufficient: true` makes the whole step deterministic for
+# repositories whose command genuinely is the proof. Whether this repository
+# should adopt that is an open question about our own change mix (a share of our
+# changes are agent-prompt and rendered-output changes an exit code cannot
+# demonstrate), not a settled policy.
+#
+# What is settled either way: the Test step is targeted validation of the
+# requested intent, never a repository-wide regression suite. Broad race-enabled
+# Go coverage stays in remote CI (`go test -race ./...` in
+# .github/workflows/ci.yml) and remains mandatory before a PR is ready. See
+# docs/src/content/docs/reference/repo-config.md (commands.test,
+# test_command_sufficient) and docs/src/content/docs/reference/pipeline-steps.md
+# (Test).
+#
 # Lint and format stay explicit so those gates stay deterministic.
 
 commands:

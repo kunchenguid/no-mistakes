@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -127,7 +128,38 @@ Previous test findings to address:
 		}
 	}
 
-	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
+	// The evidence agent runs when there is no deterministic command at all, or
+	// when user intent needs demonstrating beyond a pass/fail exit code.
+	//
+	// test_command_sufficient is the maintainer's explicit, trusted-only
+	// declaration that a passing commands.test already demonstrates the intent
+	// for this repository, which retires the second case. It deliberately
+	// cannot retire the first: the `testCmd == ""` disjunct is evaluated before
+	// the flag is consulted, so a declaration without a command still launches
+	// the agent instead of skipping Test. Command failure is likewise
+	// unaffected - the non-zero exit above returns before this point - and so
+	// is the fix-mode repair agent, which runs earlier and answers a prior
+	// failure rather than gathering evidence.
+	//
+	// This is an opt-in, never an inference: absent the declaration the
+	// behavior is unchanged. Repositories whose changes are proven by a
+	// rendered surface (UI, browser, native application, externally observable
+	// CLI, artifact-dependent behavior) should leave it off unless the command
+	// itself produces and records that evidence, because an exit code cannot
+	// stand in for a screenshot.
+	//
+	// Whitespace is not a command: `sh -c "   "` exits 0 having proven nothing,
+	// so it must not satisfy the declaration. This mirrors the TrimSpace that
+	// config.validateTestCommandSufficient already rejects the combination
+	// with, keeping the runtime check and the parse-time check agreed.
+	commandSufficient := strings.TrimSpace(testCmd) != "" && sctx.Config.TestCommandSufficient
+	useEvidenceAgent := testCmd == "" || (cleanedUserIntent(sctx) != "" && !commandSufficient)
+	if commandSufficient && !useEvidenceAgent {
+		// Name the declaration in the log so a command-only pass stays
+		// inspectable rather than being indistinguishable from a run that had
+		// no user intent to demonstrate.
+		sctx.Log("test_command_sufficient: configured test command passed, skipping evidence agent")
+	}
 	if useEvidenceAgent {
 		evidenceDir := testEvidenceDir(sctx)
 		if evidenceDir == "" {
