@@ -1037,7 +1037,7 @@ func TestExtractCommitSummary_RejectsOversizedSummary(t *testing.T) {
 	}
 }
 
-func TestExtractCommitSummary_PreservesQuotedCommitText(t *testing.T) {
+func TestExecuteFixMode_PreservesQuotedCommitText(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, summary, want string }{
 		{"double quotes", `"Captain, ready" fixture restored`, `no-mistakes(review): "Captain, ready" fixture restored`},
@@ -1050,17 +1050,27 @@ func TestExtractCommitSummary_PreservesQuotedCommitText(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			summary, err := extractCommitSummary(&agent.Result{Output: output})
-			if err != nil {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if err := os.WriteFile(filepath.Join(opts.CWD, "agent-change.txt"), []byte("fixture restored\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: output}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Fixing = true
+			if _, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{ErrorPrefix: "fix fixture"}); err != nil {
 				t.Fatal(err)
 			}
-			message, err := (config.Commit{}).RenderFixMessage(types.StepReview, summary)
-			if err != nil {
-				t.Fatal(err)
-			}
+			message := lastCommitMessage(t, dir)
 			if message != tt.want {
 				t.Errorf("commit message = %q, want %q", message, tt.want)
 			}
+			if got := gitCmd(t, dir, "show", "HEAD:agent-change.txt"); got != "fixture restored" {
+				t.Errorf("committed fixture = %q", got)
+			}
+			t.Logf("agent summary: %s\ngit log -1 --format=%%s:\n%s", output, message)
 		})
 	}
 }
