@@ -281,7 +281,7 @@ type scriptedRunStateSource struct {
 	reconcileErr  error
 }
 
-func (s *scriptedRunStateSource) Subscribe(string) (<-chan ipc.Event, func(), error) {
+func (s *scriptedRunStateSource) Subscribe(context.Context, string) (<-chan ipc.Event, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.operations = append(s.operations, "subscribe")
