@@ -252,7 +252,7 @@ Status uses the same `recoverySourceAvailable` classification as recovery and ac
 
 A verified archive plan reports its evidence in `branch_sync.recovery`, keeps `next_action.code: recover_custody`, and sets the command to exactly `no-mistakes axi sync --recover --keep-local`. That action leaves the worktree and local branch at `recovery.required_head`, leaves the divergent archive at `recovery.preserved_head`, and never merges, replays, fast-forwards, resets to, or otherwise selects the archived history. Running plain `--recover` against this plan refuses without adding an anchor or moving a ref.
 
-`no-mistakes rerun` is the alternative exit for ordinary preserved-head recovery that resumes validating the preserved head instead of taking the branch back; it is not offered for the archive-backed keep-local plan.
+For the alternative validation path and its refusal conditions, see [`no-mistakes rerun`](#no-mistakes-rerun); it is not offered for the archive-backed keep-local plan.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
@@ -349,10 +349,14 @@ the run-specific recovery ref is conflicting, invalid, or the recorded head is
 unavailable. Use `no-mistakes axi status` and reconcile custody first in that
 case.
 When invoked from a clean worktree, `rerun` also refuses if that worktree's HEAD
-differs from the selected gate or preserved head. The error names both heads;
+differs from the selected gate or preserved head, before starting or superseding
+any run. The error names both full commit SHAs;
 inspect `no-mistakes axi status` and follow its custody guidance, then use
-`no-mistakes axi run` to submit local commits. Rerun never replaces its selected
-head with the caller's head. Dirty worktrees retain the existing selection behavior.
+`no-mistakes axi run` to submit local commits. The refusal leaves both branches
+unchanged; rerun never replaces its selected head with the caller's head.
+The same check applies to `axi run`'s rerun fallback after an up-to-date push.
+Dirty worktrees and callers without clean-head evidence, including TUI reruns,
+retain the existing selection behavior.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
 explicit intent in either case. Inherited intent keeps distinct rerun provenance;
