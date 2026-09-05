@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS runs (
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
     review_approved_head_sha TEXT,
+    review_fix_config_json   TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
@@ -240,6 +241,11 @@ var migrationStatements = []string{
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
+	// The resolved global-only Review-fixer routing is recorded before a new
+	// run starts. Nullable historical rows retain the legacy recovery behavior;
+	// new rows store an explicit disabled shape so later global edits cannot
+	// opt an already-parked run into a different credentialed process.
+	`ALTER TABLE runs ADD COLUMN review_fix_config_json TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,

@@ -92,6 +92,34 @@ func TestNewWithOptions_RawOverrideKeepsWinning(t *testing.T) {
 
 // TestNewWithOptions_ZeroProfileLeavesArgvUntouched is the no-op guarantee for
 // every configuration written before the common layer existed.
+func TestNewWithOptions_FastIsPiOpenAICodexOnly(t *testing.T) {
+	valid, err := NewWithOptions(types.AgentPi, "pi", nil, Options{
+		Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+		Fast:    true,
+	})
+	if err != nil {
+		t.Fatalf("valid fast profile: %v", err)
+	}
+	if pi, ok := valid.(*piAgent); !ok || !pi.fast {
+		t.Fatalf("fast Pi profile created %T", valid)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		agent   types.AgentName
+		profile agentcfg.Profile
+	}{
+		{"wrong agent", types.AgentCodex, agentcfg.Profile{Model: "gpt-5.6-sol"}},
+		{"wrong provider", types.AgentPi, agentcfg.Profile{Model: "anthropic-vertex/claude-opus-4-8"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewWithOptions(tt.agent, "bin", nil, Options{Profile: tt.profile, Fast: true}); err == nil || !strings.Contains(err.Error(), "fast requires agent pi") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestNewWithOptions_ZeroProfileLeavesArgvUntouched(t *testing.T) {
 	raw := []string{"-c", `service_tier="priority"`}
 	ag, err := NewWithOptions(types.AgentCodex, "bin", raw, Options{})

@@ -243,6 +243,11 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if run.ReviewFixConfigJSON != nil {
+		if err := cfg.ApplyReviewFixRunConfig(*run.ReviewFixConfigJSON); err != nil {
+			return nil, err
+		}
+	}
 	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
 		return nil, err
 	}
@@ -266,13 +271,15 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		return nil, err
 	}
 
-	primary, err := newConfiguredAgentSet(cfg, cfg.Agents, evidenceRoot, environment)
+	primary, err := newConfiguredAgentSet(cfg, cfg.Agents, evidenceRoot, environment, false)
 	if err != nil {
 		return nil, err
 	}
 	ag := primary
-	if cfg.HasReviewFixAgentOverride() && !agentListsEqual(cfg.Agents, cfg.ReviewFixAgents) {
-		fixer, fixErr := newConfiguredAgentSet(cfg, cfg.ReviewFixAgents, evidenceRoot, environment)
+	fixerNames := cfg.ReviewFixAgentsForRun()
+	separateFixer := !agentListsEqual(cfg.Agents, fixerNames) || cfg.HasReviewFixProfileFor(fixerNames)
+	if separateFixer {
+		fixer, fixErr := newConfiguredAgentSet(cfg, fixerNames, evidenceRoot, environment, true)
 		if fixErr != nil {
 			_ = primary.Close()
 			return nil, fmt.Errorf("create review fixer: %w", fixErr)
@@ -293,13 +300,18 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	return ag, nil
 }
 
-func newConfiguredAgentSet(cfg *config.Config, names []types.AgentName, evidenceRoot string, environment runenv.Overlay) (agent.Agent, error) {
+func newConfiguredAgentSet(cfg *config.Config, names []types.AgentName, evidenceRoot string, environment runenv.Overlay, reviewFix bool) (agent.Agent, error) {
 	created := make([]agent.Agent, 0, len(names))
 	for _, name := range names {
+		profile := config.ReviewFixProfile{Profile: cfg.AgentProfileFor(name)}
+		if reviewFix {
+			profile, _ = cfg.ReviewFixProfileFor(name)
+		}
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
-			Profile:                cfg.AgentProfileFor(name),
+			Profile:                profile.Profile,
+			Fast:                   profile.Fast,
 			Environment:            environment,
 		})
 		if err != nil {
@@ -1103,15 +1115,30 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("resolve forge profile: %w", err)
 	}
 
-	// Create the run-owned agent selection once. The optional Review fixer is
-	// resolved from global config here, so later edits affect only later runs;
-	// the in-memory executor for an already-running run keeps its selection.
+	// Create the run-owned agent selection once, then record its resolved
+	// Review-fixer routing before execution. The in-memory executor keeps that
+	// selection, and recovery reapplies the snapshot instead of current global
+	// role config, so later edits affect only later runs.
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("create_agent")
 		return "", err
 	}
+	fixerSnapshot, err := cfg.MarshalReviewFixRunConfig()
+	if err != nil {
+		_ = ag.Close()
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("snapshot_review_fixer")
+		return "", err
+	}
+	if err := m.db.SetRunReviewFixConfig(run.ID, fixerSnapshot); err != nil {
+		_ = ag.Close()
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("snapshot_review_fixer")
+		return "", err
+	}
+	run.ReviewFixConfigJSON = &fixerSnapshot
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{

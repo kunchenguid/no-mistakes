@@ -8,9 +8,10 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 ```yaml
 # ~/.no-mistakes/config.yaml
 
-agent: auto
+agent: pi
 
-review_fix_agent: pi
+# Optional when the fixer uses a different harness.
+# review_fix_agent: codex
 
 acpx_path: acpx
 
@@ -29,12 +30,13 @@ agent_path_override:
   copilot: /usr/local/bin/copilot
 
 agent_config:
-  codex:
-    model: gpt-5.4
-    effort: low
   pi:
-    model: openai-codex/gpt-5.6-sol
-    effort: low
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 
 agent_args_override:
   codex:
@@ -160,24 +162,25 @@ Optional agent used only to remediate findings from the Review step. It accepts 
 
 This override is narrowly scoped: initial Review and every rereview still use `agent`, as do Test, Document, Lint, Rebase, PR, and CI work. Only the turn that fixes Review findings uses `review_fix_agent`. Its durable fixer session, when enabled, is also created for this agent.
 
-`review_fix_agent` is global-only. A repository's `.no-mistakes.yaml` cannot select the credentialed process used for fixes. A trusted repository-level `agent` override still controls ordinary pipeline duties; when `review_fix_agent` is set globally it remains the Review fixer, and when it is absent the fixer follows that effective repository agent. Global edits are read while setting up a run, so an executor already running keeps the selection it started with.
+`review_fix_agent` is global-only. A repository's `.no-mistakes.yaml` cannot select the credentialed process used for fixes. A trusted repository-level `agent` override still controls ordinary pipeline duties; when `review_fix_agent` is set globally it remains the Review fixer, and when it is absent the fixer follows that effective repository agent.
 
-Binary paths, raw arguments, model, and effort continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override), [`agent_args_override`](#agent_args_override), and [`agent_config`](#agent_config). There is no second profile system.
+Binary paths and raw arguments continue to use the existing per-agent maps: [`agent_path_override`](#agent_path_override) and [`agent_args_override`](#agent_args_override). Model, effort, and Pi fast mode use [`agent_config`](#agent_config); its nested `review_fix` block gives the selected fixer a role profile without introducing a second profile system. The resolved fixer selection and role profile are recorded before a new run starts. Editing global config therefore affects later runs only, including when a parked run resumes after a daemon restart. Historical runs created before this snapshot field retain the old recovery behavior.
 
-For example, this keeps an existing `acp:omp` reviewer profile configured in OMP for Vertex AI, Claude Opus 4.8, and xhigh reasoning, while routing only Review remediation to Pi with OpenAI GPT-5.6 Sol at low reasoning:
+For example, both roles can use Pi while selecting different providers and models. This exact configuration runs Review through Vertex AI Claude Opus 4.8 with xhigh reasoning, then runs only Review remediation through OpenAI GPT-5.6 Sol with low reasoning and priority processing:
 
 ```yaml
-# OMP owns the Vertex/Claude reviewer profile and its xhigh reasoning setting.
-agent: acp:omp
-review_fix_agent: pi
-
+agent: pi
 agent_config:
   pi:
-    model: openai-codex/gpt-5.6-sol
-    effort: low
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 ```
 
-ACP exposes model selection but not reasoning effort through `acpx`, so the OMP target retains ownership of its existing Vertex model and xhigh setting. no-mistakes owns the role selection and maps the Pi fixer profile to `--model openai-codex/gpt-5.6-sol --thinking low`.
+no-mistakes maps the reviewer to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh` and the fixer to `--model openai-codex/gpt-5.6-sol --thinking low`. Pi has no stock fast-mode flag, so `fast: true` loads a trusted run-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests. It does not depend on an ambient user extension or launcher-specific environment variable.
 
 ### acpx_path
 
@@ -246,11 +249,11 @@ Default native binary names when no override is set:
 
 ### agent_config
 
-Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. no-mistakes maps each field down to whatever mechanism that harness actually uses, so you no longer have to know each CLI's own flag.
+Model and reasoning effort per agent, in one common spelling. Profiles apply whether an agent is selected by `agent` or `review_fix_agent`. An optional nested `review_fix` profile replaces that agent's ordinary profile only for Review remediation. no-mistakes maps each field down to the harness mechanism, so you do not need a parallel role-profile map.
 
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
-| Type    | `map[string]{model, effort}`                                                        |
+| Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                     |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | Empty (every harness keeps its own defaults)                                        |
 
@@ -266,7 +269,16 @@ agent_config:
     model: openai/gpt-5
   cursor:
     model: gpt-5
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 ```
+
+The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes. `fast` is accepted only in a Pi `review_fix` profile whose model uses `openai-codex/<model>`; other combinations fail config loading with a concise correction. It injects `service_tier: priority` through a run-scoped Pi extension because Pi does not expose a native fast flag.
 
 `effort` is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The value is passed to the harness as written, so a level that harness does not implement is rejected by the harness itself rather than silently downgraded.
 
@@ -306,7 +318,7 @@ agent_args_override:
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.
-Use this for anything [`agent_config`](#agent_config) does not cover - service tier, permission mode, profiles, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
+Use this for anything [`agent_config`](#agent_config) does not cover - permission mode, a general service tier, or any other flag the underlying agent supports - and as the escape hatch for a harness whose model or effort flag no-mistakes cannot map. Pi's OpenAI Codex priority tier for Review fixes is covered directly by `agent_config.<agent>.review_fix.fast`. For model and reasoning effort on a mapped harness, prefer `agent_config`: one spelling instead of seven.
 
 |         |                                                           |
 | ------- | --------------------------------------------------------- |

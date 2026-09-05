@@ -31,6 +31,30 @@ func TestPiAgent_BuildArgs(t *testing.T) {
 	}
 }
 
+func TestPiAgent_BuildRunArgs_FastInstallsPriorityExtension(t *testing.T) {
+	pa := &piAgent{bin: "pi", fast: true}
+	args, extensionPath, err := pa.buildRunArgs(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extensionPath == "" {
+		t.Fatal("fast Pi run did not create an extension")
+	}
+	defer os.Remove(extensionPath)
+	if got := strings.Join(args[len(args)-2:], " "); got != "--extension "+extensionPath {
+		t.Fatalf("fast args tail = %q", got)
+	}
+	source, err := os.ReadFile(extensionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`ctx.model?.provider !== "openai-codex"`, `ctx.model?.api !== "openai-codex-responses"`, `service_tier: "priority"`} {
+		if !strings.Contains(string(source), want) {
+			t.Errorf("fast extension missing %q", want)
+		}
+	}
+}
+
 func TestPiAgent_BuildArgs_DurableSession(t *testing.T) {
 	pa := &piAgent{bin: "pi"}
 	started := pa.buildArgs(&SessionRef{})
