@@ -285,15 +285,18 @@ func describePR(pr *scm.PR) string {
 
 // buildPRContent drafts the pull request title and body and then applies the
 // publication redaction boundary. It is the only producer of PR content, and
-// Execute publishes exactly what it returns, so this is the one place a scrub
-// has to happen for every source that can reach a PR body: agent-authored
-// prose, extracted user intent, findings, fix summaries, step errors, artifact
-// paths, artifact captions, and captured output embedded from evidence files.
+// Execute publishes exactly what it returns, so home-path redaction happens
+// here once, over the assembled title and body, for every source that can
+// reach them: agent-authored prose, extracted user intent, findings, fix
+// summaries, step errors, artifact paths, artifact captions, and captured
+// output embedded from evidence files.
 //
-// The scrub deliberately sits here rather than at each of those sources. A
-// per-source scrub is a set of guards that has to be complete to work, and the
-// next rendering path somebody adds is not going to have one; a boundary scrub
-// covers sources nobody has written yet.
+// Operator-address removal is different: it runs per field, on raw text,
+// before escaping, list prefixes, and fence rewriting change where code
+// begins and ends, and it must not run again over the assembled body, where
+// those rewritten delimiters would pair as inline code and swallow literal
+// evidence. TestPRStep_OperatorAddress enumerates every generated field that
+// reaches the body; a new generated field needs its own call and a case there.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
