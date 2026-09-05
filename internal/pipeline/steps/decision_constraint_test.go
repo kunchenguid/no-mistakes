@@ -165,6 +165,79 @@ func TestTestStep_DecisionReversalParksWithDurableFinding(t *testing.T) {
 	logDecisionState(t, sctx, "operator aborted rejected test repair", nil)
 }
 
+// After an operator approves a parked decision conflict, the next commit
+// boundary must not re-check a tree the human already ruled on; only a new
+// change after that ruling buys another check.
+func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		documentEdits bool
+		wantChecks    int
+	}{
+		{name: "unchanged_tree", wantChecks: 1},
+		{name: "new_change_after_ruling", documentEdits: true, wantChecks: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			testCalls, checks := 0, 0
+			ag := &mockAgent{name: "test"}
+			ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				switch opts.Purpose {
+				case "decision-conformance":
+					checks++
+					if checks == 1 {
+						return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"decision-reversal","severity":"error","action":"ask-user","description":"review round 1 remove-teardown-reclamation contradicted by teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
+					}
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"ruling already accepted"}`)}, nil
+				case "housekeeping":
+					if tc.documentEdits {
+						if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("documented\n"), 0o644); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+				}
+				testCalls++
+				if testCalls == 1 {
+					return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"failing-test","severity":"error","action":"auto-fix","description":"test expects teardown reclamation"}],"summary":"test failed","tested":["focused check"],"testing_summary":"test failed","artifacts":[]}`)}, nil
+				}
+				if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("reclaim build outputs during teardown\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"restore teardown reclamation"}`)}, nil
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			sctx.Config.AutoFix.Test = 1
+			recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+			approved := false
+			var executor *pipeline.Executor
+			executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}, &DocumentStep{}}, func(event ipc.Event) {
+				if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusFixReview) {
+					return
+				}
+				if approved || event.StepName == nil || *event.StepName != types.StepTest {
+					t.Fatalf("unexpected gate: %+v", event)
+				}
+				approved = true
+				logDecisionState(t, sctx, "test repair parked", event)
+				if err := executor.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+					t.Fatal(err)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir); err != nil || !approved {
+				t.Fatalf("run did not complete after the operator ruling: err=%v approved=%t", err, approved)
+			}
+			logDecisionState(t, sctx, "run completed after operator ruling", map[string]int{"decision_checks": checks})
+			if checks != tc.wantChecks {
+				t.Fatalf("decision checks = %d, want %d", checks, tc.wantChecks)
+			}
+		})
+	}
+}
+
 // Emit real persisted state and Git state for evidence collection with go test
 // -json. Agent verdicts are simulated by the fixtures, not live model judgments.
 func logDecisionState(t *testing.T, sctx *pipeline.StepContext, stage string, observation any) {
