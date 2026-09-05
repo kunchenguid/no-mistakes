@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.66.0](https://github.com/kunchenguid/no-mistakes/compare/v1.65.4...v1.66.0) (2026-09-05)
+
+
+### Features
+
+* **pipeline:** add opt-in protected paths for automatic commits ([#970](https://github.com/kunchenguid/no-mistakes/issues/970)) ([bb821d3](https://github.com/kunchenguid/no-mistakes/commit/bb821d3fb9966821834ac25ebb415b81194f20c3))
+
+
+### Bug Fixes
+
+* **axi:** qualify automatic publication and CI skips ([#975](https://github.com/kunchenguid/no-mistakes/issues/975)) ([5700d0f](https://github.com/kunchenguid/no-mistakes/commit/5700d0f80b17378cf51cb0cbcee275dd00318e79))
+* **daemon:** refuse reruns that differ from the clean caller HEAD ([#972](https://github.com/kunchenguid/no-mistakes/issues/972)) ([68ae62f](https://github.com/kunchenguid/no-mistakes/commit/68ae62f18d6d2925fffaa680fec5f2c7ab0cc56d))
+* **eval:** normalize provider-qualified model identities ([#982](https://github.com/kunchenguid/no-mistakes/issues/982)) ([9b6d998](https://github.com/kunchenguid/no-mistakes/commit/9b6d99828c8465f9eb387c92c9a44548a3bf4b71))
+
 ## [1.65.4](https://github.com/kunchenguid/no-mistakes/compare/v1.65.3...v1.65.4) (2026-09-05)
 
 
