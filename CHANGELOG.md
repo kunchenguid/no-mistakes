@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.4](https://github.com/kunchenguid/no-mistakes/compare/v1.65.3...v1.65.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* **pipeline:** give CI repairs the recorded decision history ([#976](https://github.com/kunchenguid/no-mistakes/issues/976)) ([7808aea](https://github.com/kunchenguid/no-mistakes/commit/7808aeae2702f301b6da4a7cd39935c0adaaf5fe))
+
 ## [1.65.3](https://github.com/kunchenguid/no-mistakes/compare/v1.65.2...v1.65.3) (2026-09-04)
 
 
