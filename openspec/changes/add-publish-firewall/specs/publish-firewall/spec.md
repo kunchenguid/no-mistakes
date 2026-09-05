@@ -40,6 +40,10 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 - **WHEN** the diff contains `namespace: no-mistakes`, `cluster: staging`, `build: true`, or `vlan: 100`
 - **THEN** the scanner reports no findings, because the keyword alone is not a hit and none of those values carries an instance identity
 
+#### Scenario: Tracing plumbing and port counts are not captures
+- **WHEN** the diff contains `trace_id: req.TraceID`, `serialNumber: row.SerialNumber`, or `scans up to 65535 ports per host`
+- **THEN** the scanner reports no findings, because a session or serial value must be an opaque token and a port count is not a fleet unit
+
 #### Scenario: Coordinates split across lines still fail
 - **WHEN** a diff serializes `"latitude": 37.774929,` and `"longitude": -122.419416` on separate lines
 - **THEN** the scanner reports a GPS finding, and an ordinary float with no lat/lon keyword nearby reports none

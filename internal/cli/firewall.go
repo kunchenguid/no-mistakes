@@ -163,7 +163,7 @@ func newFirewallServeCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&listen, "listen", "", "listen address (default 127.0.0.1:8787)")
 	cmd.Flags().StringVar(&portalURL, "portal-url", "", "absolute LAN URL prefix advertised in public summaries")
-	cmd.Flags().StringVar(&token, "ingest-token", "", "optional bearer token required for POST /v1/firewall/verdicts")
+	cmd.Flags().StringVar(&token, "ingest-token", "", "optional bearer token required for portal ingest, respond, and abort")
 	return cmd
 }
 

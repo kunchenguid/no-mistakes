@@ -21,19 +21,21 @@ var (
 	// placeholder and is allowlisted. Three-letter tokens without a delimiter
 	// are not matched (the abbreviation trap).
 	siteCode   = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_][a-z0-9]{2,}\b`)
-	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,}\b`)
+	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._:-]{3,})\b`)
 	firmwareKw = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._+-]{2,})\b`)
 	gpsKw      = regexp.MustCompile(`(?i)\b(?:gps|lat(?:itude)?|lon(?:gitude)?|coord(?:inates)?)\b`)
 	gpsPair    = regexp.MustCompile(`-?\d{1,3}\.\d{3,},\s*-?\d{1,3}\.\d{3,}`)
 	// A lat/lon keyword carrying one coordinate-shaped value. The dominant
 	// serialization splits the pair across lines, so a single assigned
 	// coordinate is the hit; a bare float with no keyword is not.
-	gpsAssign   = regexp.MustCompile(`(?i)\b(?:latitude|longitude|coordinates|coord|gps|lat|lon|lng)["']?\s*[:=]\s*["'\[\s]*(-?\d{1,3}\.\d{3,})`)
-	k8sAssign   = regexp.MustCompile(`(?i)\b(?:namespace|cluster(?:\s*name)?|tenant(?:\s*id)?|workspace)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
-	policyKw    = regexp.MustCompile(`(?i)\b(?:ssid|vlan|radius(?:\s*policy)?|802\.1x|aaa\s*policy|firewall(?:\s*rule)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
-	sessionKw   = regexp.MustCompile(`(?i)\b(?:session[_-]?id|jsessionid|connect\.sid|trace[_-]?id|x-request-id)\s*[:=]\s*["']?[A-Za-z0-9._-]{8,}`)
-	syslogLine  = regexp.MustCompile(`(?i)\b(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+(?:\[\d+\])?:`)
-	fleetScale  = regexp.MustCompile(`(?i)\b\d{3,}(?:,\d{3})*\s+(?:devices?|sites?|ports?|endpoints?)\b`)
+	gpsAssign  = regexp.MustCompile(`(?i)\b(?:latitude|longitude|coordinates|coord|gps|lat|lon|lng)["']?\s*[:=]\s*["'\[\s]*(-?\d{1,3}\.\d{3,})`)
+	k8sAssign  = regexp.MustCompile(`(?i)\b(?:namespace|cluster(?:\s*name)?|tenant(?:\s*id)?|workspace)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
+	policyKw   = regexp.MustCompile(`(?i)\b(?:ssid|vlan|radius(?:\s*policy)?|802\.1x|aaa\s*policy|firewall(?:\s*rule)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
+	sessionKw  = regexp.MustCompile(`(?i)\b(?:session[_-]?id|jsessionid|connect\.sid|trace[_-]?id|x-request-id)\s*[:=]\s*["']?([A-Za-z0-9._-]{8,})`)
+	syslogLine = regexp.MustCompile(`(?i)\b(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+(?:\[\d+\])?:`)
+	// Fleet units only. A port count is a protocol range or a capability
+	// figure, never the size of a live estate.
+	fleetScale  = regexp.MustCompile(`(?i)\b\d{3,}(?:,\d{3})*\s+(?:devices?|sites?|endpoints?)\b`)
 	captureName = regexp.MustCompile(`(?i)\.(?:pcap|pcapng|cap|dmp)$`)
 	ipv6Loose   = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b`)
 )
@@ -92,6 +94,7 @@ var docSiteTokens = map[string]struct{}{
 var (
 	uuidValue     = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	numericValue  = regexp.MustCompile(`^\d+$`)
+	digitInValue  = regexp.MustCompile(`\d`)
 	digitRunValue = regexp.MustCompile(`\d{2,}`)
 	versionValue  = regexp.MustCompile(`\d+\.\d+`)
 	buildIDValue  = regexp.MustCompile(`(?i)^[a-z]*\d{4,}[a-z0-9._+-]*$`)
@@ -150,6 +153,17 @@ func isLiveShaped(v string) bool {
 		}
 	}
 	return false
+}
+
+// isCapturedLiteral reports whether a session or serial value is an opaque
+// token read off a live system rather than the identifier or expression that
+// ordinary tracing and device plumbing assigns.
+func isCapturedLiteral(v string) bool {
+	v = strings.Trim(strings.TrimSpace(v), `"'`)
+	if v == "" {
+		return false
+	}
+	return digitInValue.MatchString(v)
 }
 
 // isVersionShaped reports whether a firmware/build value is a real revision

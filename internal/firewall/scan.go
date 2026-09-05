@@ -250,8 +250,11 @@ func detectSiteCodes(s surface) []Finding {
 
 func detectSerials(s surface) []Finding {
 	var hits []Finding
-	for _, tok := range serialKw.FindAllString(s.text, -1) {
-		hits = append(hits, hit(s, ClassSerial, tok))
+	for _, m := range serialKw.FindAllStringSubmatch(s.text, -1) {
+		if len(m) < 2 || !isCapturedLiteral(m[1]) {
+			continue
+		}
+		hits = append(hits, hit(s, ClassSerial, m[0]))
 	}
 	return hits
 }
@@ -358,8 +361,11 @@ func detectCaptures(s surface) []Finding {
 	if s.kind == "filename" && captureName.MatchString(s.text) {
 		hits = append(hits, hit(s, ClassFilename, s.text))
 	}
-	for _, tok := range sessionKw.FindAllString(s.text, -1) {
-		hits = append(hits, hit(s, ClassCapture, tok))
+	for _, m := range sessionKw.FindAllStringSubmatch(s.text, -1) {
+		if len(m) < 2 || !isCapturedLiteral(m[1]) {
+			continue
+		}
+		hits = append(hits, hit(s, ClassCapture, m[0]))
 	}
 	if syslogLine.MatchString(s.text) {
 		hits = append(hits, hit(s, ClassCapture, clip(s.text, 40)))

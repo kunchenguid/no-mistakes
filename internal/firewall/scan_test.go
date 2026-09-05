@@ -249,6 +249,51 @@ func TestScan_LiveShapedIdentifiersStillFail(t *testing.T) {
 	}
 }
 
+func TestScan_TracingAndSerialPlumbingIsNotACapture(t *testing.T) {
+	res := Scan(Input{Diff: unified("internal/trace/trace.go", []string{
+		"trace_id: req.TraceID",
+		"sessionID: cookieValue",
+		"x-request-id: uuid.NewString()",
+		"serialNumber: row.SerialNumber",
+		"Serial: device.Serial",
+	})})
+	if len(res.Findings) != 0 {
+		t.Fatalf("code identifiers flagged as captured values: %+v", res.Findings)
+	}
+}
+
+func TestScan_PortCountProseIsNotFleetScale(t *testing.T) {
+	res := Scan(Input{Diff: unified("docs/scanner.md", []string{
+		"scans up to 65535 ports per host",
+		"probe 1024 ports",
+	})})
+	if hasClass(res, ClassFleetScale) {
+		t.Fatalf("port-count prose flagged as fleet scale: %+v", res.Findings)
+	}
+}
+
+func TestScan_RealCapturedValuesStillFail(t *testing.T) {
+	cases := []struct {
+		name  string
+		line  string
+		class Class
+	}{
+		{"session", "session_id=abcdef1234567890", ClassCapture},
+		{"trace", "trace_id: 4bf92f3577b34da6a3ce929d0e0e4736", ClassCapture},
+		{"serial", "serial: SN9F3K21AB", ClassSerial},
+		{"fleet-devices", "deployed 12000 devices", ClassFleetScale},
+		{"fleet-sites", "monitors 4200 sites", ClassFleetScale},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(Input{Diff: unified("cfg.txt", []string{tc.line})})
+			if !hasClass(res, tc.class) {
+				t.Fatalf("want %s for %q, got %+v", tc.class, tc.line, classes(res))
+			}
+		})
+	}
+}
+
 func unified(file string, added []string) string {
 	var b strings.Builder
 	b.WriteString("diff --git a/" + file + " b/" + file + "\n")

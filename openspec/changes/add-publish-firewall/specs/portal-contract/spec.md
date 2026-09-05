@@ -28,6 +28,14 @@ POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT ch
 - **WHEN** an operator responds with action `acknowledge` on a failing verdict
 - **THEN** the stored conclusion remains `failure` and a response row is recorded
 
+### Requirement: Mutating portal routes are authorized
+
+When an ingest token is configured, every portal request that mutates stored verdict state (ingest, respond, abort) SHALL require it. Read routes stay open on the LAN.
+
+#### Scenario: Unauthenticated abort cannot cancel a live violation
+- **WHEN** a token is configured and a caller POSTs to `/v1/axi/runs/{id}/abort` or `/respond` without it
+- **THEN** the portal answers 401, the verdict keeps its `awaiting_approval` gate, and no acknowledgement row is recorded
+
 ### Requirement: Firewall serve is not the Mac daemon
 
 `no-mistakes firewall serve` SHALL bind a configurable listen address (default loopback) and use `$NM_HOME/firewall.sqlite`. It MUST NOT start, stop, or relocate the pipeline daemon.

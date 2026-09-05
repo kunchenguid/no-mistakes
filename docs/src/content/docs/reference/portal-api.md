@@ -33,5 +33,9 @@ must not.
 | GET | `/v1/firewall/verdicts/{id}/public` | Generic summary + class counts |
 | GET | `/v1/firewall/verdicts/{id}/notice` | Discord-safe payload |
 
+Every `POST` mutates stored state and is gated by
+`NO_MISTAKES_FIREWALL_INGEST_TOKEN` when the operator sets one. `GET` routes
+are open on the LAN.
+
 Off-LAN notifiers, including Discord, MUST use `/notice`. That object has
 `kind`, `repo`, `pr_url`, `portal_url`, and `conclusion` only.

@@ -23,7 +23,6 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/axi/home", s.getHome)
-	mux.HandleFunc("GET /v1/axi/runs", s.getHome)
 	mux.HandleFunc("GET /v1/axi/runs/{id}", s.getRun)
 	mux.HandleFunc("GET /v1/axi/runs/{id}/logs", s.getLogs)
 	mux.HandleFunc("POST /v1/axi/runs/{id}/respond", s.postRespond)
@@ -104,6 +103,8 @@ func (s *Server) postIngest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, v.AxiRun())
 }
 
+// authorize guards every request that mutates stored verdict state: ingest,
+// respond, and abort. Read surfaces stay open on the LAN.
 func (s *Server) authorize(r *http.Request) bool {
 	if s.IngestTok == "" {
 		return true
@@ -163,6 +164,10 @@ func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postRespond(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	var body struct {
 		Action string `json:"action"`
 	}
@@ -181,6 +186,10 @@ func (s *Server) postRespond(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) postAbort(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	v, err := s.Store.Abort(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "abort", http.StatusBadRequest)

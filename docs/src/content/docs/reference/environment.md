@@ -49,14 +49,17 @@ Must stay loopback unless the process is behind the cluster ClusterIP Service. D
 
 ## `NO_MISTAKES_FIREWALL_INGEST_TOKEN`
 
-Optional bearer token required for `POST /v1/firewall/verdicts`.
+Optional bearer token required for every portal request that mutates stored
+state: `POST /v1/firewall/verdicts`, `POST /v1/axi/runs/{id}/respond`, and
+`POST /v1/axi/runs/{id}/abort`. Read surfaces stay open on the LAN.
 
 |         |        |
 | ------- | ------ |
 | Type    | `string` |
 | Default | (none) |
 
-When set, ingest without the token fails closed. Never log the token value.
+When set, a mutating request without the token fails closed. Never log the
+token value.
 
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 

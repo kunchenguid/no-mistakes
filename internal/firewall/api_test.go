@@ -171,6 +171,76 @@ func TestAbort_ChangesRenderedOutcomeAndClearsGate(t *testing.T) {
 	}
 }
 
+func TestMutatingRoutesRequireTheIngestToken(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "firewall.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	in := Input{Diff: unified("cfg.txt", []string{"bind 10.0.0.5"}), Branch: "fm/example", HeadSHA: "abc"}
+	v, err := store.Insert(in, Scan(in), "http://portal.lan")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{Store: store, PortalBase: "http://portal.lan", IngestTok: "secret"}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	for _, path := range []string{"/respond", "/abort"} {
+		res, err := http.Post(ts.URL+"/v1/axi/runs/"+v.ID+path, "application/json", bytes.NewBufferString(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s without a token: want 401, got %d", path, res.StatusCode)
+		}
+	}
+
+	got, err := store.Get(v.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == StatusCancelled {
+		t.Fatal("unauthenticated abort cancelled the verdict")
+	}
+	if len(got.Responses) != 0 {
+		t.Fatalf("unauthenticated respond recorded an acknowledgement: %+v", got.Responses)
+	}
+	if run := got.AxiRun(); run.Outcome != "failed" || run.Gate == nil {
+		t.Fatalf("live violation must still read as a pending gate: %+v", run)
+	}
+
+	authed := postJSONAuthed(t, ts.URL+"/v1/axi/runs/"+v.ID+"/abort", "secret")
+	run, ok := authed["run"].(map[string]any)
+	if !ok || run["outcome"] != StatusCancelled {
+		t.Fatalf("authorized abort should cancel: %v", authed)
+	}
+}
+
+func postJSONAuthed(t *testing.T, url, token string) map[string]any {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestDefaultListenIsLoopback(t *testing.T) {
 	if !strings.HasPrefix(DefaultListen, "127.0.0.1:") {
 		t.Fatalf("default listen must be loopback, got %s", DefaultListen)
