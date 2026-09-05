@@ -1037,6 +1037,34 @@ func TestExtractCommitSummary_RejectsOversizedSummary(t *testing.T) {
 	}
 }
 
+func TestExtractCommitSummary_PreservesQuotedCommitText(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, summary, want string }{
+		{"double quotes", `"Captain, ready" fixture restored`, `no-mistakes(review): "Captain, ready" fixture restored`},
+		{"single quotes", `'Captain: ready' fixture restored`, `no-mistakes(review): 'Captain: ready' fixture restored`},
+		{"fully quoted", `"Captain, ready"`, `no-mistakes(review): "Captain, ready"`},
+		{"operator address", "Captain, restore fixture.", "no-mistakes(review): restore fixture"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			output, err := json.Marshal(map[string]string{"summary": tt.summary})
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err := extractCommitSummary(&agent.Result{Output: output})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, err := (config.Commit{}).RenderFixMessage(types.StepReview, summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message != tt.want {
+				t.Errorf("commit message = %q, want %q", message, tt.want)
+			}
+		})
+	}
+}
+
 func TestExecuteFixMode_RejectsUnsafeSummaryWithoutStaging(t *testing.T) {
 	t.Parallel()
 

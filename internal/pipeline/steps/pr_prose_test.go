@@ -199,6 +199,21 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	}
 	cases := []renderCase{
 		{
+			name: "type seven inside inline code",
+			body: "Keep `literal\n<br>\nCaptain: ready` intact.\n\nCaptain, done",
+			want: []string{"Keep `literal\n<br>\nCaptain: ready` intact.\n\ndone"},
+		},
+		{
+			name: "noninterrupting number inside inline code",
+			body: "Keep `literal\n2. Captain: ready` intact.\n\nCaptain, done",
+			want: []string{"Keep `literal\n2. Captain: ready` intact.\n\ndone"},
+		},
+		{
+			name: "parent code after nested list",
+			body: "- outer\n  - inner\n\n  parent paragraph\n\n      Captain: parent code\n\nCaptain, done",
+			want: []string{"- outer\n  - inner\n\n  parent paragraph\n\n      Captain: parent code\n\ndone"},
+		},
+		{
 			name:   "intent indented evidence",
 			intent: "Observed fixture:\n\n    Captain: ready\n\nCaptain, finish cleanup",
 			want:   []string{"## Intent\n\nObserved fixture:\n\nCaptain: ready\n\nfinish cleanup"},
