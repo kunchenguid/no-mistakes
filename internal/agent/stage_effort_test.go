@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -71,7 +72,13 @@ func TestStageEffortNativeInvocations(t *testing.T) {
 					argv := string(data)
 					pin := tc.flag + " " + want
 					if tc.name == types.AgentCodex {
-						pin = tc.flag + `"` + want + `"`
+						quote := `"`
+						if runtime.GOOS == "windows" {
+							// cmd.exe's echo %* records Go's escaped command line,
+							// rather than the decoded argv a native executable sees.
+							quote = `\"`
+						}
+						pin = tc.flag + quote + want + quote
 					}
 					if !strings.Contains(argv, pin) {
 						t.Fatalf("%s raw=%v: argv %q missing %q", purpose, rawPin, argv, pin)
