@@ -254,7 +254,7 @@ How each field maps:
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
 
-**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
+**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone defaults to `agent_config` (with duty-specific effort selectable through [`stage_effort`](#stage_effort)), so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
 agent_config:
@@ -266,6 +266,60 @@ agent_args_override:
     - -m
     - o3
 ```
+
+### stage_effort
+
+Optional reasoning-effort overrides per harness and pipeline duty. Agent selection stays in `agent`; model selection stays in `agent_config` / native flags. This setting does not select providers, credentials, executable paths, or permissions.
+
+```yaml
+agent: pi
+agent_config:
+  pi:
+    model: your-model
+    effort: medium
+stage_effort:
+  pi:
+    review: high
+    review-fix: medium
+    test: medium
+    document: low
+    lint: low
+```
+
+| | |
+| --- | --- |
+| Type | `map[agent]map[stage]effort` |
+| Stages | `intent`, `rebase`, `review`, `review-fix`, `test`, `document`, `lint`, `pr`, `ci` |
+| Default | Empty (existing behavior unchanged) |
+
+Use the effort vocabulary and supported harness mappings from [`agent_config`](#agent_config). Unknown harnesses, stage names, empty efforts, and unknown effort values fail at global config load. Harnesses without a verified effort mechanism are refused, even if a raw flag is present. Supported values are passed through without downgrading; model-specific acceptance remains the native harness's responsibility.
+
+**Precedence:** native `agent_args_override` effort pin > `stage_effort.<agent>.<duty>` > `agent_config.<agent>.effort` > native harness default. Each available provider in an existing fallback list uses its own overrides for the same duty. An absent override inherits the harness-global effort, not another stage's setting.
+
+`review` covers the initial independent assessment and every rereview. **`review-fix` covers only the fixer inside Review**, including durable-session resumes and fresh-session fallback. It does not inherit `review`. Test evidence and Test repairs share `test`; the same principle applies to other stages' agent-driven repair calls. `intent` covers transcript summarization and disambiguation. Rebase and CI use agents only when their existing repair paths need them; PR uses an agent for drafting. Push has no agent invocation and is not an accepted key. Command-only paths are unchanged; configuring effort never causes an otherwise unnecessary agent invocation.
+
+Document and agent-driven Lint keep their single combined housekeeping pass when their effective efforts match for every resolved fallback provider. If they differ, Document handles documentation alone and Lint performs its own pass, so neither requested effort is ignored and lint work is not duplicated. A raw effort pin makes both effective efforts equal. Configured `commands.lint` remains a separate deterministic gate.
+
+Like `agent_config`, this field is **global-only**: a repository's `.no-mistakes.yaml` cannot set it, even with `allow_repo_commands: true`. Settings are resolved when constructing a run's agents; no shared adapter is mutated per invocation, and review/fixer session isolation is unchanged. Existing global-config reload/recovery behavior is unchanged. Eval replay strips these operator pins and uses the selected candidate profile instead.
+
+#### Migrating a legacy Pi thinking flag
+
+If `agent_args_override.pi` contains `--thinking high` (two list entries) or `--thinking=high`, merely adding stage overrides will **not** change it: that explicit raw flag still wins everywhere. Remove that flag and its value first, moving its desired default into `agent_config.pi.effort`. Keep unrelated flags and your existing model selection. For example, replace the old thinking pin with:
+
+```yaml
+agent: pi
+agent_config:
+  pi:
+    model: your-existing-model
+    effort: medium
+stage_effort:
+  pi:
+    review: high
+    review-fix: medium
+# Keep other agent_args_override.pi entries, but no --thinking pin.
+```
+
+This selects high for every independent review and medium for Review fixes and unspecified duties, on the same model. It configures no-mistakes invocations only, not an interactive implementation agent. Set the model identifier to one your Pi installation supports. No wrapper, update, or daemon restart is required to configure future runs.
 
 ### agent_args_override
 
@@ -573,7 +627,7 @@ The key is matched against the checkout path recorded at `init`. After moving a 
 
 Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
-For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings then pause for approval instead of starting another automatic fix loop.
+When the document step performs a [combined housekeeping pass](#stage_effort), it also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings then pause for approval instead of starting another automatic fix loop.
 
 |      |          |
 | ---- | -------- |

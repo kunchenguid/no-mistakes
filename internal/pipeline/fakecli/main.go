@@ -39,6 +39,8 @@ func handleFakeCLI(mode string) {
 	logFakeCLIStdinBody(args, logFile)
 
 	switch mode {
+	case "pi-effort":
+		fakePiEffortHandler(args)
 	case "gh":
 		fakeGHHandler(args)
 	case "glab":

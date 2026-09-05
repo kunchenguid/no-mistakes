@@ -31,6 +31,9 @@ func TestAgentDisambiguatorRestoresAfterBranchSwitchWithDirtyConflict(t *testing
 	mainHead := gitTestOutput(t, repo, "rev-parse", "HEAD")
 
 	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.Purpose != "intent" {
+			t.Fatalf("disambiguator purpose = %q", opts.Purpose)
+		}
 		gitTestOutput(t, opts.CWD, "checkout", "other")
 		if err := os.WriteFile(filepath.Join(opts.CWD, "conflict.txt"), []byte("mutated\n"), 0o644); err != nil {
 			t.Fatalf("write mutation: %v", err)

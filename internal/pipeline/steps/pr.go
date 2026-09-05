@@ -347,6 +347,7 @@ Final diff paths and statuses:
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+		Purpose:    "pr",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: prContentSchema,

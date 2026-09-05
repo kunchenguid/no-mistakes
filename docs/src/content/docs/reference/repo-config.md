@@ -238,7 +238,7 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Default | Empty (agent auto-detects) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, the agent-driven lint duty is folded into the document step's combined housekeeping pass: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
+When empty, lint is agent-driven, sharing Document's pass when eligible under the [housekeeping effort rules](/no-mistakes/reference/global-config/#stage_effort). The lint step consumes any usable shared result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
 Neither responsibility is skipped: when the document step has nothing to run against (or its structured output cannot be trusted), the lint step runs its own agent pass as before.
 
 ### commands.format
@@ -396,7 +396,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
-For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
+When the document step performs a [combined housekeeping pass](/no-mistakes/reference/global-config/#stage_effort), it also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 

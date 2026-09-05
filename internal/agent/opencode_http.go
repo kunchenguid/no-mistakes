@@ -83,8 +83,8 @@ func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) 
 	return resp.Body, nil
 }
 
-func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, prompt string, schema json.RawMessage) (*opencodeMessageResponse, error) {
-	respBytes, err := doJSON(ctx, http.MethodPost, baseURL+"/session/"+sessionID+"/message", nil, a.messageBody(prompt, schema))
+func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, prompt string, schema json.RawMessage, effort agentcfg.Effort) (*opencodeMessageResponse, error) {
+	respBytes, err := doJSON(ctx, http.MethodPost, baseURL+"/session/"+sessionID+"/message", nil, a.messageBody(prompt, schema, effort))
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (a *opencodeAgent) sendMessage(ctx context.Context, baseURL, sessionID, pro
 // provider/model split is validated at construction by agentcfg, so a non-empty
 // model always yields the two fields opencode requires; opencode calls reasoning
 // effort a provider-specific "variant".
-func (a *opencodeAgent) messageBody(prompt string, schema json.RawMessage) map[string]any {
+func (a *opencodeAgent) messageBody(prompt string, schema json.RawMessage, effort agentcfg.Effort) map[string]any {
 	body := map[string]any{
 		"role":  "user",
 		"parts": []map[string]string{{"type": "text", "text": prompt}},
@@ -112,8 +112,8 @@ func (a *opencodeAgent) messageBody(prompt string, schema json.RawMessage) map[s
 	if provider, modelID, ok := agentcfg.SplitProviderModel(a.profile.Model); ok {
 		body["model"] = map[string]string{"providerID": provider, "modelID": modelID}
 	}
-	if a.profile.Effort != "" {
-		body["variant"] = string(a.profile.Effort)
+	if effort != "" {
+		body["variant"] = string(effort)
 	}
 	if len(schema) > 0 {
 		body["info"] = map[string]any{

@@ -796,6 +796,9 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
 
+	if ag.calls[0].Purpose != "pr" {
+		t.Fatalf("PR invocation purpose = %q", ag.calls[0].Purpose)
+	}
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)

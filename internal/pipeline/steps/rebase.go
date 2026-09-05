@@ -409,6 +409,7 @@ Instructions:
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
 	_, err = sctx.RunAgentContext(ctx, agent.RunOpts{
+		Purpose:    "rebase",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: commitSummarySchema,

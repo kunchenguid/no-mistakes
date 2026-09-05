@@ -43,8 +43,8 @@ type RunOpts struct {
 	// a failed resume. Instrumentation only; adapters ignore it.
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, test-evidence, ...). Instrumentation only; adapters
-	// ignore it.
+	// review-fix, test-evidence, ...). Stage-effort selection and local
+	// instrumentation use this label; it is not sent to the native harness.
 	Purpose string
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
@@ -274,6 +274,8 @@ type Options struct {
 	// harness on its own defaults, which is what every configuration that
 	// predates the common layer resolves to.
 	Profile agentcfg.Profile
+	// StageEfforts is global-only effort tuning for pipeline invocation duties.
+	StageEfforts agentcfg.StageEfforts
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -1049,6 +1051,9 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
+	if len(opts.StageEfforts) != 0 {
+		return newStageEffortAgent(name, bin, extraArgs, opts)
+	}
 	// Fail closed on a knob this harness cannot express. Config load performs
 	// the same check, but this is the funnel every caller reaches - including
 	// eval replay and programmatic callers that build a profile directly - so a
