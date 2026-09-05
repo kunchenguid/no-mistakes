@@ -64,7 +64,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -85,13 +84,17 @@ jobs:
           check-latest: true
 
       - name: Lint
-        run: go vet ./... && gofmt -l .
+        run: |
+          go vet ./... && gofmt -l .
 
       - name: Test
-        run: go test ./... -race
+        run: |
+          go test ./... -race
 ```
 
 When you push through the no-mistakes gate or open a PR, GitHub now has real checks to gate on. The gate's `ci` step completes successfully instead of timing out.
+
+**Note:** The `push` branch is resolved from your repository's default branch (not hardcoded to `main`). The `pull_request` trigger runs on all PRs. Commands are placed in YAML block scalars so special characters and multi-line commands stay intact.
 
 ## Options
 
