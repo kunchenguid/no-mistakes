@@ -862,6 +862,15 @@ func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
 		return false
 	}
+	run, err := d.GetRun(wt.runID)
+	if err != nil {
+		slog.Warn("preserving run worktree: cannot read run", "run_id", wt.runID, "error", err)
+		return false
+	}
+	if reason := protectedPathCleanupReason(d, run); reason != "" {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
+		return false
+	}
 	return true
 }
 
@@ -907,9 +916,6 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 	}
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
-	}
-	if reason := protectedPathCleanupReason(d, run); reason != "" {
-		return true, reason
 	}
 	if run != nil && run.Status == types.RunCIMonitorInterrupted {
 		head, err := git.HeadSHA(ctx, wtPath)
