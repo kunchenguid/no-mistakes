@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -230,7 +231,27 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 	return nil
 }
 
-func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
+	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(sctx.PreviousFindings)
+	manualFixAttempted := retryRefusal
+	defer func() {
+		if !retryRefusal {
+			return
+		}
+		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
+			outcome, err = refusal, nil
+			return
+		}
+		findings, _ := types.ParseFindingsJSON(sctx.PreviousFindings)
+		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
+		if err != nil {
+			findings.Summary += ": " + safeurl.RedactText(err.Error())
+		} else if outcome != nil && outcome.SkipReason != "" {
+			findings.Summary += ": " + safeurl.RedactText(outcome.SkipReason)
+		}
+		encoded, _ := types.MarshalFindingsJSON(findings)
+		outcome, err = &pipeline.StepOutcome{NeedsApproval: true, Findings: encoded}, nil
+	}()
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
@@ -285,6 +306,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	if retryRefusal {
+		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+			return nil, err
+		}
+		repair, err := s.retryProtectedPathRepair(sctx)
+		if err != nil {
+			return nil, err
+		}
+		retryRefusal = false
+		if repair.Revalidate {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+	}
 	baseBranch := effectivePRBaseBranch(sctx)
 	// A resumed run may have a different trusted configuration than the run
 	// that created this PR. Re-read the forge record without a base filter so
@@ -333,7 +367,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	// poll-interval and grace-period pacing are unaffected by re-arming.
 	timeoutAnchor := started
 	lastBaseTip := ""
-	manualFixAttempted := false
 	mergeabilityBlockedReason := ""
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false

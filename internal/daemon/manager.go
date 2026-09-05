@@ -564,6 +564,15 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 // different routes. reason distinguishes the routes in the log.
 func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
 	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		slog.Warn("preserving run worktree: cannot read run", "run_id", runID, "error", err)
+		return
+	}
+	if refusal := protectedPathCleanupReason(m.db, run); refusal != "" {
+		slog.Warn("preserving run worktree", "run_id", runID, "path", wtDir, "reason", refusal)
+		return
+	}
 	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
 		slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
 	}

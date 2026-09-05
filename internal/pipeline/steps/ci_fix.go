@@ -284,6 +284,23 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, erro
 	return s.commitRepair(sctx, "")
 }
 
+func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairResult, error) {
+	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
+		return ciRepairResult{}, err
+	}
+	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
+	sctx.Log("retrying retained CI repair after protected-path refusal")
+	repair, err := s.commitRepair(sctx, "")
+	if err != nil || repair.HeadAdvanced {
+		return repair, err
+	}
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return ciRepairResult{}, err
+	}
+	return s.recordRepair(sctx, head)
+}
+
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {

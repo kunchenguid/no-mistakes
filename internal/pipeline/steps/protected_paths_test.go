@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,114 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testing.T) {
+	for _, revalidate := range []bool{false, true} {
+		name := "publish"
+		if revalidate {
+			name = "revalidate"
+		}
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			f := newCIRepairFixture(t, revalidate, func(dir string) {
+				calls++
+				for file, content := range map[string]string{"package.lock": "refused\n", "fix.go": "retained repair\n"} {
+					if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+			outcome, err := f.run(t)
+			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
+				t.Fatalf("repair did not refuse: %+v, %v", outcome, err)
+			}
+			f.sctx.Fixing = true
+			f.sctx.PreviousFindings = outcome.Findings
+			f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			outcome, err = f.run(t)
+			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) || calls != 1 || f.localHead(t) != f.headSHA {
+				t.Fatalf("unresolved retry bypassed refusal or reran fixer: %+v, %v calls=%d", outcome, err, calls)
+			}
+			if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
+				t.Fatal(err)
+			}
+			f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			outcome, err = f.run(t)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("retry: %+v, %v\n%s", outcome, err, f.log())
+			}
+			if f.localHead(t) == f.headSHA {
+				t.Fatalf("green checks bypassed retained repair: remote=%s dirty=%q\n%s", f.remoteHead(t), gitStatusPorcelain(t, f.dir), f.log())
+			}
+			if calls != 1 {
+				t.Fatalf("retry ran another fixer over retained work: %d calls", calls)
+			}
+			if got := gitCmd(t, f.dir, "show", "HEAD:fix.go"); got != "retained repair" {
+				t.Fatalf("commit lost retained repair: %q", got)
+			}
+			if revalidate {
+				if outcome == nil || outcome.RestartFrom != types.StepReview || f.remoteHead(t) != f.headSHA {
+					t.Fatalf("retry skipped required pipeline revalidation: %+v remote=%s", outcome, f.remoteHead(t))
+				}
+				if strings.Contains(f.log(), ciChecksPassedMsg) {
+					t.Fatal("reported checks passed before revalidation/publication")
+				}
+			} else if f.remoteHead(t) != f.localHead(t) || !strings.Contains(f.log(), ciChecksPassedMsg) {
+				t.Fatalf("retry did not publish before monitoring: local=%s remote=%s\n%s", f.localHead(t), f.remoteHead(t), f.log())
+			}
+		})
+	}
+}
+
+func TestCIStep_ProtectedPathRetryPublicationFailureKeepsRefusal(t *testing.T) {
+	f := newCIRepairFixture(t, false, func(dir string) {
+		for file, content := range map[string]string{"package.lock": "refused\n", "fix.go": "retained repair\n"} {
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	f.sctx.Config.ProtectedPaths = []string{"*.lock"}
+	outcome, err := f.run(t)
+	if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
+		t.Fatalf("repair did not refuse: %+v, %v", outcome, err)
+	}
+	f.sctx.Fixing = true
+	f.sctx.PreviousFindings = outcome.Findings
+	if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+	hooks := t.TempDir()
+	gitCmd(t, f.upstream, "config", "core.hooksPath", hooks)
+	rejectPush := filepath.Join(hooks, "pre-receive")
+	if err := os.WriteFile(rejectPush, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = f.run(t)
+	if err != nil || outcome == nil || !outcome.NeedsApproval || !pipeline.HasProtectedPathRefusal(outcome.Findings) {
+		t.Fatalf("unfinished publication lost refusal: %+v, %v\n%s", outcome, err, f.log())
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil || len(findings.Items) != 1 || findings.Items[0].File != "package.lock" || !strings.Contains(findings.Items[0].Description, `rule "*.lock"`) {
+		t.Fatalf("retry lost original path or rule: %+v, %v", findings, err)
+	}
+	if strings.Contains(f.log(), ciChecksPassedMsg) || f.remoteHead(t) != f.headSHA {
+		t.Fatal("unfinished publication advanced remote or reported checks passed")
+	}
+	if got, err := os.ReadFile(filepath.Join(f.dir, "fix.go")); err != nil || string(got) != "retained repair\n" {
+		t.Fatalf("lost retained work: %q, %v", got, err)
+	}
+	f.sctx.PreviousFindings = outcome.Findings
+	if err := os.Remove(rejectPush); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = f.run(t)
+	if !errors.Is(err, context.Canceled) || f.remoteHead(t) == f.headSHA || f.remoteHead(t) != f.localHead(t) {
+		t.Fatalf("second explicit retry did not finish publication: %+v, %v\n%s", outcome, err, f.log())
+	}
+}
 
 func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) {
 	t.Parallel()

@@ -24,6 +24,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -907,6 +908,9 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
 	}
+	if reason := protectedPathCleanupReason(d, run); reason != "" {
+		return true, reason
+	}
 	if run != nil && run.Status == types.RunCIMonitorInterrupted {
 		head, err := git.HeadSHA(ctx, wtPath)
 		if err != nil {
@@ -917,6 +921,29 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 		}
 	}
 	return false, ""
+}
+
+func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
+	if run == nil || run.Status == types.RunCancelled {
+		return ""
+	}
+	results, err := d.GetStepsByRun(run.ID)
+	if err != nil {
+		return fmt.Sprintf("cannot read protected-path refusals for run %s: %v", run.ID, err)
+	}
+	for _, step := range results {
+		if step.FindingsJSON == nil || !pipeline.HasProtectedPathRefusal(*step.FindingsJSON) || step.Status == types.StepStatusCompleted {
+			continue
+		}
+		if step.Status == types.StepStatusSkipped && (step.Error == nil || *step.Error != types.RunCIMonitorInterruptedReason) {
+			continue
+		}
+		if step.Error != nil && *step.Error == "aborted by user" {
+			continue
+		}
+		return fmt.Sprintf("run %s has an unresolved protected-path refusal; preserving index and worktree", run.ID)
+	}
+	return ""
 }
 
 type gateMigrationStats struct {
