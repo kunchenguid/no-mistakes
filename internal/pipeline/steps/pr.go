@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -284,15 +285,18 @@ func describePR(pr *scm.PR) string {
 
 // buildPRContent drafts the pull request title and body and then applies the
 // publication redaction boundary. It is the only producer of PR content, and
-// Execute publishes exactly what it returns, so this is the one place a scrub
-// has to happen for every source that can reach a PR body: agent-authored
-// prose, extracted user intent, findings, fix summaries, step errors, artifact
-// paths, artifact captions, and captured output embedded from evidence files.
+// Execute publishes exactly what it returns, so home-path redaction happens
+// here once, over the assembled title and body, for every source that can
+// reach them: agent-authored prose, extracted user intent, findings, fix
+// summaries, step errors, artifact paths, artifact captions, and captured
+// output embedded from evidence files.
 //
-// The scrub deliberately sits here rather than at each of those sources. A
-// per-source scrub is a set of guards that has to be complete to work, and the
-// next rendering path somebody adds is not going to have one; a boundary scrub
-// covers sources nobody has written yet.
+// Operator-address removal is different: it runs per field, on raw text,
+// before escaping, list prefixes, and fence rewriting change where code
+// begins and ends, and it must not run again over the assembled body, where
+// those rewritten delimiters would pair as inline code and swallow literal
+// evidence. TestPRStep_OperatorAddress enumerates every generated field that
+// reaches the body; a new generated field needs its own call and a case there.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
@@ -301,12 +305,12 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	return redactPRContent(content), nil
 }
 
-// redactPRContent removes the operator's home directory from the content about
-// to be published. It runs after every length cap has been applied, which is
-// safe because safepath's placeholder is never longer than the path it
-// replaces, so a redacted body can only be shorter than the clamped one.
+// redactPRContent removes home paths from the content about to be published
+// and known operator address from the title. Body prose is sanitized field by
+// field before rendering. Both only shorten text, so the preceding length caps
+// still hold.
 func redactPRContent(content prContent) prContent {
-	content.Title = safepath.RedactText(content.Title)
+	content.Title = safepath.RedactText(publicprose.Text(content.Title))
 	content.Body = safepath.RedactText(content.Body)
 	return content
 }
@@ -364,13 +368,14 @@ Final diff paths and statuses:
 			content.Body = strings.TrimSpace(content.Body)
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
+			content.Body = publicprose.Text(content.Body)
 			content.Body = neutralizeAttestationMarkers(content.Body)
-			if content.Title != "" && content.Body != "" {
-				originalTitle := content.Title
-				content.Title = conventional.TightenTitle(content.Title)
-				if content.Title != originalTitle {
-					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
+			title := conventional.TightenTitle(publicprose.Text(content.Title))
+			if title != "" && content.Body != "" {
+				if title != content.Title {
+					slog.Warn("tightened agent PR title type", "from", content.Title, "to", title)
 				}
+				content.Title = title
 				if bodyLimit > 0 {
 					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
 				} else {
@@ -518,9 +523,7 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
-	// Neutralized for the same reason as in prependIntentSection: intent is
-	// agent-extracted text placed ahead of the pipeline section.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := publicUserIntent(sctx)
 	if cleaned == "" {
 		return sections
 	}
@@ -1269,16 +1272,25 @@ func isGeneratedSectionHeading(line string) bool {
 	}
 }
 
+// publicUserIntent is the intent as published in the PR body. It is
+// agent-extracted text placed ahead of the pipeline section, so it could
+// shadow the real attestation the same way the Testing section can; see
+// appendGeneratedSectionsToCleanBodyWithinLimit.
+func publicUserIntent(sctx *pipeline.StepContext) string {
+	if sctx == nil {
+		return ""
+	}
+	return neutralizeAttestationMarkers(sanitizeUserIntent(publicprose.Text(sctx.UserIntent)))
+}
+
 // prependIntentSection prepends a "## Intent" section sourced from the
-// already-extracted user intent. The intent text is reused verbatim (after
-// the same secret/adversarial scrubbing the agent prompt path applies)
-// rather than being paraphrased by the agent. Returns body unchanged when
+// already-extracted user intent. The intent text is reused as
+// publicUserIntent renders it (the agent prompt path's secret/adversarial
+// scrubbing plus the publication cleanups) rather than being paraphrased by
+// the agent. Returns body unchanged when
 // no intent is available.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
-	// Intent is agent-extracted text that lands ahead of the pipeline section,
-	// so it can shadow the real attestation the same way the Testing section
-	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
-	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	cleaned := publicUserIntent(sctx)
 	if cleaned == "" {
 		return body
 	}

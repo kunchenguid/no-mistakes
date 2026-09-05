@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 )
 
 // branchNameRules and commitSubjectRules are shared between the single-purpose
@@ -242,11 +243,13 @@ func isValidBranchName(name string) bool {
 	return true
 }
 
-// sanitizeCommitSubject trims whitespace and keeps only the first line.
+// sanitizeCommitSubject trims whitespace, keeps only the first line, drops
+// operator address, and only then tightens the conventional type, so the
+// type is inferred from the cleaned subject.
 func sanitizeCommitSubject(raw string) string {
 	s := strings.TrimSpace(raw)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = strings.TrimSpace(s[:i])
 	}
-	return conventional.TightenTitle(s)
+	return conventional.TightenTitle(publicprose.Text(s))
 }

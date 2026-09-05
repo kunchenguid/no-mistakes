@@ -254,7 +254,9 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 		return "", fmt.Errorf("%w: commit summary must not exceed %d bytes", errRejectedCommitSummary, config.MaxFixMessageSummaryBytes)
 	}
 	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
-	cleaned = strings.Trim(cleaned, " \t\r\n\"'.;:,-")
+	// Keep quote delimiters so RenderFixMessage can distinguish literal dialogue
+	// from operator address before publishing the summary as a commit subject.
+	cleaned = strings.Trim(cleaned, " \t\r\n.;:,-")
 	return cleaned, nil
 }
 

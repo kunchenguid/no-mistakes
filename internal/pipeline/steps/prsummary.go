@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/publicprose"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -405,7 +406,7 @@ func testingSummaryFromFindings(raw *string) string {
 	if err != nil {
 		return ""
 	}
-	return sanitizePromptMultilineText(findings.TestingSummary)
+	return sanitizePromptMultilineText(publicprose.Text(findings.TestingSummary))
 }
 
 func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
@@ -514,8 +515,10 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	return fmt.Sprintf("<code>%s</code>", escaped)
 }
 
-func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
-	clean := sanitizePromptMultilineText(summary)
+// renderTestingSummaryFor expects text cleaned by testingSummaryFromFindings,
+// which removes operator address before whitespace normalization loses evidence
+// indentation. Do not repeat address removal on this normalized input.
+func renderTestingSummaryFor(clean string, flavor prBodyFlavor) string {
 	if clean == "" {
 		return ""
 	}
@@ -534,7 +537,7 @@ func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
 }
 
 func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, state *testingArtifactRenderState) string {
-	label := sanitizePromptText(artifact.Label)
+	label := publicprose.Text(sanitizePromptText(artifact.Label))
 	if label == "" {
 		return ""
 	}
@@ -1159,8 +1162,8 @@ func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) 
 
 		emoji := riskEmoji(src.RiskLevel)
 		label := capitalizeRisk(src.RiskLevel)
-		if src.RiskRationale != "" {
-			return fmt.Sprintf("%s %s: %s", emoji, label, src.RiskRationale)
+		if rationale := publicprose.Text(src.RiskRationale); rationale != "" {
+			return fmt.Sprintf("%s %s: %s", emoji, label, rationale)
 		}
 		return fmt.Sprintf("%s %s", emoji, label)
 	}
@@ -1353,7 +1356,7 @@ func isTautologicalStepInner(inner string) bool {
 func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
 	summary := ""
 	if r.FixSummary != nil {
-		summary = strings.TrimSpace(*r.FixSummary)
+		summary = strings.TrimSpace(publicprose.Text(*r.FixSummary))
 	}
 	if summary == "" {
 		return "🔧 Fix applied."
@@ -1374,7 +1377,7 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 			}
 			loc += "` - "
 		}
-		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, escapePRText(f.Description, flavor)))
+		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, escapePRText(publicprose.Text(f.Description), flavor)))
 	}
 	writeTestedDetails(b, sr, findings, flavor)
 }
@@ -1459,10 +1462,12 @@ func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult, flavor prBodyF
 	case types.StepStatusSkipped:
 		b.WriteString("Step was skipped.\n\n")
 	case types.StepStatusFailed:
-		if sr.Error != nil && strings.TrimSpace(*sr.Error) != "" {
-			b.WriteString(escapePRText(strings.TrimSpace(*sr.Error), flavor))
-			b.WriteString("\n\n")
-			return
+		if sr.Error != nil {
+			if msg := publicprose.Text(strings.TrimSpace(*sr.Error)); msg != "" {
+				b.WriteString(escapePRText(msg, flavor))
+				b.WriteString("\n\n")
+				return
+			}
 		}
 		b.WriteString("Step failed.\n\n")
 	case types.StepStatusCompleted:

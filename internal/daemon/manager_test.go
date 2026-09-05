@@ -505,9 +505,8 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 // push_received call's error. macOS-only in practice (Linux file locking and
 // timing hide it), but the assertion is platform-independent.
 func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testing.T) {
-	started := make(chan string, 2)
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
-		return []pipeline.Step{&notifyBlockStep{name: types.StepReview, started: started}}
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
 	})
 
 	const repoID = "concurrent-config-lock-repo"
@@ -522,6 +521,7 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 
 	branches := []string{"feature/one", "feature/two"}
 	errs := make([]error, len(branches))
+	results := make([]ipc.PushReceivedResult, len(branches))
 	var wg sync.WaitGroup
 	for i, br := range branches {
 		wg.Add(1)
@@ -535,13 +535,12 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 				return
 			}
 			defer client.Close()
-			var res ipc.PushReceivedResult
 			errs[i] = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate: p.RepoDir(repoID),
 				Ref:  "refs/heads/" + br,
 				Old:  "0000000000000000000000000000000000000000",
 				New:  headSHA,
-			}, &res)
+			}, &results[i])
 		}(i, br)
 	}
 	wg.Wait()
@@ -552,31 +551,16 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 		}
 	}
 
-	// Drain both start signals regardless of which run won the race to begin,
-	// then confirm both branches have a live, error-free run.
-	gotStarted := make(map[string]bool, len(branches))
-	for range branches {
-		select {
-		case b := <-started:
-			gotStarted[b] = true
-		case <-time.After(3 * time.Second):
-			t.Fatalf("a concurrent run did not start (started so far: %v)", gotStarted)
+	// Verify both accepted runs complete. The shared waiter accounts for slow
+	// Windows git startup; reaching the first step within three seconds is not
+	// part of the config-lock contract.
+	for i, br := range branches {
+		run := waitForRunTerminalState(t, d, results[i].RunID)
+		if run.Branch != br {
+			t.Fatalf("run branch = %s, want %s", run.Branch, br)
 		}
-	}
-
-	for _, br := range branches {
-		if !gotStarted[br] {
-			t.Fatalf("run for branch %s did not start", br)
-		}
-		active, err := d.GetActiveRun(repoID, br)
-		if err != nil {
-			t.Fatalf("get active run for %s: %v", br, err)
-		}
-		if active == nil {
-			t.Fatalf("expected active run for %s", br)
-		}
-		if active.Status != types.RunRunning {
-			t.Fatalf("active run for %s status = %s, want running (error: %v)", br, active.Status, active.Error)
+		if run.Status != types.RunCompleted {
+			t.Fatalf("run for %s status = %s, want completed (error: %v)", br, run.Status, run.Error)
 		}
 	}
 }

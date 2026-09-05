@@ -22,6 +22,32 @@ func TestCommitRenderFixMessage_Default(t *testing.T) {
 	}
 }
 
+func TestCommitRenderFixMessage_OperatorAddress(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		step          types.StepName
+		summary, want string
+	}{
+		{types.StepTest, "Captain: restore automatic Next.js build-output reclamation", "no-mistakes(test): restore automatic Next.js build-output reclamation"},
+		{types.StepReview, "Captain, prevent Codex App stale wakes", "no-mistakes(review): prevent Codex App stale wakes"},
+		{types.StepCI, "Captain, repair failing checks", "no-mistakes(ci): repair failing checks"},
+		{types.StepCI, "cApTaIn, repair failing checks", "no-mistakes(ci): cApTaIn, repair failing checks"},
+		{types.StepReview, "preserve captain selection in the game", "no-mistakes(review): preserve captain selection in the game"},
+		{types.StepReview, "preserve `Captain: ready` fixture text", "no-mistakes(review): preserve `Captain: ready` fixture text"},
+		{types.StepReview, `preserve "Captain, ready" dialogue`, `no-mistakes(review): preserve "Captain, ready" dialogue`},
+	} {
+		t.Run(tt.summary, func(t *testing.T) {
+			got, err := (Commit{}).RenderFixMessage(tt.step, tt.summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("subject = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommitRenderFixMessage_CustomTemplate(t *testing.T) {
 	t.Parallel()
 
