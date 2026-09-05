@@ -220,7 +220,7 @@ Model and reasoning effort per agent, in one common spelling. Pi's optional nest
 | ------- | ------------------------------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                                         |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Built-in Pi profiles shown below when `agent_config` is omitted                                        |
+| Default | Built-in Pi profiles shown below when `agent_config.pi` is omitted                                     |
 
 ```yaml
 agent_config:
@@ -243,7 +243,7 @@ agent_config:
       fast: true
 ```
 
-The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. For an `anthropic-vertex` profile, no-mistakes loads the pinned `@twogiants/pi-anthropic-vertex` package for that invocation; configure Google Cloud Application Default Credentials, enable the Claude model in Vertex AI Model Garden, and set `GOOGLE_CLOUD_PROJECT` (plus `GOOGLE_CLOUD_LOCATION` when needed) in the daemon environment. Pi installs this invocation-scoped package into temporary storage for each agent process: no-mistakes does not persist or reuse it, so repeated Review invocations incur package-install startup latency and require network access even after an earlier invocation succeeded. An unavailable package registry or offline daemon therefore prevents the Vertex-backed Review from starting.
+The built-in Pi setup maps ordinary duties, including Review, to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh`, and maps Review remediation to `--model openai-codex/gpt-5.6-sol --thinking low`. Those defaults remain active when `agent_config` contains only other agents; an explicit `agent_config.pi` entry replaces both Pi defaults, and omitting its `review_fix` block makes remediation use that explicit ordinary Pi profile. For an `anthropic-vertex` profile, no-mistakes loads the pinned `@twogiants/pi-anthropic-vertex` package for that invocation; configure Google Cloud Application Default Credentials, enable the Claude model in Vertex AI Model Garden, and set `GOOGLE_CLOUD_PROJECT` (plus `GOOGLE_CLOUD_LOCATION` when needed) in the daemon environment. Pi installs this invocation-scoped package into temporary storage for each agent process: no-mistakes does not persist or reuse it, so repeated Review invocations incur package-install startup latency and require network access even after an earlier invocation succeeded. An unavailable package registry or offline daemon therefore prevents the Vertex-backed Review from starting.
 
 The nested profile is independent: omitted `model` or `effort` values leave that fixer harness on its own default rather than inheriting the ordinary profile. Omit `review_fix` entirely to preserve the existing behavior and use the ordinary profile for fixes.
 

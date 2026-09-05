@@ -2059,6 +2059,16 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		if err != nil {
 			return nil, err
 		}
+		if _, explicitPi := raw.AgentConfig[string(types.AgentPi)]; !explicitPi {
+			if profiles == nil {
+				profiles = make(map[string]agentcfg.Profile)
+			}
+			profiles[string(types.AgentPi)] = cfg.AgentConfig[string(types.AgentPi)]
+			if fixProfiles == nil {
+				fixProfiles = make(map[string]ReviewFixProfile)
+			}
+			fixProfiles[string(types.AgentPi)] = cfg.ReviewFixAgentConfig[string(types.AgentPi)]
+		}
 		cfg.AgentConfig = profiles
 		cfg.ReviewFixAgentConfig = fixProfiles
 	}

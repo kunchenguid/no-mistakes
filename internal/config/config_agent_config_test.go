@@ -59,6 +59,23 @@ agent_config:
 			t.Errorf("AgentConfig[%q] = %#v, want %#v", name, got, wantProfile)
 		}
 	}
+	if got := cfg.AgentConfig["pi"]; got.Model != "anthropic-vertex/claude-opus-4-8" || got.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("omitted Pi Review profile = %#v", got)
+	}
+	if got, ok := cfg.ReviewFixAgentConfig["pi"]; !ok || got.Profile.Model != "openai-codex/gpt-5.6-sol" || got.Profile.Effort != agentcfg.EffortLow || !got.Fast {
+		t.Fatalf("omitted Pi Review-fix profile = %#v, explicit=%v", got, ok)
+	}
+}
+
+func TestLoadGlobal_ExplicitPiAgentConfigReplacesRoleDefaults(t *testing.T) {
+	global := writeGlobalConfig(t, "agent_config:\n  pi:\n    model: custom-pi-model\n")
+	cfg := Merge(global, &RepoConfig{})
+	if got := cfg.AgentProfileFor(types.AgentPi); got != (agentcfg.Profile{Model: "custom-pi-model"}) {
+		t.Fatalf("explicit Pi Review profile = %#v", got)
+	}
+	if got, explicit := cfg.ReviewFixProfileFor(types.AgentPi); explicit || got.Profile.Model != "custom-pi-model" || got.Fast {
+		t.Fatalf("explicit Pi Review-fix fallback = %#v, explicit=%v", got, explicit)
+	}
 }
 
 func TestLoadGlobal_AgentConfigRejectsBadInput(t *testing.T) {
