@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -16,7 +17,26 @@ const (
 	// rather than an infinite silent wait.
 	driveReconnectInterval = 500 * time.Millisecond
 	driveReconnectTimeout  = 30 * time.Second
+	defaultGetRunTimeout   = 30 * time.Second
 )
+
+// driveGetRunTimeoutNS is the per-attempt get_run read deadline in
+// nanoseconds. A live daemon that takes longer than this to answer is slow,
+// not dead: Reconcile classifies that timeout, probes health, and retries.
+// Tests shorten it so a fake slow daemon can be proven without waiting 30s.
+var driveGetRunTimeoutNS atomic.Int64
+
+func init() {
+	driveGetRunTimeoutNS.Store(int64(defaultGetRunTimeout))
+}
+
+func getRunCallTimeout() time.Duration {
+	d := time.Duration(driveGetRunTimeoutNS.Load())
+	if d <= 0 {
+		return defaultGetRunTimeout
+	}
+	return d
+}
 
 type runStateSource interface {
 	Subscribe(runID string) (<-chan ipc.Event, func(), error)
@@ -32,13 +52,33 @@ func (s *ipcRunStateSource) Subscribe(runID string) (<-chan ipc.Event, func(), e
 }
 
 func (s *ipcRunStateSource) Reconcile(ctx context.Context, runID string) (*ipc.RunInfo, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		run, err := s.getRun(ctx, runID)
+		if err == nil {
+			return run, nil
+		}
+		if !ipc.IsCallTimeout(err) {
+			return nil, err
+		}
+		if probeErr := s.probeHealth(ctx); probeErr != nil {
+			return nil, fmt.Errorf("get_run timed out and daemon health probe failed: %w", probeErr)
+		}
+		// Health succeeded: the daemon is live and the missed deadline was a
+		// slow reply. Retry until the caller's wait/context budget expires.
+	}
+}
+
+func (s *ipcRunStateSource) getRun(ctx context.Context, runID string) (*ipc.RunInfo, error) {
 	client, err := ipc.Dial(s.socketPath)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
 
-	timeout := 30 * time.Second
+	timeout := getRunCallTimeout()
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -49,10 +89,40 @@ func (s *ipcRunStateSource) Reconcile(ctx context.Context, runID string) (*ipc.R
 		}
 	}
 	var result ipc.GetRunResult
-	if err := client.CallWithTimeout(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, timeout); err != nil {
+	if err := client.CallWithContext(ctx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, timeout); err != nil {
 		return nil, err
 	}
 	return result.Run, nil
+}
+
+func (s *ipcRunStateSource) probeHealth(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	client, err := ipc.Dial(s.socketPath)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	timeout := ipc.DefaultDialTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ctx.Err()
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	var result ipc.HealthResult
+	if err := client.CallWithContext(ctx, ipc.MethodHealth, &ipc.HealthParams{}, &result, timeout); err != nil {
+		return err
+	}
+	if result.Status != "ok" {
+		return fmt.Errorf("daemon health status %q", result.Status)
+	}
+	return nil
 }
 
 // runReconciler is the sole owner of event-driven run-state refresh policy.
@@ -60,7 +130,9 @@ func (s *ipcRunStateSource) Reconcile(ctx context.Context, runID string) (*ipc.R
 // state-bearing events, reconnects a dropped stream before reconciling, and
 // uses one slow heartbeat as a lost-event backstop. Event payloads are wakeup
 // hints only: authoritative state always comes from get_run, which makes
-// duplicate and delayed events harmless.
+// duplicate and delayed events harmless. A get_run that misses its read
+// deadline is classified as a slow reply: a passing health probe retries
+// instead of treating a live daemon as I/O failure.
 type runReconciler struct {
 	runID             string
 	source            runStateSource

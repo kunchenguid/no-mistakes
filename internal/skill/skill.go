@@ -146,9 +146,15 @@ Run the pipeline and decide on its findings as they come up:
    ` + "```" + `
    ` + "`axi run`" + ` and every ` + "`axi respond`" + ` block synchronously - the review, test,
    and CI steps can each take **several minutes**, so a single call may not
-   return for a while. That is normal; allow a long timeout and do not cancel
-   or re-issue the command because it seems slow. To check progress without
-   disturbing the run, use ` + "`no-mistakes axi status`" + ` from a separate call.
+   return for a while. That is normal; do not cancel or re-issue the command
+   because it seems slow. Both commands default to ` + "`--wait 8m`" + ` so a harness
+   with a 10-minute tool cap gets a structured return instead of an unbounded
+   hang. If the command returns because that wait elapsed, it is not a failed
+   run and does not mean the daemon is dead: inspect with ` + "`no-mistakes axi status`" + `
+   and re-run ` + "`axi run`" + ` or ` + "`axi respond`" + ` to reattach. A slow live daemon is
+   retried after a health probe rather than treated as I/O failure. To check
+   progress without disturbing the run, use ` + "`no-mistakes axi status`" + ` from a
+   separate call.
    A long-running call is working, not stalled - background it if your harness
    needs to, but the run **never advances past a gate on its own**. Read every
    return; on a ` + "`gate:`" + `, respond; loop until an ` + "`outcome:`" + `. Never idle-wait
@@ -202,9 +208,10 @@ Run the pipeline and decide on its findings as they come up:
    runs (after a ` + "`failed`" + ` or ` + "`cancelled`" + ` outcome), never to circumvent a
    gate.
 
-    Each ` + "`respond`" + ` blocks until the next ` + "`gate:`" + `, ` + "`checks-passed`" + ` decision point, or final outcome.
+    Each ` + "`respond`" + ` blocks until the next ` + "`gate:`" + `, ` + "`checks-passed`" + ` decision point, or final outcome, subject to the same default ` + "`--wait 8m`" + ` hold.
 
-    Two extra flags are available on ` + "`respond`" + ` when you need them:
+    Extra flags on ` + "`respond`" + `:
+    - ` + "`--wait`" + ` bounds the hold (default 8m).
     - ` + "`--add-finding '<json>'`" + ` (with ` + "`--action fix`" + `) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in

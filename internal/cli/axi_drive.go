@@ -38,6 +38,45 @@ const triggerWaitTimeout = 5 * time.Second
 // production always uses the default.
 var abortStateWaitTimeout = 10 * time.Second
 
+// defaultAxiWait is the hold cap for axi run/respond. It sits under a typical
+// 10-minute agent tool budget so the command returns with a reattach error
+// instead of hanging until the harness kills it.
+const defaultAxiWait = 8 * time.Minute
+
+func bindAxiWaitFlag(cmd *cobra.Command, wait *time.Duration) {
+	cmd.Flags().DurationVar(wait, "wait", defaultAxiWait, "maximum time to block driving this run before returning so the caller can reattach")
+}
+
+func boundAxiWait(ctx context.Context, wait time.Duration) (context.Context, context.CancelFunc, error) {
+	if err := validateAxiWait(wait); err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	return ctx, cancel, nil
+}
+
+func validateAxiWait(wait time.Duration) error {
+	if wait <= 0 {
+		return fmt.Errorf("--wait must be a positive duration")
+	}
+	return nil
+}
+
+func isAxiWaitElapsed(parent, drive context.Context, err error) bool {
+	if err == nil || parent.Err() != nil || drive.Err() != context.DeadlineExceeded {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string) error {
+	return emitError(cmd, 1, fmt.Sprintf("wait of %s elapsed while driving the run", wait),
+		"This bounded hold ended; it is not a pipeline failure and does not mean the daemon is dead.",
+		"Run `no-mistakes axi status` to inspect progress",
+		fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait),
+	)
+}
+
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
 	return types.RunStatus(status).Terminal()
@@ -80,6 +119,7 @@ func newAxiRunCmd() *cobra.Command {
 	var launchNonce string
 	var validationGeneration string
 	var baseBranch string
+	var wait time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -93,6 +133,10 @@ func newAxiRunCmd() *cobra.Command {
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
+			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
+			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
+			"is retried after a health probe rather than reported as I/O failure.\n\n" +
 			"--launch-nonce with --validation-generation enables strict proof mode.\n" +
 			"Before driving, AXI emits a receipt with the durable run ID, created or\n" +
 			"reused disposition, full submitted head, and a digest of the exact\n" +
@@ -121,7 +165,7 @@ func newAxiRunCmd() *cobra.Command {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, launchNonce, validationGeneration)
+				return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, launchNonce, validationGeneration, wait)
 			})
 		},
 	}
@@ -131,14 +175,18 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
 	cmd.Flags().StringVar(&validationGeneration, "validation-generation", "", "opaque generation bound to --launch-nonce proof mode")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
+	bindAxiWaitFlag(cmd, &wait)
 	return cmd
 }
 
 func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch string) error {
-	return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, "", "")
+	return runAxiRunWithLaunchProof(cmd, autoYes, skipSteps, intent, baseBranch, "", "", defaultAxiWait)
 }
 
-func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string) error {
+func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, baseBranch, launchNonce, validationGeneration string, wait time.Duration) error {
+	if err := validateAxiWait(wait); err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -234,8 +282,16 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		emitLaunchReceipt(cmd, *launchReceipt)
 	}
 
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
+	driveCtx, cancel, err := boundAxiWait(ctx, wait)
 	if err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
+	defer cancel()
+	run, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
+	if err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, wait, "no-mistakes axi run")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
 	return renderDriveResult(cmd, run, ciReady)
@@ -956,12 +1012,17 @@ func successReportHelp(fixes []fixRow) []string {
 func newAxiRespondCmd() *cobra.Command {
 	var action, step, findings, instructions, addFinding string
 	var autoYes bool
+	var wait time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "respond",
 		Short: "Answer the current approval gate and continue the run",
 		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
 			"blocks until the next gate, CI-ready decision point, or final outcome.\n\n" +
+			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
+			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
+			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
+			"is retried after a health probe rather than reported as I/O failure.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -978,6 +1039,7 @@ func newAxiRespondCmd() *cobra.Command {
 					instructions: instructions,
 					addFinding:   addFinding,
 					autoYes:      autoYes,
+					wait:         wait,
 				})
 			})
 		},
@@ -988,6 +1050,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path refusals require an explicit response")
+	bindAxiWaitFlag(cmd, &wait)
 	return cmd
 }
 
@@ -998,9 +1061,13 @@ type respondArgs struct {
 	instructions string
 	addFinding   string
 	autoYes      bool
+	wait         time.Duration
 }
 
 func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
+	if err := validateAxiWait(ra.wait); err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
 	ctx := cmd.Context()
 
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
@@ -1079,14 +1146,26 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
 
+	driveCtx, cancel, err := boundAxiWait(ctx, ra.wait)
+	if err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
+	defer cancel()
+
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.
-	if err := waitStepLeavesGate(ctx, env.p.Socket(), runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
+	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
+	final, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
 	return renderDriveResult(cmd, final, ciReady)

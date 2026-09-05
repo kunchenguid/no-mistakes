@@ -42,6 +42,41 @@ func IsConnectTimeout(err error) bool {
 	return errors.As(err, &timeoutErr)
 }
 
+// CallTimeoutError reports an IPC method whose response did not arrive before
+// the caller-selected read deadline. The connection was accepted; this is a
+// slow or stuck reply, not a refused dial.
+type CallTimeoutError struct {
+	Method          string
+	TimeoutDuration time.Duration
+	Err             error
+}
+
+func (e *CallTimeoutError) Error() string {
+	return fmt.Sprintf("daemon %s did not reply within %s", e.Method, e.TimeoutDuration)
+}
+
+func (e *CallTimeoutError) Unwrap() error { return e.Err }
+
+func (e *CallTimeoutError) Timeout() bool { return true }
+
+// IsCallTimeout reports whether err was caused by a bounded IPC call read
+// deadline. Connect timeouts are a different failure and do not match.
+func IsCallTimeout(err error) bool {
+	var timeoutErr *CallTimeoutError
+	return errors.As(err, &timeoutErr)
+}
+
+func isReadTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 func connectTimeout() time.Duration {
 	value := os.Getenv("NM_DAEMON_CONNECT_TIMEOUT")
 	if value == "" {
@@ -159,6 +194,13 @@ func (c *Client) CallWithContext(ctx context.Context, method string, params inte
 			return err
 		}
 		if err := c.scanner.Err(); err != nil {
+			if isReadTimeout(err) {
+				return fmt.Errorf("read response: %w", &CallTimeoutError{
+					Method:          method,
+					TimeoutDuration: timeout,
+					Err:             err,
+				})
+			}
 			return fmt.Errorf("read response: %w", err)
 		}
 		return fmt.Errorf("read response: connection closed")
