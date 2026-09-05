@@ -12,7 +12,7 @@ import (
 
 // Only the reported vocative forms at a prose boundary are removed. A domain
 // phrase such as "the captain, crew and ship" is not operator address.
-var address = regexp.MustCompile(`(?m)(^[^\pL\pN\r\n]*?|^[ \t]*[0-9]+[.)][ \t]+|[.!?:][*_]*[ \t]+|[ \t]+-[ \t]+|>[ \t]*)([*_]*)(Captain[ \t]*)([:,])([*_]*)([ \t]*)`)
+var address = regexp.MustCompile(`(?m)(^(?:[ \t]*[0-9]+[.)][ \t]+)?[^\pL\pN\r\n]*?|[.!?:][*_]*[ \t]+|[ \t]+-[ \t]+|>[ \t]*)([*_]*)(Captain[ \t]*)([:,])([*_]*)([ \t]*)`)
 
 var codeTokens = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|(?i:<pre\b[^>]*>.*?(?:</pre\s*>|$)|<code\b[^>]*>.*?(?:</code\s*>|$))|<[^>\n]*>|` + "`+")
 var listMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`)

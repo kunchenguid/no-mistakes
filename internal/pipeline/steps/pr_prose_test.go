@@ -209,6 +209,11 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	}
 	cases := []renderCase{
 		{
+			name: "nested ordered headings",
+			body: "- outer\n  1. A literal ` character.\n  2. ## Captain, run `go test`.\n\n- A literal ` character.\n\n  2. ## Captain, run `go test`.",
+			want: []string{"- outer\n  1. A literal ` character.\n  2. ## run `go test`.\n\n- A literal ` character.\n\n  2. ## run `go test`."},
+		},
+		{
 			name: "type seven inside inline code",
 			body: "Keep `literal\n<br>\nCaptain: ready` intact.\n\nCaptain, done",
 			want: []string{"Keep `literal\n<br>\nCaptain: ready` intact.\n\ndone"},

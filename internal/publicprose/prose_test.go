@@ -101,6 +101,10 @@ func TestText_InlineCodeBlockBoundaries(t *testing.T) {
 		{"noninterrupting number before hashes inside list span", "- Keep `literal\n  2. ## still literal\n  Captain: ready` intact.\n\nCaptain, done", "- Keep `literal\n  2. ## still literal\n  Captain: ready` intact.\n\ndone"},
 		{"nested ordered list interrupts at one", "- outer\n  - A literal ` character.\n    1. Captain, run `go test`.", "- outer\n  - A literal ` character.\n    1. run `go test`."},
 		{"nested ordered list after blank", "- A literal ` character.\n\n  2. Captain, run `go test`.", "- A literal ` character.\n\n  2. run `go test`."},
+		{"nested ordered heading after blank", "- A literal ` character.\n\n  2. ## Captain, run `go test`.", "- A literal ` character.\n\n  2. ## run `go test`."},
+		{"nested ordered sibling heading", "- outer\n  1. A literal ` character.\n  2. ## Captain, run `go test`.", "- outer\n  1. A literal ` character.\n  2. ## run `go test`."},
+		{"ordered heading inside list span", "- A literal ` character.\n  2. ## Captain, run `go test`.", "- A literal ` character.\n  2. ## Captain, run `go test`."},
+		{"ordered heading inside nested list span", "- outer\n  - A literal ` character.\n    2. ## Captain, run `go test`.", "- outer\n  - A literal ` character.\n    2. ## Captain, run `go test`."},
 		{"multiline html code", "<code>literal\n\nCaptain: ready\n</code>\nCaptain, done", "<code>literal\n\nCaptain: ready\n</code>\ndone"},
 		{"multiline html comment", "<!-- literal ` character\n\nCaptain: ready ` -->\nCaptain, done", "<!-- literal ` character\n\nCaptain: ready ` -->\ndone"},
 	} {
