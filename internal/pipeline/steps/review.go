@@ -417,11 +417,20 @@ Risk assessment (after listing all findings):
 
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
+	skipRemaining := false
+	if decisionConstraints != "" && !needsApproval && !types.HasAskUserFindings(findings) {
+		integrationBaseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, effectivePRBaseBranch(sctx))
+		diff, err := git.Diff(ctx, sctx.WorkDir, integrationBaseSHA, reviewTargetSHA)
+		if err != nil {
+			return nil, fmt.Errorf("get integration diff after review: %w", err)
+		}
+		skipRemaining = strings.TrimSpace(diff) == ""
+	}
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
-		SkipRemaining: len(changed) == 0 && len(findings.Items) == 0,
+		SkipRemaining: skipRemaining,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	})

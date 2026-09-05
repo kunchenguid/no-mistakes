@@ -321,12 +321,19 @@ func TestRebaseStep_EmptyConflictResolutionStillReachesIndependentReview(t *test
 }
 
 func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testing.T) {
-	for _, validReview := range []bool{true, false} {
-		name := "accepted"
-		if !validReview {
-			name = "unusable_review"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, baseBranch, severity, action, wantError string
+	}{
+		{name: "accepted"},
+		{name: "unusable_review", wantError: "missing risk assessment"},
+		{name: "configured_base", baseBranch: "develop"},
+		{name: "informational", severity: "info", action: types.ActionNoOp},
+		{name: "configured_base_informational", baseBranch: "develop", severity: "info", action: types.ActionNoOp},
+		{name: "blocking", severity: "warning", action: types.ActionNoOp, wantError: "aborted by user"},
+		{name: "ask_user_info", severity: "info", action: types.ActionAskUser, wantError: "aborted by user"},
+		{name: "missing_action_info", severity: "info", wantError: "aborted by user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir, base, _ := setupGitRepo(t)
 			gitCmd(t, dir, "reset", "--hard", base)
@@ -334,6 +341,9 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			gitCmd(t, dir, "commit", "-m", "remove superseded behavior")
 			head := gitCmd(t, dir, "rev-parse", "HEAD")
 			gitCmd(t, dir, "checkout", "main")
+			if tc.baseBranch != "" {
+				gitCmd(t, dir, "checkout", "-b", tc.baseBranch)
+			}
 			if err := os.WriteFile(filepath.Join(dir, "base.txt"), []byte("updated upstream behavior\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -345,6 +355,7 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			const instruction = "Accept upstream base.txt and drop the branch's removal"
 			decisionID := ""
 			reviews := 0
+			parkedReview := false
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				if !strings.Contains(opts.Prompt, instruction) {
 					t.Fatal("agent did not receive the accepted upstream decision")
@@ -355,16 +366,21 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 				}
 				reviews++
 				if opts.Session != nil || gitCmd(t, dir, "rev-parse", "HEAD") != upstreamHead {
-					t.Fatal("expected independent Review of HEAD equal to origin/main")
+					t.Fatal("expected independent Review of HEAD equal to the integration base")
 				}
-				if !validReview {
+				if tc.name == "unusable_review" {
 					return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
 				}
-				output, err := json.Marshal(cleanReviewFindings())
+				findings := cleanReviewFindings()
+				if tc.severity != "" {
+					findings.Items = []Finding{{ID: "rebase-decision-note", Severity: tc.severity, Action: tc.action, Description: "Review note for rebase round 1 " + decisionID}}
+				}
+				output, err := json.Marshal(findings)
 				return &agent.Result{Output: output}, err
 			}}
 			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
 			sctx.Repo.UpstreamURL = dir
+			sctx.Config.PR.BaseBranch = tc.baseBranch
 			var executor *pipeline.Executor
 			executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag,
 				[]pipeline.Step{&RebaseStep{}, &ReviewStep{}, &PushStep{}, &PRStep{}, &CIStep{}}, func(event ipc.Event) {
@@ -375,6 +391,16 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 						t.Fatalf("empty Rebase reached publication step %s", *event.StepName)
 					}
 					if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+						return
+					}
+					if *event.StepName == types.StepReview && tc.wantError == "aborted by user" {
+						if event.Findings == nil || !strings.Contains(*event.Findings, decisionID) {
+							t.Fatal("Review gate lost the named decision finding")
+						}
+						parkedReview = true
+						if err := executor.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
+							t.Fatal(err)
+						}
 						return
 					}
 					if *event.StepName != types.StepRebase || decisionID != "" || event.Findings == nil {
@@ -392,8 +418,11 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
-			if validReview && err != nil || !validReview && (err == nil || !strings.Contains(err.Error(), "missing risk assessment")) {
+			if tc.wantError == "" && err != nil || tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
 				t.Fatalf("unexpected pipeline result: %v", err)
+			}
+			if parkedReview != (tc.wantError == "aborted by user") {
+				t.Fatalf("Review approval gate reached = %t, expected error = %q", parkedReview, tc.wantError)
 			}
 			if decisionID == "" || reviews != 1 || len(ag.calls) != 2 {
 				t.Fatalf("missing independent Review after accepted Rebase: decision=%q reviews=%d calls=%d", decisionID, reviews, len(ag.calls))
@@ -402,7 +431,7 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if validReview {
+			if tc.wantError == "" {
 				if run.Status != types.RunCompleted || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != upstreamHead {
 					t.Fatalf("accepted empty Review did not complete with its reviewed head: %+v", run)
 				}
@@ -417,8 +446,17 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 				t.Fatal(err)
 			}
 			for _, step := range steps {
-				if validReview && step.StepName != types.StepRebase && step.StepName != types.StepReview && step.Status != types.StepStatusSkipped {
+				if tc.wantError == "" && step.StepName != types.StepRebase && step.StepName != types.StepReview && step.Status != types.StepStatusSkipped {
 					t.Fatalf("publication step %s was not skipped: %s", step.StepName, step.Status)
+				}
+				if step.StepName == types.StepReview && tc.severity != "" {
+					if step.FindingsJSON == nil {
+						t.Fatal("Review lost its findings")
+					}
+					findings, err := types.ParseFindingsJSON(*step.FindingsJSON)
+					if err != nil || len(findings.Items) != 1 || findings.Items[0].ID != "rebase-decision-note" {
+						t.Fatalf("Review did not preserve the finding: %+v, %v", findings, err)
+					}
 				}
 			}
 		})
