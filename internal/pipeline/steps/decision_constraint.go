@@ -100,7 +100,7 @@ var errDecisionCheck = errors.New("recorded fix decision check failed")
 
 // assertRecordedFixDecisions checks only the exceptional repair path with a
 // positive human ruling in this run and a changed tree. Review already has its
-// own independent conformance pass; later commits have only lineage checks.
+// own independent pass, so review fixes reuse it instead of adding a checker.
 // A contradiction refuses the repair without deleting the agent's local work.
 func assertRecordedFixDecisions(sctx *pipeline.StepContext) (err error) {
 	defer func() {

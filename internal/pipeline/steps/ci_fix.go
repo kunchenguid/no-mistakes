@@ -30,11 +30,9 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 
-// autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
-// records the repair under the run's uniform continuity rule: published
-// immediately through the guarded push path when its continuity with the
-// reviewed head is provable, held for revalidation when it is not or when
-// ci.revalidate_repairs asks for it outright. See recordRepair.
+// autoFixCI runs the agent for CI failures, merge conflicts, or a selected fix
+// of a rejected decision repair. commitRepair checks recorded decisions before
+// applying recordRepair's publication policy.
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (ciRepairResult, error) {
@@ -441,12 +439,10 @@ func ciRepairContinuityGap(sctx *pipeline.StepContext, headSHA string) string {
 	return ""
 }
 
-// recordLocalRepair keeps the repair local because revalidation was requested
-// or continuity could not be proven. It revokes the run's review authority, so
-// the Push step's
-// assertReviewApprovedPushHead guard refuses to publish the repaired head until
-// Review has approved it again. The CI monitor turns that into a restart at
-// Review.
+// recordLocalRepair preserves the local head without granting publication
+// authority: assertReviewApprovedPushHead refuses it until Review approves it.
+// The caller either parks a rejected decision repair at the existing approval
+// gate or restarts validation from Review.
 func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	if _, err := stepGitRun(sctx, "update-ref", ref, headSHA); err != nil {

@@ -32,9 +32,9 @@ When a human resolves a findings gate with Approve, Skip, or Abort without selec
 
 Review, Test, Document, Lint, Rebase, and CI repair agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later human decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
-Recorded choices to fix, including per-finding instructions, bind later fixes and Review's acceptance criteria. Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it. Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
+Recorded human choices to fix in the same run, including per-finding instructions, bind later fixes and Review's acceptance criteria. Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it. Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
 
-When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance before the shared Test/Document/Lint commit, after Test's evidence agent, or before accepting a CI repair. Review uses its existing independent pass, which also follows Rebase. Runs without a positive human selection, and unchanged trees, incur no additional agent call. A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision. An unreadable or oversized complete decision history, failed checker, or malformed checker output also stops the repair. Detection is model-based, not a deterministic semantic guarantee.
+When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance before the shared Test/Document/Lint commit, after Test's evidence agent, or before accepting a CI repair. Review uses its existing independent pass, which also follows Rebase. Runs without a positive human selection, and unchanged trees, incur no additional conformance-check invocation. A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision. An unreadable or oversized complete decision history, failed checker, or malformed checker output also stops the repair. Detection is model-based, not a deterministic semantic guarantee.
 
 Declines retain their existing advisory semantics: agents may re-raise a declined finding when current code introduces a materially different problem. Earlier-run branch history remains bounded advisory context; it does not activate the additional same-run check.
 
@@ -73,7 +73,7 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 - The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<PR base branch>` and is an ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
-- If the diff against the PR base branch is empty after rebase, completes rebase and skips all remaining pipeline steps
+- If the diff against the PR base branch is empty after rebase, skips all remaining steps unless this run contains a positive human fix decision. Such decisions require the existing independent Review first. Once Review succeeds with no blocking or `ask-user` findings and the reviewed commit still has an empty diff against the same PR base branch (including configured `pr.base_branch`), it skips the remaining steps, including Push, PR, and CI. Nonblocking informational findings do not prevent that skip; `ignore_patterns` cannot establish emptiness
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 - Bounds the conflict-repair agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): an expired budget cancels the agent and fails the step with a timeout diagnostic rather than leaving the run active indefinitely
 
@@ -289,6 +289,8 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 - Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.
 - Gitea requires `tea` CLI, installed with a login configured for the instance.
+
+A repair rejected by the [recorded-decision check](#finding-decision-history) stays local at the existing approval gate, with its head recorded and review approval revoked. Remote checks still describe the published head and cannot authorize the rejected repair. On an open PR, a selected Fix applies the gate's findings and instructions before polling checks, then returns to Review even if checks are green or pending, or the fixer proposes no changes. Existing merged/closed-PR handling takes precedence over that repair path.
 
 **Behavior:**
 

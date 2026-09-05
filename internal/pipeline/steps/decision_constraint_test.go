@@ -136,6 +136,7 @@ func TestTestStep_DecisionReversalParksWithDurableFinding(t *testing.T) {
 			if err != nil || run.AwaitingAgentSince == nil {
 				t.Fatalf("decision conflict did not park the run: %+v, %v", run, err)
 			}
+			logDecisionState(t, sctx, "test repair parked", event)
 			if err := executor.Respond(types.StepTest, types.ActionAbort, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -160,6 +161,38 @@ func TestTestStep_DecisionReversalParksWithDurableFinding(t *testing.T) {
 	if calls != 3 || parkedEvent.Findings == nil || !strings.Contains(*parkedEvent.Findings, "remove-teardown-reclamation") {
 		t.Fatalf("calls=%d, parked event=%+v", calls, parkedEvent)
 	}
+	logDecisionState(t, sctx, "operator aborted rejected test repair", nil)
+}
+
+// Emit real persisted state and Git state for evidence collection with go test
+// -json. Agent verdicts are simulated by the fixtures, not live model judgments.
+func logDecisionState(t *testing.T, sctx *pipeline.StepContext, stage string, observation any) {
+	t.Helper()
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sctx.DB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds := make(map[types.StepName][]*db.StepRound)
+	for _, step := range steps {
+		rounds[step.StepName], err = sctx.DB.GetRoundsByStep(step.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"stage": stage, "run": run, "steps": steps, "rounds": rounds,
+		"git_head": gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD"),
+		"git_status": gitCmd(t, sctx.WorkDir, "status", "--porcelain"),
+		"observation": observation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("DECISION_EVIDENCE %s", encoded)
 }
 
 func TestDecisionCheck_UnusableOutputDoesNotCommit(t *testing.T) {
@@ -459,6 +492,10 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 					}
 				}
 			}
+			logDecisionState(t, sctx, "empty rebase after independent review", map[string]any{
+				"integration_base": effectivePRBaseBranch(sctx), "integration_head": upstreamHead,
+				"review_invocations": reviews, "review_parked": parkedReview,
+			})
 		})
 	}
 }
@@ -577,6 +614,9 @@ func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
 			if err := assertReviewApprovedPushHead(f.sctx, rejectedHead); err == nil {
 				t.Fatal("rejected repair gained publication authority")
 			}
+			logDecisionState(t, f.sctx, "CI rejection reconciled at approval gate", map[string]any{
+				"remote_head": f.remoteHead(t), "publication_error": assertReviewApprovedPushHead(f.sctx, rejectedHead).Error(),
+			})
 			conflict.Findings.Items[0].UserInstructions = "Remove the rejected teardown restoration"
 			selected := `["decision-reversal"]`
 			userFindings, err := types.MarshalFindingsJSON(conflict.Findings)
@@ -613,6 +653,10 @@ func TestCIStep_RejectedRebasePreservesGateAndFixReentry(t *testing.T) {
 			if f.remoteHead(t) != f.headSHA || assertReviewApprovedPushHead(f.sctx, f.localHead(t)) == nil {
 				t.Fatal("corrected repair published before independent Review")
 			}
+			logDecisionState(t, f.sctx, "CI selected Fix returned", map[string]any{
+				"remote_head": f.remoteHead(t), "outcome": outcome, "agent_invocations": calls,
+				"checks": json.RawMessage(tc.checks), "pr_state": prState,
+			})
 		})
 	}
 }

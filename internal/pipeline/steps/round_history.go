@@ -31,9 +31,9 @@ const (
 // durable statement left - the user-intent prose - and could re-apply exactly
 // the change a human had declined.
 //
-// Declines remain advisory: an agent may raise one again when code genuinely
-// changed. Positive decisions bind fixes and review acceptance; the additional
-// same-run check at later repair boundaries lives in decision_constraint.go.
+// Declines and earlier-run history remain advisory. Positive same-run decisions
+// bind fixes and review acceptance; the additional check at later repair
+// boundaries lives in decision_constraint.go.
 //
 // Returns an empty string when there is nothing to report. The section is
 // meant to be appended to an existing prompt and begins with two newlines so
