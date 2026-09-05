@@ -162,6 +162,69 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+type commitSigningPolicyStep struct {
+	observed chan<- string
+}
+
+func (s *commitSigningPolicyStep) Name() types.StepName { return types.StepReview }
+func (s *commitSigningPolicyStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	policy, err := git.Run(sctx.Ctx, sctx.WorkDir, "config", "--get", "commit.gpgsign")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(sctx.WorkDir, "generated-fix.txt"), []byte("generated review fix\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "generated-fix.txt"); err != nil {
+		return nil, err
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "commit", "-m", "pipeline review fix"); err != nil {
+		return nil, err
+	}
+	s.observed <- policy
+	return &pipeline.StepOutcome{}, nil
+}
+
+func TestPushReceivedCarriesExplicitUnsignedPolicyIntoRunWorktree(t *testing.T) {
+	observed := make(chan string, 1)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&commitSigningPolicyStep{observed: observed}}
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "unsigned-commit-policy-repo")
+	gitCmd(t, repo.WorkingPath, "config", "commit.gpgsign", "false")
+	if err := git.IsolateHooksPath(context.Background(), p.RepoDir(repo.ID)); err != nil {
+		t.Fatalf("isolate gate worktree config: %v", err)
+	}
+	gitCmd(t, p.RepoDir(repo.ID), "config", "commit.gpgsign", "true")
+	gitCmd(t, p.RepoDir(repo.ID), "config", "gpg.program", filepath.Join(t.TempDir(), "missing-signer"))
+	gitCmd(t, p.RepoDir(repo.ID), "config", "user.signingkey", "test-signing-key")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", New: headSHA,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case policy := <-observed:
+		if policy != "false" {
+			t.Fatalf("run worktree commit.gpgsign = %q, want false", policy)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("pipeline did not commit with the registered checkout's unsigned policy")
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q: %v", run.Status, types.RunCompleted, run.Error)
+	}
+}
+
 func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	started := make(chan string, 2)
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
@@ -499,7 +562,7 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 // creation and git-identity setup concurrently. All runs share one gate bare
 // repo, so writing identity with `git config --local` (which targets the bare's
 // shared config) made the two startups race on <bare>/config.lock and fail one
-// run with "could not lock config file ...: File exists". CopyLocalUserIdentity
+// run with "could not lock config file ...: File exists". CopyLocalCommitSettings
 // now writes per-worktree, so the startups no longer contend. The race window
 // is during synchronous startRun, so a failure surfaces directly as the
 // push_received call's error. macOS-only in practice (Linux file locking and

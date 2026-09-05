@@ -1007,10 +1007,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
-	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
+	if err := git.CopyLocalCommitSettings(ctx, repo.WorkingPath, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git commit settings: %s", err))
 		trackStartFailure("configure_worktree_identity")
-		return "", fmt.Errorf("configure worktree git identity: %w", err)
+		return "", fmt.Errorf("configure worktree git commit settings: %w", err)
 	}
 	if storedPRBaseBranch != "" {
 		if err := steps.VerifyRemoteBranchExists(ctx, wtDir, storedPRBaseBranch); err != nil {
