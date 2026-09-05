@@ -161,6 +161,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				if gates != 2 || reviews != 0 || remote != f.headSHA || !strings.Contains(gitStatusPorcelain(t, f.dir), "fix.go") {
 					t.Fatalf("unverified head escaped refusal: gates=%d reviews=%d remote=%s dirty=%q error=%v", gates, reviews, remote, gitStatusPorcelain(t, f.dir), err)
 				}
+				t.Logf("unverified retry: gates=%d reviews=%d remote=%s status=%q", gates, reviews, remote, gitStatusPorcelain(t, f.dir))
 				return
 			}
 			if gates != 1 || remote == f.headSHA || remote != local || gitStatusPorcelain(t, f.dir) != "" {
@@ -185,8 +186,10 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 					if sr.Status != types.StepStatusCompleted || sr.StartedAt == nil {
 						t.Fatalf("repair skipped required %s: %+v", sr.StepName, sr)
 					}
+					t.Logf("persisted revalidation: step=%s status=%s started_at=%d", sr.StepName, sr.Status, *sr.StartedAt)
 				}
 			}
+			t.Logf("retained CI repair publication: before=%s local=%s remote=%s remote:fix.go=%q status=%q", f.headSHA, local, remote, gitCmd(t, f.upstream, "show", "refs/heads/feature:fix.go"), gitStatusPorcelain(t, f.dir))
 		})
 	}
 }
@@ -443,6 +446,7 @@ func TestTestStep_FixMode_ProtectedPathDoesNotReachCommit(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(dir, ledger)); err != nil || string(got) != "unrelated agent edit\n" {
 		t.Errorf("protected edit was discarded: content = %q, err = %v", got, err)
 	}
+	t.Logf("Test auto-fix refusal: %v\nHEAD=%s\nindex paths=%q\nworktree status:\n%s", err, gitCmd(t, dir, "rev-parse", "HEAD"), gitCmd(t, dir, "diff", "--cached", "--name-only"), gitStatusPorcelain(t, dir))
 }
 
 func TestProtectedPaths_AllAutomaticCommitPathsRefuseWithoutMutation(t *testing.T) {

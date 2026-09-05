@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,11 +251,16 @@ func assertProtectedWorktreePreserved(t *testing.T, workDir, head string) {
 	}
 	if got, err := os.ReadFile(filepath.Join(workDir, "test.txt")); err != nil || string(got) != "unstaged edit\n" {
 		t.Fatalf("refusal changed working file: %q, %v", got, err)
+	} else {
+		t.Logf("retained Git state: HEAD=%s index:test.txt=%q worktree:test.txt=%q", gitOutput(t, workDir, "rev-parse", "HEAD"), gitOutput(t, workDir, "show", ":test.txt"), string(got))
 	}
 }
 
 func (s *protectedPathPushRetryStep) Name() types.StepName { return types.StepPush }
 func (s *protectedPathPushRetryStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if len(sctx.Config.ProtectedPaths) != 1 || sctx.Config.ProtectedPaths[0] != "*.txt" {
+		return nil, fmt.Errorf("trusted protected_paths lost to pushed config: %q", sctx.Config.ProtectedPaths)
+	}
 	if !s.edited {
 		s.edited = true
 		if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
@@ -270,6 +276,23 @@ func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing
 		return []pipeline.Step{&protectedPathPushRetryStep{}}
 	})
 	repo, headSHA := setupTestGitRepo(t, p, database, "protected-publication")
+	// Exercise the manager's real trusted-config fetch: the pushed branch tries
+	// to remove protection even though the trusted branch opts into repo commands.
+	configFile := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configFile, []byte("protected_paths: ['*.txt']\nallow_repo_commands: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "protect text files on trusted main")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	if err := os.WriteFile(configFile, []byte("protected_paths: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "try to remove protection on feature")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/feature")
+	headSHA = gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	t.Logf("trusted main config:\n%s\npushed feature config:\n%s", gitOutput(t, p.RepoDir(repo.ID), "show", "refs/heads/main:.no-mistakes.yaml"), gitOutput(t, p.RepoDir(repo.ID), "show", "refs/heads/feature:.no-mistakes.yaml"))
 	publicationDir := filepath.Join(t.TempDir(), "published.git")
 	gitCmd(t, "", "init", "--bare", publicationDir)
 	if _, err := database.UpdateRepoForkURL(repo.ID, publicationDir); err != nil {
@@ -282,7 +305,7 @@ func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing
 	defer client.Close()
 	var result ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main",
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature",
 		Old: strings.Repeat("0", 40), New: headSHA,
 	}, &result); err != nil {
 		t.Fatal(err)
@@ -315,22 +338,24 @@ func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		_, publicationErr := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/main")
+		_, publicationErr := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/feature")
 		_, worktreeErr := os.Stat(workDir)
 		t.Fatalf("approval bypassed refused Push: run=%s published=%v worktree_exists=%v", run.Status, publicationErr == nil, worktreeErr == nil)
 	}
 	if !strings.Contains(approvalErr.Error(), "protected") || !strings.Contains(approvalErr.Error(), "fix") {
 		t.Fatalf("approval refusal lacks retry guidance: %v", approvalErr)
 	}
+	t.Logf("respond approve: %v", approvalErr)
 	if got := gitOutput(t, workDir, "show", ":test.txt"); got != "staged edit" {
 		t.Fatalf("approval changed the index: %q", got)
 	}
 	if got, err := os.ReadFile(filepath.Join(workDir, "test.txt")); err != nil || string(got) != "unstaged edit\n" {
 		t.Fatalf("approval changed working files: %q, %v", got, err)
 	}
-	if _, err := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/main"); err == nil {
+	if _, err := git.Run(context.Background(), publicationDir, "show-ref", "--verify", "refs/heads/feature"); err == nil {
 		t.Fatal("unresolved protected edit was published")
 	}
+	assertProtectedWorktreePreserved(t, workDir, headSHA)
 
 	// The operator resolves the protected edit, then explicitly retries Push.
 	gitCmd(t, workDir, "restore", "--source=HEAD", "--staged", "--worktree", "--", "test.txt")
@@ -343,12 +368,14 @@ func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing
 	if run.Status != types.RunCompleted || run.LastPushedSHA == nil || *run.LastPushedSHA != headSHA {
 		t.Fatalf("retry did not complete publication: %+v", run)
 	}
-	if got := gitOutput(t, publicationDir, "rev-parse", "refs/heads/main"); got != headSHA {
+	if got := gitOutput(t, publicationDir, "rev-parse", "refs/heads/feature"); got != headSHA {
 		t.Fatalf("published head = %s, want %s", got, headSHA)
 	}
+	t.Logf("after explicit resolution + respond fix: run=%s last_pushed_sha=%s bare-remote feature=%s", run.Status, *run.LastPushedSHA, gitOutput(t, publicationDir, "rev-parse", "refs/heads/feature"))
 	deadline = time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(workDir); os.IsNotExist(err) {
+			t.Logf("after successful publication: worktree stat=%v", err)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

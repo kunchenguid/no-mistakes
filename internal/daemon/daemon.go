@@ -839,7 +839,7 @@ func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWor
 // names only the exact directories run records name, which is the same rule
 // eject applies (see gate.removeRepoWorktrees): nothing there is enumerated,
 // and a directory no run recorded is never even looked at. Whether a named
-// directory may go is still the active-run guard (see skipWorktreeCleanup).
+// directory may go is decided by removableOrphanWorktree.
 func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) []orphanWorktree {
 	var removable []orphanWorktree
 	for _, wt := range leftover {
@@ -854,9 +854,9 @@ func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree
 	return removable
 }
 
-// removableOrphanWorktree reports whether cleanup may take this directory,
-// which is the active-run guard (see skipWorktreeCleanup). A directory it
-// spares is neither swept nor removed.
+// removableOrphanWorktree combines the active-run guard with refusal retention.
+// This removal decision does not exempt retained terminal runs from the
+// independent startup process sweep or evidence expiry.
 func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
 	if skip, reason := skipWorktreeCleanup(context.Background(), d, wt.runID, wt.dir); skip {
 		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
@@ -929,6 +929,8 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 	return false, ""
 }
 
+// protectedPathCleanupReason protects only the index and working files. It must
+// not be used as a process-liveness or test-evidence retention predicate.
 func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
 	if run == nil || (run.Status == types.RunCancelled && run.Error != nil && *run.Error == types.RunCancelReasonAbortedByUser) {
 		return ""

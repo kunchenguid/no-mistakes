@@ -554,8 +554,8 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	reapEvidence(m.db, root, policy, time.Now())
 }
 
-// removeRunWorktree tears one run's worktree down: it sweeps whatever is still
-// standing in the directory and only then removes it.
+// removeRunWorktree sweeps processes before deciding whether to remove the
+// directory, so refusal retention cannot keep escaped workers alive.
 //
 // Every removal of a run worktree this package performs goes through here, and
 // none calls git.WorktreeRemove directly, because the ordering is easy to forget

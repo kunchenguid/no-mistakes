@@ -437,6 +437,7 @@ func TestDriveRun_YesLeavesProtectedPathRefusalAwaitingResponse(t *testing.T) {
 					t.Errorf("parked output missing %q: %s", want, output.String())
 				}
 			}
+			t.Logf("AXI output with --yes (automatic IPC responses: %d):\n%s%s", responses.Load(), progress.String(), output.String())
 		})
 	}
 }

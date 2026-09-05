@@ -282,7 +282,7 @@ Start a new run only after abort confirms the terminal state; see the [abort com
 
 Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` - or `<root>/<runID>` when the repository has a [configured worktree root](/no-mistakes/reference/global-config/#worktree_roots) - sticks around after a run ends.
 
-The daemon removes worktrees at run completion, and also on daemon startup (crash recovery). If one is still there:
+The daemon's [retention rules](/no-mistakes/concepts/daemon/#what-it-does) and [crash-recovery checks](/no-mistakes/concepts/daemon/#crash-recovery) can deliberately keep a worktree after a run ends. Inspect retained work before considering removal; for a protected-path refusal, follow the [resolution guidance](/no-mistakes/reference/repo-config/#protected_paths). Only remove a leftover after deciding its contents can be discarded:
 
 ```sh
 # From inside the repo the worktree belongs to:
@@ -290,7 +290,7 @@ git worktree list
 git worktree remove --force <path>
 ```
 
-Or let the daemon clean it on next startup:
+Otherwise, eligible orphan worktrees are cleaned on the next startup, subject to those same retention rules:
 
 ```sh
 no-mistakes daemon stop

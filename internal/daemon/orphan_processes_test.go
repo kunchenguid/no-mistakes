@@ -115,6 +115,8 @@ func TestProtectedPathRefusalRetainsWorktreeButReapsProcessesAndEvidence(t *test
 			if !pidGoneWithin(leakedPID, 10*time.Second) {
 				t.Errorf("orphan %d in the terminal refused run survived the startup sweep", leakedPID)
 			}
+			_, evidenceErr := os.Stat(evidenceDir)
+			t.Logf("after failed trusted-config recovery: run=%s executors=%d orphan_alive=%t evidence_exists=%t", run.Status, len(mgr.executors), processIsAlive(leakedPID), !os.IsNotExist(evidenceErr))
 		})
 	}
 }
