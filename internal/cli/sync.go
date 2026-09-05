@@ -335,7 +335,7 @@ func humanSyncSummary(state branchsync.State) string {
 			if state.Recovery != nil && state.Recovery.KeepLocal {
 				return "later pipeline work is preserved by a verified archive; recover custody at the exact required head with `no-mistakes sync --recover --keep-local`"
 			}
-			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
+			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`. `no-mistakes rerun` resumes validating the selected preserved head, but refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits"
 		}
 		if state.Safety == "blocked_recover_preserved_head_missing" {
 			return "run ended without a recoverable preserved head; recover custody with `no-mistakes sync --recover --keep-local` to keep the current local head"
@@ -415,7 +415,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool, bindArchiveR
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
 	if state.Safety == "blocked_pipeline_owned_recoverable" && (state.Recovery == nil || !state.Recovery.KeepLocal) {
-		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
+		help = append(help, "Run `no-mistakes rerun` instead to resume validating the selected preserved pipeline head; it refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits")
 	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})

@@ -593,7 +593,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 //	all local
 //	work
 //	diverged   any       refuse (anchor named, manual   custody at local head;
-//	                     reconcile / rerun offered)     gate reset to it (CAS)
+//	                     reconcile / guarded rerun)     gate reset to it (CAS)
 //	P missing  any       refuse                         custody at local head;
 //	                                                    gate reset to it (CAS)
 //
@@ -842,7 +842,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return s.recoverAdoptPreserved(ctx, run, state, preserved)
 		}
 		state.Relation = RelationDiverged
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, or use --keep-local to keep the current head. `no-mistakes rerun` resumes validating the selected preserved head, but refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits; no files or refs were changed", anchorRef))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}

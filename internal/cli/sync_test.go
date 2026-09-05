@@ -1055,14 +1055,14 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
 		t.Fatalf("stranded check should exit 1, got %#v\n%s", err, out)
 	}
-	for _, want := range []string{
+	for _, want := range append([]string{
 		"state: pipeline_owned",
 		"status: cancelled",
 		"safety: blocked_pipeline_owned_recoverable",
 		"code: recover_custody",
 		"command: no-mistakes axi sync --recover",
 		"no-mistakes rerun",
-	} {
+	}, canonicalRerunRecoveryPhrases...) {
 		if !strings.Contains(out, want) {
 			t.Errorf("stranded check missing %q:\n%s", want, out)
 		}
@@ -1115,7 +1115,7 @@ func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
 		t.Fatalf("diverged recover should exit 1, got %#v\n%s", err, out)
 	}
-	for _, want := range []string{"safety: blocked_recover_diverged", "refs/no-mistakes/recover/", "--keep-local"} {
+	for _, want := range append([]string{"safety: blocked_recover_diverged", "refs/no-mistakes/recover/", "--keep-local"}, canonicalRerunRecoveryPhrases...) {
 		if !strings.Contains(out, want) {
 			t.Errorf("diverged refusal missing %q:\n%s", want, out)
 		}
