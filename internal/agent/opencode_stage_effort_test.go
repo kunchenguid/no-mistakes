@@ -67,6 +67,7 @@ func TestOpenCodeStageEffortSharedServerConcurrentReplay(t *testing.T) {
 					if !reflect.DeepEqual(body.Model, map[string]string{"providerID": "openai", "modelID": "same"}) {
 						t.Errorf("model = %v", body.Model)
 					}
+					t.Logf("shared OpenCode endpoint: duty=%s variant=%s model=%s/%s session=%s native_schema=%t", purpose, body.Variant, body.Model["providerID"], body.Model["modelID"], r.URL.Path, len(body.Info.Format) != 0)
 					mu.Lock()
 					attempts[purpose]++
 					attempt := attempts[purpose]

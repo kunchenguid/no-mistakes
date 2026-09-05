@@ -27,6 +27,9 @@ func newStageEffortAgent(name types.AgentName, bin string, raw []string, opts Op
 	if err != nil {
 		return nil, err
 	}
+	// OpenCode effort belongs to each message, not the server process. Keep one
+	// persistent server across duties; Run captures the selection for retries
+	// and structured-output fallback without mutating the shared profile.
 	if openCode, ok := base.(*opencodeAgent); ok {
 		openCode.stageEfforts = make(agentcfg.StageEfforts, len(stages))
 		for stage, effort := range stages {

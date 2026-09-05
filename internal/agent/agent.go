@@ -44,7 +44,7 @@ type RunOpts struct {
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
 	// review-fix, test-evidence, ...). Stage-effort selection and local
-	// instrumentation use this label; native adapters ignore it.
+	// instrumentation use this label; it is not sent to the native harness.
 	Purpose string
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
