@@ -1277,7 +1277,10 @@ func isGeneratedSectionHeading(line string) bool {
 // shadow the real attestation the same way the Testing section can; see
 // appendGeneratedSectionsToCleanBodyWithinLimit.
 func publicUserIntent(sctx *pipeline.StepContext) string {
-	return neutralizeAttestationMarkers(publicprose.Text(cleanedUserIntent(sctx)))
+	if sctx == nil {
+		return ""
+	}
+	return neutralizeAttestationMarkers(sanitizeUserIntent(publicprose.Text(sctx.UserIntent)))
 }
 
 // prependIntentSection prepends a "## Intent" section sourced from the

@@ -406,7 +406,7 @@ func testingSummaryFromFindings(raw *string) string {
 	if err != nil {
 		return ""
 	}
-	return sanitizePromptMultilineText(findings.TestingSummary)
+	return sanitizePromptMultilineText(publicprose.Text(findings.TestingSummary))
 }
 
 func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
@@ -515,11 +515,7 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	return fmt.Sprintf("<code>%s</code>", escaped)
 }
 
-func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
-	// Multiline summaries may be wrapped as code below. Clean generated prose
-	// before that distinction is lost; tested commands and artifact bytes keep
-	// their separate, verbatim rendering paths.
-	clean := publicprose.Text(sanitizePromptMultilineText(summary))
+func renderTestingSummaryFor(clean string, flavor prBodyFlavor) string {
 	if clean == "" {
 		return ""
 	}

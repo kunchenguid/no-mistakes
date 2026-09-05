@@ -4,6 +4,7 @@ package publicprose
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -29,7 +30,7 @@ var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’
 // line after it starts a block too. HTML block starts follow CommonMark 4.6.
 var atxHeading = regexp.MustCompile(`^ {0,3}#{1,6}(?:[ \t\r\n]|$)`)
 var blockStart = regexp.MustCompile(`^(?: {0,3}(?:(?:[-+*]|[0-9]+[.)])[ \t]|>)|    |\t)`)
-var htmlBlockStart = regexp.MustCompile(`(?i)^ {0,3}<(?:!|\?|/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)(?:[ \t\r\n>]|/>|$)|/?[a-z][a-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t\r]*(?:\n|$))`)
+var htmlBlockStart = regexp.MustCompile(`(?i)^ {0,3}<(?:(!--|!\[CDATA\[|![a-z]|\?|(?:pre|script|style|textarea)(?:[ \t\r\n>]|$)|/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t\r\n>]|/>|$))|/?[a-z][a-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t\r]*(?:\n|$))`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining
 // quoted text byte-for-byte. Callers must keep repository text and captured
@@ -59,6 +60,8 @@ func Text(text string) string {
 		leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 		indent := len(leading) + 3*strings.Count(leading, "\t")
 		rule := thematicBreak.MatchString(line)
+		htmlBlock := htmlBlockStart.FindStringSubmatchIndex(line)
+		htmlInterrupt := htmlBlock != nil && htmlBlock[2] >= 0
 		if fence == "" {
 			trimmed = listMarker.ReplaceAllString(trimmed, "")
 			item := listMarker.FindString(line[len(leading):])
@@ -75,7 +78,7 @@ func Text(text string) string {
 		}
 		if fence == "" {
 			heading := atxHeading.MatchString(line)
-			if heading || rule || trimmed == "" || marker != "" || blockStart.MatchString(line) || htmlBlockStart.MatchString(line) {
+			if heading || rule || trimmed == "" || marker != "" || blockStart.MatchString(line) || htmlBlock != nil {
 				blockStarts = append(blockStarts, offset)
 			}
 			if heading {
@@ -96,7 +99,7 @@ func Text(text string) string {
 		case strings.HasPrefix(trimmed, ">"):
 			blockquote = true
 			protect(offset, offset+len(line))
-		case rule, trimmed == "", blockquoteBreak.MatchString(line):
+		case rule, trimmed == "", blockquoteBreak.MatchString(line), htmlInterrupt:
 			blockquote = false
 		case blockquote, indent >= listContent+4:
 			protect(offset, offset+len(line))
@@ -129,14 +132,18 @@ func Text(text string) string {
 			}
 			// Inline spans require a matching run of ticks. An unmatched tick
 			// is ordinary text; only unfinished block fences extend to EOF.
-			for next := to; next < end; {
-				tick := strings.IndexByte(text[next:end], '`')
+			spanEnd := end
+			if nextBlock := sort.SearchInts(blockStarts, to); nextBlock < len(blockStarts) {
+				spanEnd = min(spanEnd, blockStarts[nextBlock])
+			}
+			for next := to; next < spanEnd; {
+				tick := strings.IndexByte(text[next:spanEnd], '`')
 				if tick < 0 {
 					break
 				}
 				closeStart := next + tick
 				next = closeStart
-				for next < end && text[next] == '`' {
+				for next < spanEnd && text[next] == '`' {
 					next++
 				}
 				if next-closeStart == to-from {

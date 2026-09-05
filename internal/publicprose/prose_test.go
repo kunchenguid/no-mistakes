@@ -59,6 +59,37 @@ func TestText_BlockquoteBoundaries(t *testing.T) {
 		{"explicit quoted blocks", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item"},
 		{"noninterrupting number", "> note\n2. Captain, quoted continuation", "> note\n2. Captain, quoted continuation"},
 		{"nonheading hash", "> note\n##Captain, quoted continuation", "> note\n##Captain, quoted continuation"},
+		{"html pre block", "> Captain, quoted\n<pre>Captain: literal</pre>\nCaptain, done", "> Captain, quoted\n<pre>Captain: literal</pre>\ndone"},
+		{"html comment", "> Captain, quoted\n<!-- note -->\nCaptain, done", "> Captain, quoted\n<!-- note -->\ndone"},
+		{"html processing instruction", "> Captain, quoted\n<?instruction?>\nCaptain, done", "> Captain, quoted\n<?instruction?>\ndone"},
+		{"html declaration", "> Captain, quoted\n<!DOCTYPE html>\nCaptain, done", "> Captain, quoted\n<!DOCTYPE html>\ndone"},
+		{"html cdata", "> Captain, quoted\n<![CDATA[note]]>\nCaptain, done", "> Captain, quoted\n<![CDATA[note]]>\ndone"},
+		{"html closing block tag", "> Captain, quoted\n</div>\nCaptain, done", "> Captain, quoted\n</div>\ndone"},
+		{"html type seven", "> Captain, quoted\n<custom-tag>\nCaptain, continued quote", "> Captain, quoted\n<custom-tag>\nCaptain, continued quote"},
+		{"html closing pre is type seven", "> Captain, quoted\n</pre>\nCaptain, continued quote", "> Captain, quoted\n</pre>\nCaptain, continued quote"},
+		{"indented html continuation", "> Captain, quoted\n    <div>\nCaptain, continued quote", "> Captain, quoted\n    <div>\nCaptain, continued quote"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Text(tt.input); got != tt.want {
+				t.Errorf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestText_InlineCodeBlockBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, input, want string }{
+		{"paragraph", "A literal ` character.\n\nCaptain, run `go test`.", "A literal ` character.\n\nrun `go test`."},
+		{"heading", "A literal ` character.\n## Captain, run `go test`.", "A literal ` character.\n## run `go test`."},
+		{"after heading", "## A literal ` character.\nCaptain, run `go test`.", "## A literal ` character.\nrun `go test`."},
+		{"list item", "- A literal ` character.\n- Captain, run `go test`.", "- A literal ` character.\n- run `go test`."},
+		{"thematic break", "A literal ` character.\n---\nCaptain, run `go test`.", "A literal ` character.\n---\nrun `go test`."},
+		{"html block", "A literal ` character.\n<div>Captain, run `go test`.</div>", "A literal ` character.\n<div>run `go test`.</div>"},
+		{"soft wrapped span", "Keep `literal\nCaptain: ready` intact.\n\nCaptain, done", "Keep `literal\nCaptain: ready` intact.\n\ndone"},
+		{"soft wrapped markup in span", "Keep `literal\n<em>Captain: ready</em>` intact.\n\nCaptain, done", "Keep `literal\n<em>Captain: ready</em>` intact.\n\ndone"},
+		{"multiline html code", "<code>literal\n\nCaptain: ready\n</code>\nCaptain, done", "<code>literal\n\nCaptain: ready\n</code>\ndone"},
+		{"multiline html comment", "<!-- literal ` character\n\nCaptain: ready ` -->\nCaptain, done", "<!-- literal ` character\n\nCaptain: ready ` -->\ndone"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := Text(tt.input); got != tt.want {
