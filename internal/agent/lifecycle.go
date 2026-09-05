@@ -16,6 +16,14 @@ const (
 	// LifecyclePhaseFallback marks any fallback before a fresh agent attempt,
 	// including provider, session-resume, and structured-output fallbacks.
 	LifecyclePhaseFallback = "fallback"
+	// LifecyclePhaseReady marks the point where a native agent has completed
+	// local startup and begun emitting its machine-readable protocol.
+	LifecyclePhaseReady = "ready"
+	// LifecyclePhaseToolStarted and LifecyclePhaseToolFinished are bounded
+	// diagnostics for a tool invocation. They deliberately carry only the tool
+	// name and outcome, never arguments or output.
+	LifecyclePhaseToolStarted  = "tool_started"
+	LifecyclePhaseToolFinished = "tool_finished"
 	// LifecyclePhaseActivity marks observed liveness of a running native
 	// subprocess: bytes arrived on its stdout or stderr.
 	//
