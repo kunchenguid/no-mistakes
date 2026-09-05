@@ -913,7 +913,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
 # Use acp:<target> to run an optional user-installed acpx target, for example acp:gemini
-agent: auto
+agent: pi
 
 # Optional agent (or ordered fallback list) used only to fix Review findings.
 # When unset, Review fixes use agent. This is global-only: a repository cannot
@@ -1002,7 +1002,14 @@ log_level: info
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
 # agent_config is refused for them; agent_args_override remains an escape hatch
 # only if your installed CLI build accepts a suitable flag.
-# agent_config:
+agent_config:
+  pi:
+    model: anthropic-vertex/claude-opus-4-8
+    effort: xhigh
+    review_fix:
+      model: openai-codex/gpt-5.6-sol
+      effort: low
+      fast: true
 #   codex:
 #     model: gpt-5.4
 #     effort: low
@@ -1011,13 +1018,6 @@ log_level: info
 #     effort: high
 #   opencode:
 #     model: openai/gpt-5
-#   pi:
-#     model: anthropic-vertex/claude-opus-4-8
-#     effort: xhigh
-#     review_fix:
-#       model: openai-codex/gpt-5.6-sol
-#       effort: low
-#       fast: true # verified service_tier=priority request injection
 #
 # Extra native agent CLI flags (optional, global only)
 # Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
@@ -1885,8 +1885,17 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                   types.AgentAuto,
-		Agents:                  []types.AgentName{types.AgentAuto},
+		Agent:  types.AgentPi,
+		Agents: []types.AgentName{types.AgentPi},
+		AgentConfig: map[string]agentcfg.Profile{
+			"pi": {Model: "anthropic-vertex/claude-opus-4-8", Effort: agentcfg.EffortXHigh},
+		},
+		ReviewFixAgentConfig: map[string]ReviewFixProfile{
+			"pi": {
+				Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol", Effort: agentcfg.EffortLow},
+				Fast:    true,
+			},
+		},
 		ForgejoAXIPath:          "forgejo-axi",
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
@@ -2053,6 +2062,8 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 
 func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg := DefaultGlobalConfig()
+	cfg.AgentConfig = nil
+	cfg.ReviewFixAgentConfig = nil
 	cfg.SourceYAML = append([]byte(nil), data...)
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))

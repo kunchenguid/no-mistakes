@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -31,7 +32,11 @@ func TestPiAgent_BuildArgs(t *testing.T) {
 	}
 }
 
-func TestPiAgent_BuildRunArgs_FastInstallsPriorityExtension(t *testing.T) {
+func TestPiAgent_BuildRunArgs_FastExtensionTransformsOrTerminates(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required to execute the generated Pi extension")
+	}
 	pa := &piAgent{bin: "pi", fast: true}
 	args, extensionPath, err := pa.buildRunArgs(nil)
 	if err != nil {
@@ -44,14 +49,40 @@ func TestPiAgent_BuildRunArgs_FastInstallsPriorityExtension(t *testing.T) {
 	if got := strings.Join(args[len(args)-2:], " "); got != "--extension "+extensionPath {
 		t.Fatalf("fast args tail = %q", got)
 	}
-	source, err := os.ReadFile(extensionPath)
+
+	const harness = `
+import { pathToFileURL } from "node:url";
+let handler;
+const extension = await import(pathToFileURL(process.argv[1]).href);
+extension.default({ on(name, candidate) { if (name === "before_provider_request") handler = candidate; } });
+const valid = process.argv[2] === "valid";
+const result = handler(
+  { payload: valid ? { input: "kept" } : null },
+  { model: valid ? { provider: "openai-codex", api: "openai-codex-responses" } : { provider: "other", api: "other" } },
+);
+process.stdout.write(JSON.stringify(result));
+`
+	valid := exec.Command(node, "--input-type=module", "--eval", harness, extensionPath, "valid")
+	output, err := valid.CombinedOutput()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("execute valid extension request: %v: %s", err, output)
 	}
-	for _, want := range []string{`ctx.model?.provider !== "openai-codex"`, `ctx.model?.api !== "openai-codex-responses"`, `service_tier: "priority"`} {
-		if !strings.Contains(string(source), want) {
-			t.Errorf("fast extension missing %q", want)
-		}
+	var payload map[string]any
+	if err := json.Unmarshal(output, &payload); err != nil {
+		t.Fatalf("decode transformed payload: %v: %s", err, output)
+	}
+	if payload["input"] != "kept" || payload["service_tier"] != "priority" {
+		t.Fatalf("transformed payload = %#v", payload)
+	}
+
+	mismatch := exec.Command(node, "--input-type=module", "--eval", harness, extensionPath, "mismatch")
+	output, err = mismatch.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 78 {
+		t.Fatalf("mismatched provider exit = %v, output = %s", err, output)
+	}
+	if !strings.Contains(string(output), "fast mode requires Pi's openai-codex Responses provider") {
+		t.Fatalf("mismatched provider output = %q", output)
 	}
 }
 

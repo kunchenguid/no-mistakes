@@ -532,34 +532,40 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 	}
 
 	branches := []string{"feature/one", "feature/two"}
-	errs := make([]error, len(branches))
+	type pushResult struct {
+		branch string
+		err    error
+	}
+	results := make(chan pushResult, len(branches))
 	var wg sync.WaitGroup
-	for i, br := range branches {
+	for _, br := range branches {
 		wg.Add(1)
-		go func(i int, br string) {
+		go func(br string) {
 			defer wg.Done()
 			// A dedicated client per goroutine: a single client serializes
 			// calls, which would defeat the concurrency we are testing.
 			client, err := ipc.Dial(p.Socket())
 			if err != nil {
-				errs[i] = err
+				results <- pushResult{branch: br, err: err}
 				return
 			}
 			defer client.Close()
 			var res ipc.PushReceivedResult
-			errs[i] = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 				Gate: p.RepoDir(repoID),
 				Ref:  "refs/heads/" + br,
 				Old:  "0000000000000000000000000000000000000000",
 				New:  headSHA,
 			}, &res)
-		}(i, br)
+			results <- pushResult{branch: br, err: err}
+		}(br)
 	}
 	wg.Wait()
 
-	for i, br := range branches {
-		if errs[i] != nil {
-			t.Fatalf("concurrent push for %s failed: %v", br, errs[i])
+	for range branches {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent push for %s failed: %v", result.branch, result.err)
 		}
 	}
 

@@ -417,7 +417,7 @@ Shows runs newest-first with branch, status (styled), short SHA, timestamp, and 
 
 ## no-mistakes eval
 
-Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model in isolation, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
+Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model with isolated no-mistakes state and a throwaway worktree, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
 
 See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
 
@@ -462,7 +462,7 @@ Checks:
 - Daemon status
 - Agent runners: native binaries `claude`, `codex`, `grok`, `acli`, `opencode`, `pi`, `copilot`, and `agy` (Antigravity), plus the optional ACP bridge `acpx`
 - ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`
-- Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
+- Effective global primary and optional Review-fixer agent configuration, reported as `gate validation`; any unavailable selected runner is a failed check because the gate cannot validate without it
 - Every configured [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry, reported as `forge <host>`: the profile resolves and validates, its provider CLI is installed, and that CLI is authenticated for the profile's host
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
