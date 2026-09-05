@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -498,14 +499,22 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 // gateFields renders the active approval gate: the awaiting step, its findings
 // table, and the next-step commands an agent can run to clear it.
 func gateFields(gate stepView) []toon.Field {
-	return gateFieldsWithHelp(gate, []string{
+	help := []string{
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
+	}
+	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
+		help = []string{
+			"Protected-path refusals require an explicit operator response; Approve is rejected.",
+			"Have the operator inspect and resolve the reported protected-path edit through the repository's authorized workflow, then run `no-mistakes axi respond --action fix` to retry the refused step, including its commit and publication.",
+		}
+	}
+	return gateFieldsWithHelp(gate, append(help,
 		"Run `no-mistakes axi respond --action skip` to skip this step",
 		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, "")),
 		"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
 		preserveGateFixCommitsGuidance,
-	})
+	))
 }
 
 func inspectionOnlyGateFields(gate stepView, runID string) []toon.Field {
