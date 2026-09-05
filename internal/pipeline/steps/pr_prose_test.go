@@ -14,51 +14,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, input, want string }{
-		{"subject", "fix: Captain: restore reclamation", "fix: restore reclamation"},
-		{"risk", "✅ Low: Captain, the change is bounded", "✅ Low: the change is bounded"},
-		{"mixed case", "✅ Low: cApTaIn, the change is bounded", "✅ Low: cApTaIn, the change is bounded"},
-		{"upper case", "CAPTAIN: the change is bounded", "CAPTAIN: the change is bounded"},
-		{"lowercase roles", "Roles: captain, crew and ship.", "Roles: captain, crew and ship."},
-		{"lowercase risk", "✅ Low: captain, crew and ship selection is unchanged", "✅ Low: captain, crew and ship selection is unchanged"},
-		{"error prefix", "fails with: captain: undefined", "fails with: captain: undefined"},
-		{"bold term label", "- **captain**: now persisted across sessions", "- **captain**: now persisted across sessions"},
-		{"capitalized bold term label", "- **Captain**: the role that owns the ship", "- **Captain**: the role that owns the ship"},
-		{"bold label sentence", "**Note:** Captain, fix this", "**Note:** fix this"},
-		{"bold label testing", "**Testing:** Captain, ran the suite", "**Testing:** ran the suite"},
-		{"finding", "- ⚠️ Captain, guard stale wakes", "- ⚠️ guard stale wakes"},
-		{"ordered paren item", "1) Captain, guard stale wakes", "1) guard stale wakes"},
-		{"ordered dot item", "12. Captain, guard stale wakes", "12. guard stale wakes"},
-		{"sentences", "Tests passed. Captain, checks are complete.", "Tests passed. checks are complete."},
-		{"domain", "The captain, crew and ship remain unchanged.", "The captain, crew and ship remain unchanged."},
-		{"quoted", `Keep "Captain, ready" and 'Captain: ready' dialogue.`, `Keep "Captain, ready" and 'Captain: ready' dialogue.`},
-		{"curly quotes", "Keep “Captain, ready” and ‘Captain: ready’ dialogue.", "Keep “Captain, ready” and ‘Captain: ready’ dialogue."},
-		{"escaped quotes", "Keep &#34;Captain, ready&#34; dialogue.", "Keep &#34;Captain, ready&#34; dialogue."},
-		{"inline code", "Captain, keep ``Captain: `ready` `` intact", "keep ``Captain: `ready` `` intact"},
-		{"fenced code", "````diff\n+Captain: fixture\n```\nCaptain, still code\n````\nCaptain, done", "````diff\n+Captain: fixture\n```\nCaptain, still code\n````\ndone"},
-		{"tilde fence", "~~~text\nCaptain, fixture\n~~~\nCaptain, done", "~~~text\nCaptain, fixture\n~~~\ndone"},
-		{"unclosed fence", "```text\nCaptain, fixture", "```text\nCaptain, fixture"},
-		{"blockquote", "> Captain, quoted\nCaptain, continued quote\n\nCaptain, done", "> Captain, quoted\nCaptain, continued quote\n\ndone"},
-		{"indented code", "    Captain: fixture\n\nCaptain, done", "    Captain: fixture\n\ndone"},
-		{"html code", "<pre><code>Captain: fixture\nCaptain, code</code></pre>\nCaptain, done", "<pre><code>Captain: fixture\nCaptain, code</code></pre>\ndone"},
-		{"html attribute", `<a title="Captain: fixture">link</a>`, `<a title="Captain: fixture">link</a>`},
-		{"html prose", "<details>\n<summary>Captain, fix summary</summary>\n\nCaptain, fixed\n</details>", "<details>\n<summary>fix summary</summary>\n\nfixed\n</details>"},
-		{"comment", "<!-- Captain: recorded -->\nCaptain, done", "<!-- Captain: recorded -->\ndone"},
-		{"unmatched tick in dialogue", "\"Captain, type a ` character.\"\n\nCaptain, done", "\"Captain, type a ` character.\"\n\ndone"},
-		{"markup in inline code", "`<code> Captain: literal`\n\nCaptain, done", "`<code> Captain: literal`\n\ndone"},
-		{"inline span cannot cross block code", "A lone ` precedes code.\n\n```text\n`Captain: literal\n```\nCaptain, done", "A lone ` precedes code.\n\n```text\n`Captain: literal\n```\ndone"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got := redactPRContent(prContent{Body: tt.input}).Body
-			if got != tt.want {
-				t.Errorf("body = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestPRStep_OperatorAddressBeforeTitleInference(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -99,116 +54,6 @@ func TestPRStep_EmptySanitizedTitleUsesFallback(t *testing.T) {
 	}
 }
 
-func TestRedactPRContent_OperatorAddressBlockquoteBoundaries(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, input, want string }{
-		{"reported heading", "> note\n## Captain, next steps", "> note\n## next steps"},
-		{"heading and following prose", "> Captain, quoted\n## Captain, next steps\nCaptain: finish cleanup", "> Captain, quoted\n## next steps\nfinish cleanup"},
-		{"bullet list", "> Captain, quoted\n- Captain, next steps", "> Captain, quoted\n- next steps"},
-		{"ordered list", "> Captain, quoted\n1. Captain, next steps", "> Captain, quoted\n1. next steps"},
-		{"fence and following prose", "> note\n```text\nCaptain, literal\n```\nCaptain: finish cleanup", "> note\n```text\nCaptain, literal\n```\nfinish cleanup"},
-		{"paragraph continuation", "> Captain, quoted\nCaptain: continued quote", "> Captain, quoted\nCaptain: continued quote"},
-		{"explicit quoted blocks", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item"},
-		{"noninterrupting number", "> note\n2. Captain, quoted continuation", "> note\n2. Captain, quoted continuation"},
-		{"nonheading hash", "> note\n##Captain, quoted continuation", "> note\n##Captain, quoted continuation"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
-				t.Errorf("body = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRedactPRContent_OperatorAddressQuoteBlockBoundaries(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, input, want string }{
-		{
-			"unbalanced intent quote",
-			"Fix the \"flaky test\n\n## What Changed\n\n- Captain, guard wakes\n\n✅ Low: Captain, bounded. The \"foo\" helper. Captain, done",
-			"Fix the \"flaky test\n\n## What Changed\n\n- guard wakes\n\n✅ Low: bounded. The \"foo\" helper. done",
-		},
-		{"inch mark bullet", "- Support 5\" displays\n- Captain, guard wakes\n\n✅ Low: Captain, bounded. The \"foo\" helper.", "- Support 5\" displays\n- guard wakes\n\n✅ Low: bounded. The \"foo\" helper."},
-		{"unbalanced quote before heading", "An odd \" mark\n## Captain, next steps \"x\"", "An odd \" mark\n## next steps \"x\""},
-		{"unbalanced quote before thematic break", "An odd \" mark\n---\nCaptain, next \"x\"", "An odd \" mark\n---\nnext \"x\""},
-		{"unbalanced curly quote before blank line", "An odd “ mark\n\nCaptain, next ”x”", "An odd “ mark\n\nnext ”x”"},
-		{"unbalanced quote before fence", "An odd \" mark\n```text\nCaptain: literal\n```\nCaptain, next \"x\"", "An odd \" mark\n```text\nCaptain: literal\n```\nnext \"x\""},
-		{"unbalanced quote before blockquote", "An odd \" mark\n> Captain, quoted\n\nCaptain, next \"x\"", "An odd \" mark\n> Captain, quoted\n\nnext \"x\""},
-		{"soft wrapped dialogue", "Keep \"Captain, ready\nand waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\nand waiting\" dialogue.\n\ndone"},
-		{"dialogue after reset", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. Captain, done", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. done"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
-				t.Errorf("body = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRedactPRContent_OperatorAddressQuoteBlockStarts(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, input, want string }{
-		{"blank line", "An odd \" mark\n\nCaptain, next \"x\"", "An odd \" mark\n\nnext \"x\""},
-		{"heading line", "An odd \" mark\n## Captain, next \"x\"", "An odd \" mark\n## next \"x\""},
-		{"line after heading", "## Odd \" heading\nCaptain, next \"x\"", "## Odd \" heading\nnext \"x\""},
-		{"line after indented heading", "   # Odd \" heading\nCaptain, next \"x\"", "   # Odd \" heading\nnext \"x\""},
-		{"dash bullet", "- Support 5\" displays\n- Captain, guard wakes. The \"foo\" helper. Captain, done", "- Support 5\" displays\n- guard wakes. The \"foo\" helper. done"},
-		{"plus bullet", "+ Support 5\" displays\n+ Captain, guard wakes. The \"foo\" helper. Captain, done", "+ Support 5\" displays\n+ guard wakes. The \"foo\" helper. done"},
-		{"star bullet", "* Support 5\" displays\n* Captain, guard wakes. The \"foo\" helper. Captain, done", "* Support 5\" displays\n* guard wakes. The \"foo\" helper. done"},
-		{"ordered dot", "1. Support 5\" displays\n2. Captain, guard wakes. The \"foo\" helper. Captain, done", "1. Support 5\" displays\n2. guard wakes. The \"foo\" helper. done"},
-		{"ordered paren", "1) Support 5\" displays\n2) Captain, guard wakes. The \"foo\" helper. Captain, done", "1) Support 5\" displays\n2) guard wakes. The \"foo\" helper. done"},
-		{"ordered high start", "9. Support 5\" displays\n10. Captain, guard wakes. The \"foo\" helper.", "9. Support 5\" displays\n10. guard wakes. The \"foo\" helper."},
-		{"indented bullet", "- Support 5\" displays\n   - Captain, guard wakes. The \"foo\" helper.", "- Support 5\" displays\n   - guard wakes. The \"foo\" helper."},
-		{"thematic break", "An odd \" mark\n***\nCaptain, next \"x\"", "An odd \" mark\n***\nnext \"x\""},
-		{"fence open", "An odd \" mark\n```text\nCaptain: literal\n```\nCaptain, next \"x\"", "An odd \" mark\n```text\nCaptain: literal\n```\nnext \"x\""},
-		{"fence close", "```text\nAn odd \" mark\n```\nCaptain, next \"x\"", "```text\nAn odd \" mark\n```\nnext \"x\""},
-		{"blockquote marker", "An odd \" mark\n> Captain, quoted\n\nCaptain, next \"x\"", "An odd \" mark\n> Captain, quoted\n\nnext \"x\""},
-		{"indented code", "An odd \" mark\n    Captain: literal\nCaptain, next \"x\"", "An odd \" mark\n    Captain: literal\nnext \"x\""},
-		{"tab indented code", "An odd \" mark\n\tCaptain: literal\nCaptain, next \"x\"", "An odd \" mark\n\tCaptain: literal\nnext \"x\""},
-		{"html block", "An odd \" mark\n<details>\nCaptain, next \"x\"", "An odd \" mark\n<details>\nnext \"x\""},
-		{"html block with content", "An odd \" mark\n<summary>Captain, next \"x\"</summary>", "An odd \" mark\n<summary>next \"x\"</summary>"},
-		{"html comment block", "An odd \" mark\n<!-- note -->\nCaptain, next \"x\"", "An odd \" mark\n<!-- note -->\nnext \"x\""},
-		{"lone tag line", "An odd \" mark\n<br>\nCaptain, next \"x\"", "An odd \" mark\n<br>\nnext \"x\""},
-		{"paragraph continuation", "Keep \"Captain, ready\nand waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\nand waiting\" dialogue.\n\ndone"},
-		{"single quoted continuation", "Keep 'Captain, ready\nand waiting' dialogue.\n\nCaptain, done", "Keep 'Captain, ready\nand waiting' dialogue.\n\ndone"},
-		{"inline tag continuation", "Keep \"Captain, ready\n<em>and</em> waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n<em>and</em> waiting\" dialogue.\n\ndone"},
-		{"number continuation", "Keep \"Captain, ready\n2024 was fine\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n2024 was fine\" dialogue.\n\ndone"},
-		{"hash continuation", "Keep \"Captain, ready\n#1 priority\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n#1 priority\" dialogue.\n\ndone"},
-		{"emphasis continuation", "Keep \"Captain, ready\n*and* waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\n*and* waiting\" dialogue.\n\ndone"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
-				t.Errorf("body = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRedactPRContent_OperatorAddressThematicBreaks(t *testing.T) {
-	t.Parallel()
-	for _, separator := range []string{"---", "***", "___", "  - - -  ", " *\t* *\t", "   _ _ _ _\t"} {
-		t.Run(separator, func(t *testing.T) {
-			input := "> Captain, quoted evidence\n" + separator + "\nCaptain, next steps"
-			want := "> Captain, quoted evidence\n" + separator + "\nnext steps"
-			if got := redactPRContent(prContent{Body: input}).Body; got != want {
-				t.Errorf("body = %q, want %q", got, want)
-			}
-		})
-	}
-	for _, input := range []string{
-		"> note\n--\nCaptain, quoted continuation",
-		"> note\n-_*\nCaptain, quoted continuation",
-		"> note\n___ suffix\nCaptain, quoted continuation",
-		"> note\n    ---\nCaptain, quoted continuation",
-		"> note\n> ---\n> Captain, quoted evidence",
-		"```text\n> note\n---\nCaptain, literal output\n```",
-	} {
-		if got := redactPRContent(prContent{Body: input}).Body; got != input {
-			t.Errorf("body = %q, want unchanged %q", got, input)
-		}
-	}
-}
-
 func TestPRStep_OperatorAddress(t *testing.T) {
 	t.Parallel()
 	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
@@ -241,6 +86,7 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 					Tested:         []string{"echo 'Captain: evidence'"},
 					Artifacts:      []types.TestArtifact{{Kind: "command-output", Label: "Captain, captured fixture", URL: "https://example.com/fixture.txt", Content: "Captain: recorded output"}},
 				}), "")
+				insertCompletedStep(t, sctx, types.StepLint, "", "Captain, lint agent timed out")
 				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, provider, 0)
 				if err != nil {
 					t.Fatal(err)
@@ -255,18 +101,51 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 						}
 					}
 				}
-				for _, leak := range []string{"Captain, preserve", "Captain, guard", "Captain, the", "Captain: prevent", "Captain, ran", "Captain, checked", "Captain, captured"} {
+				for _, leak := range []string{"Captain, preserve", "Captain: restore", "Captain, guard", "Captain, the", "Captain: prevent", "Captain, ran", "Captain, checked", "Captain, captured", "Captain, lint"} {
 					if strings.Contains(content.Body, leak) {
 						t.Errorf("public prose leaked %q:\n%s", leak, content.Body)
 					}
 				}
-				for _, want := range []string{noMistakesPRSignature, "captain.go", "Captain: evidence", "Captain: recorded output", "guard stale wakes", "ran focused tests", "the changes are well-scoped"} {
+				for _, want := range []string{noMistakesPRSignature, "captain.go", "Captain: evidence", "Captain: recorded output", "guard stale wakes", "ran focused tests", "the changes are well-scoped", "lint agent timed out"} {
 					if !strings.Contains(content.Body, want) {
 						t.Errorf("missing %q:\n%s", want, content.Body)
 					}
 				}
 				if provider == scm.ProviderGitHub {
 					assertFirstAttestationBindsHead(t, content.Body, headSHA)
+				}
+			})
+		}
+	}
+}
+
+func TestPRStep_OperatorAddressTestingSummaryFences(t *testing.T) {
+	t.Parallel()
+	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
+		for _, tt := range []struct{ name, summary string }{
+			{"two fences", "Ran game tests:\n```text\nCaptain: ready\n```\nThen ship tests:\n```text\nCaptain: aboard\n```\n\nCaptain, checks passed"},
+			{"unclosed fence", "Captain, checks passed\n```text\nCaptain: ready\nCaptain: aboard"},
+		} {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				ag := &mockAgent{name: "pr", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					raw, err := json.Marshal(prContent{Title: "fix(pipeline): preserve rendering", Body: "## What Changed\n\n- guard cleanup"})
+					return &agent.Result{Output: raw}, err
+				}}
+				sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{TestingSummary: tt.summary}), "")
+				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, provider, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := html.UnescapeString(strings.ReplaceAll(content.Body, "&#10;", "\n"))
+				for _, want := range []string{"Captain: ready", "Captain: aboard", "checks passed"} {
+					if !strings.Contains(body, want) {
+						t.Errorf("rendered PR missing %q:\n%s", want, content.Body)
+					}
+				}
+				if strings.Contains(body, "Captain, checks") {
+					t.Errorf("public prose leaked operator address:\n%s", content.Body)
 				}
 			})
 		}

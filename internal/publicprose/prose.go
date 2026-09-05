@@ -52,11 +52,20 @@ func Text(text string) string {
 	var fence string
 	var blockStarts []int
 	blockquote := false
+	listContent := 0
 	offset := 0
 	for line := range strings.SplitAfterSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
+		leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		indent := len(leading) + 3*strings.Count(leading, "\t")
 		if fence == "" {
 			trimmed = listMarker.ReplaceAllString(trimmed, "")
+			item := listMarker.FindString(line[len(leading):])
+			if item != "" && indent < listContent+4 {
+				listContent = indent + len(item)
+			} else if trimmed != "" && indent == 0 {
+				listContent = 0
+			}
 		}
 		marker := ""
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
@@ -87,7 +96,7 @@ func Text(text string) string {
 			protect(offset, offset+len(line))
 		case trimmed == "" || blockquoteBreak.MatchString(line) || thematicBreak.MatchString(line):
 			blockquote = false
-		case blockquote, strings.HasPrefix(line, "    "), strings.HasPrefix(line, "\t"):
+		case blockquote, indent >= listContent+4:
 			protect(offset, offset+len(line))
 		}
 		offset += len(line)
