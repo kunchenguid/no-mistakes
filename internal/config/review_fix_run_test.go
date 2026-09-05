@@ -74,23 +74,39 @@ func TestReviewFixRunConfigPinsEffectiveBaseProfileForSelectedFixer(t *testing.T
 	}
 }
 
-func TestReviewFixRunConfigPinsAbsenceOfOverride(t *testing.T) {
-	started := &Config{Agent: types.AgentClaude, Agents: []types.AgentName{types.AgentClaude}}
+func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
+	started := &Config{
+		Agent:  types.AgentCodex,
+		Agents: []types.AgentName{types.AgentCodex},
+		AgentConfig: map[string]agentcfg.Profile{
+			"codex": {Model: "gpt-5.3-codex", Effort: agentcfg.EffortHigh},
+		},
+	}
 	encoded, err := started.MarshalReviewFixRunConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	recovered := &Config{
-		ReviewFixAgent:       types.AgentPi,
-		ReviewFixAgents:      []types.AgentName{types.AgentPi},
-		ReviewFixAgentConfig: map[string]ReviewFixProfile{"pi": {}},
+		Agent:           types.AgentPi,
+		Agents:          []types.AgentName{types.AgentPi},
+		AgentConfig:     map[string]agentcfg.Profile{"codex": {Model: "changed"}},
+		ReviewFixAgent:  types.AgentPi,
+		ReviewFixAgents: []types.AgentName{types.AgentPi},
+		ReviewFixAgentConfig: map[string]ReviewFixProfile{
+			"pi": {Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol"}, Fast: true},
+		},
 	}
 	if err := recovered.ApplyReviewFixRunConfig(encoded); err != nil {
 		t.Fatal(err)
 	}
-	if recovered.HasReviewFixAgentOverride() || recovered.ReviewFixAgentConfig != nil {
-		t.Fatalf("later global override leaked into existing run: %#v", recovered)
+	if recovered.ReviewFixAgent != types.AgentCodex || len(recovered.ReviewFixAgents) != 1 || recovered.ReviewFixAgents[0] != types.AgentCodex {
+		t.Fatalf("restored inherited fixer = %q %v", recovered.ReviewFixAgent, recovered.ReviewFixAgents)
+	}
+	got, explicit := recovered.ReviewFixProfileFor(types.AgentCodex)
+	want := agentcfg.Profile{Model: "gpt-5.3-codex", Effort: agentcfg.EffortHigh}
+	if !explicit || got.Profile != want || got.Fast {
+		t.Fatalf("restored inherited profile = %#v, explicit=%v, want %#v", got, explicit, want)
 	}
 }
 
