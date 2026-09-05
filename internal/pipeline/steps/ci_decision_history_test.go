@@ -74,6 +74,9 @@ func newCIDecisionPromptFixture(t *testing.T) *ciDecisionPromptFixture {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if opts.Purpose != "ci" {
+				t.Fatalf("CI repair purpose = %q", opts.Purpose)
+			}
 			f.prompt = opts.Prompt
 			os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644)
 			return &agent.Result{}, nil

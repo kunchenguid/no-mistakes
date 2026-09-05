@@ -41,9 +41,16 @@ func TestNewPipelineAgent_ProfileIsPerAgent(t *testing.T) {
 	_ = ag.Close()
 }
 
-// TestNewPipelineAgent_NoProfileIsUnchanged is the backwards-compatibility
-// floor at the daemon: a configuration that predates agent_config builds every
-// agent exactly as before.
+// Recovery uses the same effort-validation funnel as fresh run setup.
+func TestNewPipelineAgent_StageEffortValidatedOnRecovery(t *testing.T) {
+	cfg := &config.Config{Agent: types.AgentAntigravity, StageEffort: map[string]agentcfg.StageEfforts{"antigravity": {"review": "high"}}}
+	_, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath, runenv.Overlay{})
+	if err == nil || !strings.Contains(err.Error(), "cannot express effort") {
+		t.Fatalf("recovery accepted unsupported stage effort: %v", err)
+	}
+}
+
+// A configuration that predates agent_config builds every agent as before.
 func TestNewPipelineAgent_NoProfileIsUnchanged(t *testing.T) {
 	cfg := &config.Config{
 		Agent:             types.AgentCodex,

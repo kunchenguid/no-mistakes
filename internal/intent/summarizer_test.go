@@ -13,16 +13,18 @@ import (
 )
 
 type fakeAgent struct {
-	lastPrompt string
-	lastCWD    string
-	output     string
-	run        func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
+	lastPrompt  string
+	lastCWD     string
+	lastPurpose string
+	output      string
+	run         func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
 }
 
 func (f *fakeAgent) Name() string { return "fake" }
 func (f *fakeAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.lastPrompt = opts.Prompt
 	f.lastCWD = opts.CWD
+	f.lastPurpose = opts.Purpose
 	if f.run != nil {
 		return f.run(ctx, opts)
 	}
@@ -44,6 +46,9 @@ func TestAgentSummarizer_Happy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("summarize: %v", err)
+	}
+	if fa.lastPurpose != "intent" {
+		t.Fatalf("summarizer purpose = %q", fa.lastPurpose)
 	}
 	if got != "user wanted to add foo" {
 		t.Errorf("got %q", got)

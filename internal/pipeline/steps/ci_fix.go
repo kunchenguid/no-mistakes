@@ -144,6 +144,7 @@ CI logs:
 
 	sctx.Log("running agent to fix CI issues...")
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+		Purpose:    "ci",
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: ciFixConclusionSchema,
