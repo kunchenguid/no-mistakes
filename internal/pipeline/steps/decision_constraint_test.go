@@ -282,7 +282,8 @@ func TestDecisionCheck_UnreadableSelectionFailsClosed(t *testing.T) {
 
 // A fix response may name an ID from an earlier round or carry a typo. Such a
 // selection is no positive decision: Review and every later commit boundary
-// treat it as a logged no-op, never as a run failure.
+// treat it as a logged no-op, never as a run failure, and a mixed selection
+// binds only the IDs that matched a finding so the log and the binding text agree.
 func TestDecisionCheck_UnmatchedSelectedFindingIsNoOp(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
@@ -328,6 +329,17 @@ func TestDecisionCheck_UnmatchedSelectedFindingIsNoOp(t *testing.T) {
 	}
 	if !named {
 		t.Fatalf("no log line named the unmatched selection: %q", logs)
+	}
+	selected = `["review-1","review-9"]`
+	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := recordedFixConstraints(sctx)
+	if err != nil {
+		t.Fatalf("mixed selection failed instead of binding the matched finding: %v", err)
+	}
+	if !strings.Contains(decisions, `"id":"review-1"`) || strings.Contains(decisions, `"review-9"`) {
+		t.Fatalf("mixed selection must bind only the matched finding: %q", decisions)
 	}
 }
 
