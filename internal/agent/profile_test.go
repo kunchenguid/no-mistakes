@@ -199,7 +199,7 @@ func TestOpenCodeProfileRidesTheMessageBody(t *testing.T) {
 	if len(oc.extraArgs) != 0 {
 		t.Fatalf("opencode serve argv gained %v; the server rejects model flags", oc.extraArgs)
 	}
-	body := oc.messageBody("prompt", nil)
+	body := oc.messageBody("prompt", nil, oc.profile.Effort)
 	model, ok := body["model"].(map[string]string)
 	if !ok || model["providerID"] != "openai" || model["modelID"] != "gpt-5" {
 		t.Fatalf("message body model = %#v", body["model"])
@@ -215,7 +215,7 @@ func TestOpenCodeWithoutProfileSendsNoModelOrVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ag.Close()
-	body := ag.(*opencodeAgent).messageBody("prompt", json.RawMessage(`{"type":"object"}`))
+	body := ag.(*opencodeAgent).messageBody("prompt", json.RawMessage(`{"type":"object"}`), ag.(*opencodeAgent).profile.Effort)
 	if _, ok := body["model"]; ok {
 		t.Fatalf("message body pinned a model with no profile: %#v", body)
 	}

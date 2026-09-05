@@ -27,6 +27,13 @@ func newStageEffortAgent(name types.AgentName, bin string, raw []string, opts Op
 	if err != nil {
 		return nil, err
 	}
+	if openCode, ok := base.(*opencodeAgent); ok {
+		openCode.stageEfforts = make(agentcfg.StageEfforts, len(stages))
+		for stage, effort := range stages {
+			openCode.stageEfforts[stage] = effort
+		}
+		return openCode, nil
+	}
 	a := &stageEffortAgent{Agent: base, stages: make(map[string]Agent, len(stages))}
 	for stage, effort := range stages {
 		selection := opts

@@ -154,20 +154,15 @@ func TestStageEffortOpenCodeRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrapper := a.(*stageEffortAgent)
-	// Inject only the transport endpoint; the real router, message builder,
-	// session lifecycle and response validation remain in use.
-	for _, inner := range []Agent{wrapper.Agent, wrapper.stages["review"]} {
-		inner.(*opencodeAgent).server = &managedServer{port: mustParsePort(server.URL)}
-	}
-	for _, purpose := range []string{"review", "review-fix", "review"} {
+	a.(*opencodeAgent).server = &managedServer{port: mustParsePort(server.URL)}
+	for _, purpose := range []string{"review", "review-fix", "review", "test"} {
 		_, err := a.Run(context.Background(), RunOpts{Prompt: "fixture", Purpose: purpose, CWD: t.TempDir(), JSONSchema: json.RawMessage(`{"type":"object"}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		body := <-bodies
 		want := "high"
-		if purpose == "review-fix" {
+		if purpose != "review" {
 			want = "medium"
 		}
 		if body["variant"] != want {

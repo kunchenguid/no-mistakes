@@ -55,7 +55,8 @@ type opencodeAgent struct {
 	// internal/agentcfg. `opencode serve` rejects model and variant flags
 	// outright, so unlike every other native adapter these two knobs cannot ride
 	// argv: they belong to the session-message body (see sendMessage).
-	profile agentcfg.Profile
+	profile      agentcfg.Profile
+	stageEfforts agentcfg.StageEfforts
 	subprocessContext
 	mu     sync.Mutex
 	server *managedServer
@@ -66,8 +67,12 @@ func (a *opencodeAgent) Name() string { return "opencode" }
 func (a *opencodeAgent) ReportsAgentAttempts() bool { return true }
 
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	effort := a.profile.Effort
+	if selected, ok := a.stageEfforts[agentcfg.EffortStage(opts.Purpose)]; ok {
+		effort = selected
+	}
 	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyOpencodeTransient, a.recoverTransientRetry, func() (*Result, error) {
-		return a.runOnce(ctx, opts)
+		return a.runOnce(ctx, opts, effort)
 	})
 }
 
@@ -84,8 +89,8 @@ func (a *opencodeAgent) recoverTransientRetry(label string) {
 	}
 }
 
-func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	result, err := a.runOnceWithFormat(ctx, opts, true)
+func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts, effort agentcfg.Effort) (*Result, error) {
+	result, err := a.runOnceWithFormat(ctx, opts, true, effort)
 	if err == nil || len(opts.JSONSchema) == 0 || !errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
 		return result, err
 	}
@@ -108,14 +113,14 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		Phase:   LifecyclePhaseFallback,
 		Message: "opencode starting a fresh prompt-only structured output session",
 	})
-	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false)
+	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false, effort)
 	if fallbackErr != nil {
 		return nil, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)
 	}
 	return result, nil
 }
 
-func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nativeFormat bool) (*Result, error) {
+func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nativeFormat bool, effort agentcfg.Effort) (*Result, error) {
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD, opts.Env)
 	if err != nil {
@@ -154,7 +159,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		if !nativeFormat {
 			schema = nil
 		}
-		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, schema)
+		resp, err := a.sendMessage(msgCtx, baseURL, sessionID, prompt, schema, effort)
 		msgCh <- opencodeMessageResult{resp: resp, err: err, settled: true}
 	}()
 
