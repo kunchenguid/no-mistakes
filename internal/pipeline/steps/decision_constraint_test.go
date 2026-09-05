@@ -170,16 +170,28 @@ func TestTestStep_DecisionReversalParksWithDurableFinding(t *testing.T) {
 // change after that ruling buys another check.
 func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		documentEdits bool
-		wantChecks    int
+		name           string
+		trackedIgnored bool
+		documentEdits  string
+		wantChecks     int
 	}{
 		{name: "unchanged_tree", wantChecks: 1},
-		{name: "new_change_after_ruling", documentEdits: true, wantChecks: 2},
+		{name: "new_change_after_ruling", documentEdits: "README.md", wantChecks: 2},
+		{name: "new_change_in_tracked_ignored_file", trackedIgnored: true, documentEdits: "ignored.txt", wantChecks: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir, base, head := setupGitRepo(t)
+			if tc.trackedIgnored {
+				for name, content := range map[string]string{".gitignore": "ignored.txt\n", "ignored.txt": "tracked despite the ignore rule\n"} {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				gitCmd(t, dir, "add", "-f", ".gitignore", "ignored.txt")
+				gitCmd(t, dir, "commit", "-m", "track a file the ignore rule matches")
+				head = gitCmd(t, dir, "rev-parse", "HEAD")
+			}
 			testCalls, checks := 0, 0
 			ag := &mockAgent{name: "test"}
 			ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -191,8 +203,8 @@ func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T)
 					}
 					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"ruling already accepted"}`)}, nil
 				case "housekeeping":
-					if tc.documentEdits {
-						if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("documented\n"), 0o644); err != nil {
+					if tc.documentEdits != "" {
+						if err := os.WriteFile(filepath.Join(dir, tc.documentEdits), []byte("edited after the ruling\n"), 0o644); err != nil {
 							t.Fatal(err)
 						}
 					}
