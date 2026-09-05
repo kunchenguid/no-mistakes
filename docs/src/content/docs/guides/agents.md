@@ -6,7 +6,7 @@ description: Supported AI agents, how to pick one, and how they integrate.
 `no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
 It is not runner-free.
 Every validation run requires a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`.
-The default uses Pi, with Vertex AI Claude Opus 4.8 at xhigh reasoning for Review and OpenAI GPT-5.6 Sol at low reasoning with priority processing for Review fixes.
+The default role setup uses Pi; the [Global Config Reference](/no-mistakes/reference/global-config/#agent_config) owns its Review and Review-fix profiles.
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
 Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
@@ -26,7 +26,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 ## How to choose quickly
 
-- Keep the default Pi role profiles when Pi and both configured providers are available.
+- Keep the default Pi role setup when Pi and its configured providers are available.
 - Set `agent: auto` if you prefer automatic selection of another installed agent.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
 - Set global [`review_fix_agent`](/no-mistakes/reference/global-config/#review_fix_agent) when Review remediation needs a different harness. For a different profile on the same harness, use `agent_config.<agent>.review_fix`; every other duty stays on `agent`.
@@ -100,15 +100,9 @@ If the calling environment exposes neither a supported native CLI nor a working 
 ```yaml
 # ~/.no-mistakes/config.yaml
 agent: pi
-agent_config:
-  pi:
-    model: anthropic-vertex/claude-opus-4-8
-    effort: xhigh
-    review_fix:
-      model: openai-codex/gpt-5.6-sol
-      effort: low
-      fast: true
 ```
+
+The [`agent_config` reference](/no-mistakes/reference/global-config/#agent_config) owns the built-in role profiles and their customization.
 
 ### Per-repo override
 
@@ -128,20 +122,7 @@ agent: [codex, grok]
 
 ### Separate Review fixer profile
 
-```yaml
-# ~/.no-mistakes/config.yaml (global-only)
-agent: pi
-agent_config:
-  pi:
-    model: anthropic-vertex/claude-opus-4-8
-    effort: xhigh
-    review_fix:
-      model: openai-codex/gpt-5.6-sol
-      effort: low
-      fast: true
-```
-
-Set `review_fix_agent` as well only when the fixer needs a different harness or fallback list. The [`review_fix_agent` field reference](/no-mistakes/reference/global-config/#review_fix_agent) owns its narrow scope and precedence rules; [`agent_config`](/no-mistakes/reference/global-config/#agent_config) owns the role-profile and Pi fast-mode behavior.
+Use `agent_config.<agent>.review_fix` for different fixer tuning on the same harness, or `review_fix_agent` when the fixer needs a different harness or fallback list. The [`agent_config`](/no-mistakes/reference/global-config/#agent_config) and [`review_fix_agent`](/no-mistakes/reference/global-config/#review_fix_agent) references own the exact defaults, scope, precedence, and Pi fast-mode behavior.
 
 ### Optional ACP target
 
@@ -231,9 +212,8 @@ Seven global config fields tune resolution and invocation, and the [Global Confi
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run, using `review_fix_agent` when configured and otherwise the effective `agent`; a nested `agent_config.<agent>.review_fix` profile belongs to that session. Resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it. The selected fixer routing and role profile are also pinned to the run before it starts, so a global edit cannot retarget a parked run after daemon recovery.
-Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
-The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
+With the default `session_reuse: true`, supported agents keep a durable session for Review-fix turns, while Review and rereview turns remain fresh and session-free.
+The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the selected-agent, role-profile, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface
 
