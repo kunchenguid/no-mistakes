@@ -332,6 +332,7 @@ type recoveredGate struct {
 	autoFixes       int
 	lastRoundID     string
 	reviewedHeadSHA string
+	skipRemaining   bool
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -479,6 +480,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
+		if gate.skipRemaining {
+			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+		}
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
 	case types.ActionSkip:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
@@ -581,13 +585,14 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				}
 			}
 			gate = &recoveredGate{
-				index:       index,
-				step:        e.steps[index],
-				stepResult:  result,
-				findings:    *result.FindingsJSON,
-				round:       latest.Round,
-				autoFixes:   autoFixes,
-				lastRoundID: latest.ID,
+				index:         index,
+				step:          e.steps[index],
+				stepResult:    result,
+				findings:      *result.FindingsJSON,
+				round:         latest.Round,
+				autoFixes:     autoFixes,
+				lastRoundID:   latest.ID,
+				skipRemaining: latest.SkipRemaining,
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
@@ -890,12 +895,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			outcome, err = refusal, nil
 		}
 		var conflict *DecisionConflictError
-		checkedTree := ""
 		if errors.As(err, &conflict) {
 			findings, marshalErr := types.MarshalFindingsJSON(conflict.Findings)
-			outcome = &StepOutcome{NeedsApproval: true, Findings: findings}
+			outcome = &StepOutcome{NeedsApproval: true, Findings: findings, CheckedTreeSHA: conflict.CheckedTreeSHA}
 			err = marshalErr
-			checkedTree = conflict.CheckedTreeSHA
 		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
@@ -917,6 +920,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, "", fmt.Errorf("step %s failed: %s", stepName, redactedErr)
 		}
 		restartFrom = outcome.RestartFrom
+		skipRemaining = outcome.SkipRemaining
 
 		if stepName == types.StepReview {
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
@@ -961,13 +965,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, roundDuration)
 		}
 		if dbErr != nil {
+			if outcome.SkipRemaining {
+				return false, "", fmt.Errorf("persist %s skip remaining outcome: %w", stepName, dbErr)
+			}
 			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		} else {
 			currentRoundID = roundInsertID(currentRoundID, inserted, nil)
-			if checkedTree != "" {
-				if dbErr := e.db.SetStepRoundCheckedTree(inserted.ID, checkedTree); dbErr != nil {
+			if outcome.CheckedTreeSHA != "" {
+				if dbErr := e.db.SetStepRoundCheckedTree(inserted.ID, outcome.CheckedTreeSHA); dbErr != nil {
 					slog.Warn("failed to record checked tree", "step", stepName, "round", roundNum, "error", dbErr)
+				}
+			}
+			if outcome.SkipRemaining {
+				if dbErr := e.db.SetStepRoundSkipRemaining(inserted.ID); dbErr != nil {
+					return false, "", fmt.Errorf("persist %s skip remaining outcome: %w", stepName, dbErr)
 				}
 			}
 		}
@@ -1014,7 +1026,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
-			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
 			skipReason = safeurl.RedactText(outcome.SkipReason)
 			break

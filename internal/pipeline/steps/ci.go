@@ -482,7 +482,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		// the published head, so a Fix response must repair the local decision first,
 		// even if those checks have since passed or started running again.
 		if sctx.Fixing && sctx.Run.ReviewApprovedHeadSHA == nil {
-			decisions, err := recordedFixConstraints(sctx)
+			decisions, _, err := recordedFixConstraints(sctx)
 			if err != nil {
 				return nil, fmt.Errorf("%w: %w", errDecisionCheck, err)
 			}

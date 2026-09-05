@@ -24,24 +24,24 @@ const maxRecordedDecisionBytes = 256 * 1024
 // advisory branch history, this check must not silently drop a binding ruling.
 // Declines remain context for supersession; only a human's positive selection
 // enables the check. Automatic selections never buy an additional agent pass.
-func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
+func recordedFixConstraints(sctx *pipeline.StepContext) (string, string, error) {
 	if sctx.DB == nil || sctx.Run == nil || sctx.Run.ID == "" {
-		return "", nil
+		return "", "", nil
 	}
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
-		return "", fmt.Errorf("load run decisions: %w", err)
+		return "", "", fmt.Errorf("load run decisions: %w", err)
 	}
 	type decision struct {
 		step  string
 		round *db.StepRound
 	}
 	var decisions []decision
-	hasFix := false
+	latestFixRoundID := ""
 	for _, step := range steps {
 		rounds, err := sctx.DB.GetRoundsByStep(step.ID)
 		if err != nil {
-			return "", fmt.Errorf("load %s decisions: %w", step.StepName, err)
+			return "", "", fmt.Errorf("load %s decisions: %w", step.StepName, err)
 		}
 		for _, r := range rounds {
 			source := selectionSourceValue(r.SelectionSource)
@@ -50,14 +50,14 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 			}
 			if source == db.RoundSelectionSourceUser {
 				if r.SelectedFindingIDs == nil {
-					return "", fmt.Errorf("decision %s has no recorded selection", r.ID)
+					return "", "", fmt.Errorf("decision %s has no recorded selection", r.ID)
 				}
 				var ids []string
 				if err := json.Unmarshal([]byte(*r.SelectedFindingIDs), &ids); err != nil {
-					return "", fmt.Errorf("read decision %s: %w", r.ID, err)
+					return "", "", fmt.Errorf("read decision %s: %w", r.ID, err)
 				}
 				if ids == nil {
-					return "", fmt.Errorf("decision %s has no selection array", r.ID)
+					return "", "", fmt.Errorf("decision %s has no selection array", r.ID)
 				}
 				if len(ids) > 0 {
 					raw := r.UserFindingsJSON
@@ -65,11 +65,11 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 						raw = r.FindingsJSON
 					}
 					if raw == nil {
-						return "", fmt.Errorf("decision %s has no findings", r.ID)
+						return "", "", fmt.Errorf("decision %s has no findings", r.ID)
 					}
 					findings, err := types.ParseFindingsJSON(*raw)
 					if err != nil {
-						return "", fmt.Errorf("read decision %s findings: %w", r.ID, err)
+						return "", "", fmt.Errorf("read decision %s findings: %w", r.ID, err)
 					}
 					matched := make([]string, 0, len(ids))
 					for _, id := range ids {
@@ -85,11 +85,13 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 						}
 						matched = append(matched, id)
 					}
-					hasFix = hasFix || len(matched) > 0
+					if len(matched) > 0 && r.ID > latestFixRoundID {
+						latestFixRoundID = r.ID
+					}
 					if len(matched) != len(ids) {
 						encoded, err := json.Marshal(matched)
 						if err != nil {
-							return "", fmt.Errorf("record decision %s selection: %w", r.ID, err)
+							return "", "", fmt.Errorf("record decision %s selection: %w", r.ID, err)
 						}
 						bound := *r
 						selection := string(encoded)
@@ -101,8 +103,8 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 			decisions = append(decisions, decision{string(step.StepName), r})
 		}
 	}
-	if !hasFix {
-		return "", nil
+	if latestFixRoundID == "" {
+		return "", "", nil
 	}
 	sort.SliceStable(decisions, func(i, j int) bool {
 		return decisions[i].round.ID < decisions[j].round.ID
@@ -113,9 +115,9 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 	}
 	text := strings.Join(lines, "\n")
 	if text == "" || len(text) > maxRecordedDecisionBytes {
-		return "", fmt.Errorf("cannot check complete recorded fix decisions: empty or over %d bytes", maxRecordedDecisionBytes)
+		return "", "", fmt.Errorf("cannot check complete recorded fix decisions: empty or over %d bytes", maxRecordedDecisionBytes)
 	}
-	return text, nil
+	return text, latestFixRoundID, nil
 }
 
 var errDecisionCheck = errors.New("recorded fix decision check failed")
@@ -130,7 +132,7 @@ func assertRecordedFixDecisions(sctx *pipeline.StepContext) (err error) {
 			err = fmt.Errorf("%w: %w", errDecisionCheck, err)
 		}
 	}()
-	decisions, err := recordedFixConstraints(sctx)
+	decisions, latestFixRoundID, err := recordedFixConstraints(sctx)
 	if err != nil || decisions == "" {
 		return err
 	}
@@ -149,7 +151,7 @@ func assertRecordedFixDecisions(sctx *pipeline.StepContext) (err error) {
 	if err != nil {
 		return fmt.Errorf("hash repair tree for decision check: %w", err)
 	}
-	ruled, err := sctx.DB.HasDeclinedDecisionCheck(sctx.Run.ID, tree)
+	ruled, err := sctx.DB.HasDeclinedDecisionCheck(sctx.Run.ID, tree, latestFixRoundID)
 	if err != nil {
 		return fmt.Errorf("read decision rulings: %w", err)
 	}

@@ -124,7 +124,7 @@ func (d *DB) SetStepRoundCheckedTree(id, treeSHA string) error {
 
 // HasDeclinedDecisionCheck reports whether a human already declined a decision
 // check that inspected exactly this worktree tree in the run.
-func (d *DB) HasDeclinedDecisionCheck(runID, treeSHA string) (bool, error) {
+func (d *DB) HasDeclinedDecisionCheck(runID, treeSHA, latestFixRoundID string) (bool, error) {
 	if treeSHA == "" {
 		return false, nil
 	}
@@ -132,8 +132,9 @@ func (d *DB) HasDeclinedDecisionCheck(runID, treeSHA string) (bool, error) {
 	if err := d.sql.QueryRow(
 		`SELECT COUNT(*) FROM step_rounds sr
 		   JOIN step_results res ON res.id = sr.step_result_id
-		  WHERE res.run_id = ? AND sr.selection_source = ? AND sr.checked_tree_sha = ?`,
-		runID, RoundSelectionSourceUserDeclined, treeSHA,
+		  WHERE res.run_id = ? AND sr.selection_source = ? AND sr.checked_tree_sha = ?
+		    AND sr.id > ?`,
+		runID, RoundSelectionSourceUserDeclined, treeSHA, latestFixRoundID,
 	).Scan(&count); err != nil {
 		return false, fmt.Errorf("find declined decision check: %w", err)
 	}

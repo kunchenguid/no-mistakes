@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     selection_source     TEXT,
     fix_summary          TEXT,
     checked_tree_sha     TEXT,
+    skip_remaining       INTEGER NOT NULL DEFAULT 0,
     duration_ms          INTEGER NOT NULL,
     created_at           INTEGER NOT NULL
 );
@@ -213,6 +214,7 @@ var migrationStatements = []string{
 	// so a later boundary can tell a human ruling on that exact content from a
 	// genuinely new change.
 	`ALTER TABLE step_rounds ADD COLUMN checked_tree_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN skip_remaining INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

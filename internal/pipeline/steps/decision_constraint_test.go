@@ -329,24 +329,213 @@ func TestReviewStep_RecordedFixDecisionSurvivesEmptyDiff(t *testing.T) {
 	}
 }
 
-func TestTestStep_EvidenceFixCannotSilentlyReverseDecision(t *testing.T) {
+func TestTestStep_ApprovedEvidenceConflictPreservesTestingSection(t *testing.T) {
 	t.Parallel()
 	dir, base, head := setupGitRepo(t)
-	calls := 0
-	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		calls++
-		if calls == 1 {
-			if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("reclaim\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"tests pass","tested":["focused test"],"testing_summary":"tests pass","artifacts":[]}`)}, nil
-		}
-		return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","action":"ask-user","description":"review round 1 remove-teardown-reclamation contradicted by teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
-	}}
+	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
 	recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
-	if outcome, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "remove-teardown-reclamation") {
-		t.Fatalf("evidence agent's zero-finding reversal passed: outcome=%+v, err=%v", outcome, err)
+	p := paths.WithRoot(t.TempDir())
+	evidenceDir := p.RunEvidenceDir("", sctx.Run.ID)
+	artifactPath := filepath.Join(evidenceDir, "teardown.log")
+	const summary = "Exercised teardown and captured its reclamation output"
+	const transcript = "teardown: reclaimed build outputs"
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.Purpose == "decision-conformance" {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"decision-reversal","severity":"error","action":"ask-user","description":"review round 1 remove-teardown-reclamation contradicted by teardown.txt"}],"summary":"recorded ruling reversed"}`)}, nil
+		}
+		if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("reclaim\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(artifactPath, []byte(transcript), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		output, err := json.Marshal(Findings{
+			Items:   []Finding{{ID: "evidence-note", Severity: "info", Action: types.ActionNoOp, Description: "Captured teardown output"}},
+			Summary: "tests pass", Tested: []string{"teardown --dry-run"}, TestingSummary: summary,
+			Artifacts: []types.TestArtifact{{Kind: "log", Label: "Teardown transcript", Path: artifactPath}},
+		})
+		return &agent.Result{Output: output}, err
+	}
+	assertEvidence := func(raw string) {
+		t.Helper()
+		findings, err := types.ParseFindingsJSON(raw)
+		if err != nil || len(findings.Items) != 2 || findings.Items[0].ID != "evidence-note" || findings.Items[1].ID != "decision-reversal" || findings.Items[1].Action != types.ActionAskUser {
+			t.Errorf("evidence and conflict findings not preserved: %+v, %v", findings, err)
+		}
+		if len(findings.Tested) != 1 || findings.Tested[0] != "teardown --dry-run" || findings.TestingSummary != summary || len(findings.Artifacts) != 1 || findings.Artifacts[0].Path != artifactPath {
+			t.Errorf("decision conflict lost analyzer evidence: %+v", findings)
+		}
+	}
+	parked := false
+	var executor *pipeline.Executor
+	executor = pipeline.NewExecutor(sctx.DB, p, sctx.Config, ag, []pipeline.Step{&TestStep{}}, func(event ipc.Event) {
+		if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+			return
+		}
+		parked = true
+		if event.Findings == nil {
+			t.Fatal("parked without findings")
+		}
+		assertEvidence(*event.Findings)
+		run, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil || run.AwaitingAgentSince == nil {
+			t.Fatalf("conflict not durably parked: %+v, %v", run, err)
+		}
+		results, err := sctx.DB.GetStepsByRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, result := range results {
+			if result.StepName != types.StepTest {
+				continue
+			}
+			if result.FindingsJSON == nil {
+				t.Fatal("Test has no persisted evidence")
+			}
+			assertEvidence(*result.FindingsJSON)
+			rounds, err := sctx.DB.GetRoundsByStep(result.ID)
+			if err != nil || len(rounds) != 1 || rounds[0].FindingsJSON == nil {
+				t.Fatalf("Test round not persisted: %+v, %v", rounds, err)
+			}
+			assertEvidence(*rounds[0].FindingsJSON)
+		}
+		if err := executor.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir); err != nil || !parked {
+		t.Fatalf("conflict approval did not complete: parked=%t, %v", parked, err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.Status != types.RunCompleted || run.HeadSHA != head || gitCmd(t, dir, "rev-parse", "HEAD") != head {
+		t.Fatalf("evidence approval changed completion or commit semantics: %+v, %v", run, err)
+	}
+	if err := assertRecordedFixDecisions(sctx); err != nil || len(ag.calls) != 2 {
+		t.Fatalf("approved evidence tree lost its checked-tree ruling: calls=%d, %v", len(ag.calls), err)
+	}
+	results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds := make(map[string][]*db.StepRound)
+	for _, result := range results {
+		rounds[result.ID], err = sctx.DB.GetRoundsByStep(result.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	testingSection := BuildTestingSummaryForPR(results, rounds, sctx.Repo.UpstreamURL, head, dir, evidenceDir, nil)
+	for _, want := range []string{summary, "Teardown transcript", transcript} {
+		if !strings.Contains(testingSection, want) {
+			t.Errorf("Testing section lost %q:\n%s", want, testingSection)
+		}
+	}
+	t.Logf("APPROVED_EVIDENCE_TESTING_SECTION\n%s", testingSection)
+}
+
+func TestDecisionCheck_NewerPositiveDecisionSupersedesTreeRuling(t *testing.T) {
+	for _, tc := range []struct {
+		name, selection string
+		wantConflict    bool
+	}{
+		{name: "matched", selection: `["remove-again"]`, wantConflict: true},
+		{name: "mixed", selection: `["remove-again","typo"]`, wantConflict: true},
+		{name: "unmatched", selection: `["typo"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"decision-reversal","severity":"error","action":"ask-user","description":"teardown.txt restores reclamation against the latest positive decision"}],"summary":"recorded decision reversed"}`)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+			writeTree := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeTree("reclaim\n")
+			var conflict *pipeline.DecisionConflictError
+			if err := assertRecordedFixDecisions(sctx); !errors.As(err, &conflict) {
+				t.Fatalf("initial reversal did not conflict: %v", err)
+			}
+			sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := types.MarshalFindingsJSON(conflict.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ruling, err := sctx.DB.InsertStepRound(sr.ID, 1, "initial", &raw, nil, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepRoundCheckedTree(ruling.ID, conflict.CheckedTreeSHA); err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepRoundDeclined(ruling.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := assertRecordedFixDecisions(sctx); err != nil || len(ag.calls) != 1 {
+				t.Fatalf("unchanged tree exemption was lost: %v, calls=%d", err, len(ag.calls))
+			}
+			ci, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			findings := `{"findings":[{"id":"remove-again","severity":"warning","action":"ask-user","description":"Remove reclamation again","user_instructions":"Remove teardown-side build-output reclamation"}]}`
+			decision, err := sctx.DB.InsertStepRound(ci.ID, 1, "initial", &findings, nil, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.SetStepRoundUserDecision(decision.ID, &tc.selection, db.RoundSelectionSourceUser, &findings); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "record approved tree")
+			writeTree("keep outputs\n")
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "implement latest decision")
+			sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+			if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
+				t.Fatal(err)
+			}
+			writeTree("reclaim\n")
+			err = commitAgentFixes(sctx, types.StepCI, "restore old tree", "")
+			if tc.wantConflict {
+				if !errors.As(err, &conflict) || len(ag.calls) != 2 {
+					t.Fatalf("old ruling bypassed the newer positive decision: %v, checks=%d", err, len(ag.calls))
+				}
+				if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sctx.Run.HeadSHA {
+					t.Fatalf("rejected repair changed HEAD: %s", got)
+				}
+				raw, err := types.MarshalFindingsJSON(conflict.Findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				currentRuling, err := sctx.DB.InsertStepRound(ci.ID, 2, "auto_fix", &raw, nil, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := sctx.DB.SetStepRoundCheckedTree(currentRuling.ID, conflict.CheckedTreeSHA); err != nil {
+					t.Fatal(err)
+				}
+				if err := sctx.DB.SetStepRoundDeclined(currentRuling.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := commitAgentFixes(sctx, types.StepCI, "publish newly approved tree", ""); err != nil || len(ag.calls) != 2 {
+					t.Fatalf("current unchanged-tree ruling was ignored: %v, checks=%d", err, len(ag.calls))
+				}
+			} else if err != nil || len(ag.calls) != 1 {
+				t.Fatalf("unmatched selection invalidated a legitimate exemption: %v, checks=%d", err, len(ag.calls))
+			}
+		})
 	}
 }
 
@@ -360,7 +549,7 @@ func TestDecisionCheck_UnreadableSelectionFailsClosed(t *testing.T) {
 	if err := f.db.SetStepRoundUserDecision(mustLatestRoundID(t, sctx), &selected, db.RoundSelectionSourceUser, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recordedFixConstraints(sctx); err == nil || !strings.Contains(err.Error(), "read decision") {
+	if _, _, err := recordedFixConstraints(sctx); err == nil || !strings.Contains(err.Error(), "read decision") {
 		t.Fatalf("unreadable selection must be refused: %v", err)
 	}
 }
@@ -419,7 +608,7 @@ func TestDecisionCheck_UnmatchedSelectedFindingIsNoOp(t *testing.T) {
 	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
 		t.Fatal(err)
 	}
-	decisions, err := recordedFixConstraints(sctx)
+	decisions, _, err := recordedFixConstraints(sctx)
 	if err != nil {
 		t.Fatalf("mixed selection failed instead of binding the matched finding: %v", err)
 	}
@@ -457,7 +646,7 @@ func TestDecisionCheck_LargeSameRunHistoryStillBinds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	decisions, err := recordedFixConstraints(sctx)
+	decisions, _, err := recordedFixConstraints(sctx)
 	if err != nil {
 		t.Fatalf("large same-run history failed instead of binding: %v", err)
 	}
@@ -560,8 +749,13 @@ func TestRebaseStep_EmptyConflictResolutionStillReachesIndependentReview(t *test
 func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testing.T) {
 	for _, tc := range []struct {
 		name, baseBranch, severity, action, wantError string
+		approve, recovered                            bool
 	}{
 		{name: "accepted"},
+		{name: "approve_blocking", baseBranch: "develop", severity: "warning", action: types.ActionNoOp, approve: true},
+		{name: "approve_ask_user", baseBranch: "develop", severity: "info", action: types.ActionAskUser, approve: true},
+		{name: "recovered_approve_blocking", baseBranch: "develop", severity: "warning", action: types.ActionNoOp, approve: true, recovered: true},
+		{name: "recovered_approve_ask_user", baseBranch: "develop", severity: "info", action: types.ActionAskUser, approve: true, recovered: true},
 		{name: "unusable_review", wantError: "missing risk assessment"},
 		{name: "configured_base", baseBranch: "develop"},
 		{name: "informational", severity: "info", action: types.ActionNoOp},
@@ -619,46 +813,77 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			sctx.Repo.UpstreamURL = dir
 			sctx.Config.PR.BaseBranch = tc.baseBranch
 			var executor *pipeline.Executor
-			executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag,
-				[]pipeline.Step{&RebaseStep{}, &ReviewStep{}, &PushStep{}, &PRStep{}, &CIStep{}}, func(event ipc.Event) {
-					if event.StepName == nil {
-						return
+			stopped := false
+			stop := errors.New("daemon stopped at durable Review gate")
+			p := paths.WithRoot(t.TempDir())
+			plan := []pipeline.Step{&RebaseStep{}, &ReviewStep{}, &PushStep{}, &PRStep{}, &CIStep{}}
+			emit := func(event ipc.Event) {
+				if event.StepName == nil {
+					return
+				}
+				if event.Type == ipc.EventStepStarted && *event.StepName != types.StepRebase && *event.StepName != types.StepReview {
+					t.Fatalf("empty Rebase reached publication step %s", *event.StepName)
+				}
+				if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+					return
+				}
+				if *event.StepName == types.StepReview && (tc.approve || tc.wantError == "aborted by user") {
+					if event.Findings == nil || !strings.Contains(*event.Findings, decisionID) {
+						t.Fatal("Review gate lost the named decision finding")
 					}
-					if event.Type == ipc.EventStepStarted && *event.StepName != types.StepRebase && *event.StepName != types.StepReview {
-						t.Fatalf("empty Rebase reached publication step %s", *event.StepName)
+					parkedReview = true
+					if tc.recovered && !stopped {
+						stopped = true
+						panic(stop)
 					}
-					if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
-						return
+					action := types.ActionAbort
+					if tc.approve {
+						action = types.ActionApprove
 					}
-					if *event.StepName == types.StepReview && tc.wantError == "aborted by user" {
-						if event.Findings == nil || !strings.Contains(*event.Findings, decisionID) {
-							t.Fatal("Review gate lost the named decision finding")
-						}
-						parkedReview = true
-						if err := executor.Respond(types.StepReview, types.ActionAbort, nil); err != nil {
-							t.Fatal(err)
-						}
-						return
-					}
-					if *event.StepName != types.StepRebase || decisionID != "" || event.Findings == nil {
-						t.Fatal("unexpected approval gate")
-					}
-					findings, err := types.ParseFindingsJSON(*event.Findings)
-					if err != nil || len(findings.Items) != 1 {
-						t.Fatalf("expected one removal conflict: %+v, %v", findings, err)
-					}
-					decisionID = findings.Items[0].ID
-					if err := executor.RespondWithOverrides(types.StepRebase, types.ActionFix, []string{decisionID}, map[string]string{decisionID: instruction}, nil); err != nil {
+					if err := executor.Respond(types.StepReview, action, nil); err != nil {
 						t.Fatal(err)
 					}
-				})
+					return
+				}
+				if *event.StepName != types.StepRebase || decisionID != "" || event.Findings == nil {
+					t.Fatal("unexpected approval gate")
+				}
+				findings, err := types.ParseFindingsJSON(*event.Findings)
+				if err != nil || len(findings.Items) != 1 {
+					t.Fatalf("expected one removal conflict: %+v, %v", findings, err)
+				}
+				decisionID = findings.Items[0].ID
+				if err := executor.RespondWithOverrides(types.StepRebase, types.ActionFix, []string{decisionID}, map[string]string{decisionID: instruction}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			executor = pipeline.NewExecutor(sctx.DB, p, sctx.Config, ag, plan, emit)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
+			var err error
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil && recovered != stop {
+						panic(recovered)
+					}
+				}()
+				err = executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
+			}()
+			if tc.recovered {
+				if !stopped {
+					t.Fatal("Review never persisted a recoverable gate")
+				}
+				run, readErr := sctx.DB.GetRun(sctx.Run.ID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				executor = pipeline.NewExecutor(sctx.DB, p, sctx.Config, ag, plan, emit)
+				err = executor.Resume(ctx, run, sctx.Repo, dir)
+			}
 			if tc.wantError == "" && err != nil || tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
 				t.Fatalf("unexpected pipeline result: %v", err)
 			}
-			if parkedReview != (tc.wantError == "aborted by user") {
+			if parkedReview != (tc.approve || tc.wantError == "aborted by user") {
 				t.Fatalf("Review approval gate reached = %t, expected error = %q", parkedReview, tc.wantError)
 			}
 			if decisionID == "" || reviews != 1 || len(ag.calls) != 2 {

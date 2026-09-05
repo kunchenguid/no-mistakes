@@ -161,7 +161,7 @@ Previous review findings to address:
 		fixSummary = summary
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
-	decisionConstraints, err := recordedFixConstraints(sctx)
+	decisionConstraints, _, err := recordedFixConstraints(sctx)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +418,7 @@ Risk assessment (after listing all findings):
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 	skipRemaining := false
-	if decisionConstraints != "" && !needsApproval && !types.HasAskUserFindings(findings) {
+	if decisionConstraints != "" {
 		integrationBaseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, effectivePRBaseBranch(sctx))
 		diff, err := git.Diff(ctx, sctx.WorkDir, integrationBaseSHA, reviewTargetSHA)
 		if err != nil {
