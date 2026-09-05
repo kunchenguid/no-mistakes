@@ -1060,6 +1060,29 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodUpdateRunClosingIssueRefs, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.UpdateRunClosingIssueRefsParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if err := d.MergeRunClosingIssueRefs(p.RunID, p.ClosingIssueRefs); err != nil {
+			// The PR body already sampled the closing issue references, so this update
+			// could not reach the footer. Report a structured rejection rather
+			// than success for a write that will never be visible.
+			if errors.Is(err, db.ErrClosingIssueRefsLocked) {
+				return &ipc.UpdateRunClosingIssueRefsResult{
+					OK:     false,
+					Reason: ipc.ClosingIssueRefsRejectedPRBodyComposed,
+				}, nil
+			}
+			return nil, fmt.Errorf("update closing issue references: %w", err)
+		}
+		return &ipc.UpdateRunClosingIssueRefsResult{OK: true}, nil
+	})
+
 	srv.Handle(ipc.MethodGetRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
 		var p ipc.GetRunParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -1194,7 +1217,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.ClosingIssueRefs)
 		if err != nil {
 			return nil, err
 		}

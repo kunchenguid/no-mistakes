@@ -1,14 +1,19 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
+	"text/template"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/closingissues"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -62,6 +67,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	ctx := sctx.Ctx
+	provider := resolvedProvider(sctx)
+	latestRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve closing issue references before PR handling: %w", err)
+	}
+	if len(latestRun.ClosingIssueRefs) > 0 && provider != scm.ProviderGitHub {
+		return nil, fmt.Errorf("render closing issues: --closes currently supports GitHub repositories only")
+	}
 
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {
@@ -72,7 +85,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
-	provider := resolvedProvider(sctx)
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
@@ -81,13 +93,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := host.Available(ctx); err != nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
-	}
-
-	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
-	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
-	if err != nil {
-		return nil, err
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
@@ -100,14 +105,55 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
+		sctx.PreservedClosingLines, err = readExistingClosingLines(ctx, host, existing)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Resolve the branch base so PR summaries cover the full branch delta, then
+	// claim the closing issue references immediately before composition. Keeping
+	// PR lookup and existing-body capture outside the claim window lets a reattach
+	// update the structured metadata until composition actually starts. Once
+	// claimed, a concurrent update fails closed instead of landing after this
+	// sample and leaving the composed body without an accepted reference.
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	closingIssues, err := sctx.DB.ClaimClosingIssueRefsForPRBody(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve closing issue references: %w", err)
+	}
+	sctx.ClosingIssueRefs = closingIssues
+	if len(closingIssues) > 0 {
+		if provider != scm.ProviderGitHub {
+			return nil, fmt.Errorf("render closing issues: --closes currently supports GitHub repositories only")
+		}
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil, fmt.Errorf("verify closing issues: GitHub provider cannot read the current pull request body")
+		}
+	}
+	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyClosingIssuesInBody(content.Body, sctx); err != nil {
+		return nil, err
+	}
+
+	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
+			if len(sctx.ClosingIssueRefs) > 0 {
+				return nil, fmt.Errorf("update pull request with closing issues: %w", err)
+			}
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
+		}
+		if err := verifyClosingIssues(ctx, host, updated, sctx); err != nil {
+			return nil, err
 		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
@@ -123,14 +169,130 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	if created == nil || strings.TrimSpace(created.URL) == "" {
+	if created == nil || strings.TrimSpace(created.URL) == "" && strings.TrimSpace(created.Number) == "" {
+		if len(sctx.ClosingIssueRefs) > 0 {
+			return nil, fmt.Errorf("verify closing issues: created pull request identity is unavailable")
+		}
 		return &pipeline.StepOutcome{}, nil
+	}
+	if err := verifyClosingIssues(ctx, host, created, sctx); err != nil {
+		return nil, err
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+var closingKeywordLinePattern = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+(?:#[1-9][0-9]*|[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*)(?:\s*,\s*(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?\s+(?:#[1-9][0-9]*|[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*))*\s*$`)
+
+func readExistingClosingLines(ctx context.Context, host scm.Host, pr *scm.PR) ([]string, error) {
+	reader, ok := host.(scm.PRContentReader)
+	if !ok {
+		return nil, nil
+	}
+	content, err := reader.GetPRContent(ctx, pr)
+	if err != nil {
+		return nil, fmt.Errorf("read existing pull request before preserving closing references: %w", err)
+	}
+	return extractClosingKeywordLines(content.Body), nil
+}
+
+func extractClosingKeywordLines(body string) []string {
+	seen := map[string]struct{}{}
+	var lines []string
+	fence := ""
+	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if marker := markdownFenceMarker(line); marker != "" {
+			if fence == "" {
+				fence = marker
+			} else if marker == fence {
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" || strings.HasPrefix(raw, "\t") || strings.HasPrefix(raw, "    ") {
+			continue
+		}
+		if !closingKeywordLinePattern.MatchString(line) {
+			continue
+		}
+		key := strings.ToLower(line)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func markdownFenceMarker(line string) string {
+	switch {
+	case strings.HasPrefix(line, "```"):
+		return "```"
+	case strings.HasPrefix(line, "~~~"):
+		return "~~~"
+	default:
+		return ""
+	}
+}
+
+func verifyClosingIssues(ctx context.Context, host scm.Host, pr *scm.PR, sctx *pipeline.StepContext) error {
+	if sctx == nil || len(sctx.ClosingIssueRefs) == 0 && len(sctx.PreservedClosingLines) == 0 {
+		return nil
+	}
+	reader, ok := host.(scm.PRContentReader)
+	if !ok {
+		return fmt.Errorf("verify closing issues: provider cannot read the current pull request body")
+	}
+	if pr == nil {
+		return fmt.Errorf("verify closing issues: pull request identity is unavailable")
+	}
+	content, err := reader.GetPRContent(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("verify closing issues: %w", err)
+	}
+	return verifyClosingIssuesInBody(content.Body, sctx)
+}
+
+func verifyClosingIssuesInBody(body string, sctx *pipeline.StepContext) error {
+	if sctx == nil {
+		return nil
+	}
+	for _, line := range sctx.PreservedClosingLines {
+		line = neutralizeAttestationMarkers(line)
+		if !containsExactLineBlock(body, line) {
+			return fmt.Errorf("verify closing issues: pull request body dropped preserved closing line %q", line)
+		}
+	}
+	if len(sctx.ClosingIssueRefs) == 0 {
+		return nil
+	}
+	preservedTargets := closingTargets(extractClosingKeywordLines(body))
+	for _, ref := range sctx.ClosingIssueRefs {
+		if _, exists := preservedTargets[strings.ToLower(ref)]; exists {
+			continue
+		}
+		line := neutralizeAttestationMarkers(renderIssueLinkForRef(sctx, ref))
+		renderedTargets := closingTargets([]string{line})
+		_, rendersRequestedTarget := renderedTargets[strings.ToLower(ref)]
+		if line == "" || !rendersRequestedTarget || !containsExactLineBlock(body, line) {
+			return fmt.Errorf("verify closing issues: pull request body is missing %s", closingissues.Target(ref))
+		}
+	}
+	return nil
+}
+
+func containsExactLineBlock(body, block string) bool {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	block = strings.TrimSpace(strings.ReplaceAll(block, "\r\n", "\n"))
+	if block == "" {
+		return false
+	}
+	return strings.Contains("\n"+body+"\n", "\n"+block+"\n")
 }
 
 // retargetExistingPRIfNeeded moves an already-open PR onto a per-run
@@ -449,46 +611,49 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 // narrative intact. prependIntentSectionWithinLimit is the final backstop
 // when even that core overruns.
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
+	coreLimit := bodyLimitReservingIssueLink(bodyLimit, sctx)
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD)
 	full := prependIntentSection(sections, sctx)
+	full = appendIssueLinkWithinLimit(full, sctx, bodyLimit)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
 	if testingMD != "" {
 		sections = appendGeneratedSections(whatChanged, riskLine, "", pipelineMD)
 		core := prependIntentSection(sections, sctx)
+		core = appendIssueLinkWithinLimit(core, sctx, bodyLimit)
 		if scm.PRBodyLen(core) <= bodyLimit {
 			return core
 		}
 	}
-	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, bodyLimit)
+	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, coreLimit, bodyLimit)
 }
 
-func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int) string {
+func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, coreLimit, finalLimit int) string {
 	prefix := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", ""), sctx)
 	if pipelineMD == "" {
-		return scm.ClampPRBody(prefix, bodyLimit)
+		return appendIssueLinkWithinLimit(scm.ClampPRBody(prefix, coreLimit), sctx, finalLimit)
 	}
 
 	header, _ := splitPipelineSectionHeader(pipelineMD)
 	headerLen := scm.PRBodyLen(header)
-	if header == "" || headerLen > bodyLimit {
-		return scm.ClampPRBody(prefix+"\n\n"+pipelineMD, bodyLimit)
+	if header == "" || headerLen > coreLimit {
+		return appendIssueLinkWithinLimit(scm.ClampPRBody(prefix+"\n\n"+pipelineMD, coreLimit), sctx, finalLimit)
 	}
 
 	separator := "\n\n"
-	prefixBudget := bodyLimit - headerLen - scm.PRBodyLen(separator)
+	prefixBudget := coreLimit - headerLen - scm.PRBodyLen(separator)
 	if prefixBudget <= 0 {
-		return header
+		return appendIssueLinkWithinLimit(header, sctx, finalLimit)
 	}
 	prefix = scm.ClampPRBody(prefix, prefixBudget)
 	if scm.PRBodyLen(prefix) > prefixBudget {
 		prefix = ""
 		separator = ""
 	}
-	pipelineBudget := bodyLimit - scm.PRBodyLen(prefix) - scm.PRBodyLen(separator)
+	pipelineBudget := coreLimit - scm.PRBodyLen(prefix) - scm.PRBodyLen(separator)
 	pipeline := clampPipelineSectionWithinLimit(pipelineMD, pipelineBudget)
-	return prefix + separator + pipeline
+	return appendIssueLinkWithinLimit(prefix+separator+pipeline, sctx, finalLimit)
 }
 
 func clampPipelineSectionWithinLimit(pipelineMD string, bodyLimit int) string {
@@ -517,31 +682,35 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
-	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	maxBytes := bodyLimitReservingIssueLink(maxPullRequestBodyBytes, sctx)
+	sections := appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxBytes)
 	// Neutralized for the same reason as in prependIntentSection: intent is
 	// agent-extracted text placed ahead of the pipeline section.
 	cleaned := neutralizeAttestationMarkers(cleanedUserIntent(sctx))
+	separator := "\n\n"
 	if cleaned == "" {
-		return sections
+		return appendIssueLinkWithinLimit(sections, sctx, maxPullRequestBodyBytes)
 	}
 
 	intent := "## Intent\n\n" + cleaned
-	separator := "\n\n"
-	if len(intent)+len(separator)+len(sections) <= maxPullRequestBodyBytes {
-		return intent + separator + sections
+	if len(intent)+len(separator)+len(sections) <= maxBytes {
+		result := intent + separator + sections
+		return appendIssueLinkWithinLimit(result, sctx, maxPullRequestBodyBytes)
 	}
-	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
+	sectionsBudget := maxBytes - len(separator) - len(intent)
 	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
 	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
-		return intent + separator + sections
+		result := intent + separator + sections
+		return appendIssueLinkWithinLimit(result, sctx, maxPullRequestBodyBytes)
 	}
 
-	intentBudget := maxPullRequestBodyBytes - len(separator) - len(sections)
+	intentBudget := maxBytes - len(separator) - len(sections)
 	if intentBudget <= 0 {
-		return sections
+		return appendIssueLinkWithinLimit(sections, sctx, maxPullRequestBodyBytes)
 	}
-	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	result := truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
+	return appendIssueLinkWithinLimit(result, sctx, maxPullRequestBodyBytes)
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
@@ -1262,7 +1431,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
 		return true
 	default:
 		return false
@@ -1287,6 +1456,125 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 		return section
 	}
 	return section + "\n\n" + body
+}
+
+// issueLinkData is the template data for one closing issue reference.
+type issueLinkData struct {
+	Issue      string
+	Owner      string
+	Repository string
+	Reference  string
+	Keyword    string
+}
+
+// renderIssueLink renders one configured issue-link line. Issue remains the
+// decimal number for compatibility; Reference is #N or owner/repository#N.
+func renderIssueLink(templateStr, ref, keyword string) string {
+	templateStr = strings.TrimSpace(templateStr)
+	ref = strings.TrimSpace(ref)
+	if templateStr == "" || ref == "" {
+		return ""
+	}
+	if keyword == "" {
+		keyword = "Closes"
+	}
+	owner, repository, issue, reference := closingissues.Parts(ref)
+	tmpl, err := template.New("issue_link").Parse(templateStr)
+	if err != nil {
+		slog.Warn("failed to parse issue_link_template", "template", templateStr, "error", err)
+		return ""
+	}
+	var buf bytes.Buffer
+	data := issueLinkData{Issue: issue, Owner: owner, Repository: repository, Reference: reference, Keyword: keyword}
+	if err := tmpl.Execute(&buf, data); err != nil {
+		slog.Warn("failed to render issue_link_template", "template", templateStr, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(buf.String())
+}
+
+func renderIssueLinkForRef(sctx *pipeline.StepContext, ref string) string {
+	templateStr := ""
+	if sctx != nil && sctx.Config != nil {
+		templateStr = sctx.Config.PR.IssueLinkTemplate
+	}
+	if strings.TrimSpace(templateStr) == "" {
+		templateStr = config.DefaultIssueLinkTemplate
+	}
+	return renderIssueLink(templateStr, ref, "Closes")
+}
+
+var closingReferencePattern = regexp.MustCompile(`(?i)(?:[A-Za-z0-9-]+/[A-Za-z0-9._-]+#[1-9][0-9]*|#[1-9][0-9]*)`)
+
+func closingTargets(lines []string) map[string]struct{} {
+	targets := map[string]struct{}{}
+	for _, line := range lines {
+		for _, target := range closingReferencePattern.FindAllString(line, -1) {
+			targets[strings.ToLower(strings.TrimPrefix(target, "#"))] = struct{}{}
+		}
+	}
+	return targets
+}
+
+func issueSection(sctx *pipeline.StepContext) string {
+	if sctx == nil {
+		return ""
+	}
+	lines := append([]string(nil), sctx.PreservedClosingLines...)
+	present := closingTargets(lines)
+	for _, ref := range sctx.ClosingIssueRefs {
+		if _, exists := present[strings.ToLower(ref)]; exists {
+			continue
+		}
+		if line := renderIssueLinkForRef(sctx, ref); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return neutralizeAttestationMarkers("## Issues\n\n" + strings.Join(lines, "\n"))
+}
+
+// issueLinkFooterBytes returns the byte cost of the stable Issues section plus
+// its preceding separator, or 0 when no section will be appended.
+func issueLinkFooterBytes(sctx *pipeline.StepContext) int {
+	section := issueSection(sctx)
+	if section == "" {
+		return 0
+	}
+	return scm.PRBodyLen("\n\n" + section)
+}
+
+func bodyLimitReservingIssueLink(bodyLimit int, sctx *pipeline.StepContext) int {
+	if bodyLimit <= 0 {
+		return bodyLimit
+	}
+	footerBudget := issueLinkFooterBytes(sctx)
+	if footerBudget <= 0 || footerBudget >= bodyLimit {
+		return bodyLimit
+	}
+	return bodyLimit - footerBudget
+}
+
+func appendIssueLink(body string, sctx *pipeline.StepContext) string {
+	return appendIssueLinkWithinLimit(body, sctx, 0)
+}
+
+func appendIssueLinkWithinLimit(body string, sctx *pipeline.StepContext, bodyLimit int) string {
+	section := issueSection(sctx)
+	if section == "" {
+		return body
+	}
+	result := section
+	if strings.TrimSpace(body) != "" {
+		result = body + "\n\n" + section
+	}
+	if bodyLimit <= 0 || scm.PRBodyLen(result) <= bodyLimit {
+		return result
+	}
+	slog.Warn("omitting issues section because it exceeds PR body limit", "limit", bodyLimit, "body_len", scm.PRBodyLen(body), "section_len", scm.PRBodyLen(section))
+	return body
 }
 
 func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {

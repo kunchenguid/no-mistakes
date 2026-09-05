@@ -224,12 +224,18 @@ func linkTestBinary(t *testing.T, binDir, name string) {
 func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
-	logFile = filepath.Join(t.TempDir(), "gh.log")
+	tmp := t.TempDir()
+	logFile = filepath.Join(tmp, "gh.log")
+	bodyFile := filepath.Join(tmp, "pr-body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	linkTestBinary(t, binDir, "gh")
 	env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":   "gh",
-		"FAKE_CLI_LOG":    logFile,
-		"FAKE_CLI_PR_URL": prViewURL,
+		"FAKE_CLI_MODE":         "gh",
+		"FAKE_CLI_LOG":          logFile,
+		"FAKE_CLI_PR_URL":       prViewURL,
+		"FAKE_CLI_PR_BODY_FILE": bodyFile,
 	})
 	return env, logFile
 }
@@ -240,13 +246,19 @@ func fakeGH(t *testing.T, prViewURL string) (env []string, logFile string) {
 func fakeGHWithBase(t *testing.T, prViewURL, prBase string) (env []string, logFile string) {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
-	logFile = filepath.Join(t.TempDir(), "gh.log")
+	tmp := t.TempDir()
+	logFile = filepath.Join(tmp, "gh.log")
+	bodyFile := filepath.Join(tmp, "pr-body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	linkTestBinary(t, binDir, "gh")
 	env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":    "gh",
-		"FAKE_CLI_LOG":     logFile,
-		"FAKE_CLI_PR_URL":  prViewURL,
-		"FAKE_CLI_PR_BASE": prBase,
+		"FAKE_CLI_MODE":         "gh",
+		"FAKE_CLI_LOG":          logFile,
+		"FAKE_CLI_PR_URL":       prViewURL,
+		"FAKE_CLI_PR_BASE":      prBase,
+		"FAKE_CLI_PR_BODY_FILE": bodyFile,
 	})
 	return env, logFile
 }

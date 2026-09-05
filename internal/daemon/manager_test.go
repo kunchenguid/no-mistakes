@@ -636,7 +636,7 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
-func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
+func TestRerunInheritsIntentAndClosingIssuesFromSelectedRun(t *testing.T) {
 	step := &mockPassStep{name: types.StepReview}
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{step}
@@ -662,6 +662,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	waitForRunTerminalState(t, d, first.RunID)
 	selectedIntent := "  selected exact requirements\n"
 	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunClosingIssueRefs(first.RunID, []string{"owner/repo#9", "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -692,6 +695,9 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
+	}
+	if refs := strings.Join(got.ClosingIssueRefs, ","); refs != "42,owner/repo#9" {
+		t.Fatalf("closing issue references = %q, want inherited set", refs)
 	}
 }
 

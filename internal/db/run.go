@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
+	"github.com/kunchenguid/no-mistakes/internal/closingissues"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -75,24 +76,39 @@ type Run struct {
 	// It is set by the operator (axi run --base-branch) and takes precedence
 	// over pr.base_branch in repo config for this run only.
 	PRBaseBranch *string
-	CreatedAt    int64
-	UpdatedAt    int64
+	// ClosingIssueRefs are the explicit issues the generated PR should close.
+	ClosingIssueRefs []string
+	// ClosingIssueRefsLockedAt is non-nil once a PR body composition has sampled
+	// ClosingIssueRefs, after which UpdateRunClosingIssueRefs refuses to change it.
+	ClosingIssueRefsLockedAt *int64
+	CreatedAt                int64
+	UpdatedAt                int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, pr_base_branch, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, worktree_dir, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, pr_base_branch, closing_issue_refs, closing_issue_refs_locked_at, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
-	return row.Scan(
+	var storedClosingIssues sql.NullString
+	err := row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.WorktreeDir, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore, &r.PRBaseBranch,
+		&storedClosingIssues, &r.ClosingIssueRefsLockedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
+	if err != nil {
+		return err
+	}
+	r.ClosingIssueRefs, err = closingissues.Decode(storedClosingIssues.String)
+	if err != nil {
+		return fmt.Errorf("decode run closing issue references: %w", err)
+	}
+	return nil
 }
 
 // WorktreePath returns the recorded worktree directory of this run, or "" for
@@ -740,6 +756,165 @@ func (d *DB) UpdateRunIntent(id string, intent RunIntent) error {
 		return fmt.Errorf("update run intent: %w", err)
 	}
 	return nil
+}
+
+// ErrClosingIssueRefsLocked reports that a PR body composition already sampled
+// a run's closing issue references, so a later update cannot reach the Issues section. It is
+// the fail-closed half of the claim protocol described on
+// ClaimClosingIssueRefsForPRBody: callers must surface it rather than treat the
+// write as applied.
+var ErrClosingIssueRefsLocked = errors.New("closing issue references already consumed by PR body composition")
+
+// UpdateRunClosingIssueRefs sets the canonical closing issue references on a
+// run record. The PR step renders them in its stable Issues section.
+//
+// The write is refused with ErrClosingIssueRefsLocked once the PR step has claimed
+// the value (closing_issue_refs_locked_at is non-NULL). Reporting success for a write
+// that can no longer change the PR body is the race this guard closes: the
+// reattach path in `axi run --closes` would otherwise tell the caller the link
+// was applied while the already-composed body shipped without it.
+func (d *DB) UpdateRunClosingIssueRefs(id string, refs []string) error {
+	encoded, err := closingissues.Encode(refs)
+	if err != nil {
+		return fmt.Errorf("update run closing issue references: %w", err)
+	}
+	var value any
+	if encoded != "" {
+		value = encoded
+	}
+	res, err := d.sql.Exec(
+		`UPDATE runs SET closing_issue_refs = ?, updated_at = ? WHERE id = ? AND closing_issue_refs_locked_at IS NULL`,
+		value, now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update run closing issue references: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update run closing issue references: %w", err)
+	}
+	if affected > 0 {
+		return nil
+	}
+	// No row changed: either the run is gone or its closing issue references are locked.
+	// Distinguish the two so a missing run does not masquerade as a race.
+	var locked sql.NullInt64
+	switch err := d.sql.QueryRow(`SELECT closing_issue_refs_locked_at FROM runs WHERE id = ?`, id).Scan(&locked); {
+	case err == sql.ErrNoRows:
+		return fmt.Errorf("update run closing issue references: run not found: %s", id)
+	case err != nil:
+		return fmt.Errorf("update run closing issue references: %w", err)
+	case locked.Valid:
+		return ErrClosingIssueRefsLocked
+	default:
+		// The lock was released between the update and this read, which the
+		// claim protocol never does. Treat an unexplained no-op as a failure
+		// rather than reporting a write that did not happen.
+		return fmt.Errorf("update run closing issue references: no row updated for run %s", id)
+	}
+}
+
+// MergeRunClosingIssueRefs adds refs to an unclaimed run without dropping
+// values supplied when the run started or by an earlier reattachment.
+func (d *DB) MergeRunClosingIssueRefs(id string, refs []string) error {
+	incoming, err := closingissues.Normalize(refs)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if len(incoming) == 0 {
+		return nil
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	defer tx.Rollback()
+
+	var storedRefs sql.NullString
+	var lockedAt sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT closing_issue_refs, closing_issue_refs_locked_at FROM runs WHERE id = ?`, id,
+	).Scan(&storedRefs, &lockedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("merge run closing issue references: run not found: %s", id)
+		}
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if lockedAt.Valid {
+		return ErrClosingIssueRefsLocked
+	}
+	existing, err := closingissues.Decode(storedRefs.String)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	encoded, err := closingissues.Encode(append(existing, incoming...))
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	res, err := tx.Exec(
+		`UPDATE runs SET closing_issue_refs = ?, updated_at = ? WHERE id = ? AND closing_issue_refs_locked_at IS NULL`,
+		encoded, now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	} else if affected == 0 {
+		return ErrClosingIssueRefsLocked
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge run closing issue references: %w", err)
+	}
+	return nil
+}
+
+// ClaimClosingIssueRefsForPRBody returns the run's closing issue references and
+// marks them as consumed by PR body composition in one transaction. After the claim, a
+// concurrent UpdateRunClosingIssueRefs fails with ErrClosingIssueRefsLocked instead of
+// silently landing too late to appear in the composed body.
+//
+// The claim is deliberately never released. A PR step that runs again (a
+// resume, or a later update of an existing PR) recomposes from the value it
+// already claimed, so refusing the late write stays correct; the caller is told
+// to edit the PR or start a fresh run rather than being told a link was added
+// that never appears.
+func (d *DB) ClaimClosingIssueRefsForPRBody(id string) ([]string, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("claim closing issue references: %w", err)
+	}
+	defer tx.Rollback()
+
+	var storedRefs sql.NullString
+	var lockedAt sql.NullInt64
+	err = tx.QueryRow(
+		`SELECT closing_issue_refs, closing_issue_refs_locked_at FROM runs WHERE id = ?`, id,
+	).Scan(&storedRefs, &lockedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("claim closing issue references: run not found: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("claim closing issue references: %w", err)
+	}
+
+	if !lockedAt.Valid {
+		if _, err := tx.Exec(
+			`UPDATE runs SET closing_issue_refs_locked_at = ? WHERE id = ? AND closing_issue_refs_locked_at IS NULL`,
+			now(), id,
+		); err != nil {
+			return nil, fmt.Errorf("claim closing issue references: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("claim closing issue references: %w", err)
+	}
+	refs, err := closingissues.Decode(storedRefs.String)
+	if err != nil {
+		return nil, fmt.Errorf("claim closing issue references: %w", err)
+	}
+	return refs, nil
 }
 
 // SetRunAwaitingAgent marks a run as parked awaiting the driving agent,

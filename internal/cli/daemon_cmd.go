@@ -110,6 +110,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			closingIssues, err := parseClosingIssueRefsPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -128,13 +132,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:         gatePath,
-				Ref:          ref,
-				Old:          oldSHA,
-				New:          newSHA,
-				SkipSteps:    skipSteps,
-				Intent:       intent,
-				PRBaseBranch: prBaseBranch,
+				Gate:             gatePath,
+				Ref:              ref,
+				Old:              oldSHA,
+				New:              newSHA,
+				SkipSteps:        skipSteps,
+				Intent:           intent,
+				PRBaseBranch:     prBaseBranch,
+				ClosingIssueRefs: closingIssues,
 			}, &result)
 		},
 	}
@@ -254,6 +259,35 @@ func parsePRBaseBranchPushOptions(options []string) (string, error) {
 		branch = value
 	}
 	return branch, nil
+}
+
+// closingIssuePushOptionPrefix carries one closing issue reference through a git push.
+// Repeating the option preserves the repeatable --closes CLI contract.
+const closingIssuePushOptionPrefix = "no-mistakes.closes="
+
+func formatClosingIssueRefsPushOptions(refs []string) []string {
+	options := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		options = append(options, closingIssuePushOptionPrefix+ref)
+	}
+	return options
+}
+
+// parseClosingIssueRefsPushOptions extracts all closing issue push options and
+// applies the same validation, deduplication, and ordering as the public CLI.
+func parseClosingIssueRefsPushOptions(options []string) ([]string, error) {
+	var values []string
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, closingIssuePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("invalid closing issue push option: value is required")
+		}
+		values = append(values, value)
+	}
+	return normalizeClosingIssueRefs(values)
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

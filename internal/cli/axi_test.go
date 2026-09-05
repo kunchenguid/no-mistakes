@@ -576,8 +576,22 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 	}
 }
 
+func TestAxiRunClosesFlagIsRepeatable(t *testing.T) {
+	cmd := newAxiRunCmd()
+	if err := cmd.ParseFlags([]string{"--closes", "10", "--closes", "owner/repo#2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cmd.Flags().GetStringArray("closes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "10,owner/repo#2" {
+		t.Fatalf("--closes values = %q", refs)
+	}
+}
+
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", "develop", []string{"42", "owner/repo#9"})
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
@@ -587,6 +601,95 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	if params.PRBaseBranch != "develop" {
 		t.Fatalf("PRBaseBranch = %q, want develop", params.PRBaseBranch)
 	}
+	if got := strings.Join(params.ClosingIssueRefs, ","); got != "42,owner/repo#9" {
+		t.Fatalf("ClosingIssueRefs = %q, want 42,owner/repo#9", got)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunRequiresUpdateSuccess(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{err: errors.New("database unavailable")}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42", "owner/repo#9"})
+	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("forward error = %v, want daemon update failure", err)
+	}
+	if client.method != ipc.MethodUpdateRunClosingIssueRefs {
+		t.Fatalf("method = %q, want %q", client.method, ipc.MethodUpdateRunClosingIssueRefs)
+	}
+	params, ok := client.params.(*ipc.UpdateRunClosingIssueRefsParams)
+	if !ok {
+		t.Fatalf("params type = %T, want *ipc.UpdateRunClosingIssueRefsParams", client.params)
+	}
+	if params.RunID != "run-1" || strings.Join(params.ClosingIssueRefs, ",") != "42,owner/repo#9" {
+		t.Fatalf("params = %#v, want run-1 with both references", params)
+	}
+}
+
+func TestForwardClosingIssueRefsToActiveRunSkipsEmptyIssue(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{}
+
+	if err := forwardClosingIssueRefsToActiveRun(client, "run-1", nil); err != nil {
+		t.Fatalf("empty issue should not update: %v", err)
+	}
+	if client.method != "" {
+		t.Fatalf("empty issue made IPC call %q", client.method)
+	}
+}
+
+// A rejection because the PR body was already composed is distinguishable from
+// a transport failure, so the caller can say "not applied, edit the PR" instead
+// of advising a retry that can never succeed.
+func TestForwardClosingIssueRefsToActiveRunReportsPRBodyAlreadyComposed(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{
+		reject: ipc.ClosingIssueRefsRejectedPRBodyComposed,
+	}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if !errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("forward error = %v, want errClosingIssueRefsPRBodyComposed", err)
+	}
+	if !strings.Contains(err.Error(), "could not be applied") {
+		t.Fatalf("error %q should state the link was not applied", err.Error())
+	}
+}
+
+// A rejection with no recognized reason must stay an error rather than passing
+// as success, so an unknown refusal never reports a link that was not added.
+func TestForwardClosingIssueRefsToActiveRunRejectsUnknownReason(t *testing.T) {
+	client := &scriptedClosingIssueRefsUpdateClient{reject: "some_future_reason"}
+
+	err := forwardClosingIssueRefsToActiveRun(client, "run-1", []string{"42"})
+	if err == nil {
+		t.Fatal("unknown rejection reason reported success")
+	}
+	if errors.Is(err, errClosingIssueRefsPRBodyComposed) {
+		t.Fatalf("unknown reason misreported as the composed-body case: %v", err)
+	}
+}
+
+type scriptedClosingIssueRefsUpdateClient struct {
+	method string
+	params interface{}
+	err    error
+	// reject, when set, makes the daemon refuse the update with this reason.
+	reject string
+}
+
+func (s *scriptedClosingIssueRefsUpdateClient) Call(method string, params interface{}, result interface{}) error {
+	s.method = method
+	s.params = params
+	if s.err != nil {
+		return s.err
+	}
+	if out, ok := result.(*ipc.UpdateRunClosingIssueRefsResult); ok {
+		if s.reject != "" {
+			out.OK = false
+			out.Reason = s.reject
+			return nil
+		}
+		out.OK = true
+	}
+	return nil
 }
 
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
@@ -1011,7 +1114,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal", ""); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", "", nil); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

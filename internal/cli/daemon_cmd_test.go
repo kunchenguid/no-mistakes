@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -118,5 +119,23 @@ func TestPRBaseBranchPushOptionRoundTrip(t *testing.T) {
 	}
 	if got != "epic/feature" {
 		t.Fatalf("round-trip = %q, want epic/feature", got)
+	}
+}
+
+func TestClosingIssueRefsPushOptionsRoundTrip(t *testing.T) {
+	options := formatClosingIssueRefsPushOptions([]string{"42", "owner/repo#9"})
+	got, err := parseClosingIssueRefsPushOptions(append([]string{"ci.skip"}, options...))
+	if err != nil {
+		t.Fatalf("parseClosingIssueRefsPushOptions() error = %v", err)
+	}
+	if refs := strings.Join(got, ","); refs != "42,owner/repo#9" {
+		t.Fatalf("parseClosingIssueRefsPushOptions() = %q, want both references", refs)
+	}
+}
+
+func TestParseClosingIssueRefsPushOptionsRejectsInvalidValue(t *testing.T) {
+	_, err := parseClosingIssueRefsPushOptions([]string{"no-mistakes.closes=42 Fixes #99"})
+	if err == nil {
+		t.Fatal("expected invalid closing issue references push option to fail")
 	}
 }

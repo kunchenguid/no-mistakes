@@ -89,6 +89,9 @@ func logFakeCLIStdinBody(args []string, logFile string) {
 	defer f.Close()
 	fmt.Fprint(f, "stdin --body ")
 	fmt.Fprintln(f, string(body))
+	if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+		_ = os.WriteFile(path, body, 0o644)
+	}
 }
 
 func argsUseStdinBodyFile(args []string) bool {
@@ -113,6 +116,7 @@ func fakeRecordSuccessHandler() {
 }
 
 func fakeGHHandler(args []string) {
+	fakeGHHandlePRContentCommands(args, strings.Join(args, " "))
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
 	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
@@ -158,6 +162,9 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		if os.Getenv("FAKE_CLI_PR_CREATE_EMPTY") == "1" {
+			os.Exit(0)
+		}
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}
@@ -437,6 +444,9 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			os.Exit(1)
 		}
 		if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+			if os.Getenv("FAKE_CLI_LOG") != "" {
+				os.Exit(0) // logFakeCLIStdinBody already copied stdin to the body file.
+			}
 			body, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)

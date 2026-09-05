@@ -318,6 +318,12 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
+	// IssueLinkTemplate is a Go text/template rendered once per closing issue.
+	// It receives Issue, Owner, Repository, Reference, and Keyword fields.
+	// When empty, the built-in "{{.Keyword}} {{.Reference}}" is used for
+	// explicit --closes values. Repositories can choose a different keyword;
+	// no Issues section is rendered when a run has no closing references.
+	IssueLinkTemplate *string `yaml:"issue_link_template"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -666,7 +672,8 @@ type AzureDevOpsProvider struct {
 
 // PR is the resolved pull-request configuration.
 type PR struct {
-	BaseBranch string
+	BaseBranch        string
+	IssueLinkTemplate string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -871,6 +878,18 @@ func resolvePathInstructions(entries []PathInstruction) []PathInstruction {
 		return nil
 	}
 	return out
+}
+
+// DefaultIssueLinkTemplate is the built-in issue link footer when only
+// --closes is provided without a repo-specific template.
+const DefaultIssueLinkTemplate = "{{.Keyword}} {{.Reference}}"
+
+// resolveIssueLinkTemplate returns the trimmed template or "" when unset.
+func resolveIssueLinkTemplate(t *string) string {
+	if t == nil {
+		return ""
+	}
+	return strings.TrimSpace(*t)
 }
 
 // defaultConfigYAML is the template written when no global config file exists.
@@ -2284,8 +2303,8 @@ func validatePathInstructionGlob(pattern string) error {
 // budget) is trusted-only because every rerun it authorizes is another
 // provider-side workflow run billed to the repository. These gate-control
 // fields ignore allowRepoCommands. PR is the explicit exception: the
-// allowRepoCommands opt-in also permits a pushed PR target because it controls
-// where a maintainer-authorized PR lands, not code execution.
+// allowRepoCommands opt-in also permits pushed PR publication settings because
+// they control the destination and body of an already-authorized PR, not code execution.
 // When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
@@ -2344,9 +2363,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// file, and the upload client refuses Actions/App installation tokens,
 		// so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
-		// pr.base_branch controls where the contributor's PR lands, so it is
-		// trusted-only unless the repository explicitly opts into pushed
-		// settings alongside commands and agent selection.
+		// PR target and issue-link rendering are trusted-only unless the
+		// repository explicitly opts into pushed settings alongside commands
+		// and agent selection.
 		if !allowRepoCommands {
 			effective.PR = trusted.PR
 		}
@@ -2758,7 +2777,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
+		PR: PR{
+			BaseBranch:        strings.TrimSpace(repo.PR.BaseBranch),
+			IssueLinkTemplate: resolveIssueLinkTemplate(repo.PR.IssueLinkTemplate),
+		},
 		ForgeProfiles:  global.ForgeProfiles,
 		Providers:      providers,
 		// repo is the EffectiveRepoConfig result, so this value is already

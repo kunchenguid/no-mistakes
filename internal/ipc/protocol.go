@@ -9,20 +9,21 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived              = "push_received"
+	MethodGetRun                    = "get_run"
+	MethodGetStepDiff               = "get_step_diff"
+	MethodGetRuns                   = "get_runs"
+	MethodGetRunsForHead            = "get_runs_for_head"
+	MethodGetActiveRun              = "get_active_run"
+	MethodRerun                     = "rerun"
+	MethodSubscribe                 = "subscribe"
+	MethodRespond                   = "respond"
+	MethodCancelRun                 = "cancel_run"
+	MethodGateContext               = "gate_context"
+	MethodAdmitPush                 = "admit_push"
+	MethodHealth                    = "health"
+	MethodShutdown                  = "shutdown"
+	MethodUpdateRunClosingIssueRefs = "update_run_closing_issue_refs"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -65,15 +66,18 @@ func (e *RPCError) Error() string { return e.Message }
 // Intent, when set, is an agent-supplied description of the change. It is
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
+//
+// ClosingIssueRefs contains the explicit issues the generated PR should close.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate         string           `json:"gate"`
-	Ref          string           `json:"ref"`
-	Old          string           `json:"old"`
-	New          string           `json:"new"`
-	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
-	Intent       string           `json:"intent,omitempty"`
-	PRBaseBranch string           `json:"pr_base_branch,omitempty"`
+	Gate             string           `json:"gate"`
+	Ref              string           `json:"ref"`
+	Old              string           `json:"old"`
+	New              string           `json:"new"`
+	SkipSteps        []types.StepName `json:"skip_steps,omitempty"`
+	Intent           string           `json:"intent,omitempty"`
+	PRBaseBranch     string           `json:"pr_base_branch,omitempty"`
+	ClosingIssueRefs []string         `json:"closing_issue_refs,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -125,13 +129,16 @@ type GetActiveRunParams struct {
 // Intent, when set, overrides inherited intent and fresh inference. When empty,
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.
+// ClosingIssueRefs contains an explicit replacement set. When empty, a rerun
+// inherits the selected run's persisted references.
 type RerunParams struct {
-	RepoID        string           `json:"repo_id"`
-	Branch        string           `json:"branch"`
-	PreviousRunID string           `json:"previous_run_id,omitempty"`
-	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
-	Intent        string           `json:"intent,omitempty"`
-	PRBaseBranch  string           `json:"pr_base_branch,omitempty"`
+	RepoID           string           `json:"repo_id"`
+	Branch           string           `json:"branch"`
+	PreviousRunID    string           `json:"previous_run_id,omitempty"`
+	SkipSteps        []types.StepName `json:"skip_steps,omitempty"`
+	Intent           string           `json:"intent,omitempty"`
+	PRBaseBranch     string           `json:"pr_base_branch,omitempty"`
+	ClosingIssueRefs []string         `json:"closing_issue_refs,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -178,6 +185,26 @@ type HealthParams struct{}
 
 // ShutdownParams has no fields but exists for consistency.
 type ShutdownParams struct{}
+
+// UpdateRunClosingIssueRefsParams updates the closing issue references on an existing run.
+type UpdateRunClosingIssueRefsParams struct {
+	RunID            string   `json:"run_id"`
+	ClosingIssueRefs []string `json:"closing_issue_refs"`
+}
+
+// ClosingIssueRefsRejectedPRBodyComposed is the Reason reported when the run's PR
+// body was already composed, so the closing issue references could no longer reach its
+// footer. It is a rejection rather than a transport error because retrying
+// cannot help: the caller must edit the PR or start a fresh run.
+const ClosingIssueRefsRejectedPRBodyComposed = "pr_body_already_composed"
+
+// UpdateRunClosingIssueRefsResult is the result of UpdateRunClosingIssueRefs. OK is false
+// for a refused update, with Reason naming why so the caller can give advice
+// that fits instead of matching on error prose.
+type UpdateRunClosingIssueRefsResult struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+}
 
 // --- Method results ---
 

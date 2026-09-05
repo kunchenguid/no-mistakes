@@ -9,7 +9,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
 The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, and `test.evidence.branch` only from that trusted copy.
-`pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
+The whole `pr` block ([`pr.base_branch`](#prbase_branch), [`pr.issue_link_template`](#prissue_link_template)) is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent`.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -210,6 +210,46 @@ Because this setting controls where a PR lands, a pushed branch cannot redirect 
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
 The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
 An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
+
+### pr.issue_link_template
+
+Choose how each explicit closing issue is rendered in the stable `## Issues` section of the PR body.
+
+| | |
+| --- | --- |
+| Type | `string` (Go `text/template`) |
+| Default | Empty. Without `--closes`, no new or inferred closing reference is added; existing standalone closing-keyword lines are preserved during GitHub PR refreshes |
+| Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
+
+The footer exists so a tool-authored PR can carry the same tracker link a human contributor would type, for repositories whose CI requires one.
+It is supplementary PR-body text only: it never changes what any gate means or how a PR is judged.
+
+Closing references come from repeatable `no-mistakes axi run --closes <issue>` flags on GitHub repositories. Each value may be a same-repository number (`--closes 95`) or a cross-repository reference (`--closes owner/repository#95`). Repeated references are deduplicated and rendered in deterministic order. The flag is optional; without it no closing reference is inferred from intent, commits, branches, parent issues, or other prose.
+
+The template is rendered once per issue and receives these fields:
+
+| Field | Value |
+| --- | --- |
+| `{{.Issue}}` | The decimal issue number, without a leading `#` |
+| `{{.Owner}}` | The owner for a qualified reference, otherwise empty |
+| `{{.Repository}}` | The repository for a qualified reference, otherwise empty |
+| `{{.Reference}}` | `#95` or `owner/repository#95`, ready to follow a keyword |
+| `{{.Keyword}}` | The linking keyword, currently always `Closes` |
+
+```yaml
+pr:
+  # GitLab-style, and does not auto-close the issue:
+  issue_link_template: "Refs {{.Reference}}"
+```
+
+When `--closes` is supplied but no template is configured, the built-in `{{.Keyword}} {{.Reference}}` renders `Closes #95` or `Closes owner/repository#95`.
+Repositories differ on which keyword they want — `Closes` auto-closes the issue on merge, `Refs` only cross-links it — so that choice stays the repository's rather than the tool's.
+
+The Issues section is appended last and budgeted against the forge's PR body size cap. If it cannot fit, it is omitted rather than truncating the body around it; live-body verification then fails the PR step closed instead of publishing an update that drops requested or preserved references. Existing standalone `Closes`, `Fixes`, and `Resolves` lines are preserved when a readable GitHub PR body is replaced, including author-supplied cross-repository references. Closing-looking text inside fenced or indented code examples is not treated as metadata.
+
+Immediately before PR-body composition starts, the references are claimed once. Reattachment values received before that point are merged with, rather than replace, the run's existing references. A `--closes` passed while reattaching after that point is refused explicitly because it could no longer appear in that PR; updates arriving during PR lookup and existing-body capture are still included. Before the PR step completes, no-mistakes reads the live body and verifies every requested reference; an unverifiable or missing reference fails the step closed. GitHub is currently the only supported provider for `--closes`, because the feature requires a readable live PR body for preservation and verification; using it with another provider fails before PR mutation.
+
+GitHub applies closing keywords only when the PR is merged into the repository's default branch and the referenced issue is eligible for keyword closure. A PR merged into another branch does not automatically close the issue.
 
 ### commands.test
 
