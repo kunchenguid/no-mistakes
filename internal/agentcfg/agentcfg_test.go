@@ -316,7 +316,9 @@ func TestServedMatchesRequested(t *testing.T) {
 		{name: "true mismatch different provider", requested: "openai/grok-4.6", served: "grok-4.6", servedProvider: "xai", want: false},
 		{name: "qualified request rejects empty provider", requested: "xai/grok-4.6", served: "grok-4.6", servedProvider: "", want: false},
 		{name: "qualified served matches qualified request", requested: "xai/grok-4.6", served: "xai/grok-4.6", want: true},
+		{name: "qualified served rejects contradictory provider metadata", requested: "xai/grok-4.6", served: "xai/grok-4.6", servedProvider: "openai", want: false},
 		{name: "bare request matches qualified served id", requested: "grok-4.6", served: "xai/grok-4.6", want: true},
+		{name: "bare request rejects contradictory provider metadata", requested: "grok-4.6", served: "xai/grok-4.6", servedProvider: "openai", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

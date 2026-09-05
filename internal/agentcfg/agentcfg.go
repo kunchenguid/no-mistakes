@@ -233,9 +233,9 @@ func SplitProviderModel(model string) (provider, id string, ok bool) {
 // ServedMatchesRequested reports whether an adapter's served model is the same
 // identity the operator requested. Pi reports a bare model id plus a separate
 // provider while candidates commonly use the provider/model spelling
-// (xai/grok-4.6). Exact string equality is the fallback so a bare request
-// still matches a bare report. A different model id or a different provider
-// is a mismatch; an empty provider cannot satisfy a qualified request.
+// (xai/grok-4.6). A different model id or provider is a mismatch, including
+// contradictory provider metadata; an empty provider cannot satisfy a
+// qualified request when the served model is bare.
 func ServedMatchesRequested(requested, served, servedProvider string) bool {
 	requested = strings.TrimSpace(requested)
 	served = strings.TrimSpace(served)
@@ -243,24 +243,22 @@ func ServedMatchesRequested(requested, served, servedProvider string) bool {
 	if requested == "" || served == "" {
 		return requested == served
 	}
-	if served == requested {
-		return true
-	}
+
 	reqProvider, reqID, requestedQualified := SplitProviderModel(requested)
-	servedProviderFromModel, servedID, servedQualified := SplitProviderModel(served)
-	if requestedQualified {
-		if served == reqID && servedProvider == reqProvider {
-			return true
-		}
-		if servedQualified {
-			return servedProviderFromModel == reqProvider && servedID == reqID
-		}
-		return false
-	}
+	embeddedProvider, servedID, servedQualified := SplitProviderModel(served)
 	if servedQualified {
-		return servedID == requested
+		if servedProvider != "" && servedProvider != embeddedProvider {
+			return false
+		}
+		servedProvider = embeddedProvider
+	} else {
+		servedID = served
 	}
-	return false
+
+	if requestedQualified {
+		return servedID == reqID && servedProvider == reqProvider
+	}
+	return servedID == requested
 }
 
 // harnesses is the whole mapping. Every native flag here was read off the
