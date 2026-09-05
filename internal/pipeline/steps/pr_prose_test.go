@@ -18,7 +18,16 @@ func TestRedactPRContent_OperatorAddressPreservesEvidence(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, input, want string }{
 		{"subject", "fix: Captain: restore reclamation", "fix: restore reclamation"},
-		{"risk", "✅ Low: cApTaIn, the change is bounded", "✅ Low: the change is bounded"},
+		{"risk", "✅ Low: Captain, the change is bounded", "✅ Low: the change is bounded"},
+		{"mixed case", "✅ Low: cApTaIn, the change is bounded", "✅ Low: cApTaIn, the change is bounded"},
+		{"upper case", "CAPTAIN: the change is bounded", "CAPTAIN: the change is bounded"},
+		{"lowercase roles", "Roles: captain, crew and ship.", "Roles: captain, crew and ship."},
+		{"lowercase risk", "✅ Low: captain, crew and ship selection is unchanged", "✅ Low: captain, crew and ship selection is unchanged"},
+		{"error prefix", "fails with: captain: undefined", "fails with: captain: undefined"},
+		{"bold term label", "- **captain**: now persisted across sessions", "- **captain**: now persisted across sessions"},
+		{"capitalized bold term label", "- **Captain**: the role that owns the ship", "- **Captain**: the role that owns the ship"},
+		{"bold label sentence", "**Note:** Captain, fix this", "**Note:** fix this"},
+		{"bold label testing", "**Testing:** Captain, ran the suite", "**Testing:** ran the suite"},
 		{"finding", "- ⚠️ Captain, guard stale wakes", "- ⚠️ guard stale wakes"},
 		{"sentences", "Tests passed. Captain, checks are complete.", "Tests passed. checks are complete."},
 		{"domain", "The captain, crew and ship remain unchanged.", "The captain, crew and ship remain unchanged."},
@@ -64,6 +73,30 @@ func TestPRStep_OperatorAddressBeforeTitleInference(t *testing.T) {
 	}
 }
 
+func TestPRStep_EmptySanitizedTitleUsesFallback(t *testing.T) {
+	t.Parallel()
+	for _, title := range []string{"Captain:", "**Captain,**", "Captain: "} {
+		t.Run(title, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "pr", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				raw, err := json.Marshal(prContent{Title: title, Body: "## What Changed\n\n- guard stale wakes"})
+				return &agent.Result{Output: raw}, err
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if content.Title != "chore: update pull request" {
+				t.Errorf("title = %q, want fallback title", content.Title)
+			}
+			if !strings.Contains(content.Body, "## What Changed") {
+				t.Errorf("body lost its summary:\n%s", content.Body)
+			}
+		})
+	}
+}
+
 func TestRedactPRContent_OperatorAddressBlockquoteBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, input, want string }{
@@ -76,6 +109,31 @@ func TestRedactPRContent_OperatorAddressBlockquoteBoundaries(t *testing.T) {
 		{"explicit quoted blocks", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item", "> Captain, quoted\n> ## Captain, quoted heading\n> - Captain: quoted item"},
 		{"noninterrupting number", "> note\n2. Captain, quoted continuation", "> note\n2. Captain, quoted continuation"},
 		{"nonheading hash", "> note\n##Captain, quoted continuation", "> note\n##Captain, quoted continuation"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
+				t.Errorf("body = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedactPRContent_OperatorAddressQuoteBlockBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, input, want string }{
+		{
+			"unbalanced intent quote",
+			"Fix the \"flaky test\n\n## What Changed\n\n- Captain, guard wakes\n\n✅ Low: Captain, bounded. The \"foo\" helper. Captain, done",
+			"Fix the \"flaky test\n\n## What Changed\n\n- guard wakes\n\n✅ Low: bounded. The \"foo\" helper. done",
+		},
+		{"inch mark bullet", "- Support 5\" displays\n- Captain, guard wakes\n\n✅ Low: Captain, bounded. The \"foo\" helper.", "- Support 5\" displays\n- guard wakes\n\n✅ Low: bounded. The \"foo\" helper."},
+		{"unbalanced quote before heading", "An odd \" mark\n## Captain, next steps \"x\"", "An odd \" mark\n## next steps \"x\""},
+		{"unbalanced quote before thematic break", "An odd \" mark\n---\nCaptain, next \"x\"", "An odd \" mark\n---\nnext \"x\""},
+		{"unbalanced curly quote before blank line", "An odd “ mark\n\nCaptain, next ”x”", "An odd “ mark\n\nnext ”x”"},
+		{"unbalanced quote before fence", "An odd \" mark\n```text\nCaptain: literal\n```\nCaptain, next \"x\"", "An odd \" mark\n```text\nCaptain: literal\n```\nnext \"x\""},
+		{"unbalanced quote before blockquote", "An odd \" mark\n> Captain, quoted\n\nCaptain, next \"x\"", "An odd \" mark\n> Captain, quoted\n\nnext \"x\""},
+		{"soft wrapped dialogue", "Keep \"Captain, ready\nand waiting\" dialogue.\n\nCaptain, done", "Keep \"Captain, ready\nand waiting\" dialogue.\n\ndone"},
+		{"dialogue after reset", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. Captain, done", "An odd \" mark\n\nKeep \"Captain, ready\" dialogue. done"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := redactPRContent(prContent{Body: tt.input}).Body; got != tt.want {
@@ -177,12 +235,25 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	t.Parallel()
 	type renderCase struct {
-		name, body, risk, fix string
-		descriptions, tested  []string
-		artifacts             []types.TestArtifact
-		want                  []string
+		name, intent, body, risk, fix string
+		descriptions, tested          []string
+		artifacts                     []types.TestArtifact
+		want                          []string
 	}
 	cases := []renderCase{
+		{
+			name:   "unbalanced intent quote before later blocks",
+			intent: "Fix the \"flaky test",
+			body:   "- Captain, guard wakes",
+			risk:   "Captain, bounded. The \"foo\" helper.",
+			want:   []string{"Fix the \"flaky test", "- guard cleanup\n\n- guard wakes", "✅ Low: bounded. The \"foo\" helper."},
+		},
+		{
+			name: "inch mark before later blocks",
+			body: "- Support 5\" displays\n- Captain, guard wakes",
+			risk: "Captain, bounded. The \"foo\" helper.",
+			want: []string{"- Support 5\" displays\n- guard wakes", "✅ Low: bounded. The \"foo\" helper."},
+		},
 		{
 			name: "blockquote followed by thematic break",
 			body: "> Captain, quoted evidence\n---\nCaptain, next steps",
@@ -246,13 +317,16 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 	}
 	for _, emphasis := range []struct{ prefix, suffix, remaining string }{
 		{"**Captain,** ", "", ""},
-		{"*cApTaIn:* ", "", ""},
-		{"__CAPTAIN,__ ", "", ""},
+		{"*Captain:* ", "", ""},
+		{"__Captain,__ ", "", ""},
 		{"_Captain:_ ", "", ""},
-		{"**Captain**, ", "", ""},
 		{"***Captain:*** ", "", ""},
 		{"**Captain, ", "**", "**"},
 		{"Captain, **", "**", "**"},
+		{"**Note:** Captain, ", "", "**Note:** "},
+		{"**Captain**, ", "", "**Captain**, "},
+		{"*cApTaIn:* ", "", "*cApTaIn:* "},
+		{"__CAPTAIN,__ ", "", "__CAPTAIN,__ "},
 	} {
 		cases = append(cases, renderCase{
 			name:         "emphasis " + emphasis.prefix,
@@ -277,6 +351,7 @@ func TestPRStep_OperatorAddressRendering(t *testing.T) {
 					return &agent.Result{Output: raw}, err
 				}}
 				sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				sctx.UserIntent = tt.intent
 				findings := types.Findings{RiskLevel: "low", RiskRationale: tt.risk}
 				for i, description := range tt.descriptions {
 					findings.Items = append(findings.Items, types.Finding{Severity: types.FindingSeverityWarning, File: "captain.go", Line: i + 1, Description: description})

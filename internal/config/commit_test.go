@@ -30,7 +30,8 @@ func TestCommitRenderFixMessage_OperatorAddress(t *testing.T) {
 	}{
 		{types.StepTest, "Captain: restore automatic Next.js build-output reclamation", "no-mistakes(test): restore automatic Next.js build-output reclamation"},
 		{types.StepReview, "Captain, prevent Codex App stale wakes", "no-mistakes(review): prevent Codex App stale wakes"},
-		{types.StepCI, "cApTaIn, repair failing checks", "no-mistakes(ci): repair failing checks"},
+		{types.StepCI, "Captain, repair failing checks", "no-mistakes(ci): repair failing checks"},
+		{types.StepCI, "cApTaIn, repair failing checks", "no-mistakes(ci): cApTaIn, repair failing checks"},
 		{types.StepReview, "preserve captain selection in the game", "no-mistakes(review): preserve captain selection in the game"},
 		{types.StepReview, "preserve `Captain: ready` fixture text", "no-mistakes(review): preserve `Captain: ready` fixture text"},
 		{types.StepReview, `preserve "Captain, ready" dialogue`, `no-mistakes(review): preserve "Captain, ready" dialogue`},
