@@ -3,18 +3,19 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestGenerateCIWorkflow(t *testing.T) {
 	tests := []struct {
-		name        string
-		configYAML  string
-		force       bool
-		wantErr     bool
-		wantContent string
-		setup       func(dir string) error
+		name       string
+		configYAML string
+		force      bool
+		wantErr    bool
+		validate   func(*testing.T, map[string]interface{})
+		setup      func(dir string) error
 	}{
 		{
 			name: "basic go repo with lint and test",
@@ -23,14 +24,26 @@ func TestGenerateCIWorkflow(t *testing.T) {
   test: "go test ./... -race"
 `,
 			wantErr: false,
-			wantContent: "go vet ./... && gofmt -l .",
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyWorkflowName(t, workflow, "CI")
+				verifyJobsExist(t, workflow)
+				verifyStepNames(t, workflow, []string{"Lint", "Test"})
+			},
 		},
 		{
-			name: "missing lint command",
+			name: "empty lint (combined document+lint)",
 			configYAML: `commands:
-  test: "go test ./..."
+  test: "go test ./... -race"
 `,
-			wantErr: true,
+			wantErr: false,
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyWorkflowName(t, workflow, "CI")
+				verifyJobsExist(t, workflow)
+				verifyStepNames(t, workflow, []string{"Test"})
+				verifyStepNotPresent(t, workflow, "Lint")
+			},
 		},
 		{
 			name: "missing test command",
@@ -42,7 +55,7 @@ func TestGenerateCIWorkflow(t *testing.T) {
 		{
 			name: "empty config",
 			configYAML: ``,
-			wantErr: true,
+			wantErr:    true,
 		},
 		{
 			name: "file exists, no force",
@@ -71,16 +84,22 @@ func TestGenerateCIWorkflow(t *testing.T) {
 `,
 			force:   true,
 			wantErr: false,
-			setup: func(dir string) error {
-				workflowDir := filepath.Join(dir, ".github", "workflows")
-				if err := os.MkdirAll(workflowDir, 0755); err != nil {
-					return err
-				}
-				return os.WriteFile(
-					filepath.Join(workflowDir, "ci.yml"),
-					[]byte("existing"),
-					0644,
-				)
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyWorkflowName(t, workflow, "CI")
+			},
+		},
+		{
+			name: "commands with special yaml characters",
+			configYAML: `commands:
+  lint: "go vet ./... && { test -z \"$(gofmt -l .)\" || exit 1; }"
+  test: "go test ./... -race -count=1"
+`,
+			wantErr: false,
+			validate: func(t *testing.T, workflow map[string]interface{}) {
+				t.Helper()
+				verifyStepRunContains(t, workflow, "Lint", "gofmt")
+				verifyStepRunContains(t, workflow, "Test", "-race")
 			},
 		},
 	}
@@ -118,7 +137,7 @@ func TestGenerateCIWorkflow(t *testing.T) {
 				return
 			}
 
-			// Check output file exists
+			// Check output file exists and is valid YAML
 			workflowPath := filepath.Join(dir, ".github", "workflows", "ci.yml")
 			content, err := os.ReadFile(workflowPath)
 			if err != nil {
@@ -126,25 +145,142 @@ func TestGenerateCIWorkflow(t *testing.T) {
 				return
 			}
 
-			// Check content
-			contentStr := string(content)
-			if tt.wantContent != "" && !strings.Contains(contentStr, tt.wantContent) {
-				t.Errorf("workflow content missing expected text: %q", tt.wantContent)
+			// Parse YAML
+			var workflow map[string]interface{}
+			if err := yaml.Unmarshal(content, &workflow); err != nil {
+				t.Errorf("workflow is not valid YAML: %v", err)
+				return
 			}
 
-			// Verify structure
-			if !strings.Contains(contentStr, "name: CI") {
-				t.Error("workflow missing name field")
-			}
-			if !strings.Contains(contentStr, "runs-on: ubuntu-latest") {
-				t.Error("workflow missing runs-on field")
-			}
-			if !strings.Contains(contentStr, "uses: actions/checkout@v4") {
-				t.Error("workflow missing checkout step")
-			}
-			if !strings.Contains(contentStr, "uses: actions/setup-go@v5") {
-				t.Error("workflow missing setup-go step")
+			// Run validation
+			if tt.validate != nil {
+				tt.validate(t, workflow)
 			}
 		})
 	}
+}
+
+// Workflow validation helpers
+
+func verifyWorkflowName(t *testing.T, workflow map[string]interface{}, expected string) {
+	t.Helper()
+	name, ok := workflow["name"].(string)
+	if !ok || name != expected {
+		t.Errorf("workflow name: got %q, want %q", name, expected)
+	}
+}
+
+func verifyJobsExist(t *testing.T, workflow map[string]interface{}) {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]interface{})
+	if !ok || len(jobs) == 0 {
+		t.Error("workflow missing jobs")
+	}
+}
+
+func verifyStepNames(t *testing.T, workflow map[string]interface{}, stepNames []string) {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing jobs")
+	}
+
+	buildTestJob, ok := jobs["build-test"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing build-test job")
+	}
+
+	stepsInterface, ok := buildTestJob["steps"].([]interface{})
+	if !ok {
+		t.Fatal("job missing steps")
+	}
+
+	foundSteps := make(map[string]bool)
+	for _, s := range stepsInterface {
+		step, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, ok := step["name"].(string); ok {
+			foundSteps[name] = true
+		}
+	}
+
+	for _, wantName := range stepNames {
+		if !foundSteps[wantName] {
+			t.Errorf("workflow missing step: %q", wantName)
+		}
+	}
+}
+
+func verifyStepNotPresent(t *testing.T, workflow map[string]interface{}, stepName string) {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	buildTestJob, ok := jobs["build-test"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	stepsInterface, ok := buildTestJob["steps"].([]interface{})
+	if !ok {
+		return
+	}
+
+	for _, s := range stepsInterface {
+		step, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, ok := step["name"].(string); ok && name == stepName {
+			t.Errorf("workflow should not contain step: %q", stepName)
+		}
+	}
+}
+
+func verifyStepRunContains(t *testing.T, workflow map[string]interface{}, stepName string, expectedText string) {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing jobs")
+	}
+
+	buildTestJob, ok := jobs["build-test"].(map[string]interface{})
+	if !ok {
+		t.Fatal("workflow missing build-test job")
+	}
+
+	stepsInterface, ok := buildTestJob["steps"].([]interface{})
+	if !ok {
+		t.Fatal("job missing steps")
+	}
+
+	for _, s := range stepsInterface {
+		step, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, ok := step["name"].(string); ok && name == stepName {
+			if run, ok := step["run"].(string); ok {
+				if runContains(run, expectedText) {
+					return
+				}
+			}
+			t.Errorf("step %q run does not contain %q", stepName, expectedText)
+			return
+		}
+	}
+	t.Errorf("step %q not found", stepName)
+}
+
+func runContains(haystack, needle string) bool {
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }
