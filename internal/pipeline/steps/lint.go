@@ -151,7 +151,10 @@ Previous lint findings to address:
 		fixSummary = summary
 	}
 
-	// Run configured lint command
+	// Run configured lint command after the run-scoped dependency preparation.
+	if err := ensurePrepared(sctx, s.Name()); err != nil {
+		return nil, fmt.Errorf("prepare lint dependencies: %w", err)
+	}
 	sctx.Log(fmt.Sprintf("running linter: %s", lintCmd))
 	output, exitCode, err := runStepShellCommand(sctx, lintCmd)
 	if err != nil {

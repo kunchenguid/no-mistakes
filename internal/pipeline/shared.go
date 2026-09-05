@@ -20,7 +20,27 @@ type HousekeepingLintResult struct {
 // falls back to doing its own work.
 type RunShared struct {
 	mu               sync.Mutex
+	prepared         bool
 	housekeepingLint *HousekeepingLintResult
+}
+
+// EnsurePrepared runs prepare once successfully for this executor lifetime.
+// A failed attempt is not cached, so a caller may retry after the underlying
+// problem is corrected.
+func (s *RunShared) EnsurePrepared(prepare func() error) error {
+	if s == nil {
+		return prepare()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prepared {
+		return nil
+	}
+	if err := prepare(); err != nil {
+		return err
+	}
+	s.prepared = true
+	return nil
 }
 
 // SetHousekeepingLint records the combined pass's lint assessment for the
