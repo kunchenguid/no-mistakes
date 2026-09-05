@@ -13,6 +13,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// maxRecordedDecisionBytes bounds the complete binding history, which cannot
+// drop old lines the way the advisory sections under maxDecisionSectionBytes do.
+const maxRecordedDecisionBytes = 256 * 1024
+
 // recordedFixConstraints loads the complete same-run decision history. Unlike
 // advisory branch history, this check must not silently drop a binding ruling.
 // Declines remain context for supersession; only a human's positive selection
@@ -70,11 +74,14 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 							found = found || (id != "" && f.ID == id && strings.TrimSpace(f.Description) != "")
 						}
 						if !found {
-							return "", fmt.Errorf("decision %s selected finding %q is unavailable", r.ID, id)
+							if sctx.Log != nil {
+								sctx.Log(fmt.Sprintf("%s round %d selected finding %q matched no finding; it is not a recorded fix decision", step.StepName, r.Round, id))
+							}
+							continue
 						}
+						hasFix = true
 					}
 				}
-				hasFix = hasFix || len(ids) > 0
 			}
 			decisions = append(decisions, decision{string(step.StepName), r})
 		}
@@ -90,8 +97,8 @@ func recordedFixConstraints(sctx *pipeline.StepContext) (string, error) {
 		lines = appendHumanDecisionLines(lines, d.step, d.round)
 	}
 	text := strings.Join(lines, "\n")
-	if text == "" || len(text) > maxDecisionSectionBytes {
-		return "", fmt.Errorf("cannot check complete recorded fix decisions: empty or over %d bytes", maxDecisionSectionBytes)
+	if text == "" || len(text) > maxRecordedDecisionBytes {
+		return "", fmt.Errorf("cannot check complete recorded fix decisions: empty or over %d bytes", maxRecordedDecisionBytes)
 	}
 	return text, nil
 }
