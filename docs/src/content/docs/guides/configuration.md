@@ -3,9 +3,7 @@ title: Configuration
 description: Global and per-repo configuration options.
 ---
 
-Configuration is optional. Without any config files, `no-mistakes` defaults to
-`agent: auto`, which picks the first supported native agent or ACP alias available on your system,
-with sensible defaults for everything else.
+Configuration is optional. Without any config files, `no-mistakes` defaults to Pi with Vertex AI Claude Opus 4.8 at xhigh reasoning for Review and OpenAI GPT-5.6 Sol at low reasoning with priority processing for Review fixes, with sensible defaults for everything else.
 
 The goal is not to make you configure a mini CI system. The default path should
 work. Config exists for the parts that genuinely vary by machine or repo:

@@ -168,15 +168,6 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	// Keep the run's Review-fixer selection stable across a daemon restart.
-	// The persisted fixer session records the provider that minted it, so the
-	// recovered run rebuilds its fixer from that provider rather than the
-	// current global review_fix_agent. An operator edit therefore changes only
-	// later runs (the documented per-run stability), and a still-installed
-	// original provider never fails an otherwise-recoverable parked run.
-	if err := pinRecoveredReviewFixAgent(m.db, cfg, run.ID); err != nil {
-		return nil, err
-	}
 	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
@@ -218,32 +209,6 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 		if session.Role == string(pipeline.SessionRoleFixer) && !agent.SupportsSessionProvider(ag, session.Agent) {
 			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
 		}
-	}
-	return nil
-}
-
-// pinRecoveredReviewFixAgent overrides the recovered run's Review-fixer
-// selection with the provider recorded on the run's persisted fixer session.
-// The fixer session is written only under session reuse and only for a
-// resumable provider, so a stored row is the run's own original fixer choice;
-// pinning to it makes recovery rebuild that exact fixer instead of the current
-// global review_fix_agent. This preserves per-run configuration stability
-// (documented for review_fix_agent) across a daemon restart and lets
-// validateRecoveredSessionProviders accept the stored session whenever the
-// original provider is still installed. When no fixer session exists there is
-// nothing to keep stable, so the current configuration is used unchanged.
-func pinRecoveredReviewFixAgent(database *db.DB, cfg *config.Config, runID string) error {
-	sessions, err := database.GetRunAgentSessions(runID)
-	if err != nil {
-		return fmt.Errorf("get run sessions: %w", err)
-	}
-	for _, session := range sessions {
-		if session.Role != string(pipeline.SessionRoleFixer) || session.Agent == "" {
-			continue
-		}
-		cfg.ReviewFixAgent = types.AgentName(session.Agent)
-		cfg.ReviewFixAgents = []types.AgentName{types.AgentName(session.Agent)}
-		return nil
 	}
 	return nil
 }

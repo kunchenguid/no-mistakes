@@ -127,7 +127,7 @@ Default agent for all pipeline duties and setup-wizard suggestions. It is also t
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
 | Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | `auto`                                                                                      |
+| Default | `pi`                                                                                        |
 
 `auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
 `cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
@@ -180,7 +180,7 @@ agent_config:
       fast: true
 ```
 
-no-mistakes maps the reviewer to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh` and the fixer to `--model openai-codex/gpt-5.6-sol --thinking low`. Pi has no stock fast-mode flag, so `fast: true` loads a trusted run-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests. It does not depend on an ambient user extension or launcher-specific environment variable.
+no-mistakes maps the reviewer to `--model anthropic-vertex/claude-opus-4-8 --thinking xhigh` and the fixer to `--model openai-codex/gpt-5.6-sol --thinking low`. Pi has no stock fast-mode flag, so `fast: true` loads a trusted run-scoped extension that sets `service_tier: priority` only for Pi's `openai-codex` Responses requests and terminates the invocation if the effective provider, API, or payload shape does not match. It does not depend on an ambient user extension or launcher-specific environment variable.
 
 ### acpx_path
 
@@ -255,7 +255,7 @@ Model and reasoning effort per agent, in one common spelling. Profiles apply whe
 | ------- | ----------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                     |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Empty (every harness keeps its own defaults)                                        |
+| Default | Pi reviewer and Review-fix profiles shown below                                     |
 
 ```yaml
 agent_config:

@@ -17,8 +17,8 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Agent != types.AgentAuto {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	if cfg.Agent != types.AgentPi {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentPi)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
@@ -70,7 +70,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		"agent: auto",
+		"agent: pi",
 		"ci_timeout:",
 		"step_quiet_warning:",
 		"review_agent_timeout:",
@@ -99,8 +99,8 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error on reload: %v", err)
 	}
-	if cfg.Agent != types.AgentAuto {
-		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentAuto)
+	if cfg.Agent != types.AgentPi {
+		t.Errorf("agent = %q, want %q", cfg.Agent, types.AgentPi)
 	}
 	if cfg.CITimeout != DefaultCITimeout {
 		t.Errorf("ci_timeout = %v, want %v", cfg.CITimeout, DefaultCITimeout)
@@ -659,8 +659,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 		t.Fatalf("defaultConfigYAML is not valid YAML: %v", err)
 	}
 
-	if len(raw.Agent) != 1 || raw.Agent[0] != types.AgentAuto {
-		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, types.AgentAuto)
+	globalDefaults := DefaultGlobalConfig()
+	if len(raw.Agent) != 1 || raw.Agent[0] != globalDefaults.Agent {
+		t.Errorf("YAML agent = %q, Go default = %q", raw.Agent, globalDefaults.Agent)
 	}
 	d, err := time.ParseDuration(raw.CITimeout)
 	if err != nil {
