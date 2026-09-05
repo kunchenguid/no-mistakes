@@ -8,12 +8,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const reviewFixRunConfigVersion = 1
+const reviewFixRunConfigVersion = 2
 
 type reviewFixRunConfig struct {
 	Version  int                                `json:"version"`
 	Agents   []types.AgentName                  `json:"agents,omitempty"`
 	Profiles map[string]reviewFixRunProfileJSON `json:"profiles,omitempty"`
+	Args     map[string][]string                `json:"args"`
 }
 
 type reviewFixRunProfileJSON struct {
@@ -66,6 +67,7 @@ func (c *Config) MarshalReviewFixRunConfig() (string, error) {
 		Version:  reviewFixRunConfigVersion,
 		Agents:   names,
 		Profiles: make(map[string]reviewFixRunProfileJSON, len(names)),
+		Args:     make(map[string][]string, len(names)),
 	}
 	for _, name := range names {
 		profile, _ := c.ReviewFixProfileFor(name)
@@ -74,6 +76,7 @@ func (c *Config) MarshalReviewFixRunConfig() (string, error) {
 			Effort: profile.Profile.Effort,
 			Fast:   profile.Fast,
 		}
+		snapshot.Args[string(name)] = append([]string(nil), c.AgentArgsFor(name)...)
 	}
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -99,11 +102,31 @@ func (c *Config) ApplyReviewFixRunConfig(encoded string) error {
 	c.ReviewFixAgent = ""
 	c.ReviewFixAgents = nil
 	c.ReviewFixAgentConfig = nil
+	c.ReviewFixAgentArgsOverride = nil
 	if len(snapshot.Agents) == 0 {
 		return fmt.Errorf("restore review fixer: stored agent list is empty")
 	}
+	if snapshot.Args == nil {
+		return fmt.Errorf("restore review fixer: stored argument map is missing")
+	}
+	for name, args := range snapshot.Args {
+		if len(args) == 0 {
+			continue
+		}
+		if err := validateAgentArgsOverride(map[string][]string{name: args}); err != nil {
+			return fmt.Errorf("restore review fixer: %w", err)
+		}
+	}
 	c.ReviewFixAgents = copyAgents(snapshot.Agents)
 	c.ReviewFixAgent = firstAgent(c.ReviewFixAgents)
+	c.ReviewFixAgentArgsOverride = make(map[string][]string, len(snapshot.Agents))
+	for _, name := range snapshot.Agents {
+		args, ok := snapshot.Args[string(name)]
+		if !ok {
+			return fmt.Errorf("restore review fixer: stored arguments for %s are missing", name)
+		}
+		c.ReviewFixAgentArgsOverride[string(name)] = append([]string(nil), args...)
+	}
 	if len(snapshot.Profiles) == 0 {
 		return nil
 	}

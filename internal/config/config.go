@@ -558,42 +558,43 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	ReplayGlobalYAML      []byte
-	ReplayRepoYAML        []byte
-	TrustedConfigSHA      string
-	CaptureEvalProvenance bool
-	Agent                 types.AgentName
-	Agents                []types.AgentName
-	ReviewFixAgent        types.AgentName
-	ReviewFixAgents       []types.AgentName
-	ACPXPath              string
-	ForgejoAXIPath        string
-	ACPRegistryOverrides  map[string]string
-	AgentPathOverride     map[string]string
-	AgentArgsOverride     map[string][]string
-	AgentConfig           map[string]agentcfg.Profile
-	ReviewFixAgentConfig  map[string]ReviewFixProfile
-	CITimeout             time.Duration
-	StepQuietWarning      time.Duration
-	AgentTimeout          time.Duration
-	ReviewAgentTimeout    time.Duration
-	TestAgentTimeout      time.Duration
-	GateReconcileInterval time.Duration
-	GateReconcileTimeout  time.Duration
-	LogLevel              string
-	SessionReuse          bool
-	Eval                  Eval
-	Commands              Commands
-	IgnorePatterns        []string
-	AutoFix               AutoFix
-	CI                    CI
-	Commit                Commit
-	Intent                Intent
-	Test                  Test
-	Document              Document
-	Review                Review
-	PR                    PR
-	ForgeProfiles         ForgeProfiles
+	ReplayGlobalYAML           []byte
+	ReplayRepoYAML             []byte
+	TrustedConfigSHA           string
+	CaptureEvalProvenance      bool
+	Agent                      types.AgentName
+	Agents                     []types.AgentName
+	ReviewFixAgent             types.AgentName
+	ReviewFixAgents            []types.AgentName
+	ACPXPath                   string
+	ForgejoAXIPath             string
+	ACPRegistryOverrides       map[string]string
+	AgentPathOverride          map[string]string
+	AgentArgsOverride          map[string][]string
+	ReviewFixAgentArgsOverride map[string][]string
+	AgentConfig                map[string]agentcfg.Profile
+	ReviewFixAgentConfig       map[string]ReviewFixProfile
+	CITimeout                  time.Duration
+	StepQuietWarning           time.Duration
+	AgentTimeout               time.Duration
+	ReviewAgentTimeout         time.Duration
+	TestAgentTimeout           time.Duration
+	GateReconcileInterval      time.Duration
+	GateReconcileTimeout       time.Duration
+	LogLevel                   string
+	SessionReuse               bool
+	Eval                       Eval
+	Commands                   Commands
+	IgnorePatterns             []string
+	AutoFix                    AutoFix
+	CI                         CI
+	Commit                     Commit
+	Intent                     Intent
+	Test                       Test
+	Document                   Document
+	Review                     Review
+	PR                         PR
+	ForgeProfiles              ForgeProfiles
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -1549,6 +1550,13 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+func (c *Config) ReviewFixAgentArgsFor(name types.AgentName) []string {
+	if c.ReviewFixAgentArgsOverride != nil {
+		return c.ReviewFixAgentArgsOverride[string(name)]
+	}
+	return c.AgentArgsFor(name)
+}
+
 // AgentProfile returns the harness-neutral model/effort selection for the
 // configured agent, as declared in agent_config. The zero Profile means the
 // harness keeps its own defaults.
@@ -2062,8 +2070,6 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 
 func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg := DefaultGlobalConfig()
-	cfg.AgentConfig = nil
-	cfg.ReviewFixAgentConfig = nil
 	cfg.SourceYAML = append([]byte(nil), data...)
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))

@@ -92,20 +92,16 @@ func TestLoadGlobal_AgentConfigAcceptsExplicitACPTarget(t *testing.T) {
 	}
 }
 
-// TestLoadGlobal_AgentConfigAbsentIsZero is the backwards-compatibility floor:
-// a config that predates agent_config resolves every agent to the zero Profile,
-// which changes no argv anywhere.
-func TestLoadGlobal_AgentConfigAbsentIsZero(t *testing.T) {
-	cfg := writeGlobalConfig(t, "agent: codex\nagent_args_override:\n  codex:\n    - -m\n    - gpt-5.4\n")
-	if cfg.AgentConfig != nil {
-		t.Fatalf("AgentConfig = %#v, want nil for a config that does not set it", cfg.AgentConfig)
+func TestLoadGlobal_AgentConfigAbsentRetainsPiRoleDefaults(t *testing.T) {
+	global := writeGlobalConfig(t, "log_level: debug\n")
+	cfg := Merge(global, &RepoConfig{})
+	reviewer := cfg.AgentProfileFor(types.AgentPi)
+	if reviewer.Model != "anthropic-vertex/claude-opus-4-8" || reviewer.Effort != agentcfg.EffortXHigh {
+		t.Fatalf("default Review profile = %#v", reviewer)
 	}
-	merged := Merge(cfg, &RepoConfig{})
-	if got := merged.AgentProfileFor(types.AgentCodex); !got.IsZero() {
-		t.Fatalf("AgentProfileFor(codex) = %#v, want the zero profile", got)
-	}
-	if got := merged.AgentArgsFor(types.AgentCodex); len(got) != 2 || got[0] != "-m" {
-		t.Fatalf("AgentArgsFor(codex) = %v, want the untouched override", got)
+	fixer, explicit := cfg.ReviewFixProfileFor(types.AgentPi)
+	if !explicit || fixer.Profile.Model != "openai-codex/gpt-5.6-sol" || fixer.Profile.Effort != agentcfg.EffortLow || !fixer.Fast {
+		t.Fatalf("default Review-fix profile = %#v, explicit=%v", fixer, explicit)
 	}
 }
 

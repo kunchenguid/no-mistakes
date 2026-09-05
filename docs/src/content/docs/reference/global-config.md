@@ -241,7 +241,7 @@ Model and reasoning effort per agent, in one common spelling. Profiles apply whe
 | ------- | ------------------------------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort, review_fix?: {model, effort, fast}}`                                         |
 | Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
-| Default | Built-in Pi profiles shown below when the global config file is absent; otherwise empty when omitted     |
+| Default | Built-in Pi profiles shown below when `agent_config` is omitted                                        |
 
 ```yaml
 agent_config:

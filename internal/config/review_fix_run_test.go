@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,6 +82,9 @@ func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
 		AgentConfig: map[string]agentcfg.Profile{
 			"codex": {Model: "gpt-5.3-codex", Effort: agentcfg.EffortHigh},
 		},
+		AgentArgsOverride: map[string][]string{
+			"codex": {"--model", "raw-fixer-model", "--reasoning", "low"},
+		},
 	}
 	encoded, err := started.MarshalReviewFixRunConfig()
 	if err != nil {
@@ -88,11 +92,12 @@ func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
 	}
 
 	recovered := &Config{
-		Agent:           types.AgentPi,
-		Agents:          []types.AgentName{types.AgentPi},
-		AgentConfig:     map[string]agentcfg.Profile{"codex": {Model: "changed"}},
-		ReviewFixAgent:  types.AgentPi,
-		ReviewFixAgents: []types.AgentName{types.AgentPi},
+		Agent:             types.AgentPi,
+		Agents:            []types.AgentName{types.AgentPi},
+		AgentConfig:       map[string]agentcfg.Profile{"codex": {Model: "changed"}},
+		AgentArgsOverride: map[string][]string{"codex": {"--thinking", "high"}},
+		ReviewFixAgent:    types.AgentPi,
+		ReviewFixAgents:   []types.AgentName{types.AgentPi},
 		ReviewFixAgentConfig: map[string]ReviewFixProfile{
 			"pi": {Profile: agentcfg.Profile{Model: "openai-codex/gpt-5.6-sol"}, Fast: true},
 		},
@@ -108,14 +113,22 @@ func TestReviewFixRunConfigPinsInheritedSelectionAndProfile(t *testing.T) {
 	if !explicit || got.Profile != want || got.Fast {
 		t.Fatalf("restored inherited profile = %#v, explicit=%v, want %#v", got, explicit, want)
 	}
+	wantArgs := []string{"--model", "raw-fixer-model", "--reasoning", "low"}
+	if gotArgs := recovered.ReviewFixAgentArgsFor(types.AgentCodex); !slices.Equal(gotArgs, wantArgs) {
+		t.Fatalf("restored fixer args = %v, want %v", gotArgs, wantArgs)
+	}
+	if gotArgs := recovered.AgentArgsFor(types.AgentCodex); !slices.Equal(gotArgs, []string{"--thinking", "high"}) {
+		t.Fatalf("ordinary agent args changed to %v", gotArgs)
+	}
 }
 
 func TestApplyReviewFixRunConfigFailsClosedOnInvalidStoredShape(t *testing.T) {
 	cfg := &Config{}
 	for _, encoded := range []string{
-		`{"version":2,"enabled":false}`,
-		`{"version":1,"enabled":true}`,
-		`{"version":1,"enabled":true,"agents":["pi"],"profiles":{"pi":{"model":"anthropic-vertex/claude-opus-4-8","fast":true}}}`,
+		`{"version":3,"agents":["pi"],"args":{"pi":null}}`,
+		`{"version":2,"agents":["pi"]}`,
+		`{"version":2,"agents":["pi"],"args":{},"profiles":{"pi":{}}}`,
+		`{"version":2,"agents":["pi"],"args":{"pi":null},"profiles":{"pi":{"model":"anthropic-vertex/claude-opus-4-8","fast":true}}}`,
 	} {
 		if err := cfg.ApplyReviewFixRunConfig(encoded); err == nil || !strings.Contains(err.Error(), "restore review fixer") {
 			t.Fatalf("ApplyReviewFixRunConfig(%s) error = %v", encoded, err)
