@@ -114,6 +114,11 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 				if provider == scm.ProviderGitHub {
 					assertFirstAttestationBindsHead(t, content.Body, headSHA)
 				}
+				rendered, err := json.Marshal(content)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("generated PR: %s", rendered)
 			})
 		}
 	}
@@ -185,6 +190,11 @@ func TestPRStep_OperatorAddressBlockquoteHTML(t *testing.T) {
 			if !strings.Contains(content.Body, want) {
 				t.Errorf("rendered PR missing %q:\n%s", want, content.Body)
 			}
+			rendered, err := json.Marshal(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("generated PR: %s", rendered)
 		})
 	}
 }

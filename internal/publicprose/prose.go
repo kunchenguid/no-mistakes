@@ -30,6 +30,10 @@ var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’
 // line after it starts a block too. HTML block starts follow CommonMark 4.6.
 var atxHeading = regexp.MustCompile(`^ {0,3}#{1,6}(?:[ \t\r\n]|$)`)
 var blockStart = regexp.MustCompile(`^(?: {0,3}(?:(?:[-+*]|[0-9]+[.)])[ \t]|>)|    |\t)`)
+
+// The first capture marks paragraph-interrupting HTML. Standalone tags matched
+// only by the last alternative reset quotations, but must not end a blockquote's
+// lazy continuation or split inline code.
 var htmlBlockStart = regexp.MustCompile(`(?i)^ {0,3}<(?:(!--|!\[CDATA\[|![a-z]|\?|(?:pre|script|style|textarea)(?:[ \t\r\n>]|$)|/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t\r\n>]|/>|$))|/?[a-z][a-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t\r]*(?:\n|$))`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining

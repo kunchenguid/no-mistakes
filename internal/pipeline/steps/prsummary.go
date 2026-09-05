@@ -515,6 +515,9 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	return fmt.Sprintf("<code>%s</code>", escaped)
 }
 
+// renderTestingSummaryFor expects text cleaned by testingSummaryFromFindings,
+// which removes operator address before whitespace normalization loses evidence
+// indentation. Do not repeat address removal on this normalized input.
 func renderTestingSummaryFor(clean string, flavor prBodyFlavor) string {
 	if clean == "" {
 		return ""
