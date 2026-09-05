@@ -9,14 +9,129 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestPushStep_SelectedDecisionFixRepairsBeforePublication(t *testing.T) {
+	const preserved = "import zeta_registration\nimport alpha_loader\n"
+	const reversed = "import alpha_loader\nimport zeta_registration\n"
+	const badFormat = "printf '%s\\n' 'import alpha_loader' 'import zeta_registration' > bootstrap.py\n"
+	const goodFormat = "printf '%s\\n' 'import zeta_registration' 'import alpha_loader' > bootstrap.py\n"
+	const instruction = "Restore registration-before-loading order and correct format.sh to preserve it"
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, base, _ := setupGitRepo(t)
+	file := filepath.Join(dir, "bootstrap.py")
+	formatter := filepath.Join(dir, "format.sh")
+	for name, content := range map[string]string{file: preserved, formatter: badFormat} {
+		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", "bootstrap.py", "format.sh")
+	gitCmd(t, dir, "commit", "-m", "register before loading")
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "feature")
+	checks, fixes, gates := 0, 0, 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		switch opts.Purpose {
+		case "push-fix":
+			fixes++
+			_, raw, ok := strings.Cut(opts.Prompt, "Previous push findings to address:\n")
+			var selected Findings
+			if !ok {
+				t.Fatal("Push fixer received no selected findings")
+			}
+			if err := json.NewDecoder(strings.NewReader(raw)).Decode(&selected); err != nil {
+				t.Fatal(err)
+			}
+			if len(selected.Items) != 1 || selected.Items[0].ID != "import-order-reversal" || selected.Items[0].UserInstructions != instruction {
+				t.Fatalf("Push fixer lost the selection or instructions: %+v", selected)
+			}
+			for name, content := range map[string]string{file: preserved, formatter: goodFormat} {
+				if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"preserve import order during formatting"}`)}, nil
+		case "decision-conformance":
+			checks++
+			content, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) == preserved {
+				return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"recorded import order preserved"}`)}, nil
+			}
+			if string(content) != reversed {
+				t.Fatalf("unexpected import order: %q", content)
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"import-order-reversal","severity":"error","action":"ask-user","file":"bootstrap.py","description":"Formatter contradicts review round 1 preserve-import-order"}],"summary":"formatter reversed the recorded import order"}`)}, nil
+		default:
+			t.Fatalf("unexpected agent invocation: %s", opts.Purpose)
+			return nil, nil
+		}
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{Format: "sh format.sh"})
+	sctx.Repo.UpstreamURL = upstream
+	recordReviewApproval(t, sctx, head)
+	recordUserFixDecision(t, sctx, ciDecisionStepResult(t, sctx, types.StepReview), 1,
+		ciDecisionFindingsJSON("preserve-import-order", "Preserve registration-before-loading import order"),
+		map[string]string{"preserve-import-order": "Register before loading"})
+	var executor *pipeline.Executor
+	executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&PushStep{}}, func(event ipc.Event) {
+		if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+			return
+		}
+		gates++
+		if gates > 1 {
+			if err := executor.Respond(types.StepPush, types.ActionAbort, nil); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if event.Findings == nil || !hasAskUserFindings(t, *event.Findings) || gitCmd(t, upstream, "rev-parse", "refs/heads/feature") != head {
+			t.Fatal("Push did not park the reversal before publication")
+		}
+		if err := executor.RespondWithOverrides(types.StepPush, types.ActionFix, []string{"import-order-reversal"}, map[string]string{"import-order-reversal": instruction}, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir); err != nil || fixes != 1 || gates != 1 || checks != 2 {
+		t.Fatalf("selected Push repair did not complete: fixes=%d gates=%d checks=%d err=%v", fixes, gates, checks, err)
+	}
+	live := gitCmd(t, dir, "rev-parse", "HEAD")
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.Status != types.RunCompleted || run.HeadSHA != live || live == head || run.LastPushedSHA == nil || *run.LastPushedSHA != live {
+		t.Fatalf("repaired Push was not durably published: run=%+v err=%v", run, err)
+	}
+	if gitCmd(t, upstream, "show", "refs/heads/feature:bootstrap.py") != strings.TrimSpace(preserved) || gitCmd(t, upstream, "show", "refs/heads/feature:format.sh") != strings.TrimSpace(goodFormat) {
+		t.Error("published repair did not preserve the selected import order")
+	}
+	results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if result.StepName == types.StepPush {
+			rounds, err := sctx.DB.GetRoundsByStep(result.ID)
+			if err != nil || len(rounds) != 2 || rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceUser || rounds[1].FixSummary == nil || *rounds[1].FixSummary != "preserve import order during formatting" {
+				t.Errorf("Push lost its selected decision or repair summary: %+v, %v", rounds, err)
+			}
+		}
+	}
+}
 
 func TestPushStep_ChecksRecordedDecisionsAfterFormatting(t *testing.T) {
 	const preserved = "import zeta_registration\nimport alpha_loader\n"

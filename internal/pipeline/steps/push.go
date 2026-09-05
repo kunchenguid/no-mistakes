@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -39,6 +40,27 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		} else if exitCode != 0 {
 			sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
 		}
+	}
+	var fixSummary string
+	if sctx.Fixing {
+		prompt := `Fix the selected findings blocking publication. Make the smallest correct root-cause fix and preserve recorded human decisions and per-finding instructions.
+The configured formatter has already run. Repair its output or underlying cause as needed before publication resumes.
+Do not push or manage the pipeline. Verify only the affected behavior.
+Return JSON with a single "summary" field containing a concise git commit subject under 10 words.`
+		prompt += executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
+		prompt += "\n\nPrevious push findings to address:\n" + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
+		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+			RequirePreviousFindings: true,
+			MissingFindingsError:    "push fix requires previous findings",
+			LogMessage:              "asking agent to fix publication findings...",
+			Prompt:                  prompt,
+			ErrorPrefix:             "agent fix push",
+			FallbackSummary:         "fix publication findings",
+		})
+		if err != nil {
+			return nil, err
+		}
+		fixSummary = summary
 	}
 	if err := assertRecordedFixDecisions(sctx); err != nil {
 		return nil, err
@@ -76,7 +98,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	sctx.Log("pushed successfully")
-	return &pipeline.StepOutcome{}, nil
+	return &pipeline.StepOutcome{FixSummary: fixSummary}, nil
 }
 
 // publishRunHead is the single guarded publication path for a run's head. Both

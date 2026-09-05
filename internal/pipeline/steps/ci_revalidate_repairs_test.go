@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -118,6 +119,79 @@ func (f *ciRepairFixture) log() string { return strings.Join(*f.logs, "\n") }
 
 func writeCIFix(workDir string) {
 	os.WriteFile(filepath.Join(workDir, "ci-fix.txt"), []byte("fixed"), 0o644)
+}
+
+func TestCIStep_CommitHookDecisionReversalRemainsLocal(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	const preserved = "import zeta_registration\nimport alpha_loader\n"
+	const reversed = "import alpha_loader\nimport zeta_registration\n"
+	file := filepath.Join(f.dir, "bootstrap.py")
+	if err := os.WriteFile(file, []byte(preserved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, f.dir, "add", "bootstrap.py")
+	gitCmd(t, f.dir, "commit", "-m", "preserve import order")
+	head := f.localHead(t)
+	gitCmd(t, f.dir, "push", "origin", "feature")
+	if err := f.sctx.DB.UpdateRunHeadSHA(f.sctx.Run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Run.HeadSHA = head
+	recordReviewApproval(t, f.sctx, head)
+	if err := f.sctx.DB.UpdateRunPushBinding(f.sctx.Run.ID, db.PushBinding{
+		HeadSHA: head, TargetKind: "upstream",
+		TargetFingerprint: branchsync.TargetFingerprint(f.upstream), Ref: "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordUserFixDecision(t, f.sctx, ciDecisionStepResult(t, f.sctx, types.StepReview), 1,
+		ciDecisionFindingsJSON("preserve-import-order", "Preserve registration-before-loading import order"),
+		map[string]string{"preserve-import-order": "Register before loading"})
+	checks := 0
+	f.sctx.Agent = &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.Purpose != "decision-conformance" {
+			t.Fatalf("unexpected agent invocation: %s", opts.Purpose)
+		}
+		checks++
+		content, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) == preserved {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"recorded import order preserved"}`)}, nil
+		}
+		if string(content) != reversed {
+			t.Fatalf("unexpected import order: %q", content)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"hook-import-order-reversal","severity":"error","action":"ask-user","file":"bootstrap.py","description":"Commit hook contradicts review round 1 preserve-import-order"}],"summary":"commit hook reversed the recorded import order"}`)}, nil
+	}}
+	hook := "#!/bin/sh\nprintf '%s\\n' 'import alpha_loader' 'import zeta_registration' > bootstrap.py\ngit add bootstrap.py\n"
+	if err := os.WriteFile(filepath.Join(f.dir, ".git", "hooks", "pre-commit"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCIFix(f.dir)
+	_, err := (&CIStep{}).commitRepair(f.sctx, "repair failing check")
+	var conflict *pipeline.DecisionConflictError
+	if !errors.As(err, &conflict) || len(conflict.Findings.Items) != 1 || conflict.Findings.Items[0].ID != "hook-import-order-reversal" {
+		t.Fatalf("hook reversal did not return a named decision conflict: %v", err)
+	}
+	live := f.localHead(t)
+	if checks != 1 || live == head || conflict.CheckedTreeSHA != gitCmd(t, f.dir, "rev-parse", "HEAD^{tree}") {
+		t.Errorf("checker did not bind the final hook-modified repair: checks=%d head=%s conflict=%+v", checks, live, conflict)
+	}
+	if gitCmd(t, f.dir, "show", "HEAD:bootstrap.py") != strings.TrimSpace(reversed) || gitCmd(t, f.dir, "status", "--porcelain") != "" {
+		t.Error("expected the hook reversal to remain in a clean local commit")
+	}
+	run, err := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.HeadSHA != live || f.sctx.Run.HeadSHA != live || gitCmd(t, f.dir, "rev-parse", "refs/heads/feature") != live || run.ReviewApprovedHeadSHA != nil || f.sctx.Run.ReviewApprovedHeadSHA != nil {
+		t.Errorf("rejected repair lost local custody or retained review authority: %+v", run)
+	}
+	if f.remoteHead(t) != head || run.LastPushedSHA == nil || *run.LastPushedSHA != head || assertReviewApprovedPushHead(f.sctx, live) == nil {
+		t.Error("rejected hook reversal gained publication authority")
+	}
 }
 
 // TestCIStep_RevalidateRepairsPolicySelectsRepairDelivery is the behavioral

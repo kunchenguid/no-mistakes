@@ -311,19 +311,6 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRepairResult, error) {
-	if err := assertRecordedFixDecisions(sctx); err != nil {
-		var conflict *pipeline.DecisionConflictError
-		if errors.As(err, &conflict) {
-			headSHA, preserveErr := stepGitHeadSHA(sctx)
-			if preserveErr == nil {
-				_, preserveErr = s.recordLocalRepair(sctx, headSHA)
-			}
-			if preserveErr != nil {
-				return ciRepairResult{}, fmt.Errorf("%w: preserve rejected CI repair: %v", errDecisionCheck, preserveErr)
-			}
-		}
-		return ciRepairResult{}, err
-	}
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("check CI changes: %w", err)
@@ -334,7 +321,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 		if err == nil && headSHA != sctx.Run.HeadSHA {
 			return s.recordRepair(sctx, headSHA)
 		}
-		return ciRepairResult{}, nil
+		return ciRepairResult{}, assertRecordedFixDecisions(sctx)
 	}
 
 	if summary == "" {
@@ -402,6 +389,15 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // the two paths differ in whether the repair is published now or held until
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	if err := assertRecordedFixDecisions(sctx); err != nil {
+		var conflict *pipeline.DecisionConflictError
+		if errors.As(err, &conflict) {
+			if _, preserveErr := s.recordLocalRepair(sctx, headSHA); preserveErr != nil {
+				return ciRepairResult{}, fmt.Errorf("%w: preserve rejected CI repair: %v", errDecisionCheck, preserveErr)
+			}
+		}
+		return ciRepairResult{}, err
+	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}
