@@ -198,29 +198,33 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("check %s changes: %w", stepName, err)
 	}
-	if strings.TrimSpace(status) == "" {
+	if strings.TrimSpace(status) != "" {
+		if summary == "" {
+			summary = fallbackSummary
+		}
+		if summary == "" {
+			summary = "apply fixes"
+		}
+		commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
+		if err != nil {
+			return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+		}
+		if err := stagePipelineChanges(sctx); err != nil {
+			return fmt.Errorf("stage %s changes: %w", stepName, err)
+		}
+		if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
+			return fmt.Errorf("commit %s changes: %w", stepName, err)
+		}
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	} else {
 		sctx.Log("no agent changes to commit")
-		return nil
-	}
-	if summary == "" {
-		summary = fallbackSummary
-	}
-	if summary == "" {
-		summary = "apply fixes"
-	}
-	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
-	if err != nil {
-		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
-	}
-	if err := stagePipelineChanges(sctx); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
-	}
-	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	if headSHA == sctx.Run.HeadSHA {
+		return nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
@@ -240,7 +244,6 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
 	return nil
 }
 

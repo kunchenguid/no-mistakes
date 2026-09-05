@@ -202,10 +202,21 @@ func worktreeTreeSHA(sctx *pipeline.StepContext) (string, error) {
 		return "", err
 	}
 	defer os.RemoveAll(indexDir)
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(indexDir, "index")}
-	if _, err := git.RunWithEnv(sctx.Ctx, sctx.WorkDir, env, "read-tree", "HEAD"); err != nil {
+	indexPath, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	if err != nil {
 		return "", err
 	}
+	index, err := os.ReadFile(indexPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	scratchIndex := filepath.Join(indexDir, "index")
+	if err == nil {
+		if err := os.WriteFile(scratchIndex, index, 0o600); err != nil {
+			return "", err
+		}
+	}
+	env := []string{"GIT_INDEX_FILE=" + scratchIndex}
 	if _, err := git.RunWithEnv(sctx.Ctx, sctx.WorkDir, env, "add", "-A"); err != nil {
 		return "", err
 	}

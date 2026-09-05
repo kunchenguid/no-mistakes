@@ -173,17 +173,20 @@ func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T)
 		name           string
 		trackedIgnored bool
 		documentEdits  string
+		indexEdit      string
 		wantChecks     int
 	}{
 		{name: "unchanged_tree", wantChecks: 1},
 		{name: "new_change_after_ruling", documentEdits: "README.md", wantChecks: 2},
 		{name: "new_change_in_tracked_ignored_file", trackedIgnored: true, documentEdits: "ignored.txt", wantChecks: 2},
+		{name: "staged_ignored_removal", trackedIgnored: true, indexEdit: "remove", wantChecks: 2},
+		{name: "staged_ignored_addition", trackedIgnored: true, indexEdit: "add", wantChecks: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir, base, head := setupGitRepo(t)
 			if tc.trackedIgnored {
-				for name, content := range map[string]string{".gitignore": "ignored.txt\n", "ignored.txt": "tracked despite the ignore rule\n"} {
+				for name, content := range map[string]string{".gitignore": "ignored*.txt\n", "ignored.txt": "tracked despite the ignore rule\n"} {
 					if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 						t.Fatal(err)
 					}
@@ -194,6 +197,7 @@ func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T)
 			}
 			testCalls, checks := 0, 0
 			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
 			ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				switch opts.Purpose {
 				case "decision-conformance":
@@ -203,6 +207,29 @@ func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T)
 					}
 					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"ruling already accepted"}`)}, nil
 				case "housekeeping":
+					switch tc.indexEdit {
+					case "remove":
+						gitCmd(t, dir, "rm", "--cached", "ignored.txt")
+					case "add":
+						if err := os.WriteFile(filepath.Join(dir, "ignored-new.txt"), []byte("new staged content\n"), 0o644); err != nil {
+							t.Fatal(err)
+						}
+						gitCmd(t, dir, "add", "-f", "ignored-new.txt")
+					}
+					if tc.indexEdit != "" {
+						indexPath := filepath.Join(dir, ".git", "index")
+						before, err := os.ReadFile(indexPath)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := worktreeTreeSHA(sctx); err != nil {
+							t.Fatal(err)
+						}
+						after, err := os.ReadFile(indexPath)
+						if err != nil || string(before) != string(after) {
+							t.Fatalf("snapshot changed the real index: %v", err)
+						}
+					}
 					if tc.documentEdits != "" {
 						if err := os.WriteFile(filepath.Join(dir, tc.documentEdits), []byte("edited after the ruling\n"), 0o644); err != nil {
 							t.Fatal(err)
@@ -219,7 +246,6 @@ func TestDecisionCheck_ApprovedRulingIsNotRecheckedOnUnchangedTree(t *testing.T)
 				}
 				return &agent.Result{Output: json.RawMessage(`{"summary":"restore teardown reclamation"}`)}, nil
 			}
-			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
 			sctx.Config.AutoFix.Test = 1
 			recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
 			approved := false
@@ -750,12 +776,14 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 	for _, tc := range []struct {
 		name, baseBranch, severity, action, wantError string
 		approve, recovered                            bool
+		skippedTest                                   bool
 	}{
 		{name: "accepted"},
 		{name: "approve_blocking", baseBranch: "develop", severity: "warning", action: types.ActionNoOp, approve: true},
 		{name: "approve_ask_user", baseBranch: "develop", severity: "info", action: types.ActionAskUser, approve: true},
 		{name: "recovered_approve_blocking", baseBranch: "develop", severity: "warning", action: types.ActionNoOp, approve: true, recovered: true},
 		{name: "recovered_approve_ask_user", baseBranch: "develop", severity: "info", action: types.ActionAskUser, approve: true, recovered: true},
+		{name: "recovered_approve_preserves_skipped_test", baseBranch: "develop", severity: "warning", action: types.ActionNoOp, approve: true, recovered: true, skippedTest: true},
 		{name: "unusable_review", wantError: "missing risk assessment"},
 		{name: "configured_base", baseBranch: "develop"},
 		{name: "informational", severity: "info", action: types.ActionNoOp},
@@ -816,7 +844,7 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 			stopped := false
 			stop := errors.New("daemon stopped at durable Review gate")
 			p := paths.WithRoot(t.TempDir())
-			plan := []pipeline.Step{&RebaseStep{}, &ReviewStep{}, &PushStep{}, &PRStep{}, &CIStep{}}
+			plan := []pipeline.Step{&RebaseStep{}, &ReviewStep{}, &TestStep{}, &PushStep{}, &PRStep{}, &CIStep{}}
 			emit := func(event ipc.Event) {
 				if event.StepName == nil {
 					return
@@ -873,6 +901,22 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 				if !stopped {
 					t.Fatal("Review never persisted a recoverable gate")
 				}
+				if tc.skippedTest {
+					results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, result := range results {
+						if result.StepName == types.StepTest {
+							if err := sctx.DB.CompleteStepWithStatus(result.ID, types.StepStatusSkipped, 0, 42, "prior-test.log"); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					if err := sctx.DB.ResetStepsFrom(sctx.Run.ID, types.StepTest.Order()); err != nil {
+						t.Fatal(err)
+					}
+				}
 				run, readErr := sctx.DB.GetRun(sctx.Run.ID)
 				if readErr != nil {
 					t.Fatal(readErr)
@@ -908,6 +952,9 @@ func TestRebaseStep_AcceptedEmptyResolutionSkipsPublicationAfterReview(t *testin
 				t.Fatal(err)
 			}
 			for _, step := range steps {
+				if tc.skippedTest && step.StepName == types.StepTest && (step.DurationMS == nil || *step.DurationMS != 42 || step.LogPath == nil || *step.LogPath != "prior-test.log") {
+					t.Fatalf("recovery overwrote the skipped Test record: %+v", step)
+				}
 				if tc.wantError == "" && step.StepName != types.StepRebase && step.StepName != types.StepReview && step.Status != types.StepStatusSkipped {
 					t.Fatalf("publication step %s was not skipped: %s", step.StepName, step.Status)
 				}
@@ -942,6 +989,143 @@ func TestReviewStep_IgnoredChangesDoNotSkipPublication(t *testing.T) {
 	outcome, err := (&ReviewStep{}).Execute(sctx)
 	if err != nil || outcome == nil || outcome.NeedsApproval || outcome.SkipRemaining || len(ag.calls) != 1 {
 		t.Fatalf("ignored changes were treated as an empty branch: outcome=%+v err=%v calls=%d", outcome, err, len(ag.calls))
+	}
+}
+
+func TestReviewStep_ForwardFixCommitDoesNotSkipPublication(t *testing.T) {
+	t.Parallel()
+	dir, base, _ := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", base)
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, base, config.Commands{})
+	recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"remove-teardown-reclamation","severity":"warning","action":"auto-fix","description":"Record the teardown removal"}]}`
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.Purpose == "review-fix" {
+			if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("teardown without reclamation\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "preserve teardown removal")
+			return &agent.Result{Output: json.RawMessage(`{"summary":"preserve teardown removal"}`)}, nil
+		}
+		if opts.Purpose != "review" || opts.Session != nil {
+			t.Fatalf("expected an independent rereview, got %+v", opts)
+		}
+		output, err := json.Marshal(cleanReviewFindings())
+		return &agent.Result{Output: output}, err
+	}
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil || outcome == nil {
+		t.Fatalf("review failed: outcome=%+v err=%v", outcome, err)
+	}
+	live := gitCmd(t, dir, "rev-parse", "HEAD")
+	if live == base || gitCmd(t, dir, "status", "--porcelain") != "" || len(ag.calls) != 2 {
+		t.Fatal("expected one committed repair followed by an independent rereview")
+	}
+	if outcome.SkipRemaining || outcome.NeedsApproval || outcome.ReviewApprovedHeadSHA != live {
+		t.Errorf("forward repair was treated as empty or approved at the stale head: %+v", outcome)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || run.HeadSHA != live || sctx.Run.HeadSHA != live || gitCmd(t, dir, "rev-parse", "refs/heads/feature") != live {
+		t.Errorf("forward repair head was not reconciled: run=%+v err=%v", run, err)
+	}
+	uncertified, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
+	if err != nil || uncertified == nil || uncertified.FromSHA != base || uncertified.ToSHA != live {
+		t.Errorf("agent-created review commit lost its provenance: %+v, %v", uncertified, err)
+	}
+}
+
+func TestTestStep_CollidingEvidenceConflictIDsRemainIndependentlySelectable(t *testing.T) {
+	for _, selectedIndex := range []int{0, 1} {
+		t.Run(fmt.Sprint(selectedIndex), func(t *testing.T) {
+			t.Parallel()
+			dir, base, head := setupGitRepo(t)
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			recordReclamationDecision(t, sctx, db.RoundSelectionSourceUser)
+			descriptions := []string{"Capture the missing teardown trace", "Preserve the recorded teardown removal"}
+			const instruction = "Repair only this selected finding"
+			fixed, parked := false, false
+			selectedID := ""
+			ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				switch opts.Purpose {
+				case "decision-conformance":
+					output, err := json.Marshal(Findings{Items: []Finding{{ID: "test-1", Severity: "error", Action: types.ActionAskUser, Description: descriptions[1]}}})
+					return &agent.Result{Output: output}, err
+				case "test-fix":
+					_, raw, ok := strings.Cut(opts.Prompt, "Previous test findings to address:\n")
+					var selected Findings
+					if !ok {
+						t.Fatal("fixer received no selected findings")
+					}
+					if err := json.NewDecoder(strings.NewReader(raw)).Decode(&selected); err != nil {
+						t.Fatal(err)
+					}
+					if len(selected.Items) != 1 || selected.Items[0].ID != selectedID || selected.Items[0].Description != descriptions[selectedIndex] || selected.Items[0].UserInstructions != instruction {
+						t.Errorf("fixer received findings or instructions beyond the selection: %+v", selected)
+					}
+					fixed = true
+					if err := os.Remove(filepath.Join(dir, "teardown.txt")); err != nil {
+						t.Fatal(err)
+					}
+					return &agent.Result{Output: json.RawMessage(`{"summary":"repair selected finding"}`)}, nil
+				}
+				findings := Findings{Items: []Finding{}, Tested: []string{"teardown check"}, TestingSummary: "Captured teardown output", Artifacts: []types.TestArtifact{{Kind: "log", Label: "Teardown output", Content: "teardown checked"}}}
+				if !fixed {
+					if err := os.WriteFile(filepath.Join(dir, "teardown.txt"), []byte("reclaim\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					findings.Items = []Finding{{ID: "test-1", Severity: "warning", Action: types.ActionAskUser, Description: descriptions[0]}}
+				}
+				output, err := json.Marshal(findings)
+				return &agent.Result{Output: output}, err
+			}
+			var executor *pipeline.Executor
+			executor = pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}}, func(event ipc.Event) {
+				if event.Type != ipc.EventStepCompleted || event.Status == nil || *event.Status != string(types.StepStatusAwaitingApproval) {
+					return
+				}
+				if parked || event.Findings == nil {
+					t.Fatal("unexpected Test approval gate")
+				}
+				parked = true
+				findings, err := types.ParseFindingsJSON(*event.Findings)
+				if err != nil || len(findings.Items) != 2 {
+					t.Fatalf("combined findings missing: %+v, %v", findings, err)
+				}
+				if findings.Items[0].ID == "" || findings.Items[1].ID == "" || findings.Items[0].ID == findings.Items[1].ID {
+					t.Errorf("combined findings have colliding IDs: %+v", findings.Items)
+				}
+				selectedID = findings.Items[selectedIndex].ID
+				if err := executor.RespondWithOverrides(types.StepTest, types.ActionFix, []string{selectedID}, map[string]string{selectedID: instruction}, nil); err != nil {
+					t.Fatal(err)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			if err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir); err != nil || !parked || !fixed {
+				t.Fatalf("selected fix did not complete: parked=%t fixed=%t err=%v", parked, fixed, err)
+			}
+			results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, result := range results {
+				if result.StepName != types.StepTest {
+					continue
+				}
+				rounds, err := sctx.DB.GetRoundsByStep(result.ID)
+				if err != nil || len(rounds) != 2 || rounds[0].UserFindingsJSON == nil {
+					t.Fatalf("selection not persisted: %+v, %v", rounds, err)
+				}
+				selected, err := types.ParseFindingsJSON(*rounds[0].UserFindingsJSON)
+				if err != nil || len(selected.Items) != 1 || selected.Items[0].ID != selectedID || selected.Items[0].Description != descriptions[selectedIndex] || selected.Items[0].UserInstructions != instruction {
+					t.Errorf("durable decision includes an unselected finding: %+v, %v", selected, err)
+				}
+			}
+		})
 	}
 }
 
