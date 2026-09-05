@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"strings"
 	"testing"
 
@@ -118,6 +119,117 @@ func TestPRStep_OperatorAddress(t *testing.T) {
 				}
 				if provider == scm.ProviderGitHub {
 					assertFirstAttestationBindsHead(t, content.Body, headSHA)
+				}
+			})
+		}
+	}
+}
+
+func TestPRStep_OperatorAddressRendering(t *testing.T) {
+	t.Parallel()
+	type renderCase struct {
+		name, body, risk, fix string
+		descriptions, tested  []string
+		want                  []string
+	}
+	cases := []renderCase{
+		{
+			name:         "consecutive contractions",
+			descriptions: []string{"Don't skip cleanup", "Captain, don't swallow errors"},
+			want:         []string{"`captain.go:1` - Don't skip cleanup\n", "`captain.go:2` - don't swallow errors\n"},
+		},
+		{
+			name:         "contraction before command",
+			descriptions: []string{"Don't skip cleanup"},
+			tested:       []string{"printf 'ready'; echo ready. Captain: `literal`"},
+			want:         []string{"printf 'ready'; echo ready. Captain: `literal`"},
+		},
+		{
+			name: "quotes cannot consume code delimiters",
+			body: "The fragment ' precedes <code>printf 'ready'; echo ready. Captain: literal</code>.\n\n" +
+				"The fragment \" precedes <pre>echo \"ready\". Captain, literal output</pre>.\n\n" +
+				"Captain, finish cleanup",
+			want: []string{"<code>printf 'ready'; echo ready. Captain: literal</code>", "<pre>echo \"ready\". Captain, literal output</pre>", "\n\nfinish cleanup"},
+		},
+		{
+			name: "contractions inside dialogue",
+			descriptions: []string{
+				"Keep 'Captain, don't skip cleanup. Captain: retain errors' dialogue.",
+				"Keep ‘Captain, don’t skip cleanup. Captain: retain errors’ dialogue.",
+				"Captain, preserve captain selection and the captain, crew and ship",
+			},
+			want: []string{
+				"'Captain, don't skip cleanup. Captain: retain errors'",
+				"‘Captain, don’t skip cleanup. Captain: retain errors’",
+				"`captain.go:3` - preserve captain selection and the captain, crew and ship\n",
+			},
+		},
+	}
+	for _, emphasis := range []struct{ prefix, suffix, remaining string }{
+		{"**Captain,** ", "", ""},
+		{"*cApTaIn:* ", "", ""},
+		{"__CAPTAIN,__ ", "", ""},
+		{"_Captain:_ ", "", ""},
+		{"**Captain**, ", "", ""},
+		{"***Captain:*** ", "", ""},
+		{"**Captain, ", "**", "**"},
+		{"Captain, **", "**", "**"},
+	} {
+		cases = append(cases, renderCase{
+			name:         "emphasis " + emphasis.prefix,
+			body:         "Checks passed. " + emphasis.prefix + "finish cleanup" + emphasis.suffix,
+			risk:         emphasis.prefix + "the change is bounded" + emphasis.suffix,
+			fix:          emphasis.prefix + "guard stale wakes" + emphasis.suffix,
+			descriptions: []string{emphasis.prefix + "don't swallow errors" + emphasis.suffix},
+			want: []string{
+				"Checks passed. " + emphasis.remaining + "finish cleanup" + emphasis.suffix,
+				"✅ Low: " + emphasis.remaining + "the change is bounded" + emphasis.suffix,
+				"🔧 Fix: " + emphasis.remaining + "guard stale wakes" + emphasis.suffix,
+				"`captain.go:1` - " + emphasis.remaining + "don't swallow errors" + emphasis.suffix + "\n",
+			},
+		})
+	}
+	for _, provider := range []scm.Provider{scm.ProviderGitHub, scm.ProviderBitbucket} {
+		for _, tt := range cases {
+			t.Run(string(provider)+"/"+tt.name, func(t *testing.T) {
+				dir, baseSHA, headSHA := setupGitRepo(t)
+				ag := &mockAgent{name: "pr", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					raw, err := json.Marshal(prContent{Title: "fix(pipeline): preserve rendering", Body: "## What Changed\n\n- guard cleanup\n\n" + tt.body})
+					return &agent.Result{Output: raw}, err
+				}}
+				sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+				findings := types.Findings{RiskLevel: "low", RiskRationale: tt.risk}
+				for i, description := range tt.descriptions {
+					findings.Items = append(findings.Items, types.Finding{Severity: types.FindingSeverityWarning, File: "captain.go", Line: i + 1, Description: description})
+				}
+				review := insertCompletedStep(t, sctx, types.StepReview, findingsJSON(t, findings), "")
+				if tt.fix != "" {
+					if _, err := sctx.DB.InsertStepRound(review.ID, 2, "auto_fix", nil, &tt.fix, 100); err != nil {
+						t.Fatal(err)
+					}
+				}
+				insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{Tested: tt.tested}), "")
+				content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, provider, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, want := range tt.want {
+					if !strings.Contains(html.UnescapeString(content.Body), want) {
+						t.Errorf("rendered PR missing %q", want)
+					}
+				}
+				if !strings.Contains(content.Body, noMistakesPRSignature) {
+					t.Error("PR signature changed")
+				}
+				if provider == scm.ProviderGitHub {
+					assertFirstAttestationBindsHead(t, content.Body, headSHA)
+					steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(content.Body, buildPipelineAttestation(steps, headSHA)) {
+						t.Error("pipeline attestation changed during prose sanitization")
+					}
 				}
 			})
 		}
