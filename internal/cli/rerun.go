@@ -75,16 +75,22 @@ func newRerunCmd() *cobra.Command {
 // any daemon startup or post-push wait. Dirty callers retain the existing
 // behavior by omitting that evidence.
 func rerunCallerHead(ctx context.Context) (string, error) {
-	dirty, err := git.HasUncommittedChanges(ctx, ".")
+	// Read both facts from one status observation: a subsequent HEAD lookup
+	// could name a different commit whose index or worktree was never clean.
+	out, err := git.Run(ctx, ".", "status", "--porcelain=v2", "--branch", "-z")
 	if err != nil {
 		return "", fmt.Errorf("check working tree: %w", err)
 	}
-	if dirty {
-		return "", nil
+	var head string
+	for _, entry := range strings.Split(out, "\x00") {
+		if oid, ok := strings.CutPrefix(entry, "# branch.oid "); ok {
+			head = oid
+		} else if entry != "" && !strings.HasPrefix(entry, "# ") {
+			return "", nil
+		}
 	}
-	head, err := git.HeadSHA(ctx, ".")
-	if err != nil {
-		return "", fmt.Errorf("get caller head: %w", err)
+	if head == "" || head == "(initial)" {
+		return "", fmt.Errorf("get caller head: no HEAD commit")
 	}
 	return head, nil
 }

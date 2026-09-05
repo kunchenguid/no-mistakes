@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,127 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestRerunCallerHeadDoesNotCombineDifferentGitStates(t *testing.T) {
+	dir := t.TempDir()
+	cliGit(t, dir, "init", "-b", "main")
+	cliGit(t, dir, "config", "user.name", "Test")
+	cliGit(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, dir, "add", "tracked.txt")
+	cliGit(t, dir, "commit", "-m", "original")
+	original := cliGit(t, dir, "rev-parse", "HEAD")
+	cliGit(t, dir, "commit", "--allow-empty", "-m", "concurrent commit")
+	next := cliGit(t, dir, "rev-parse", "HEAD")
+	cliGit(t, dir, "reset", "--hard", original)
+	chdir(t, dir)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NM_RERUN_REAL_GIT", realGit)
+	t.Setenv("NM_RERUN_NEXT_HEAD", next)
+	t.Setenv("NM_RERUN_ORIGINAL_HEAD", original)
+	// Let real Git collect status, then stage an edit and move HEAD before
+	// returning. The new HEAD is never clean during this capture.
+	binDir := t.TempDir()
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	const source = `package main
+import ("fmt"; "os"; "os/exec")
+func check(err error) {
+  if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+}
+func run(args ...string) {
+  cmd := exec.Command(os.Getenv("NM_RERUN_REAL_GIT"), args...)
+  cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+  check(cmd.Run())
+}
+func main() {
+  run(os.Args[1:]...)
+  if os.Args[1] == "status" {
+    check(os.WriteFile("tracked.txt", []byte("edited\n"), 0644))
+    run("add", "tracked.txt")
+    run("update-ref", "HEAD", os.Getenv("NM_RERUN_NEXT_HEAD"), os.Getenv("NM_RERUN_ORIGINAL_HEAD"))
+  }
+}
+`
+	file := filepath.Join(binDir, "main.go")
+	if err := os.WriteFile(file, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Build a native, non-race helper so the same test runs on Windows too.
+	build := exec.Command("go", "build", "-o", filepath.Join(binDir, name), file)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build Git wrapper: %v\n%s", err, out)
+	}
+	path := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+path)
+	head, err := rerunCallerHead(context.Background())
+	t.Setenv("PATH", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current := cliGit(t, dir, "rev-parse", "HEAD"); current != next {
+		t.Fatalf("fixture did not move HEAD: got %s, want %s", current, next)
+	}
+	if staged := cliGit(t, dir, "diff", "--cached", "--name-only"); staged != "tracked.txt" {
+		t.Fatalf("fixture did not dirty the index: %q", staged)
+	}
+	if head != original {
+		t.Fatalf("clean-head evidence = %s, want observed clean head %s; later dirty head = %s", head, original, next)
+	}
+}
+
+func TestRerunCallerHeadGitStates(t *testing.T) {
+	for _, state := range []string{"clean", "detached", "unstaged", "staged", "renamed", "untracked", "unborn", "dirty_unborn", "not_repo"} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			chdir(t, dir)
+			if state != "not_repo" {
+				cliGit(t, dir, "init", "-b", "main")
+			}
+			want := ""
+			if state != "unborn" && state != "dirty_unborn" && state != "not_repo" {
+				if err := os.WriteFile("tracked.txt", []byte("original\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				cliGit(t, dir, "add", "tracked.txt")
+				cliGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+				if state == "clean" || state == "detached" {
+					want = cliGit(t, dir, "rev-parse", "HEAD")
+				}
+			}
+			switch state {
+			case "detached":
+				cliGit(t, dir, "checkout", "--detach")
+			case "unstaged", "staged":
+				if err := os.WriteFile("tracked.txt", []byte("edited\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if state == "staged" {
+					cliGit(t, dir, "add", "tracked.txt")
+				}
+			case "renamed":
+				cliGit(t, dir, "mv", "tracked.txt", "# branch.oid misleading.txt")
+			case "untracked", "dirty_unborn":
+				if err := os.WriteFile("# branch.oid misleading.txt", []byte("untracked\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			head, err := rerunCallerHead(context.Background())
+			wantError := state == "unborn" || state == "not_repo"
+			if (err != nil) != wantError || head != want {
+				t.Fatalf("caller head = %q, err = %v; want %q, error = %v", head, err, want, wantError)
+			}
+		})
+	}
+}
 
 func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 	for _, dirty := range []bool{false, true} {
