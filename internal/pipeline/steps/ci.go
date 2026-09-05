@@ -255,6 +255,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			outcome, err = refusal, nil
 			return
 		}
+		var conflict *pipeline.DecisionConflictError
+		if errors.As(err, &conflict) {
+			return
+		}
 		findings, _ := types.ParseFindingsJSON(refusalFindings)
 		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
 		if err != nil {
@@ -474,6 +478,31 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		}
 
+		// A rejected decision repair revoked review approval. Checks still describe
+		// the published head, so a Fix response must repair the local decision first,
+		// even if those checks have since passed or started running again.
+		if sctx.Fixing && sctx.Run.ReviewApprovedHeadSHA == nil {
+			decisions, _, err := recordedFixConstraints(sctx)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errDecisionCheck, err)
+			}
+			if decisions != "" {
+				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+					return nil, err
+				}
+				_, err := s.autoFixCI(sctx, host, pr, nil, false)
+				if outcome := ciFixAgentBudgetOutcome(sctx, "rejected decision repair", err); outcome != nil {
+					return outcome, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				// Even a no-change conclusion needs independent Review to resolve
+				// the rejected head; live checks cannot restore its approval.
+				return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			}
+		}
+
 		// Check mergeable state if the provider supports it
 		mergeConflict := false
 		mergeabilityKnown := true
@@ -670,6 +699,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 						return outcome, nil
 					}
+					if errors.Is(err, errDecisionCheck) {
+						return nil, err
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
@@ -718,6 +750,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 						return outcome, nil
+					}
+					if errors.Is(err, errDecisionCheck) {
+						return nil, err
 					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil

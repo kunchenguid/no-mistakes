@@ -75,8 +75,9 @@ func hasBlockingFindings(items []Finding) bool {
 // (sctx.Run.HeadSHA). Every post-review step calls this guard at entry, and
 // commitAgentFixes calls it around commits that advance the recorded head.
 //
-// The pipeline advances HEAD only through its own commits, each of which updates
-// sctx.Run.HeadSHA in lockstep. If HEAD has diverged from that recorded head -
+// Pipeline commit boundaries advance sctx.Run.HeadSHA only after checking
+// continuity, including when an agent committed its own forward repair and
+// left a clean worktree. If HEAD has diverged from that recorded head -
 // e.g. a concurrent process reset the shared worktree to a different commit -
 // then the reviewed change the pipeline approved is no longer in HEAD's history,
 // and continuing would ship an unreviewed tree. The whole job of this tool is
@@ -152,10 +153,9 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // and the directory is removed afterwards, so nothing persists in the
 // repository, the user's configuration, or the daemon's environment.
 //
-// Reach is deliberately narrow. Only commitAgentFixes (Review, Test, Document,
-// Lint) and the Push step's leftover-worktree commit route here, because those
-// are the two commits the pipeline authors from its own agents' and formatter's
-// output.
+// Reach is deliberately narrow. Only commitAgentFixes and the Push step's
+// leftover-worktree commit route here: these paths record the pipeline's own
+// agents' and formatter's output.
 // CI repair commits, the generic git runner, and every user-authored commit keep
 // hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
 // remain the authoritative quality checks for what these commits contain.
@@ -189,33 +189,42 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
+	if stepName != types.StepReview {
+		if err := assertRecordedFixDecisions(sctx); err != nil {
+			return err
+		}
+	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("check %s changes: %w", stepName, err)
 	}
-	if strings.TrimSpace(status) == "" {
+	if strings.TrimSpace(status) != "" {
+		if summary == "" {
+			summary = fallbackSummary
+		}
+		if summary == "" {
+			summary = "apply fixes"
+		}
+		commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
+		if err != nil {
+			return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+		}
+		if err := stagePipelineChanges(sctx); err != nil {
+			return fmt.Errorf("stage %s changes: %w", stepName, err)
+		}
+		if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
+			return fmt.Errorf("commit %s changes: %w", stepName, err)
+		}
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	} else {
 		sctx.Log("no agent changes to commit")
-		return nil
-	}
-	if summary == "" {
-		summary = fallbackSummary
-	}
-	if summary == "" {
-		summary = "apply fixes"
-	}
-	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
-	if err != nil {
-		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
-	}
-	if err := stagePipelineChanges(sctx); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
-	}
-	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	if headSHA == sctx.Run.HeadSHA {
+		return nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
@@ -235,7 +244,6 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
 	return nil
 }
 

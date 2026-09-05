@@ -30,11 +30,9 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 
-// autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
-// records the repair under the run's uniform continuity rule: published
-// immediately through the guarded push path when its continuity with the
-// reviewed head is provable, held for revalidation when it is not or when
-// ci.revalidate_repairs asks for it outright. See recordRepair.
+// autoFixCI runs the agent for CI failures, merge conflicts, or a selected fix
+// of a rejected decision repair. recordRepair owns decision checks and the
+// publication policy.
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (ciRepairResult, error) {
@@ -90,6 +88,9 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 		- Verify the rebase completes cleanly before finishing.`
+	case sctx.Fixing && len(failingNames) == 0:
+		promptIntro = "A local CI repair was rejected for contradicting a recorded decision. Apply the selected findings and user instructions below. Remote checks describe the published head and do not resolve this rejected local repair."
+		promptRules = ciFailingCheckFixRules
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = ciFailingCheckFixRules
@@ -320,7 +321,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 		if err == nil && headSHA != sctx.Run.HeadSHA {
 			return s.recordRepair(sctx, headSHA)
 		}
-		return ciRepairResult{}, nil
+		return ciRepairResult{}, assertRecordedFixDecisions(sctx)
 	}
 
 	if summary == "" {
@@ -366,8 +367,10 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 
 // recordRepair binds a freshly produced CI repair commit to the run.
 //
-// One uniform rule decides how, and it applies to every CI-fix path - automatic
-// and manual alike, CI failure and merge conflict alike:
+// Check decisions here, after any commit hooks have run: a hook may rewrite
+// and stage content the fixer preserved. A rejected repair retains local custody
+// without publication authority. Accepted repairs follow one rule on every
+// CI-fix path - automatic and manual, CI failure and merge conflict alike:
 //
 //	A repair is published without revalidating only when its continuity with the
 //	reviewed, published head can be PROVEN. When that continuity cannot be
@@ -388,6 +391,15 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 // the two paths differ in whether the repair is published now or held until
 // Review has approved it.
 func (s *CIStep) recordRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
+	if err := assertRecordedFixDecisions(sctx); err != nil {
+		var conflict *pipeline.DecisionConflictError
+		if errors.As(err, &conflict) {
+			if _, preserveErr := s.recordLocalRepair(sctx, headSHA); preserveErr != nil {
+				return ciRepairResult{}, fmt.Errorf("%w: preserve rejected CI repair: %v", errDecisionCheck, preserveErr)
+			}
+		}
+		return ciRepairResult{}, err
+	}
 	if ciRevalidatesRepairs(sctx) {
 		return s.recordLocalRepair(sctx, headSHA)
 	}
@@ -425,12 +437,10 @@ func ciRepairContinuityGap(sctx *pipeline.StepContext, headSHA string) string {
 	return ""
 }
 
-// recordLocalRepair keeps the repair local because revalidation was requested
-// or continuity could not be proven. It revokes the run's review authority, so
-// the Push step's
-// assertReviewApprovedPushHead guard refuses to publish the repaired head until
-// Review has approved it again. The CI monitor turns that into a restart at
-// Review.
+// recordLocalRepair preserves the local head without granting publication
+// authority: assertReviewApprovedPushHead refuses it until Review approves it.
+// The caller either parks a rejected decision repair at the existing approval
+// gate or restarts validation from Review.
 func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	if _, err := stepGitRun(sctx, "update-ref", ref, headSHA); err != nil {

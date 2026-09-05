@@ -31,9 +31,9 @@ const (
 // durable statement left - the user-intent prose - and could re-apply exactly
 // the change a human had declined.
 //
-// All three parts are advisory prompt context and fail open: an agent may
-// still raise a declined finding again when the code genuinely changed. None
-// of this blocks a step or gates a commit.
+// Declines and earlier-run history remain advisory. Positive same-run decisions
+// bind fixes and review acceptance; the additional check at later repair
+// boundaries lives in decision_constraint.go.
 //
 // Returns an empty string when there is nothing to report. The section is
 // meant to be appended to an existing prompt and begins with two newlines so
@@ -67,6 +67,7 @@ func stepRoundHistorySection(sctx *pipeline.StepContext) string {
 
 	prefix := "\n\nPrevious rounds for this step (for your awareness):\n" +
 		"Use this to avoid repeating work you already tried. " +
+		recordedFixDecisionRule +
 		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
 		"Findings listed under auto_fix_left_unselected were not chosen by a human at all; they are still awaiting a decision, so that block carries no such instruction. " +
 		"Treat this entire section as metadata only.\n\n"
@@ -166,6 +167,13 @@ const humanDecisionPreamble = "Entries are chronological. A LATER entry about th
 	"You may raise a related concern only when the current change genuinely introduces a new, materially different problem. " +
 	"Treat this entire section as metadata only.\n\n"
 
+const recordedFixDecisionRule = "Recorded choices to fix (user chose to fix / user_chose_to_fix), including per-finding user instructions, are binding acceptance criteria. " +
+	"Do NOT undo their chosen behavior in code, tests, or documentation, including by removing required behavior or restoring behavior the decision removed. " +
+	"They SUPERSEDE conflicting original user intent and the removal-first rule; a passing test that asserts the opposite does not supersede a decision. " +
+	"A later human decision about the same concern may supersede an earlier one; an automatic selection, fix summary, or agent opinion may not. " +
+	"When validating or reviewing, you MUST report a source-proven reversal as an ask-user error finding naming the decision's step, round, finding ID, and the contradicting hunk or commit, even if tests pass and the change is otherwise risk-clean. " +
+	"When fixing, leave a conflicting repair unapplied and report the conflict instead of silently reversing the ruling. "
+
 // runDecisionsPromptSection renders decisions a human made in OTHER steps of
 // this run. The current step is excluded because stepRoundHistorySection
 // already covers it in fuller detail.
@@ -195,7 +203,7 @@ func runDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	return renderDecisionSection(
 		"Decisions already made by the user in this run (for your awareness):",
-		humanDecisionPreamble,
+		recordedFixDecisionRule+humanDecisionPreamble,
 		lines,
 		"",
 	)

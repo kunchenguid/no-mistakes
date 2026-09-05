@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+func TestNormalizeFindings_PreservesExistingIDsWithoutCollisions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ids  []string
+		want []string
+	}{
+		{"duplicate", []string{"test-1", "test-1"}, []string{"test-1", "test-2"}},
+		{"missing", []string{"", "test-1"}, []string{"test-2", "test-1"}},
+		{"reserved", []string{"test-1", "test-1", "test-2"}, []string{"test-1", "test-3", "test-2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var findings Findings
+			for _, id := range tc.ids {
+				findings.Items = append(findings.Items, Finding{ID: id})
+			}
+			got := NormalizeFindings(findings, "test")
+			for i, want := range tc.want {
+				if got.Items[i].ID != want {
+					t.Errorf("finding %d ID = %q, want %q", i, got.Items[i].ID, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseFindingsJSON_RiskFields(t *testing.T) {
 	raw := `{"findings":[{"severity":"error","description":"bug"}],"risk_level":"high","risk_rationale":"Critical bug.","risk_scope":"source-or-external"}`
 	f, err := ParseFindingsJSON(raw)

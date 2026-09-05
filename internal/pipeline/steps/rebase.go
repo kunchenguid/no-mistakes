@@ -405,6 +405,7 @@ Instructions:
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
 	prompt += userIntentPromptSection(sctx)
+	prompt += roundHistoryPromptSection(sctx)
 	prompt += executionContextPromptSection(sctx.WorkDir)
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
@@ -512,7 +513,8 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 }
 
 // updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
-// When the branch diff against the default branch is empty, SkipRemaining is set.
+// Positive same-run decisions require independent Review even when the diff
+// against the effective PR base is empty; Review owns acceptance before skipping.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -528,12 +530,17 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 
-	// Check if the branch has any diff against the default branch.
-	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
 	defaultBranch := effectivePRBaseBranch(sctx)
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
+		decisions, _, err := recordedFixConstraints(sctx)
+		if err != nil {
+			return nil, err
+		}
+		if decisions != "" {
+			return &pipeline.StepOutcome{}, nil
+		}
 		sctx.Log("empty diff after rebase, skipping remaining steps")
 		return &pipeline.StepOutcome{SkipRemaining: true}, nil
 	}

@@ -100,8 +100,13 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			ci := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { cancel(); return ctx.Err() }}
 			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, &PushStep{}, reconcileEnvStep{step: ci, env: green}}
 			reviews := 0
-			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-				reviews++
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				// The explicit Fix response is a positive human selection, so a
+				// changed tree also pays the decision-conformance pass; only
+				// Review executions decide whether revalidation was required.
+				if opts.Purpose == "review" {
+					reviews++
+				}
 				output, err := json.Marshal(cleanReviewFindings())
 				return &agent.Result{Output: output}, err
 			}}

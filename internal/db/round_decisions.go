@@ -112,3 +112,32 @@ func (d *DB) SetStepRoundDeclined(id string) error {
 	}
 	return nil
 }
+
+// SetStepRoundCheckedTree records the worktree tree a decision check inspected
+// when it parked this round's findings.
+func (d *DB) SetStepRoundCheckedTree(id, treeSHA string) error {
+	if _, err := d.sql.Exec(`UPDATE step_rounds SET checked_tree_sha = ? WHERE id = ?`, treeSHA, id); err != nil {
+		return fmt.Errorf("set step round checked tree: %w", err)
+	}
+	return nil
+}
+
+// HasDeclinedDecisionCheck reports whether a human already declined a decision
+// check of this exact tree after the run's latest matched positive selection.
+// An older tree ruling cannot exempt a reversal of a newer fix decision.
+func (d *DB) HasDeclinedDecisionCheck(runID, treeSHA, latestFixRoundID string) (bool, error) {
+	if treeSHA == "" {
+		return false, nil
+	}
+	var count int
+	if err := d.sql.QueryRow(
+		`SELECT COUNT(*) FROM step_rounds sr
+		   JOIN step_results res ON res.id = sr.step_result_id
+		  WHERE res.run_id = ? AND sr.selection_source = ? AND sr.checked_tree_sha = ?
+		    AND sr.id > ?`,
+		runID, RoundSelectionSourceUserDeclined, treeSHA, latestFixRoundID,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("find declined decision check: %w", err)
+	}
+	return count > 0, nil
+}

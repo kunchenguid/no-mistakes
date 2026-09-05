@@ -52,9 +52,11 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 		"GIT_COMMITTER_NAME=test",
 		"GIT_COMMITTER_EMAIL=test@test.com",
 	)
-	out, err := cmd.CombinedOutput()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git %v: %v: %s", args, err, out)
+		t.Fatalf("git %v: %v: %s%s", args, err, out, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }

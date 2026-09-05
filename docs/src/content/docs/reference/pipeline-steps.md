@@ -17,8 +17,8 @@ This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the run's managed evidence directory, plus incidental temp or cache writes from normal development tools.
 Configured shell commands and one-shot agent subprocesses are scoped to their step: when the invocation exits, fails, or is cancelled, no-mistakes terminates remaining child processes it spawned so background workers do not outlive the run.
 When configured Test or Lint command output exceeds 64 KiB, the complete output remains in the authoritative step log while findings, IPC responses, and repair prompts receive a valid-UTF-8 head-and-tail projection capped at 64 KiB. The truncation marker reports the exact original and omitted byte counts and points to `no-mistakes axi logs --step <step> --full` for the complete output.
-Commits created by the shared Review, Test, Document, and Lint fix path, plus CI repair commits, use the configurable [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message) template.
-Review, Test, and Lint repair agents, including Lint's safe-fix pass when no command is configured, share a removal-first rule with the CI repair agent: when a problem can be resolved by removing a code path the intent does not strictly require, they remove it instead of validating, hardening, or documenting it. They judge necessity against user intent when present and otherwise against the change's stated purpose.
+The [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message) reference owns which repair commits use the configurable subject template.
+Review, Test, Lint, and Push repair agents, including Lint's safe-fix pass when no command is configured, share a removal-first rule with the CI repair agent: when a problem can be resolved by removing a code path the intent does not strictly require, they remove it instead of validating, hardening, or documenting it. They judge necessity against user intent when present and otherwise against the change's stated purpose.
 The shared correction commits, and the Push step's commit of leftover changes from a pipeline agent or formatter, are machine-authored records of pipeline output. Each is created with the complete local commit-hook family suppressed by combining `--no-verify` with an empty temporary `core.hooksPath` for that invocation, so `pre-commit`, `prepare-commit-msg`, `commit-msg`, and `post-commit` do not run. This lets a disposable run worktree commit a correction even when a tracked hook depends on generated untracked runtime files that do not exist there - the canonical case is `core.hooksPath=.husky` with a tracked hook that sources the absent `.husky/_/husky.sh`.
 The suppression is limited to those correction-commit invocations. It does not change the repository, Git configuration, or daemon environment; CI repair commits and all other commit paths keep normal hook behavior. Pipeline gates remain authoritative; whether a CI repair returns through the local gates before publication is controlled by [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs).
 Agent roles that can write, repair, or review tests reject tests whose only evidence is matching implementation source text, tokens, syntax, or incidental snapshots.
@@ -30,14 +30,28 @@ Review flags every newly added violation and requires same-pattern tests encount
 
 When a human resolves a findings gate with Approve, Skip, or Abort without selecting a fix, no-mistakes records that the round's findings were declined. A gate with no findings records no decision. When the human selects only some findings to fix, the unselected complement is recorded as declined; findings merely left out by automatic filtering remain undecided.
 
-Review, Test, Document, Lint, and CI fix agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
+Review, Test, Document, Lint, Rebase, Push, and CI repair agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later human decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
-This context is advisory and fails open. It tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but it does not block a step or commit and is not a reversion detector. Rebase fix prompts do not receive this decision history.
+Recorded human choices to fix in the same run, including per-finding instructions, bind later fixes and Review's acceptance criteria.
+Agents must preserve the chosen behavior in source, tests, and documentation; neither the original intent nor a passing test asserting the opposite overrides it.
+A selected finding ID that matches no finding in its round is logged and does not count as a recorded fix decision, so a typo or an ID from an earlier round never binds and never fails the run.
+Review receives the complete same-run decision history and must report a source-proven reversal as an `ask-user` error naming the decision's step, round, finding ID, and contradicting hunk or commit.
+
+When a run contains a positive human fix decision and a later repair changes the tree, a fresh agent checks only decision conformance at the shared Test/Document/Lint/Push repair commit boundary, after Test's evidence agent, before Push stages leftovers after configured formatting, and on the final CI repair after commit hooks and before publication or revalidation.
+Review uses its existing independent pass, which also follows Rebase.
+Runs without a positive human selection, and trees unchanged since the run's recorded head, incur no additional conformance-check invocation.
+When an operator resolves a decision-conflict gate with Approve, Skip, or Abort, the pipeline retains the tree snapshot that check inspected. The snapshot uses a copy of the current index, including staged ignored additions and removals, then incorporates unstaged changes to tracked files and non-ignored untracked files without changing the real index.
+A later boundary with an identical tree skips the check only if no newer matched positive human selection has been recorded since that ruling. New tree changes or a newer matched selection invalidate that exemption; unmatched IDs do not.
+A detected contradiction refuses the repair and parks at the existing approval gate with named findings; local work remains available for an explicit repair or operator decision.
+An unreadable complete decision history, one over its own 256 KB limit (separate from the bounded advisory sections, because the binding history never drops old lines), a failed checker, or malformed checker output also stops the repair.
+Detection is model-based, not a deterministic semantic guarantee.
+
+Declines retain their existing advisory semantics: agents may re-raise a declined finding when current code introduces a materially different problem. Earlier-run branch history remains bounded advisory context; it does not activate the additional same-run check.
 
 ## Intent
 
 Uses explicit intent when a run provides it, including exact explicit intent inherited by a rerun, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
-This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
+This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, Push fixes, CI auto-fixes, and PR drafting.
 
 **Behavior:**
 
@@ -69,7 +83,7 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 - The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<PR base branch>` and is an ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
-- If the diff against the PR base branch is empty after rebase, completes rebase and skips all remaining pipeline steps
+- If the diff against the PR base branch is empty after rebase, skips all remaining steps unless this run contains a positive human fix decision. Such decisions require the existing independent Review first. If the reviewed commit still has an empty diff against the same PR base branch (including configured `pr.base_branch`), completing Review skips the remaining steps, including Push, PR, and CI. This also applies when the operator approves blocking or `ask-user` findings, both live and after daemon recovery; already-skipped downstream steps keep their results. A fix that creates a nonempty branch proceeds through the remaining steps. Nonblocking informational findings do not prevent the empty-branch skip; `ignore_patterns` cannot establish emptiness
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 - Bounds the conflict-repair agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): an expired budget cancels the agent and fails the step with a timeout diagnostic rather than leaving the run active indefinitely
 
@@ -138,6 +152,7 @@ Local Test is never a repository-wide regression-suite substitute; broad regress
 - Bounds those agent turns with [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout): each evidence-gathering or Test-repair invocation gets its own budget, and an expired budget cancels the agent and fails the step with a timeout diagnostic rather than leaving the run active indefinitely
 - "Do not run everything" is not "run nothing": when no targeted check can establish the intent, the agent must write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
 - The analyzer result must include `tested`, `testing_summary`, and `artifacts`; `tested` records exact tests and checks, `testing_summary` is a short natural-language account of the result, and `artifacts` holds reviewer-visible evidence. `path` artifacts may be repository-relative paths or absolute paths under the run's evidence directory, `url` artifacts must be externally visible, and `content` artifacts should be short logs or command output shown directly in the PR.
+- If the evidence agent triggers a [recorded-decision conflict](#finding-decision-history), the gate retains the analyzer's findings, tested entries, summary, and artifacts alongside the named conflict and checked tree. Approving that gate preserves the evidence for the PR's Testing section. Findings from the analyzer and checker receive distinct IDs so each remains independently selectable with its own instructions.
 - Evidence is always collected under the run's evidence directory (`<NM_HOME>/evidence/<run-id>` by default, see [`test.evidence`](/no-mistakes/reference/global-config/#testevidence)), outside the worktree, so artifacts never enter the branch being validated. On GitHub.com/GHEC, [`test.evidence.attach_media`](/no-mistakes/reference/global-config/#testevidence) (default true) uploads supported image and video artifacts to GitHub user-attachments at PR render time. [`test.evidence.store_in_repo: true`](/no-mistakes/reference/global-config/#testevidence) also publishes that directory to the push-target repository's orphan evidence branch under `<test.evidence.dir>/<branch-slug>` and links the artifacts from the PR body. The config reference owns provider support and fail-closed behavior.
 - Before finishing, test agents are instructed to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, while preserving intentional source or test-file changes and evidence files under the dedicated evidence directory.
 - Missing evidence for user intent can be reported as a warning with `action: ask-user`. When a host capability or OS permission is unavailable to the agent process, the agent is instructed to name the specific capability or permission and explain how to grant it before the test is rerun.
@@ -215,7 +230,7 @@ A remote branch can move without being rejected when all remote commits are alre
 Any other out-of-band commit stops the push instead of being overwritten.
 Pre-skipping or later skipping Review leaves no approval binding, so Push fails closed unless Push is also skipped.
 
-This step never requires approval - it runs automatically after review, test, document, and lint pass.
+This step normally runs automatically after review, test, document, and lint pass. A [recorded-decision conflict](#finding-decision-history) pauses before publication. Selecting Fix runs the repair agent after the configured formatter, with the selected findings and per-finding instructions, then checks the repair before retrying publication. [Protected-path refusals](/no-mistakes/reference/repo-config/#protected_paths) retain their separate resolution rules.
 
 ## PR
 
@@ -285,6 +300,8 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 - Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.
 - Gitea requires `tea` CLI, installed with a login configured for the instance.
+
+A repair rejected by the [recorded-decision check](#finding-decision-history) stays local at the existing approval gate, with its head recorded and review approval revoked. Remote checks still describe the published head and cannot authorize the rejected repair. On an open PR, a selected Fix applies the gate's findings and instructions before polling checks, then returns to Review even if checks are green or pending, or the fixer proposes no changes. Existing merged/closed-PR handling takes precedence over that repair path.
 
 **Behavior:**
 

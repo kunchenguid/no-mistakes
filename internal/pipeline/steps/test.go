@@ -221,12 +221,21 @@ Rules:
 		if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
 			return nil, fmt.Errorf("validate test analyzer findings: %w", err)
 		}
+		var conflict *pipeline.DecisionConflictError
+		checkedTree := ""
+		if err := assertRecordedFixDecisions(sctx); err != nil {
+			if !errors.As(err, &conflict) {
+				return nil, err
+			}
+			findings.Items = append(findings.Items, conflict.Findings.Items...)
+			checkedTree = conflict.CheckedTreeSHA
+		}
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}
 
 		needsApproval := hasBlockingFindings(findings.Items)
-		autoFixable := needsApproval
+		autoFixable := needsApproval && conflict == nil
 
 		// Record any new test files the agent wrote as informational (no-op)
 		// findings. Their presence alone is not an actionable problem, so they
@@ -243,10 +252,11 @@ Rules:
 
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{
-			NeedsApproval: needsApproval,
-			AutoFixable:   autoFixable,
-			Findings:      string(findingsJSON),
-			FixSummary:    fixSummary,
+			NeedsApproval:  needsApproval,
+			AutoFixable:    autoFixable,
+			Findings:       string(findingsJSON),
+			FixSummary:     fixSummary,
+			CheckedTreeSHA: checkedTree,
 		}, nil
 	}
 
