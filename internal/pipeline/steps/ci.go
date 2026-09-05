@@ -232,7 +232,20 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
-	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(sctx.PreviousFindings)
+	refusalFindings := ""
+	if sctx.StepResultID != "" {
+		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
+		if err != nil {
+			return nil, fmt.Errorf("restore CI auto-fix attempts and refusal: %w", err)
+		}
+		if stepResult != nil {
+			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
+			if stepResult.FindingsJSON != nil {
+				refusalFindings = *stepResult.FindingsJSON
+			}
+		}
+	}
+	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
 	manualFixAttempted := retryRefusal
 	defer func() {
 		if !retryRefusal {
@@ -242,7 +255,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			outcome, err = refusal, nil
 			return
 		}
-		findings, _ := types.ParseFindingsJSON(sctx.PreviousFindings)
+		findings, _ := types.ParseFindingsJSON(refusalFindings)
 		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
 		if err != nil {
 			findings.Summary += ": " + safeurl.RedactText(err.Error())
@@ -254,15 +267,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	}()
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
-	}
-	if sctx.StepResultID != "" {
-		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
-		if err != nil {
-			return nil, fmt.Errorf("restore CI auto-fix attempts: %w", err)
-		}
-		if stepResult != nil {
-			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
-		}
 	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the

@@ -924,7 +924,7 @@ func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (b
 }
 
 func protectedPathCleanupReason(d *db.DB, run *db.Run) string {
-	if run == nil || run.Status == types.RunCancelled {
+	if run == nil || (run.Status == types.RunCancelled && run.Error != nil && *run.Error == types.RunCancelReasonAbortedByUser) {
 		return ""
 	}
 	results, err := d.GetStepsByRun(run.ID)

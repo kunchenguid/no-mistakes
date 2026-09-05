@@ -158,6 +158,14 @@ CI logs:
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
 	repair, err := s.commitRepair(sctx, conclusion.Summary)
+	var refusal *pipeline.ProtectedPathError
+	if errors.As(err, &refusal) {
+		head, recordErr := stepGitHeadSHA(sctx)
+		if recordErr == nil && head != sctx.Run.HeadSHA {
+			_, recordErr = s.recordLocalRepair(sctx, head)
+		}
+		return repair, errors.Join(err, recordErr)
+	}
 	if err != nil || repair.HeadAdvanced {
 		return repair, err
 	}

@@ -22,6 +22,94 @@ type protectedPathPushRetryStep struct {
 	edited bool
 }
 
+func TestProtectedPathRefusalCancellationCleanup(t *testing.T) {
+	for _, action := range []string{"new_push", "cancel_run", "abort_response"} {
+		t.Run(action, func(t *testing.T) {
+			p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				return []pipeline.Step{protectedPathCommitStep{step: &steps.PushStep{}}}
+			})
+			repo, head := setupTestGitRepo(t, p, database, "protected-cancellation")
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			var result ipc.PushReceivedResult
+			push := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: strings.Repeat("0", 40), New: head}
+			if err := client.Call(ipc.MethodPushReceived, push, &result); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(15 * time.Second)
+			for {
+				run, err := database.GetRun(result.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.AwaitingAgentSince != nil {
+					break
+				}
+				if run.Status.Terminal() || time.Now().After(deadline) {
+					t.Fatalf("refusal did not park: %+v", run)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			switch action {
+			case "new_push":
+				var replacement ipc.PushReceivedResult
+				if err := client.Call(ipc.MethodPushReceived, push, &replacement); err != nil {
+					t.Fatal(err)
+				}
+				if replacement.RunID == result.RunID {
+					t.Fatal("new push did not supersede the parked run")
+				}
+			case "cancel_run":
+				if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: result.RunID}, nil); err != nil {
+					t.Fatal(err)
+				}
+			case "abort_response":
+				if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: result.RunID, Step: types.StepPush, Action: types.ActionAbort}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var run *db.Run
+			deadline = time.Now().Add(15 * time.Second)
+			for {
+				run, err = database.GetRun(result.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.Status.Terminal() {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("run did not become terminal: %+v", run)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			workDir := p.WorktreeDir(repo.ID, result.RunID)
+			if action == "new_push" {
+				if run.Status != types.RunCancelled || run.Error == nil || *run.Error != types.RunCancelReasonSuperseded {
+					t.Fatalf("unexpected supersession: %+v", run)
+				}
+				assertProtectedWorktreePreserved(t, workDir, head)
+				cleanupOrphanWorktrees(database, p, nil)
+				assertProtectedWorktreePreserved(t, workDir, head)
+				return
+			}
+			deadline = time.Now().Add(15 * time.Second)
+			for {
+				if _, err := os.Stat(workDir); os.IsNotExist(err) {
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("explicit operator abort no longer cleans its worktree")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
 func TestProtectedPathRefusalSurvivesShutdownCleanup(t *testing.T) {
 	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{protectedPathCommitStep{step: &steps.PushStep{}}}
