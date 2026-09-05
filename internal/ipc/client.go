@@ -233,6 +233,15 @@ func (c *Client) Close() error {
 // Returns an event channel, a cancel function (to stop and clean up), and an error.
 // The channel is closed when the run completes, the connection drops, or cancel is called.
 func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
+	return SubscribeContext(context.Background(), socketPath, params)
+}
+
+// SubscribeContext is Subscribe with cancellation support while establishing
+// the subscription.
+func SubscribeContext(ctx context.Context, socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	conn, err := dialEndpoint(socketPath)
 	if err != nil {
 		return nil, nil, err
@@ -253,13 +262,31 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 	}
 
 	// Read initial response.
+	interruptDone := make(chan struct{})
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		conn.SetReadDeadline(time.Now())
+		close(interruptDone)
+	})
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetReadDeadline(deadline)
+	}
 	if !scanner.Scan() {
+		if !stopInterrupt() {
+			<-interruptDone
+		}
 		conn.Close()
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if err := scanner.Err(); err != nil {
 			return nil, nil, fmt.Errorf("read response: %w", err)
 		}
 		return nil, nil, fmt.Errorf("read response: connection closed")
 	}
+	if !stopInterrupt() {
+		<-interruptDone
+	}
+	conn.SetReadDeadline(time.Time{})
 	var resp Response
 	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
 		conn.Close()

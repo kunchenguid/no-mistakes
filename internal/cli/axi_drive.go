@@ -188,6 +188,11 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
 	}
 	ctx := cmd.Context()
+	driveCtx, cancel, err := boundAxiWait(ctx, wait)
+	if err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
+	defer cancel()
 	env, err := openAxiRunEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
@@ -232,7 +237,14 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		if validationGeneration != "" {
 			return emitError(cmd, 2, "--validation-generation requires --launch-nonce")
 		}
-		if active := activeRunInfo(env, branch, headSHA); active != nil {
+		active, err := activeRunInfo(driveCtx, env, branch, headSHA)
+		if err != nil {
+			if isAxiWaitElapsed(ctx, driveCtx, err) {
+				return emitAxiWaitElapsed(cmd, wait, "no-mistakes axi run")
+			}
+			return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
+		}
+		if active != nil {
 			if err := conflictingActiveRunPRBaseBranch(active, baseBranch); err != nil {
 				return emitError(cmd, 2, err.Error(),
 					"Omit --base-branch to reattach, or abort the active run before starting a new one")
@@ -282,11 +294,6 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 		emitLaunchReceipt(cmd, *launchReceipt)
 	}
 
-	driveCtx, cancel, err := boundAxiWait(ctx, wait)
-	if err != nil {
-		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
-	}
-	defer cancel()
 	run, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
@@ -341,21 +348,13 @@ func conflictingActiveRunPRBaseBranch(run *ipc.RunInfo, requested string) error 
 	return fmt.Errorf("active run %s is already targeting %s, not %s", run.ID, stored, requested)
 }
 
-// activeRunID returns the ID of a non-terminal run for branch and head, or "" if none.
-func activeRunID(env *axiEnv, branch, headSHA string) string {
-	run := activeRunInfo(env, branch, headSHA)
-	if run == nil {
-		return ""
-	}
-	return run.ID
-}
-
-func activeRunInfo(env *axiEnv, branch, headSHA string) *ipc.RunInfo {
+func activeRunInfo(ctx context.Context, env *axiEnv, branch, headSHA string) (*ipc.RunInfo, error) {
 	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
-		return nil
+	source := &ipcRunStateSource{socketPath: env.p.Socket()}
+	if err := source.callWithSlowReplyRetry(ctx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+		return nil, err
 	}
-	return activeRunInfoForHead(active.Run, headSHA)
+	return activeRunInfoForHead(active.Run, headSHA), nil
 }
 
 func activeRunIDForHead(active *ipc.GetActiveRunResult, headSHA string) string {
@@ -865,12 +864,8 @@ func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus
 	}
 }
 
-func getRunInfo(client *ipc.Client, runID string) (*ipc.RunInfo, error) {
-	var result ipc.GetRunResult
-	if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result); err != nil {
-		return nil, err
-	}
-	return result.Run, nil
+func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, error) {
+	return (&ipcRunStateSource{socketPath: socketPath}).Reconcile(ctx, runID)
 }
 
 // sendRespond issues an approval action to the daemon for a step.
@@ -1069,6 +1064,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
 	}
 	ctx := cmd.Context()
+	driveCtx, cancel, err := boundAxiWait(ctx, ra.wait)
+	if err != nil {
+		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
+	}
+	defer cancel()
 
 	act := types.ApprovalAction(strings.TrimSpace(ra.action))
 	switch act {
@@ -1092,7 +1092,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 
 	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+	source := &ipcRunStateSource{socketPath: env.p.Socket()}
+	if err := source.callWithSlowReplyRetry(driveCtx, ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("get active run: %v", err))
 	}
 	if active.Run == nil {
@@ -1101,9 +1105,15 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 	runID := active.Run.ID
 
-	run, err := getRunInfo(env.client, runID)
-	if err != nil || run == nil {
+	run, err := getRunInfo(driveCtx, env.p.Socket(), runID)
+	if err != nil {
+		if isAxiWaitElapsed(ctx, driveCtx, err) {
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+		}
 		return emitError(cmd, 1, fmt.Sprintf("load run: %v", err))
+	}
+	if run == nil {
+		return emitError(cmd, 1, "load run: daemon returned no run")
 	}
 	rv := runViewFromIPC(run)
 
@@ -1145,12 +1155,6 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
-
-	driveCtx, cancel, err := boundAxiWait(ctx, ra.wait)
-	if err != nil {
-		return emitError(cmd, 2, err.Error(), "Pass a positive duration such as --wait 8m")
-	}
-	defer cancel()
 
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.

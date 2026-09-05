@@ -39,7 +39,7 @@ func getRunCallTimeout() time.Duration {
 }
 
 type runStateSource interface {
-	Subscribe(runID string) (<-chan ipc.Event, func(), error)
+	Subscribe(ctx context.Context, runID string) (<-chan ipc.Event, func(), error)
 	Reconcile(ctx context.Context, runID string) (*ipc.RunInfo, error)
 }
 
@@ -47,34 +47,40 @@ type ipcRunStateSource struct {
 	socketPath string
 }
 
-func (s *ipcRunStateSource) Subscribe(runID string) (<-chan ipc.Event, func(), error) {
-	return ipc.Subscribe(s.socketPath, &ipc.SubscribeParams{RunID: runID})
+func (s *ipcRunStateSource) Subscribe(ctx context.Context, runID string) (<-chan ipc.Event, func(), error) {
+	return ipc.SubscribeContext(ctx, s.socketPath, &ipc.SubscribeParams{RunID: runID})
 }
 
 func (s *ipcRunStateSource) Reconcile(ctx context.Context, runID string) (*ipc.RunInfo, error) {
+	var result ipc.GetRunResult
+	if err := s.callWithSlowReplyRetry(ctx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result); err != nil {
+		return nil, err
+	}
+	return result.Run, nil
+}
+
+func (s *ipcRunStateSource) callWithSlowReplyRetry(ctx context.Context, method string, params, result interface{}) error {
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
-		run, err := s.getRun(ctx, runID)
+		err := s.call(ctx, method, params, result)
 		if err == nil {
-			return run, nil
+			return nil
 		}
 		if !ipc.IsCallTimeout(err) {
-			return nil, err
+			return err
 		}
 		if probeErr := s.probeHealth(ctx); probeErr != nil {
-			return nil, fmt.Errorf("get_run timed out and daemon health probe failed: %w", probeErr)
+			return fmt.Errorf("%s timed out and daemon health probe failed: %w", method, probeErr)
 		}
-		// Health succeeded: the daemon is live and the missed deadline was a
-		// slow reply. Retry until the caller's wait/context budget expires.
 	}
 }
 
-func (s *ipcRunStateSource) getRun(ctx context.Context, runID string) (*ipc.RunInfo, error) {
+func (s *ipcRunStateSource) call(ctx context.Context, method string, params, result interface{}) error {
 	client, err := ipc.Dial(s.socketPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer client.Close()
 
@@ -82,17 +88,13 @@ func (s *ipcRunStateSource) getRun(ctx context.Context, runID string) (*ipc.RunI
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
 		if remaining < timeout {
 			timeout = remaining
 		}
 	}
-	var result ipc.GetRunResult
-	if err := client.CallWithContext(ctx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, timeout); err != nil {
-		return nil, err
-	}
-	return result.Run, nil
+	return client.CallWithContext(ctx, method, params, result, timeout)
 }
 
 func (s *ipcRunStateSource) probeHealth(ctx context.Context) error {
@@ -237,7 +239,7 @@ func (r *runReconciler) connect(ctx context.Context) error {
 	started := time.Now()
 	var lastErr error
 	for {
-		events, cancel, err := r.source.Subscribe(r.runID)
+		events, cancel, err := r.source.Subscribe(ctx, r.runID)
 		if err == nil {
 			r.events = events
 			r.cancelSub = cancel

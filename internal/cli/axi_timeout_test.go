@@ -182,6 +182,83 @@ func TestAxiRun_WaitZeroIsUsageError(t *testing.T) {
 	}
 }
 
+func TestAxiRun_SlowActiveRunReadRetriesInsteadOfStartingAnotherRun(t *testing.T) {
+	setDriveGetRunTimeout(t, 50*time.Millisecond)
+	var calls atomic.Int32
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{})
+	fx.setGetActive(func(ctx context.Context) (*ipc.RunInfo, error) {
+		if calls.Add(1) == 1 {
+			if err := sleepOrDone(ctx, 150*time.Millisecond); err != nil {
+				return nil, err
+			}
+		}
+		return fx.running(), nil
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		return fx.completed(), nil
+	})
+
+	out, err := executeCmd("axi", "run", "--wait", "3s")
+	if err != nil {
+		t.Fatalf("axi run rejected slow active-run read: %v\n%s", err, out)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("get_active_run calls = %d, want retry", calls.Load())
+	}
+	if !strings.Contains(out, "outcome: passed") {
+		t.Fatalf("expected reattached completed run:\n%s", out)
+	}
+}
+
+func TestAxiRespond_SlowInitialRunReadRetries(t *testing.T) {
+	setDriveGetRunTimeout(t, 50*time.Millisecond)
+	var responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{responded: &responded})
+	fx.setGetRun(func(ctx context.Context, n int) (*ipc.RunInfo, error) {
+		if n == 1 {
+			if err := sleepOrDone(ctx, 150*time.Millisecond); err != nil {
+				return nil, err
+			}
+		}
+		if responded.Load() {
+			return fx.completed(), nil
+		}
+		return fx.awaiting(), nil
+	})
+
+	out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "3s")
+	if err != nil {
+		t.Fatalf("axi respond rejected slow run read: %v\n%s", err, out)
+	}
+	if !responded.Load() {
+		t.Fatal("response was not sent after the slow run read")
+	}
+	if !strings.Contains(out, "outcome: passed") {
+		t.Fatalf("expected completed run:\n%s", out)
+	}
+}
+
+func TestAxiRun_WaitInterruptsSubscriptionAcknowledgement(t *testing.T) {
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		subscribe: func(ctx context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+			if err := sleepOrDone(ctx, 5*time.Second); err != nil {
+				return nil, err
+			}
+			return hangSubscribe(ctx, nil)
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		return fx.running(), nil
+	})
+
+	started := time.Now()
+	out, err := executeCmd("axi", "run", "--wait", "250ms")
+	assertWaitElapsed(t, err, out, "250ms")
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("subscription acknowledgement ignored wait for %s", elapsed)
+	}
+}
+
 func TestAxiRun_SlowDaemonThenCompletesViaCLI(t *testing.T) {
 	setDriveGetRunTimeout(t, 60*time.Millisecond)
 	var getRunCalls atomic.Int32
@@ -259,18 +336,36 @@ func TestNoMistakesBinary_WaitAndSlowDaemon(t *testing.T) {
 
 type axiTimeoutOpts struct {
 	responded *atomic.Bool
+	subscribe ipc.StreamHandlerFunc
 }
 
 type axiTimeoutFixture struct {
-	head   string
-	mu     sync.Mutex
-	getRun func(context.Context, int) (*ipc.RunInfo, error)
+	head      string
+	mu        sync.Mutex
+	getRun    func(context.Context, int) (*ipc.RunInfo, error)
+	getActive func(context.Context) (*ipc.RunInfo, error)
 }
 
 func (fx *axiTimeoutFixture) setGetRun(fn func(context.Context, int) (*ipc.RunInfo, error)) {
 	fx.mu.Lock()
 	fx.getRun = fn
 	fx.mu.Unlock()
+}
+
+func (fx *axiTimeoutFixture) setGetActive(fn func(context.Context) (*ipc.RunInfo, error)) {
+	fx.mu.Lock()
+	fx.getActive = fn
+	fx.mu.Unlock()
+}
+
+func (fx *axiTimeoutFixture) callGetActive(ctx context.Context) (*ipc.RunInfo, error) {
+	fx.mu.Lock()
+	fn := fx.getActive
+	fx.mu.Unlock()
+	if fn == nil {
+		return fx.running(), nil
+	}
+	return fn(ctx)
 }
 
 func (fx *axiTimeoutFixture) callGetRun(ctx context.Context, n int) (*ipc.RunInfo, error) {
@@ -357,8 +452,11 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 	srv.Handle(ipc.MethodGateContext, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.GateContextResult{Nested: false}, nil
 	})
-	srv.Handle(ipc.MethodGetActiveRun, func(context.Context, json.RawMessage) (interface{}, error) {
-		run := fx.running()
+	srv.Handle(ipc.MethodGetActiveRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		run, err := fx.callGetActive(ctx)
+		if err != nil {
+			return nil, err
+		}
 		if opts.responded != nil && !opts.responded.Load() {
 			run = fx.awaiting()
 		}
@@ -379,7 +477,11 @@ func newAxiTimeoutFixture(t *testing.T, opts axiTimeoutOpts) *axiTimeoutFixture 
 		}
 		return &ipc.GetRunResult{Run: run}, nil
 	})
-	srv.HandleStream(ipc.MethodSubscribe, hangSubscribe)
+	subscribe := opts.subscribe
+	if subscribe == nil {
+		subscribe = hangSubscribe
+	}
+	srv.HandleStream(ipc.MethodSubscribe, subscribe)
 	startIPCServer(t, srv, p.Socket())
 	chdir(t, local)
 	return fx
