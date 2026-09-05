@@ -171,6 +171,12 @@ func TestCIStep_CommitHookDecisionReversalRemainsLocal(t *testing.T) {
 	}
 	writeCIFix(f.dir)
 	_, err := (&CIStep{}).commitRepair(f.sctx, "repair failing check")
+	t.Logf("CI_DECISION_CONFLICT %v", err)
+	logDecisionState(t, f.sctx, "CI repair after commit hook", map[string]any{
+		"check_rejected":    err != nil, "remote_head": f.remoteHead(t), "decision_checks": checks,
+		"local_imports":     gitCmd(t, f.dir, "show", "HEAD:bootstrap.py"),
+		"published_imports": gitCmd(t, f.upstream, "show", "refs/heads/feature:bootstrap.py"),
+	})
 	var conflict *pipeline.DecisionConflictError
 	if !errors.As(err, &conflict) || len(conflict.Findings.Items) != 1 || conflict.Findings.Items[0].ID != "hook-import-order-reversal" {
 		t.Fatalf("hook reversal did not return a named decision conflict: %v", err)

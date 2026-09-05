@@ -94,18 +94,15 @@ After a user-triggered fix, the step re-runs and pauses again to show you the re
 
 ## Fix commits
 
-When the Review, Test, Document, Lint, or CI step commits auto-fix changes, its subject comes from `commit.fix_message`.
-The [global config reference](/no-mistakes/reference/global-config/#commitfix_message) owns the template syntax, default, validation rules, size limits, and supported placeholders; the [repo config reference](/no-mistakes/reference/repo-config/#commitfix_message) owns the repository override and trust behavior.
+The [global config reference](/no-mistakes/reference/global-config/#commitfix_message) owns which repair commits use `commit.fix_message`, its template syntax, default, validation rules, size limits, and supported placeholders; the [repo config reference](/no-mistakes/reference/repo-config/#commitfix_message) owns the repository override and trust behavior.
 The pipeline validates the template, agent summary, predicted output size, and final rendered subject before `git add -A`, so a rejected value does not leave changes staged.
 The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document value for `{{.Step}}`; configured-command lint fixes use the Lint value.
 
 Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
 It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
-When the run holds a recorded human fix decision, the [finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) check also runs before that commit and refuses a repair that reverses the decision.
+The [finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) reference owns the conditional conformance checks and conflict gates for recorded human fix decisions.
 
-The template does not control commits created by the Rebase or Push steps.
-The Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
-Repositories can opt into [`protected_paths`](/no-mistakes/reference/repo-config/#protected_paths) to refuse automatic staging when a protected file is dirty, including at this Push catch-all boundary. Refusal preserves the edits for inspection.
+Repositories can opt into [`protected_paths`](/no-mistakes/reference/repo-config/#protected_paths) to refuse automatic staging when a protected file is dirty, including at [Push's leftover-change commit](/no-mistakes/reference/pipeline-steps/#push). Refusal preserves the edits for inspection.
 
 ## Step rounds
 

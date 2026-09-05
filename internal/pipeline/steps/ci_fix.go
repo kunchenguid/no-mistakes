@@ -31,8 +31,8 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Verify the fix by running the most relevant commands locally before finishing.`
 
 // autoFixCI runs the agent for CI failures, merge conflicts, or a selected fix
-// of a rejected decision repair. commitRepair checks recorded decisions before
-// applying recordRepair's publication policy.
+// of a rejected decision repair. recordRepair owns decision checks and the
+// publication policy.
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (ciRepairResult, error) {
@@ -367,8 +367,10 @@ func ciRepairPolicyDescription(sctx *pipeline.StepContext) string {
 
 // recordRepair binds a freshly produced CI repair commit to the run.
 //
-// One uniform rule decides how, and it applies to every CI-fix path - automatic
-// and manual alike, CI failure and merge conflict alike:
+// Check decisions here, after any commit hooks have run: a hook may rewrite
+// and stage content the fixer preserved. A rejected repair retains local custody
+// without publication authority. Accepted repairs follow one rule on every
+// CI-fix path - automatic and manual, CI failure and merge conflict alike:
 //
 //	A repair is published without revalidating only when its continuity with the
 //	reviewed, published head can be PROVEN. When that continuity cannot be

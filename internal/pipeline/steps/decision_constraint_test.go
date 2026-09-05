@@ -426,6 +426,7 @@ func TestTestStep_ApprovedEvidenceConflictPreservesTestingSection(t *testing.T) 
 			}
 			assertEvidence(*rounds[0].FindingsJSON)
 		}
+		logDecisionState(t, sctx, "Test evidence conflict parked with analyzer evidence", event)
 		if err := executor.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -460,6 +461,17 @@ func TestTestStep_ApprovedEvidenceConflictPreservesTestingSection(t *testing.T) 
 		}
 	}
 	t.Logf("APPROVED_EVIDENCE_TESTING_SECTION\n%s", testingSection)
+	tree, err := worktreeTreeSHA(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruled, err := sctx.DB.HasDeclinedDecisionCheck(sctx.Run.ID, tree, "")
+	if err != nil || !ruled {
+		t.Fatalf("approved evidence tree has no persisted ruling: tree=%s ruled=%t err=%v", tree, ruled, err)
+	}
+	logDecisionState(t, sctx, "Test evidence retained after operator approval", map[string]any{
+		"checked_tree_sha": tree, "persisted_ruling": ruled,
+	})
 }
 
 func TestDecisionCheck_NewerPositiveDecisionSupersedesTreeRuling(t *testing.T) {

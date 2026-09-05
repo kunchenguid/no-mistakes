@@ -166,7 +166,8 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale, RiskScope: wire.RiskScope}, nil
 }
 
-// NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
+// NormalizeFindings assigns deterministic, unique IDs to missing or repeated
+// IDs while preserving the first occurrence of each existing ID.
 func NormalizeFindings(findings Findings, prefix string) Findings {
 	reserved := make(map[string]bool, len(findings.Items))
 	for _, item := range findings.Items {

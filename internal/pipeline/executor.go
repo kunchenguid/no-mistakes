@@ -1211,8 +1211,9 @@ done:
 // user_declined source is what makes "selected nothing" representable, since a
 // NULL column means "no decision was recorded".
 //
-// Best effort by design. This is advisory prompt context for later steps, so a
-// failed write degrades to today's behavior and must never fail the run.
+// Best effort by design: a failed decline write does not fail the run, but
+// leaves no unchanged-tree exemption for a decision-conflict gate, so a later
+// boundary may check that tree again.
 // applyApprovalOverride is the single place both ActionApprove sites (the
 // live wait in executeStep and the daemon-restart recovery path in Resume)
 // route through before completing a step on approval. If step raised its gate

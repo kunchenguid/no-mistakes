@@ -102,6 +102,9 @@ func TestPushStep_SelectedDecisionFixRepairsBeforePublication(t *testing.T) {
 		if event.Findings == nil || !hasAskUserFindings(t, *event.Findings) || gitCmd(t, upstream, "rev-parse", "refs/heads/feature") != head {
 			t.Fatal("Push did not park the reversal before publication")
 		}
+		logDecisionState(t, sctx, "formatter reversal parked before publication", map[string]any{
+			"event": event, "remote_head": gitCmd(t, upstream, "rev-parse", "refs/heads/feature"),
+		})
 		if err := executor.RespondWithOverrides(types.StepPush, types.ActionFix, []string{"import-order-reversal"}, map[string]string{"import-order-reversal": instruction}, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -119,6 +122,12 @@ func TestPushStep_SelectedDecisionFixRepairsBeforePublication(t *testing.T) {
 	if gitCmd(t, upstream, "show", "refs/heads/feature:bootstrap.py") != strings.TrimSpace(preserved) || gitCmd(t, upstream, "show", "refs/heads/feature:format.sh") != strings.TrimSpace(goodFormat) {
 		t.Error("published repair did not preserve the selected import order")
 	}
+	logDecisionState(t, sctx, "selected Push repair published", map[string]any{
+		"remote_head":         gitCmd(t, upstream, "rev-parse", "refs/heads/feature"),
+		"published_imports":   gitCmd(t, upstream, "show", "refs/heads/feature:bootstrap.py"),
+		"published_formatter": gitCmd(t, upstream, "show", "refs/heads/feature:format.sh"),
+		"fix_invocations":     fixes, "decision_checks": checks, "approval_gates": gates,
+	})
 	results, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)

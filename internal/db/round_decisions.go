@@ -123,7 +123,8 @@ func (d *DB) SetStepRoundCheckedTree(id, treeSHA string) error {
 }
 
 // HasDeclinedDecisionCheck reports whether a human already declined a decision
-// check that inspected exactly this worktree tree in the run.
+// check of this exact tree after the run's latest matched positive selection.
+// An older tree ruling cannot exempt a reversal of a newer fix decision.
 func (d *DB) HasDeclinedDecisionCheck(runID, treeSHA, latestFixRoundID string) (bool, error) {
 	if treeSHA == "" {
 		return false, nil
