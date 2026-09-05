@@ -228,3 +228,18 @@ func TestTestStep_EvidenceFixCannotSilentlyReverseDecision(t *testing.T) {
 		t.Fatalf("evidence agent's zero-finding reversal passed: outcome=%+v, err=%v", outcome, err)
 	}
 }
+
+func TestDecisionCheck_MissingSelectedFindingFailsClosed(t *testing.T) {
+	t.Parallel()
+	f := newDecisionFixture(t)
+	f.declineReviewRound(t, declinedDedupFindings)
+	sctx := f.testStepContext()
+	sctx.StepResultID = f.reviewSR.ID
+	selected := `["unavailable-ruling"]`
+	if err := f.db.SetStepRoundUserDecision(mustLatestRoundID(t, sctx), &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordedFixConstraints(sctx); err == nil || !strings.Contains(err.Error(), "unavailable-ruling") {
+		t.Fatalf("missing positive decision must be named and refused: %v", err)
+	}
+}
