@@ -13,7 +13,8 @@ import (
 // phrase such as "the captain, crew and ship" is not operator address.
 var address = regexp.MustCompile(`(?im)(^[^\pL\pN\r\n]*?|[.!?:][ \t]+|[ \t]+-[ \t]+|>[ \t]*)([*_]*)(captain[ \t]*)([*_]*)([:,])([*_]*)([ \t]*)`)
 
-var markup = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|(?i:<pre\b[^>]*>.*?(?:</pre\s*>|$)|<code\b[^>]*>.*?(?:</code\s*>|$))|<[^>\n]*>`)
+var codeTokens = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|(?i:<pre\b[^>]*>.*?(?:</pre\s*>|$)|<code\b[^>]*>.*?(?:</code\s*>|$))|<[^>\n]*>|` + "`+")
+var listMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]+[.)])[ \t]+`)
 var quoteTokens = regexp.MustCompile(`(?s)\\.|&#34;|&#39;|&quot;|["'“”‘’]`)
 
 // Text strips "Captain," / "Captain:" from generated prose while retaining
@@ -39,6 +40,9 @@ func Text(text string) string {
 	offset := 0
 	for line := range strings.SplitAfterSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if fence == "" {
+			trimmed = listMarker.ReplaceAllString(trimmed, "")
+		}
 		marker := ""
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			marker = trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]
@@ -63,34 +67,49 @@ func Text(text string) string {
 		offset += len(line)
 	}
 
-	// Backtick spans may use multiple ticks and span lines. Match the same
-	// delimiter length, so an embedded single tick cannot end a double span.
-	for i := 0; i < len(text); i++ {
-		if text[i] != '`' || quoted[i] {
+	// Scan markup and inline code together, outside block evidence. The first
+	// opener owns its contents: a tag inside backticks (or vice versa) is literal
+	// and cannot protect unrelated prose after that span.
+	for i := 0; i < len(text); {
+		if quoted[i] {
+			i++
 			continue
 		}
-		start := i
-		for i < len(text) && text[i] == '`' {
-			i++
-		}
-		marker := text[start:i]
 		end := i
-		for end < len(text) {
-			next := strings.Index(text[end:], marker)
-			if next < 0 {
-				end = len(text)
+		for end < len(text) && !quoted[end] {
+			end++
+		}
+		for i < end {
+			token := codeTokens.FindStringIndex(text[i:end])
+			if token == nil {
 				break
 			}
-			end += next + len(marker)
-			if (end == len(text) || text[end] != '`') && text[end-len(marker)-1] != '`' {
-				break
+			from, to := i+token[0], i+token[1]
+			i = to
+			if text[from] != '`' {
+				protect(from, to)
+				continue
+			}
+			// Inline spans require a matching run of ticks. An unmatched tick
+			// is ordinary text; only unfinished block fences extend to EOF.
+			for next := to; next < end; {
+				tick := strings.IndexByte(text[next:end], '`')
+				if tick < 0 {
+					break
+				}
+				closeStart := next + tick
+				next = closeStart
+				for next < end && text[next] == '`' {
+					next++
+				}
+				if next-closeStart == to-from {
+					protect(from, next)
+					i = next
+					break
+				}
 			}
 		}
-		protect(start, end)
-		i = end - 1
-	}
-	for _, span := range markup.FindAllStringIndex(text, -1) {
-		protect(span[0], span[1])
+		i = end
 	}
 	closing, quoteStart := "", 0
 	for _, token := range quoteTokens.FindAllStringIndex(text, -1) {
