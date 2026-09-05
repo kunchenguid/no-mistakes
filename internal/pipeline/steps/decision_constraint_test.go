@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,18 +265,124 @@ func TestTestStep_EvidenceFixCannotSilentlyReverseDecision(t *testing.T) {
 	}
 }
 
-func TestDecisionCheck_MissingSelectedFindingFailsClosed(t *testing.T) {
+func TestDecisionCheck_UnreadableSelectionFailsClosed(t *testing.T) {
 	t.Parallel()
 	f := newDecisionFixture(t)
 	f.declineReviewRound(t, declinedDedupFindings)
 	sctx := f.testStepContext()
 	sctx.StepResultID = f.reviewSR.ID
-	selected := `["unavailable-ruling"]`
+	selected := `["journal-version-deduplication"`
 	if err := f.db.SetStepRoundUserDecision(mustLatestRoundID(t, sctx), &selected, db.RoundSelectionSourceUser, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recordedFixConstraints(sctx); err == nil || !strings.Contains(err.Error(), "unavailable-ruling") {
-		t.Fatalf("missing positive decision must be named and refused: %v", err)
+	if _, err := recordedFixConstraints(sctx); err == nil || !strings.Contains(err.Error(), "read decision") {
+		t.Fatalf("unreadable selection must be refused: %v", err)
+	}
+}
+
+// A fix response may name an ID from an earlier round or carry a typo. Such a
+// selection is no positive decision: Review and every later commit boundary
+// treat it as a logged no-op, never as a run failure.
+func TestDecisionCheck_UnmatchedSelectedFindingIsNoOp(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if opts.Purpose != "review" {
+			t.Fatalf("unmatched selection paid a %q pass", opts.Purpose)
+		}
+		output, err := json.Marshal(cleanReviewFindings())
+		return &agent.Result{Output: output}, err
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","action":"ask-user","file":"teardown.txt","description":"Remove teardown-side build-output reclamation"}]}`
+	round, err := sctx.DB.InsertStepRound(sr.ID, 1, "initial", &findings, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["review-9"]`
+	if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil || outcome == nil || outcome.NeedsApproval || len(ag.calls) != 1 {
+		t.Fatalf("unmatched selection failed Review: outcome=%+v err=%v calls=%d", outcome, err, len(ag.calls))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("safe repair\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepTest, "safe repair", ""); err != nil {
+		t.Fatalf("unmatched selection failed the commit boundary: %v", err)
+	}
+	if len(ag.calls) != 1 || gitCmd(t, dir, "rev-parse", "HEAD") == head {
+		t.Fatalf("unmatched selection changed the safe repair: calls=%d", len(ag.calls))
+	}
+	named := false
+	for _, line := range logs {
+		named = named || strings.Contains(line, `"review-9"`)
+	}
+	if !named {
+		t.Fatalf("no log line named the unmatched selection: %q", logs)
+	}
+}
+
+// The binding channel cannot drop old lines the way the advisory prompt
+// sections do, so a run recording many instructed decisions must still bind
+// rather than fail at the boundary that consumes the complete history.
+func TestDecisionCheck_LargeSameRunHistoryStillBinds(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"decisions preserved"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := strings.Repeat("Keep the teardown removal out of every later repair, including Rebase and CI fixes. ", 20)
+	const rounds = 60
+	for i := 1; i <= rounds; i++ {
+		id := fmt.Sprintf("decision-%d", i)
+		findings := fmt.Sprintf(`{"findings":[{"id":%q,"severity":"warning","action":"ask-user","file":"teardown.txt","description":"Remove teardown-side build-output reclamation %d"}]}`, id, i)
+		round, err := sctx.DB.InsertStepRound(sr.ID, i, "initial", &findings, nil, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userFindings := fmt.Sprintf(`{"findings":[{"id":%q,"severity":"warning","action":"ask-user","file":"teardown.txt","description":"Remove teardown-side build-output reclamation %d","user_instructions":%q}]}`, id, i, instructions)
+		selected := fmt.Sprintf(`[%q]`, id)
+		if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, db.RoundSelectionSourceUser, &userFindings); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decisions, err := recordedFixConstraints(sctx)
+	if err != nil {
+		t.Fatalf("large same-run history failed instead of binding: %v", err)
+	}
+	if len(decisions) <= maxDecisionSectionBytes {
+		t.Fatalf("history of %d bytes does not exceed the advisory prompt cap of %d", len(decisions), maxDecisionSectionBytes)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("safe repair\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepTest, "safe repair", ""); err != nil {
+		t.Fatalf("large same-run history failed the commit boundary: %v", err)
+	}
+	if len(ag.calls) != 1 || ag.calls[0].Purpose != "decision-conformance" {
+		t.Fatalf("expected one decision check, got %d calls", len(ag.calls))
+	}
+	for _, id := range []string{`"decision-1"`, fmt.Sprintf(`"decision-%d"`, rounds)} {
+		if !strings.Contains(ag.calls[0].Prompt, id) {
+			t.Fatalf("decision check prompt dropped %s", id)
+		}
+	}
+	if gitCmd(t, dir, "rev-parse", "HEAD") == head {
+		t.Fatal("checked repair was not committed")
 	}
 }
 
