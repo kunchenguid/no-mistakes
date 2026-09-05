@@ -1,17 +1,127 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestPushStep_ChecksRecordedDecisionsAfterFormatting(t *testing.T) {
+	const preserved = "import zeta_registration\nimport alpha_loader\n"
+	const reversed = "import alpha_loader\nimport zeta_registration\n"
+	const formatReversal = "printf '%s\\n' 'import alpha_loader' 'import zeta_registration' > bootstrap.py"
+	for _, tc := range []struct {
+		name, source, format string
+		leftover             bool
+		wantChecks           int
+	}{
+		{name: "formatter_reverses_selection", source: db.RoundSelectionSourceUser, format: formatReversal, wantChecks: 1},
+		{name: "lint_leftover_reverses_selection", source: db.RoundSelectionSourceUser, leftover: true, wantChecks: 1},
+		{name: "formatter_without_selection", format: formatReversal},
+		{name: "formatter_after_decline", source: db.RoundSelectionSourceUserDeclined, format: formatReversal},
+		{name: "formatter_after_auto_fix", source: db.RoundSelectionSourceAutoFix, format: formatReversal},
+		{name: "formatter_preserves_tree", source: db.RoundSelectionSourceUser, format: "printf '%s\\n' 'import zeta_registration' 'import alpha_loader' > bootstrap.py"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := t.TempDir()
+			gitCmd(t, upstream, "init", "--bare")
+			dir, base, _ := setupGitRepo(t)
+			file := filepath.Join(dir, "bootstrap.py")
+			if err := os.WriteFile(file, []byte(preserved), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "bootstrap.py")
+			gitCmd(t, dir, "commit", "-m", "register before loading")
+			head := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, dir, "remote", "add", "origin", upstream)
+			gitCmd(t, dir, "push", "origin", "feature")
+			checks := 0
+			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				if opts.Purpose == "review" {
+					output, err := json.Marshal(cleanReviewFindings())
+					return &agent.Result{Output: output}, err
+				}
+				checks++
+				content, err := os.ReadFile(file)
+				if err != nil || string(content) != reversed || opts.Purpose != "decision-conformance" {
+					t.Fatalf("checker did not inspect the post-format reversal: purpose=%s content=%q err=%v", opts.Purpose, content, err)
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"formatter reversed the recorded import order","findings":[{"id":"import-order-reversal","severity":"error","action":"ask-user","file":"bootstrap.py","description":"review round 1 preserve-import-order is contradicted: alpha_loader now runs before zeta_registration"}]}`)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{Format: tc.format})
+			sctx.Repo.UpstreamURL = upstream
+			setupGateMirror(t, sctx)
+			if tc.source != "" {
+				sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+				if err != nil {
+					t.Fatal(err)
+				}
+				findings := `{"findings":[{"id":"preserve-import-order","severity":"warning","action":"ask-user","file":"bootstrap.py","description":"Preserve registration-before-loading import order"}]}`
+				round, err := sctx.DB.InsertStepRound(sr.ID, 1, "initial", &findings, nil, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selected := `["preserve-import-order"]`
+				if tc.source == db.RoundSelectionSourceUserDeclined {
+					selected = "[]"
+				}
+				if err := sctx.DB.SetStepRoundUserDecision(round.ID, &selected, tc.source, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			review, err := (&ReviewStep{}).Execute(sctx)
+			if err != nil || review == nil || review.NeedsApproval || review.ReviewApprovedHeadSHA != head {
+				t.Fatalf("preserved import order did not pass Review: outcome=%+v err=%v", review, err)
+			}
+			recordReviewApproval(t, sctx, review.ReviewApprovedHeadSHA)
+			if tc.leftover {
+				if err := os.WriteFile(file, []byte(reversed), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = (&PushStep{}).Execute(sctx)
+			if checks != tc.wantChecks {
+				t.Errorf("decision checks = %d, want %d", checks, tc.wantChecks)
+			}
+			if tc.wantChecks > 0 {
+				var conflict *pipeline.DecisionConflictError
+				if !errors.As(err, &conflict) || len(conflict.Findings.Items) != 1 || conflict.Findings.Items[0].ID != "import-order-reversal" || conflict.CheckedTreeSHA == "" {
+					t.Errorf("formatter reversal did not return a named decision conflict: %v", err)
+				}
+				if gitCmd(t, dir, "rev-parse", "HEAD") != head || gitCmd(t, upstream, "rev-parse", "refs/heads/feature") != head {
+					t.Error("rejected reversal was committed or published")
+				}
+				if gitCmd(t, dir, "diff", "--cached", "--name-only") != "" || gitCmd(t, dir, "diff", "--name-only") != "bootstrap.py" {
+					t.Error("rejected reversal did not remain unstaged for an operator ruling")
+				}
+			} else if err != nil {
+				t.Errorf("unconstrained Push failed: %v", err)
+			}
+			run, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.PushActive || (tc.wantChecks > 0 && (run.LastPushedSHA != nil || run.HeadSHA != head)) {
+				t.Errorf("rejected Push changed durable publication state: %+v", run)
+			}
+			if tc.wantChecks == 0 && (run.LastPushedSHA == nil || *run.LastPushedSHA != gitCmd(t, upstream, "rev-parse", "refs/heads/feature")) {
+				t.Errorf("unconstrained Push did not record its publication: %+v", run)
+			}
+		})
+	}
+}
 
 func setupGateMirror(t *testing.T, sctx *pipeline.StepContext) string {
 	t.Helper()

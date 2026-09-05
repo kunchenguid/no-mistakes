@@ -40,6 +40,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			sctx.Log(fmt.Sprintf("warning: format command exited with code %d: %s", exitCode, output))
 		}
 	}
+	if err := assertRecordedFixDecisions(sctx); err != nil {
+		return nil, err
+	}
 
 	// Commit any uncommitted changes from pipeline agents or the formatter. Test
 	// evidence is deliberately not among them: it is collected outside the
