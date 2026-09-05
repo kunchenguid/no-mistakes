@@ -221,7 +221,7 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 		t.Fatalf("u must open confirmation without acting: confirm=%v calls=%d", m.recoverConfirm, recoverCalls)
 	}
 	plain := stripANSI(m.View())
-	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter recover", "--keep-local", "rerun"} {
+	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter recover", "--keep-local"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("recover confirmation missing %q:\n%s", want, plain)
 		}
