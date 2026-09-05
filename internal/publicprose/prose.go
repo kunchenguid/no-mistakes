@@ -72,9 +72,10 @@ func Text(text string) string {
 		paragraphInterrupt := blockquoteBreak.MatchString(line)
 		listItem := false
 		if fence == "" {
-			trimmed = listMarker.ReplaceAllString(trimmed, "")
 			item := listMarker.FindString(line[len(leading):])
-			inList := len(listContents) > 1
+			// Only sibling items bypass paragraph-interruption rules; a new
+			// nested ordered list must still start at one.
+			siblingItem := len(listContents) > 1 && indent < listContents[len(listContents)-1]
 			switch {
 			case rule:
 				listContents = listContents[:1]
@@ -85,9 +86,10 @@ func Text(text string) string {
 					}
 				}
 				listItem = item != "" && indent < listContents[len(listContents)-1]+4 &&
-					(!paragraphOpen || inList || paragraphInterrupt)
+					(!paragraphOpen || siblingItem || blockquoteBreak.MatchString(line[len(leading):]))
 				if listItem {
 					listContents = append(listContents, indent+len(item))
+					trimmed = listMarker.ReplaceAllString(trimmed, "")
 				}
 			}
 		}
@@ -97,7 +99,7 @@ func Text(text string) string {
 			marker = trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]
 		}
 		if fence == "" {
-			heading := atxHeading.MatchString(line)
+			heading := indent < listContent+4 && atxHeading.MatchString(trimmed)
 			if heading || rule || trimmed == "" || marker != "" || blockStart.MatchString(line) || htmlBlock != nil {
 				blockStarts = append(blockStarts, offset)
 			}
