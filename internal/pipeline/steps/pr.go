@@ -1281,9 +1281,10 @@ func publicUserIntent(sctx *pipeline.StepContext) string {
 }
 
 // prependIntentSection prepends a "## Intent" section sourced from the
-// already-extracted user intent. The intent text is reused verbatim (after
-// the same secret/adversarial scrubbing the agent prompt path applies)
-// rather than being paraphrased by the agent. Returns body unchanged when
+// already-extracted user intent. The intent text is reused as
+// publicUserIntent renders it (the agent prompt path's secret/adversarial
+// scrubbing plus the publication cleanups) rather than being paraphrased by
+// the agent. Returns body unchanged when
 // no intent is available.
 func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	cleaned := publicUserIntent(sctx)

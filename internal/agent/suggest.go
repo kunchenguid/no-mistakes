@@ -243,7 +243,9 @@ func isValidBranchName(name string) bool {
 	return true
 }
 
-// sanitizeCommitSubject trims whitespace and keeps only the first line.
+// sanitizeCommitSubject trims whitespace, keeps only the first line, drops
+// operator address, and only then tightens the conventional type, so the
+// type is inferred from the cleaned subject.
 func sanitizeCommitSubject(raw string) string {
 	s := strings.TrimSpace(raw)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
