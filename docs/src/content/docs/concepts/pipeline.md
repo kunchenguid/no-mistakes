@@ -40,7 +40,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
 | 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
-| 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
+| 6 | **Lint** | Run lint/static analysis; can share Document's initial pass under the [housekeeping effort rules](/no-mistakes/reference/global-config/#stage_effort) | `3` |
 | 7 | **Push** | Safely push the validated branch to the configured target | n/a |
 | 8 | **PR** | Create or update the pull request | n/a |
 | 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |

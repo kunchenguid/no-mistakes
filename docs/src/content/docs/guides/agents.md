@@ -67,7 +67,7 @@ This refusal also applies when deterministic test or lint commands are configure
 | Test without `commands.test`, or evidence validation with user intent | No | Requires the agent to discover checks and gather end-to-end evidence. |
 | Document | No | Requires the agent to discover and update documentation gaps. |
 | Lint with `commands.lint` | No, as part of a full gate | The command is deterministic, but the full gate still requires an agent. |
-| Lint without `commands.lint` and all fix rounds | No | The document step performs the initial combined housekeeping pass, and an agent is still needed for fallback assessment or code changes. |
+| Lint without `commands.lint` and all fix rounds | No | An agent performs lint, optionally sharing Document's pass under the [housekeeping effort rules](/no-mistakes/reference/global-config/#stage_effort), and handles fallback assessment or code changes. |
 | Push, PR, and CI as part of a gate | No | They run only after the required validation steps, and PR or CI paths may invoke the agent themselves. |
 
 ### Antigravity and Gemini setups
