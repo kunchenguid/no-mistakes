@@ -152,13 +152,10 @@ func TestAxiRun_WaitElapsedAgainstLiveIdleDaemon(t *testing.T) {
 	}
 }
 
-func TestAxiRespond_WaitElapsedAgainstLiveIdleDaemon(t *testing.T) {
+func TestAxiRespond_WaitElapsedAfterSubmissionReattachesWithoutRespondingAgain(t *testing.T) {
 	var responded atomic.Bool
 	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{responded: &responded})
 	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
-		if responded.Load() {
-			return fx.running(), nil
-		}
 		return fx.awaiting(), nil
 	})
 
@@ -166,6 +163,15 @@ func TestAxiRespond_WaitElapsedAgainstLiveIdleDaemon(t *testing.T) {
 	out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "250ms")
 	elapsed := time.Since(started)
 	assertWaitElapsed(t, err, out, "250ms")
+	if !responded.Load() {
+		t.Fatal("response was not submitted before the wait elapsed")
+	}
+	if !strings.Contains(out, "Re-run `no-mistakes axi run`") {
+		t.Fatalf("post-response timeout did not provide a non-mutating reattach command:\n%s", out)
+	}
+	if strings.Contains(out, "Re-run `no-mistakes axi respond") {
+		t.Fatalf("post-response timeout instructed the caller to submit another response:\n%s", out)
+	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("bounded wait took %s, want return near 250ms", elapsed)
 	}

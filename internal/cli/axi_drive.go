@@ -1160,7 +1160,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	// don't immediately observe the same gate we just answered.
 	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
@@ -1168,7 +1168,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	final, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi respond --action approve|fix|skip")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
 		}
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
