@@ -7,12 +7,82 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) {
+	t.Parallel()
+	for _, manual := range []bool{false, true} {
+		name := "automatic"
+		if manual {
+			name = "manual"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			invocations := 0
+			var indexBefore string
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				invocations++
+				if err := os.WriteFile(filepath.Join(dir, "package.lock"), []byte("staged lock\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "package.lock")
+				indexBefore = gitCmd(t, dir, "diff", "--cached")
+				for file, content := range map[string]string{"package.lock": "rejected edit\n", "fix.txt": "CI repair\n"} {
+					if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"repair checks","code_change_needed":true}`)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
+			prURL := "https://github.com/test/repo/pull/42"
+			sctx.Run.PRURL = &prURL
+			sctx.Config.ProtectedPaths = []string{"*.lock"}
+			sctx.Config.AutoFix.CI = 3
+			sctx.Config.CITimeout = time.Minute
+			sctx.Fixing = manual
+			polls := 0
+			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+				polls++
+				return nil
+			}}
+			outcome, err := step.Execute(sctx)
+			if err != nil || outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+				t.Fatalf("refusal must park for an operator: outcome=%+v err=%v", outcome, err)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil || len(findings.Items) != 1 {
+				t.Fatalf("refusal findings=%+v err=%v", findings, err)
+			}
+			finding := findings.Items[0]
+			if finding.File != "package.lock" || finding.Action != types.ActionAskUser || !strings.Contains(finding.Description, `rule "*.lock"`) {
+				t.Errorf("refusal lost the path, rule, or decision: %+v", finding)
+			}
+			if invocations != 1 || polls != 0 {
+				t.Errorf("refusal retried: invocations=%d polls=%d", invocations, polls)
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+				t.Errorf("refusal committed: HEAD=%s want %s", got, headSHA)
+			}
+			if got := gitCmd(t, dir, "diff", "--cached"); got != indexBefore {
+				t.Errorf("refusal changed the index: %q", got)
+			}
+			for file, want := range map[string]string{"package.lock": "rejected edit\n", "fix.txt": "CI repair\n"} {
+				if got, err := os.ReadFile(filepath.Join(dir, file)); err != nil || string(got) != want {
+					t.Errorf("refusal discarded %s: %q err=%v", file, got, err)
+				}
+			}
+		})
+	}
+}
 
 func TestTestStep_FixMode_ProtectedPathDoesNotReachCommit(t *testing.T) {
 	t.Parallel()

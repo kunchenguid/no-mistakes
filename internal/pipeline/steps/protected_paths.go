@@ -28,7 +28,7 @@ func stagePipelineChanges(sctx *pipeline.StepContext) error {
 			file := entry[3:]
 			for _, pattern := range sctx.Config.ProtectedPaths {
 				if matchIgnorePattern(file, pattern) {
-					return fmt.Errorf("refusing automatic commit: dirty protected path %q matches protected_paths rule %q; index and worktree preserved, inspect and resolve the edit before retrying", file, pattern)
+					return &pipeline.ProtectedPathError{Path: file, Rule: pattern}
 				}
 			}
 		}
