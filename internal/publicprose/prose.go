@@ -51,9 +51,12 @@ func Text(text string) string {
 	// Preserve fenced and indented code, including unfinished fences, and
 	// blockquotes with lazy paragraph continuation lines.
 	var fence string
-	var blockStarts []int
+	// Quotation resets use all block starts; inline spans stop only at paragraph
+	// interruptions, including new items in an existing list.
+	var blockStarts, paragraphBreaks []int
 	blockquote := false
-	listContent := 0
+	paragraphOpen := false
+	listContents := []int{0}
 	offset := 0
 	for line := range strings.SplitAfterSeq(text, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -62,16 +65,29 @@ func Text(text string) string {
 		rule := thematicBreak.MatchString(line)
 		htmlBlock := htmlBlockStart.FindStringSubmatchIndex(line)
 		htmlInterrupt := htmlBlock != nil && htmlBlock[2] >= 0
+		paragraphInterrupt := blockquoteBreak.MatchString(line)
+		listItem := false
 		if fence == "" {
 			trimmed = listMarker.ReplaceAllString(trimmed, "")
 			item := listMarker.FindString(line[len(leading):])
+			inList := len(listContents) > 1
 			switch {
-			case rule, trimmed != "" && indent == 0 && item == "":
-				listContent = 0
-			case item != "" && indent < listContent+4:
-				listContent = indent + len(item)
+			case rule:
+				listContents = listContents[:1]
+			case trimmed != "":
+				if !paragraphOpen || item != "" || paragraphInterrupt || htmlInterrupt {
+					for len(listContents) > 1 && indent < listContents[len(listContents)-1] {
+						listContents = listContents[:len(listContents)-1]
+					}
+				}
+				listItem = item != "" && indent < listContents[len(listContents)-1]+4 &&
+					(!paragraphOpen || inList || paragraphInterrupt)
+				if listItem {
+					listContents = append(listContents, indent+len(item))
+				}
 			}
 		}
+		listContent := listContents[len(listContents)-1]
 		marker := ""
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			marker = trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, trimmed[:1]))]
@@ -81,9 +97,14 @@ func Text(text string) string {
 			if heading || rule || trimmed == "" || marker != "" || blockStart.MatchString(line) || htmlBlock != nil {
 				blockStarts = append(blockStarts, offset)
 			}
+			if heading || rule || trimmed == "" || marker != "" || paragraphInterrupt || htmlInterrupt || listItem {
+				paragraphBreaks = append(paragraphBreaks, offset)
+			}
 			if heading {
 				blockStarts = append(blockStarts, offset+len(line))
+				paragraphBreaks = append(paragraphBreaks, offset+len(line))
 			}
+			paragraphOpen = trimmed != "" && !heading && !rule && marker == "" && !htmlInterrupt
 		}
 		switch {
 		case fence != "":
@@ -91,6 +112,7 @@ func Text(text string) string {
 			if strings.HasPrefix(marker, fence) && strings.TrimSpace(strings.TrimPrefix(trimmed, marker)) == "" {
 				fence = ""
 				blockStarts = append(blockStarts, offset+len(line))
+				paragraphBreaks = append(paragraphBreaks, offset+len(line))
 			}
 		case marker != "":
 			blockquote = false
@@ -99,7 +121,7 @@ func Text(text string) string {
 		case strings.HasPrefix(trimmed, ">"):
 			blockquote = true
 			protect(offset, offset+len(line))
-		case rule, trimmed == "", blockquoteBreak.MatchString(line), htmlInterrupt:
+		case rule, trimmed == "", paragraphInterrupt, htmlInterrupt:
 			blockquote = false
 		case blockquote, indent >= listContent+4:
 			protect(offset, offset+len(line))
@@ -133,8 +155,8 @@ func Text(text string) string {
 			// Inline spans require a matching run of ticks. An unmatched tick
 			// is ordinary text; only unfinished block fences extend to EOF.
 			spanEnd := end
-			if nextBlock := sort.SearchInts(blockStarts, to); nextBlock < len(blockStarts) {
-				spanEnd = min(spanEnd, blockStarts[nextBlock])
+			if nextBreak := sort.SearchInts(paragraphBreaks, to); nextBreak < len(paragraphBreaks) {
+				spanEnd = min(spanEnd, paragraphBreaks[nextBreak])
 			}
 			for next := to; next < spanEnd; {
 				tick := strings.IndexByte(text[next:spanEnd], '`')
