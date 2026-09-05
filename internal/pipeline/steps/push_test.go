@@ -162,6 +162,9 @@ func TestPushStep_ChecksRecordedDecisionsAfterFormatting(t *testing.T) {
 			upstream := t.TempDir()
 			gitCmd(t, upstream, "init", "--bare")
 			dir, base, _ := setupGitRepo(t)
+			// Exercise Windows-style conversion warnings on every platform.
+			gitCmd(t, dir, "config", "core.autocrlf", "true")
+			gitCmd(t, dir, "config", "core.safecrlf", "warn")
 			file := filepath.Join(dir, "bootstrap.py")
 			if err := os.WriteFile(file, []byte(preserved), 0o644); err != nil {
 				t.Fatal(err)
@@ -227,8 +230,10 @@ func TestPushStep_ChecksRecordedDecisionsAfterFormatting(t *testing.T) {
 				if gitCmd(t, dir, "rev-parse", "HEAD") != head || gitCmd(t, upstream, "rev-parse", "refs/heads/feature") != head {
 					t.Error("rejected reversal was committed or published")
 				}
-				if gitCmd(t, dir, "diff", "--cached", "--name-only") != "" || gitCmd(t, dir, "diff", "--name-only") != "bootstrap.py" {
-					t.Error("rejected reversal did not remain unstaged for an operator ruling")
+				staged := gitCmd(t, dir, "diff", "--cached", "--name-only")
+				unstaged := gitCmd(t, dir, "diff", "--name-only")
+				if staged != "" || unstaged != "bootstrap.py" {
+					t.Errorf("rejected reversal did not remain unstaged for an operator ruling: staged=%q unstaged=%q", staged, unstaged)
 				}
 			} else if err != nil {
 				t.Errorf("unconstrained Push failed: %v", err)
