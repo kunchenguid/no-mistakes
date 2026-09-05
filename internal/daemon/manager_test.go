@@ -429,13 +429,11 @@ func TestPushReceivedKeepsConcurrentForgeProfilesIsolated(t *testing.T) {
 	}
 
 	observed := make(map[string]capturedForgeContext, 2)
+	// The barrier proves overlap, not startup speed. Let go test's timeout
+	// bound the wait so slow Windows git subprocesses do not fail isolation.
 	for range 2 {
-		select {
-		case captured := <-contexts:
-			observed[captured.repoID] = captured
-		case <-time.After(3 * time.Second):
-			t.Fatal("concurrent forge runs did not reach barrier")
-		}
+		captured := <-contexts
+		observed[captured.repoID] = captured
 	}
 	for repoID, wantDir := range map[string]string{"personal-forge-run": personalDir, "work-forge-run": workDir} {
 		captured := observed[repoID]
