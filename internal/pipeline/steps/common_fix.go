@@ -255,12 +255,9 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 		return "", fmt.Errorf("%w: commit summary must not exceed %d bytes", errRejectedCommitSummary, config.MaxFixMessageSummaryBytes)
 	}
 	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
-	// Strip a quote pair only when it wraps the WHOLE summary. strings.Trim
-	// treats each end independently, so a cutset containing quotes also eats a
-	// lone opening quote from text like `"Captain, ready" fixture restored`,
-	// destroying the boundary RenderFixMessage needs to tell literal dialogue
-	// from operator address. Unwrapping only a matched pair keeps both cases:
-	// `'fix lint issues,'` loses its wrapper, that summary keeps its quotes.
+	// Keep quotes out of the trim cutset: trimming each end independently
+	// destroys literal dialogue boundaries needed by RenderFixMessage.
+	// unwrapQuotedSummary owns cosmetic wrapper removal.
 	cleaned = strings.Trim(cleaned, " \t\r\n.;:,-")
 	cleaned = unwrapQuotedSummary(cleaned)
 	cleaned = strings.Trim(cleaned, " \t\r\n.;:,-")

@@ -654,6 +654,7 @@ The blocked format set includes every Unicode `Bidi_Control` code point plus `U+
 Legitimate `U+200C` zero-width non-joiner and `U+200D` zero-width joiner text shaping remains allowed.
 The final rendered subject is validated again, so unsafe characters in an agent-provided summary are also rejected.
 The [PR step's operator-address rule](/no-mistakes/reference/pipeline-steps/#pr) is applied to `{{.Summary}}` before rendering; literal template text is never rewritten.
+Fix-agent summaries lose one surrounding pair of straight single or double quotes only when the inner text is unchanged by that rule: `'fix lint issues,'` becomes `fix lint issues`, while `"Captain, ready"` keeps its quotes. Quotes that do not wrap the whole summary are preserved.
 The setting does not change commit subjects created by the Rebase or Push steps.
 A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
 

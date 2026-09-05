@@ -1069,6 +1069,8 @@ func TestExtractCommitSummary_UnwrapsOnlyCosmeticQuotes(t *testing.T) {
 func TestExecuteFixMode_PreservesQuotedCommitText(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct{ name, summary, want string }{
+		{"cosmetic single quotes", `'fix lint issues,'`, `no-mistakes(review): fix lint issues`},
+		{"cosmetic double quotes", `"fix test failures."`, `no-mistakes(review): fix test failures`},
 		{"double quotes", `"Captain, ready" fixture restored`, `no-mistakes(review): "Captain, ready" fixture restored`},
 		{"single quotes", `'Captain: ready' fixture restored`, `no-mistakes(review): 'Captain: ready' fixture restored`},
 		{"fully quoted", `"Captain, ready"`, `no-mistakes(review): "Captain, ready"`},
