@@ -22,23 +22,23 @@ var (
 	// documented placeholder and is allowlisted. Three-letter tokens without a
 	// delimiter are not matched (the abbreviation trap).
 	siteCode   = regexp.MustCompile(`(?i)\b(?:site|facility|datacenter|airport|dc)[-_]([a-z0-9]{2,}(?:[-_][a-z0-9]+)*)\b`)
-	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._:-]{3,})\b`)
-	firmwareKw = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._+-]{2,})\b`)
+	serialKw   = regexp.MustCompile(`(?i)\b(?:serial(?:\s*number)?|s/n|asset\s*tag|chassis\s*id)["']?\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{3,})\b`)
+	firmwareKw = regexp.MustCompile(`(?i)\b(?:firmware|build(?:\s*number)?)["']?\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._+-]{2,})\b`)
 	gpsKw      = regexp.MustCompile(`(?i)\b(?:gps|lat(?:itude)?|lon(?:gitude)?|coord(?:inates)?)\b`)
 	gpsPair    = regexp.MustCompile(`-?\d{1,3}\.\d{3,},\s*-?\d{1,3}\.\d{3,}`)
 	// A lat/lon keyword carrying one coordinate-shaped value. The dominant
 	// serialization splits the pair across lines, so a single assigned
 	// coordinate is the hit; a bare float with no keyword is not.
 	gpsAssign  = regexp.MustCompile(`(?i)\b(?:latitude|longitude|coordinates|coord|gps|lat|lon|lng)["']?\s*[:=]\s*["'\[\s]*(-?\d{1,3}\.\d{3,})`)
-	k8sAssign  = regexp.MustCompile(`(?i)\b(?:namespace|cluster(?:\s*name)?|tenant(?:\s*id)?|workspace)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
-	policyKw   = regexp.MustCompile(`(?i)\b(?:ssid|vlan|radius(?:\s*policy)?|802\.1x|aaa\s*policy|firewall(?:\s*rule)?)\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
-	sessionKw  = regexp.MustCompile(`(?i)\b(?:session[_-]?id|jsessionid|connect\.sid|trace[_-]?id|x-request-id)\s*[:=]\s*["']?([A-Za-z0-9._-]{8,})`)
+	k8sAssign  = regexp.MustCompile(`(?i)\b(?:namespace|cluster(?:\s*name)?|tenant(?:\s*id)?|workspace)["']?\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
+	policyKw   = regexp.MustCompile(`(?i)\b(?:ssid|vlan|radius(?:\s*policy)?|802\.1x|aaa\s*policy|firewall(?:\s*rule)?)["']?\s*[:=]\s*["']?([A-Za-z0-9][A-Za-z0-9._:-]{1,})\b`)
+	sessionKw  = regexp.MustCompile(`(?i)\b(?:session[_-]?id|jsessionid|connect\.sid|trace[_-]?id|x-request-id)["']?\s*[:=]\s*["']?([A-Za-z0-9._-]{8,})`)
 	syslogLine = regexp.MustCompile(`(?i)\b(?:[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+\S+\s+\S+(?:\[\d+\])?:`)
 	// Fleet units only. A port count is a protocol range or a capability
 	// figure, never the size of a live estate.
 	fleetScale  = regexp.MustCompile(`(?i)\b\d{3,}(?:,\d{3})*\s+(?:devices?|sites?|endpoints?)\b`)
 	captureName = regexp.MustCompile(`(?i)\.(?:pcap|pcapng|cap|dmp)$`)
-	ipv6Loose   = regexp.MustCompile(`(?i)\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b`)
+	ipv6Loose   = regexp.MustCompile(`(?i)[0-9a-f:]*:[0-9a-f:]+`)
 )
 
 var docIPv4 = mustCIDRs(
@@ -348,17 +348,17 @@ func isDocSite(tok string) bool {
 	return ok
 }
 
-// isSiteCode reports whether a delimited site/facility label names one real
-// facility. The Hard Rules forbid site codes "when they are real", and a code
-// identifies an instance, so its label is numbered: facility-west12,
-// dc-east-01. A bare structural suffix - site_id, site_name, dc_name,
-// site-packages - is a schema field or a package name, not a location.
 func isSiteCode(label string) bool {
 	m := siteCode.FindStringSubmatch(label)
 	if m == nil || isDocSite(m[0]) {
 		return false
 	}
-	return digitInValue.MatchString(m[1])
+	switch strings.ToLower(m[1]) {
+	case "id", "name", "code", "key", "type", "packages", "header":
+		return false
+	default:
+		return true
+	}
 }
 
 func isDocK8s(name string) bool {

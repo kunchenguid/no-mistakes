@@ -4,7 +4,8 @@ Composite action that scans a pull request for live-system values that must
 not be published. It is the reusable implementation of the required check
 named **`publish-policy`**.
 
-Public GitHub logs emit only `publish-policy violation` and an optional LAN
+Public GitHub logs emit `publish-policy ok` on success, `publish-policy violation` for findings,
+or `publish-policy error` for scanner or portal failures, with an optional LAN
 portal URL. Match snippets, filenames, hostnames, IPs, and names never appear
 in check text, annotations, Discord notices, commit messages, or PR titles
 produced by this action.

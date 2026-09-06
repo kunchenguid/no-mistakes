@@ -5,7 +5,7 @@
 set -eu
 
 generic_fail() {
-  echo "publish-policy violation"
+  echo "publish-policy error"
   if [ -n "${NM_PORTAL_URL:-}" ]; then
     echo "${NM_PORTAL_URL}"
   fi
@@ -14,7 +14,6 @@ generic_fail() {
 }
 
 if ! command -v no-mistakes >/dev/null 2>&1; then
-  echo "publish-policy violation" >&2
   generic_fail
 fi
 
@@ -68,30 +67,11 @@ if [ ! -s "$DIFF" ]; then
   :
 fi
 
-GH_BIN=""
-if command -v gh-axi >/dev/null 2>&1; then
-  GH_BIN=gh-axi
-elif command -v gh >/dev/null 2>&1; then
-  GH_BIN=gh
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "false" ]; then
+  git fetch --quiet --unshallow origin >/dev/null 2>&1 || generic_fail
 fi
-if [ -n "$GH_BIN" ] && [ -n "${NM_REPO:-}" ] && [ -n "${NM_PR_NUMBER:-}" ]; then
-  "$GH_BIN" api "repos/${NM_REPO}/pulls/${NM_PR_NUMBER}/commits" >"$TMP/nm-firewall.commits.json" 2>/dev/null || true
-  if [ -s "$TMP/nm-firewall.commits.json" ]; then
-    NM_COMMITS_IN="$TMP/nm-firewall.commits.json" NM_COMMITS_OUT="$COMMITS" "$PY" - <<'PY'
-import json, os
-raw = open(os.environ["NM_COMMITS_IN"], encoding="utf-8").read()
-try:
-    data = json.loads(raw)
-except json.JSONDecodeError:
-    raise SystemExit(0)
-msgs = []
-if isinstance(data, list):
-    for item in data:
-        commit = (item or {}).get("commit") or {}
-        msgs.append((commit.get("message") or "").split("\n", 1)[0])
-open(os.environ["NM_COMMITS_OUT"], "w", encoding="utf-8").write("\n".join(msgs))
-PY
-  fi
+if ! git log --format=%B "${BASE_SHA}..${HEAD_SHA}" >"$COMMITS" 2>/dev/null; then
+  generic_fail
 fi
 
 set +e

@@ -110,6 +110,9 @@ func (s *Store) Insert(in Input, res Result, portalBase string) (*Verdict, error
 	}
 	portalURL := JoinPortalURL(portalBase, id)
 	public := PublicText(portalURL, res.Failed())
+	if res.Error != "" {
+		public = PublicErrorText(portalURL)
+	}
 	_, err := s.sql.Exec(
 		`INSERT INTO verdicts (id, repo, branch, head_sha, base_sha, pr_url, pr_number, status, conclusion, public_summary, portal_url, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -352,35 +355,17 @@ func (v *Verdict) AxiRun() AxiRun {
 		run.Outcome = "passed"
 	default:
 		run.Outcome = "failed"
-		gateStatus := "awaiting_approval"
-		acknowledgement := "Respond with action acknowledge to record that an operator saw the verdict; the GitHub check stays failed until a new head SHA is scanned"
-		if last := v.lastResponse(); last != nil {
-			gateStatus = StatusAcknowledged
-			acknowledgement = "An operator already recorded " + last.Action + "; the GitHub check stays failed until a new head SHA is scanned"
-		}
 		run.Gate = &AxiGate{
 			Step:     "publish-firewall",
-			Status:   gateStatus,
+			Status:   "awaiting_approval",
 			Findings: items,
 		}
 		run.Help = []string{
 			"Public GitHub output is generic; match details stay on this LAN record",
-			acknowledgement,
+			"Respond with action acknowledge to record that an operator saw the verdict; the GitHub check stays failed until a new head SHA is scanned",
 		}
 	}
 	return run
-}
-
-// StatusAcknowledged is the gate status once an operator has responded. The
-// violation stays open, so the gate is still rendered; what changes is that
-// the next reader can see it was already reviewed.
-const StatusAcknowledged = "acknowledged"
-
-func (v *Verdict) lastResponse() *Response {
-	if len(v.Responses) == 0 {
-		return nil
-	}
-	return &v.Responses[len(v.Responses)-1]
 }
 
 func (v *Verdict) Notice() Notice {

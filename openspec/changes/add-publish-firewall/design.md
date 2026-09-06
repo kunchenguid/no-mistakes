@@ -37,7 +37,7 @@ A required GitHub check can enforce this without a second forge. GitHub Actions 
 
 - Decision: Firewall state is a **separate SQLite file** (`$NM_HOME/firewall.sqlite`) and a **separate `firewall serve` process**. Cluster `NM_HOME` is not the Mac daemon root.
 
-- Decision: Public GitHub output is exactly the generic phrase `publish-policy violation` plus an optional LAN portal URL. Class counts may appear on the LAN public-notice JSON without snippets, filenames, titles, or customer names. Discord must use that notice object, never finding descriptions.
+- Decision: Public GitHub output is `publish-policy ok` on success, `publish-policy violation` for findings, or `publish-policy error` for scanner or portal failures, plus an optional LAN portal URL. Class counts may appear on the LAN public-notice JSON without snippets, filenames, titles, or customer names. Discord must use that notice object, never finding descriptions.
 
 - Decision: Portal ingest failure fails the check (fail closed). A clean scan is the only success path.
 

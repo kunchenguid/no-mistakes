@@ -310,16 +310,16 @@ func TestRespond_IsVisibleOnEveryLaterRead(t *testing.T) {
 	if !ok {
 		t.Fatalf("the violation is still open, so the gate must stay: %v", run)
 	}
-	if gate["status"] != StatusAcknowledged {
-		t.Fatalf("gate status=%v, want %s", gate["status"], StatusAcknowledged)
+	if gate["status"] != "awaiting_approval" {
+		t.Fatalf("gate status=%v, want %s", gate["status"], "awaiting_approval")
 	}
 	if run["outcome"] != "failed" {
 		t.Fatalf("acknowledgement must not green the record: %v", run["outcome"])
 	}
 	help, _ := run["help"].([]any)
 	for _, line := range help {
-		if s, _ := line.(string); strings.HasPrefix(s, "Respond with action acknowledge") {
-			t.Fatalf("help still asks for an acknowledgement that was already recorded: %v", help)
+		if s, _ := line.(string); strings.HasPrefix(s, "An operator already recorded") {
+			t.Fatalf("help echoes a recorded action: %v", help)
 		}
 	}
 }

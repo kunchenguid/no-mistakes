@@ -101,6 +101,9 @@ func TestFirewallGitHubCheck_RefusedIngestIsAnErrorNotAViolation(t *testing.T) {
 	if exit.code != firewall.ExitError {
 		t.Fatalf("exit=%d, want %d (error, not a Hard Rules violation)", exit.code, firewall.ExitError)
 	}
+	if out.String() != firewall.PublicErrorText(portal.URL) {
+		t.Fatalf("unexpected public error: %q", out.String())
+	}
 	if strings.Contains(out.String(), "192.0.2.1") {
 		t.Fatalf("stdout leaked scanned content: %q", out.String())
 	}

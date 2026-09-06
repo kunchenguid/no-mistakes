@@ -20,8 +20,8 @@ carries `id`, `branch`, `status`, `head`, `pr`, `outcome`, `steps[]` (`step`,
 `severity`, `file`, `line`, `action`, `class`, and `description`.
 
 Acknowledgements are rendered on every later read: `responses[]` (`id`,
-`action`, `created_at`) is the durable trail, and once an operator has
-responded, `gate.status` is `acknowledged` rather than `awaiting_approval`.
+`action`, `created_at`) is the durable trail. The gate status stays
+`awaiting_approval` after a response.
 The violation is still open, so the gate and `outcome: failed` remain.
 
 The verdict's `conclusion` is returned by `/respond` and `/notice`, and its

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -32,7 +33,10 @@ func newFindingID() string {
 
 // Scan inspects every counted surface. It never logs match text.
 func Scan(in Input) Result {
-	all := surfaces(in)
+	all, err := surfaces(in)
+	if err != nil {
+		return Result{Error: err.Error()}
+	}
 	var hits []Finding
 	for _, s := range all {
 		hits = append(hits, detect(s)...)
@@ -41,8 +45,8 @@ func Scan(in Input) Result {
 	return Result{Findings: hits}
 }
 
-func surfaces(in Input) []surface {
-	out := parseDiff(in.Diff)
+func surfaces(in Input) ([]surface, error) {
+	out, err := parseDiff(in.Diff)
 	if strings.TrimSpace(in.Title) != "" {
 		out = append(out, surface{kind: "title", text: in.Title})
 	}
@@ -54,12 +58,12 @@ func surfaces(in Input) []surface {
 	if strings.TrimSpace(in.Body) != "" {
 		out = append(out, surface{kind: "body", text: in.Body})
 	}
-	return out
+	return out, err
 }
 
-func parseDiff(diff string) []surface {
+func parseDiff(diff string) ([]surface, error) {
 	if strings.TrimSpace(diff) == "" {
-		return nil
+		return nil, nil
 	}
 	var out []surface
 	file := ""
@@ -70,6 +74,16 @@ func parseDiff(diff string) []surface {
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			for _, name := range diffFilenames(strings.TrimPrefix(line, "diff --git ")) {
+				out = append(out, surface{kind: "filename", file: name, text: name})
+			}
+		case strings.HasPrefix(line, "rename from "), strings.HasPrefix(line, "rename to "):
+			name := strings.TrimPrefix(strings.TrimPrefix(line, "rename from "), "rename to ")
+			if decoded, err := strconv.Unquote(name); err == nil {
+				name = decoded
+			}
+			out = append(out, surface{kind: "filename", file: name, text: name})
 		case strings.HasPrefix(line, "+++ "):
 			file = strings.TrimPrefix(line, "+++ ")
 			file = strings.TrimPrefix(file, "b/")
@@ -91,7 +105,39 @@ func parseDiff(diff string) []surface {
 			minusLine++
 		}
 	}
-	return out
+	return out, sc.Err()
+}
+
+func diffFilenames(header string) []string {
+	var left, right string
+	if strings.HasPrefix(header, `"`) {
+		for i := 1; i < len(header); i++ {
+			if header[i] == '\\' {
+				i++
+			} else if header[i] == '"' {
+				left, right = header[:i+1], strings.TrimSpace(header[i+1:])
+				break
+			}
+		}
+	} else {
+		i := strings.LastIndex(header, " b/")
+		if i < 0 {
+			i = strings.LastIndex(header, ` "b/`)
+		}
+		if i >= 0 {
+			left, right = header[:i], header[i+1:]
+		}
+	}
+	var names []string
+	for _, name := range []string{left, right} {
+		if decoded, err := strconv.Unquote(name); err == nil {
+			name = decoded
+		}
+		if len(name) >= 2 {
+			names = append(names, name[2:])
+		}
+	}
+	return names
 }
 
 func parseHunk(hunk string) (plus, minus int) {

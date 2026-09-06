@@ -18,7 +18,7 @@ The system SHALL provide a reusable GitHub composite action that scans a pull re
 
 ### Requirement: Generic public check text
 
-Public GitHub check output, annotations, and job logs SHALL contain only the generic phrase `publish-policy violation` and an optional LAN portal URL. They MUST NOT echo matched hostnames, IPs, MACs, names, emails, snippets, filenames, or PR titles.
+Public GitHub check output, annotations, and job logs SHALL contain `publish-policy ok` on success, `publish-policy violation` for findings, or `publish-policy error` for scanner or portal failures, with an optional LAN portal URL. They MUST NOT echo matched hostnames, IPs, MACs, names, emails, snippets, filenames, or PR titles.
 
 #### Scenario: Violation output is generic
 - **WHEN** the scanner finds a non-documentation IPv4 address in the diff
@@ -42,7 +42,7 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 
 #### Scenario: Site and facility field names are not site codes
 - **WHEN** the diff contains `site_id`, `site_name`, `facility_id`, `dc_name`, or `site-packages`
-- **THEN** the scanner reports no findings, because a site code numbers one facility; `facility-west12` and `dc-east-01` still fail closed
+- **THEN** the scanner reports no findings, because bare structural suffixes are excluded; `airport-lhr`, `facility-west12`, and `dc-east-01` still fail closed
 
 #### Scenario: An opaque token without digits is still a capture
 - **WHEN** the diff contains `jsessionid=ABCDEFGHIJKLMNOP` or `serial: ABCDEFGH`

@@ -334,7 +334,7 @@ func TestScan_SchemaFieldNamesAreNotSiteCodes(t *testing.T) {
 }
 
 func TestScan_NumberedSiteCodesStillFail(t *testing.T) {
-	for _, line := range []string{"facility-west12", "dc-east-01", "site_north7", "datacenter-02"} {
+	for _, line := range []string{"facility-west12", "dc-east-01", "site_north7", "datacenter-02", "airport-lhr", "dc-ashburn", "facility-northgate", "site-frankfurt"} {
 		t.Run(line, func(t *testing.T) {
 			res := Scan(Input{Diff: unified("inventory.yaml", []string{"  location: " + line})})
 			if !hasClass(res, ClassSiteCode) {
@@ -385,4 +385,60 @@ func classes(res Result) []Class {
 		out = append(out, f.Class)
 	}
 	return out
+}
+
+func TestScan_CompressedIPv6(t *testing.T) {
+	for _, value := range []string{"fe80::1", "fd12:3456::7", "::abcd", "2001:4860:4860::8888"} {
+		if res := Scan(Input{Diff: unified("config.txt", []string{"bind " + value})}); !hasClass(res, ClassIPAddress) {
+			t.Fatalf("missed compressed address %q", value)
+		}
+	}
+	for _, value := range []string{"::1", "::", "2001:db8::1234"} {
+		if res := Scan(Input{Title: value}); hasClass(res, ClassIPAddress) {
+			t.Fatalf("documentation address rejected: %q", value)
+		}
+	}
+}
+
+func TestScan_QuotedAssignments(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		class Class
+	}{
+		{`{"namespace":"prod-tenant-a"}`, ClassK8s},
+		{`{"serial":"SN9F3K21AB"}`, ClassSerial},
+		{`{"firmware":"17.9.4a"}`, ClassFirmware},
+		{`{"ssid":"prod-network-a"}`, ClassPolicyName},
+		{`{"session_id":"abcdef1234567890"}`, ClassCapture},
+	} {
+		if res := Scan(Input{Diff: unified("config.json", []string{tc.text})}); !hasClass(res, tc.class) {
+			t.Fatalf("missed quoted assignment: %s", tc.text)
+		}
+	}
+}
+
+func TestScan_BinaryAndRenameMetadata(t *testing.T) {
+	for _, diff := range []string{
+		"diff --git a/trace.pcap b/trace.pcap\nnew file mode 100644\nBinary files /dev/null and b/trace.pcap differ\n",
+		"diff --git a/trace.pcap b/trace.txt\nsimilarity index 100%\nrename from trace.pcap\nrename to trace.txt\n",
+		"diff --git a/trace.txt b/trace.pcap\nsimilarity index 100%\nrename from trace.txt\nrename to trace.pcap\n",
+		"diff --git a/packet trace.pcap b/packet trace.pcap\nBinary files /dev/null and b/packet trace.pcap differ\n",
+		`diff --git "a/packet\ttrace.pcap" "b/packet\ttrace.pcap"` + "\n",
+	} {
+		if res := Scan(Input{Diff: diff}); !hasClass(res, ClassFilename) {
+			t.Fatalf("capture metadata passed: %q", diff)
+		}
+	}
+}
+
+func TestGitHubCheck_OversizedDiffFailsAsError(t *testing.T) {
+	in := Input{Diff: unified("large.txt", []string{strings.Repeat("x", 4<<20), "bind 10.0.0.5"})}
+	res := Scan(in)
+	if res.Error == "" || res.Conclusion() != "error" {
+		t.Fatalf("partial scan certified: %+v", res)
+	}
+	out, code, err := GitHubCheck(in, CheckOptions{})
+	if code != ExitError || err == nil || out != PublicErrorText("") {
+		t.Fatalf("out=%q code=%d err=%v", out, code, err)
+	}
 }

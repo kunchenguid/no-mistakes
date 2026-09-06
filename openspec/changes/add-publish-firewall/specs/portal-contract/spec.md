@@ -38,7 +38,7 @@ POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT ch
 
 #### Scenario: A later reader can see the verdict was reviewed
 - **WHEN** a second operator GETs `/v1/axi/runs/{id}` after an acknowledgement
-- **THEN** the run renders `responses[]` and its gate status is `acknowledged` rather than `awaiting_approval`, while the gate and `outcome: failed` remain because the violation is still open
+- **THEN** the run renders `responses[]` and its gate status stays `awaiting_approval`, while the gate and `outcome: failed` remain because the violation is still open
 
 ### Requirement: An ingest the portal refuses is not a verdict
 

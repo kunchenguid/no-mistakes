@@ -165,7 +165,11 @@ func TestPublishFirewallAction_FailsClosed(t *testing.T) {
 			if code == 0 {
 				t.Fatalf("check must fail closed, exit=0 output=%q", stdout)
 			}
-			if !strings.Contains(stdout, "publish-policy violation") {
+			phrase := "publish-policy violation"
+			if tc.conclusion == "error" {
+				phrase = "publish-policy error"
+			}
+			if !strings.Contains(stdout, phrase) {
 				t.Fatalf("public output = %q, want the generic phrase", stdout)
 			}
 			for _, v := range capturedValues {
@@ -388,7 +392,7 @@ func newCheckScriptEnv(t *testing.T) *checkScriptEnv {
 		"",
 	}, "\n"))
 	git("add", "-A")
-	git("commit", "-qm", "import inventory from "+capturedValues[0])
+	git("commit", "-qm", "import inventory from "+capturedValues[0]+"\n\ncommit-body-marker")
 	head := git("rev-parse", "HEAD")
 
 	event := map[string]any{
@@ -442,7 +446,7 @@ if [ -n "$private" ] && [ -n "` + privatePayload + `" ]; then
   printf '%s\n' "` + privatePayload + `" > "$private"
 fi
 if [ ` + strconv.Itoa(exit) + ` -ne 0 ]; then
-  printf 'publish-policy violation\n'
+  if [ ` + strconv.Itoa(exit) + ` -eq 1 ]; then printf 'publish-policy violation\n'; else printf 'publish-policy error\n'; fi
   if [ -n "${NM_PORTAL_URL:-}" ]; then printf '%s\n' "${NM_PORTAL_URL}"; fi
   exit ` + strconv.Itoa(exit) + `
 fi
@@ -526,5 +530,45 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishFirewallAction_CollectsFullCommitMessagesWithoutGitHubCLI(t *testing.T) {
+	env := newCheckScriptEnv(t)
+	env.fakeScanner(t, 0, "")
+	out, code := env.run(t, nil)
+	if code != 0 {
+		t.Fatalf("exit=%d output=%q", code, out)
+	}
+	data, err := os.ReadFile(filepath.Join(env.dir, "runner-temp", "nm-firewall.commits"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), capturedValues[0]) || !strings.Contains(string(data), "commit-body-marker") {
+		t.Fatalf("incomplete collected commit messages: %q", data)
+	}
+}
+
+func TestPublishFirewallAction_CommitCollectionFailureBlocksScan(t *testing.T) {
+	env := newCheckScriptEnv(t)
+	env.fakeScanner(t, 0, "")
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(env.binDir, "git")
+	if err := os.Remove(stub); err != nil {
+		t.Fatal(err)
+	}
+	write(t, stub, "#!/usr/bin/env bash\nif [ \"$1\" = log ]; then exit 1; fi\nexec '"+strings.ReplaceAll(gitPath, "'", "'\"'\"'")+"' \"$@\"\n")
+	if err := os.Chmod(stub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := env.run(t, nil)
+	if code == 0 || strings.TrimSpace(out) != "publish-policy error" || env.stepOutput(t)["conclusion"] != "error" {
+		t.Fatalf("collection failed open: code=%d output=%q", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(env.dir, "scanner-args.txt")); !os.IsNotExist(err) {
+		t.Fatal("scanner invoked after collection failed")
 	}
 }

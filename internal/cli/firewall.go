@@ -38,7 +38,7 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			diff, err := readDiffFlag(diffFile, cmd.InOrStdin())
 			if err != nil {
-				fmt.Fprint(cmd.OutOrStdout(), firewall.PublicText(portalURL, true))
+				fmt.Fprint(cmd.OutOrStdout(), firewall.PublicErrorText(portalURL))
 				return &exitError{code: firewall.ExitError, err: err}
 			}
 			title, _ := readOptional(titleFile)
@@ -53,7 +53,7 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 			if portal == "" {
 				p, err := paths.New()
 				if err != nil {
-					fmt.Fprint(cmd.OutOrStdout(), firewall.PublicText("", true))
+					fmt.Fprint(cmd.OutOrStdout(), firewall.PublicErrorText(""))
 					return &exitError{code: firewall.ExitError, err: err}
 				}
 				opts.StorePath = p.FirewallDB()

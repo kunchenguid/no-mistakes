@@ -41,12 +41,12 @@ func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err erro
 	if opts.StorePath != "" {
 		store, openErr := OpenStore(opts.StorePath)
 		if openErr != nil {
-			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("open store: %w", openErr)
+			return PublicErrorText(opts.PortalURL), ExitError, fmt.Errorf("open store: %w", openErr)
 		}
 		defer store.Close()
 		stored, openErr = store.Insert(in, res, opts.PortalURL)
 		if openErr != nil {
-			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("store verdict: %w", openErr)
+			return PublicErrorText(opts.PortalURL), ExitError, fmt.Errorf("store verdict: %w", openErr)
 		}
 	}
 
@@ -77,21 +77,25 @@ func GitHubCheck(in Input, opts CheckOptions) (stdout string, exit int, err erro
 		}
 		b, mErr := json.MarshalIndent(payload, "", "  ")
 		if mErr != nil {
-			return PublicText(opts.PortalURL, true), ExitError, mErr
+			return PublicErrorText(opts.PortalURL), ExitError, mErr
 		}
 		if wErr := os.WriteFile(opts.PrivateJSON, b, 0o600); wErr != nil {
-			return PublicText(opts.PortalURL, true), ExitError, wErr
+			return PublicErrorText(opts.PortalURL), ExitError, wErr
 		}
 	}
 
 	if strings.TrimSpace(opts.PortalURL) != "" {
 		ingested, iErr := ingest(opts, in, res)
 		if iErr != nil {
-			return PublicText(opts.PortalURL, true), ExitError, fmt.Errorf("portal ingest: %w", iErr)
+			return PublicErrorText(opts.PortalURL), ExitError, fmt.Errorf("portal ingest: %w", iErr)
 		}
 		if ingested != "" {
 			portalShown = ingested
 		}
+	}
+
+	if res.Error != "" {
+		return PublicErrorText(portalShown), ExitError, fmt.Errorf("scan diff: %s", res.Error)
 	}
 
 	stdout = PublicText(portalShown, failed)

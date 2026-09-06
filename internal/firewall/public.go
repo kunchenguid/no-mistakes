@@ -21,8 +21,16 @@ func PublicText(portalURL string, failed bool) string {
 	if !failed {
 		return "publish-policy ok\n"
 	}
+	return publicMessage(portalURL, PublicPhrase)
+}
+
+func PublicErrorText(portalURL string) string {
+	return publicMessage(portalURL, "publish-policy error")
+}
+
+func publicMessage(portalURL, phrase string) string {
 	var b strings.Builder
-	b.WriteString(PublicPhrase)
+	b.WriteString(phrase)
 	b.WriteByte('\n')
 	if u := strings.TrimSpace(portalURL); u != "" {
 		b.WriteString(u)
@@ -52,7 +60,9 @@ func JoinPortalURL(base, id string) string {
 
 func NewNotice(repo, prURL, portalURL, conclusion string) Notice {
 	kind := "publish-policy-ok"
-	if conclusion != "success" {
+	if conclusion == "error" {
+		kind = "publish-policy-error"
+	} else if conclusion != "success" {
 		kind = "publish-policy-violation"
 	}
 	return Notice{
