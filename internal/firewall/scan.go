@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -385,12 +386,8 @@ func isContentKind(kind string) bool {
 }
 
 func overlapsMatch(loc []int, matches [][]int) bool {
-	for _, m := range matches {
-		if loc[0] < m[1] && m[0] < loc[1] {
-			return true
-		}
-	}
-	return false
+	i := sort.Search(len(matches), func(i int) bool { return matches[i][1] > loc[0] })
+	return i < len(matches) && matches[i][0] < loc[1]
 }
 
 func detectK8s(s surface) []Finding {

@@ -584,3 +584,21 @@ func TestScan_IPv6SpansExcludeEmbeddedAddressMatches(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkScan_IPv6SpanExclusion(b *testing.B) {
+	for _, tc := range []struct{ name, token string }{
+		{"mapped", "::ffff:192.0.2.7 "},
+		{"mac_suffix", "2001:db8:11:22:33:44:55:66 "},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			in := Input{Diff: unified("docs.md", []string{strings.Repeat(tc.token, 100000)})}
+			b.SetBytes(int64(len(in.Diff)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if res := Scan(in); res.Failed() {
+					b.Fatalf("documentation input rejected: %+v", res)
+				}
+			}
+		})
+	}
+}
