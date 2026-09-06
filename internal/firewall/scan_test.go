@@ -539,3 +539,48 @@ func TestScan_IPv4MappedIPv6UsesIPv4Allowlist(t *testing.T) {
 		})
 	}
 }
+
+func TestScan_IPv6SpansExcludeEmbeddedAddressMatches(t *testing.T) {
+	for _, tc := range []struct {
+		text      string
+		ips, macs int
+	}{
+		{"2001:db8:11:22:33:44:55:66", 0, 0},
+		{"2001:db8::10.0.0.5", 0, 0},
+		{"2001:db8::10.0.0.5/32", 0, 0},
+		{"2001:db8::10.0.0.5/31", 1, 0},
+		{"2001:db8:11:22:33:44:55:66/31", 1, 0},
+		{"fe80::11:22:33:44:55:66", 1, 0},
+		{"::ffff:10.0.0.5", 1, 0},
+		{"::ffff:a00:5", 1, 0},
+		{"::ffff:192.0.2.7/119", 1, 0},
+		{"10.0.0.5 2001:db8::10.0.0.5 10.0.0.6", 2, 0},
+		{"11:22:33:44:55:66 2001:db8:11:22:33:44:55:66 22:33:44:55:66:77", 0, 2},
+		{"2001:db8::10.0.0.5 10.0.0.6 11:22:33:44:55:66", 1, 1},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			in := Input{Diff: unified("docs.md", []string{tc.text})}
+			res := Scan(in)
+			ips, macs := 0, 0
+			for _, f := range res.Findings {
+				if f.Class == ClassIPAddress {
+					ips++
+				}
+				if f.Class == ClassMACAddress {
+					macs++
+				}
+			}
+			if ips != tc.ips || macs != tc.macs {
+				t.Fatalf("IP/MAC counts=%d/%d want=%d/%d", ips, macs, tc.ips, tc.macs)
+			}
+			out, code, err := GitHubCheck(in, CheckOptions{})
+			want := 0
+			if tc.ips+tc.macs > 0 {
+				want = ExitViolation
+			}
+			if code != want || err != nil || out != PublicText("", want != 0) {
+				t.Fatalf("out=%q code=%d err=%v", out, code, err)
+			}
+		})
+	}
+}

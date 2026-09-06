@@ -167,8 +167,7 @@ func hunkStart(f string) int {
 
 func detect(s surface) []Finding {
 	var hits []Finding
-	hits = append(hits, detectIPs(s)...)
-	hits = append(hits, detectMACs(s)...)
+	hits = append(hits, detectAddresses(s)...)
 	hits = append(hits, detectEmails(s)...)
 	hits = append(hits, detectPhones(s)...)
 	hits = append(hits, detectHosts(s)...)
@@ -209,19 +208,11 @@ func clip(s string, n int) string {
 	return string([]rune(s)[:n]) + "…"
 }
 
-func detectIPs(s surface) []Finding {
+func detectAddresses(s surface) []Finding {
 	var hits []Finding
-	for _, tok := range ipv4Candidate.FindAllString(s.text, -1) {
-		ip, n, ok := parseIPv4Candidate(tok)
-		if !ok {
-			continue
-		}
-		if isDocIPv4(ip, n) {
-			continue
-		}
-		hits = append(hits, hit(s, ClassIPAddress, tok))
-	}
-	for _, tok := range ipv6Loose.FindAllString(s.text, -1) {
+	var ipv6Spans [][]int
+	for _, loc := range ipv6Loose.FindAllStringIndex(s.text, -1) {
+		tok := s.text[loc[0]:loc[1]]
 		if strings.Count(tok, ":") < 2 {
 			continue
 		}
@@ -239,21 +230,30 @@ func detectIPs(s surface) []Finding {
 		if ip == nil {
 			continue
 		}
-		if isDocIPv6(ip, network) {
+		ipv6Spans = append(ipv6Spans, loc)
+		if !isDocIPv6(ip, network) {
+			hits = append(hits, hit(s, ClassIPAddress, tok))
+		}
+	}
+	for _, loc := range ipv4Candidate.FindAllStringIndex(s.text, -1) {
+		if overlapsMatch(loc, ipv6Spans) {
+			continue
+		}
+		tok := s.text[loc[0]:loc[1]]
+		ip, n, ok := parseIPv4Candidate(tok)
+		if !ok || isDocIPv4(ip, n) {
 			continue
 		}
 		hits = append(hits, hit(s, ClassIPAddress, tok))
 	}
-	return hits
-}
-
-func detectMACs(s surface) []Finding {
-	var hits []Finding
-	for _, tok := range macCandidate.FindAllString(s.text, -1) {
-		if isDocMAC(tok) {
+	for _, loc := range macCandidate.FindAllStringIndex(s.text, -1) {
+		if overlapsMatch(loc, ipv6Spans) {
 			continue
 		}
-		hits = append(hits, hit(s, ClassMACAddress, tok))
+		tok := s.text[loc[0]:loc[1]]
+		if !isDocMAC(tok) {
+			hits = append(hits, hit(s, ClassMACAddress, tok))
+		}
 	}
 	return hits
 }
