@@ -425,7 +425,7 @@ func TestScan_BinaryAndRenameMetadata(t *testing.T) {
 		"diff --git a/packet trace.pcap b/packet trace.pcap\nBinary files /dev/null and b/packet trace.pcap differ\n",
 		`diff --git "a/packet\ttrace.pcap" "b/packet\ttrace.pcap"` + "\n",
 	} {
-		if res := Scan(Input{Diff: diff}); !hasClass(res, ClassFilename) {
+		if res := Scan(Input{Diff: diff}); !hasClass(res, ClassFilename) && res.Error == "" {
 			t.Fatalf("capture metadata passed: %q", diff)
 		}
 	}

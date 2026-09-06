@@ -74,6 +74,8 @@ func parseDiff(diff string) ([]surface, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
+		case strings.HasPrefix(line, "Binary files ") && strings.HasSuffix(line, " differ"), line == "GIT binary patch":
+			return nil, fmt.Errorf("diff contains unscannable binary content")
 		case strings.HasPrefix(line, "diff --git "):
 			for _, name := range diffFilenames(strings.TrimPrefix(line, "diff --git ")) {
 				out = append(out, surface{kind: "filename", file: name, text: name})
