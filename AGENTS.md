@@ -8,7 +8,7 @@ Build, test, and release commands are owned by the `Makefile`; read it for the f
 
 **Detached fork.** `origin` is `mfreeman451/no-mistakes`. `upstream` is `kunchenguid/no-mistakes`. Open PRs against origin only; sync by fetching upstream. Guide: `docs/src/content/docs/guides/detached-fork.md`.
 
-**Publish firewall.** Required GitHub check `publish-policy` for configured public product repos (first: `carverauto/serviceradar`). Scanner and public-text rules live in `internal/firewall` (package comment owns the Hard Rules rationale). Public GitHub/Discord output is the generic phrase `publish-policy violation` plus a LAN portal URL — never snippets. Self-hosted runners in namespace `no-mistakes`; ClusterIP portal; do not relocate the Mac `~/.no-mistakes` daemon. Action: `.github/actions/publish-firewall`. Cluster: `deploy/no-mistakes/`. Regressions: `internal/firewall/*_test.go`, `internal/cli/firewall_test.go`, `publish_firewall_action_test.go`.
+**Publish firewall.** Required GitHub check `publish-policy` for configured public product repos (first: `carverauto/serviceradar`). Scanner and public-text rules live in `internal/firewall` (package comment owns the Hard Rules rationale). Public output must never include match details; `internal/firewall/public.go` owns check text and the Discord-safe notice contract. Self-hosted runners in namespace `no-mistakes`; ClusterIP portal; do not relocate the Mac `~/.no-mistakes` daemon. Action: `.github/actions/publish-firewall`. Cluster: `deploy/no-mistakes/`. Regressions: `internal/firewall/*_test.go`, `internal/cli/firewall_test.go`, `publish_firewall_action_test.go`.
 
 Safest local verification sequence after non-trivial changes:
 

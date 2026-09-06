@@ -58,7 +58,11 @@ Pattern search SHALL use word boundaries or a qualifying delimiter. The scanner 
 
 ### Requirement: Surfaces that count
 
-The scanner SHALL inspect added and removed unified-diff lines, changed filenames, the pull request title, commit messages, and the pull request body.
+The action SHALL supply aggregate and introduced-commit diffs to the scanner, including added and removed lines and changed filenames, plus commit messages and the current pull request title and body fetched through the GitHub API. Failed metadata collection or Git-reported omitted binary content SHALL fail closed as an error, not a Hard Rules violation.
+
+#### Scenario: Removed intermediate content still counts
+- **WHEN** an introduced commit adds a live-system value and a later commit removes it
+- **THEN** the history scan reports the value even if the aggregate diff is empty
 
 #### Scenario: Removed live value still fails
 - **WHEN** a pull request only deletes a non-documentation IP from a file

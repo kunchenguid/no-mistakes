@@ -2,11 +2,11 @@
 
 ### Requirement: Axi-shaped records
 
-The LAN portal API SHALL expose run, step, finding, and respond records using the same field names as `no-mistakes axi` (id, branch, status, head, pr, steps, findings, action, description) plus firewall verdict fields (conclusion, public_summary, portal_url).
+The LAN portal API SHALL expose run, step, finding, and respond records using the same field names as `no-mistakes axi` (id, branch, status, head, pr, steps, findings, action, description) with route-specific verdict fields as documented in the [Portal API](../../../../../docs/src/content/docs/reference/portal-api.md#records).
 
 #### Scenario: Status looks like axi
 - **WHEN** a client GET `/v1/axi/runs/{id}` for a firewall scan
-- **THEN** the JSON includes `run.id`, `run.branch`, `run.status`, `run.head`, `steps`, and `findings` with `id`, `severity`, `file`, `action`, and `description`
+- **THEN** the JSON includes `run.id`, `run.branch`, `run.status`, `run.head`, `run.steps`, and finding items with `id`, `severity`, `file`, `action`, and `description`
 
 ### Requirement: LAN details vs public notice
 
@@ -30,7 +30,7 @@ Ingest SHALL store the conclusion the client already published to GitHub. The po
 
 ### Requirement: Respond does not green the check
 
-POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT change the GitHub check conclusion. A new head SHA is required to pass.
+POST `/v1/axi/runs/{id}/respond` SHALL record an acknowledgement. It MUST NOT change the GitHub check conclusion. A successful check run is required to pass.
 
 #### Scenario: Acknowledge leaves conclusion failed
 - **WHEN** an operator responds with action `acknowledge` on a failing verdict

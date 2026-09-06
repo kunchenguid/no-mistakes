@@ -14,15 +14,20 @@ self-hosted runners in cluster namespace `no-mistakes`. See
 
 ## What is scanned
 
-The pull request unified diff (added **and** removed lines), filenames, title,
-commit messages, and body. A cleanup PR that deletes a captured value still
-publishes that value in the public diff, so it still fails.
+The action scans added **and** removed lines in the aggregate pull request diff
+and every introduced commit’s content changes, plus filenames, commit messages,
+and the current PR title and body fetched from GitHub. An add-then-remove
+sequence still exposes the value in history; a cleanup PR still exposes it
+in the public diff. Both fail. Metadata lookup failures and binary content
+omitted by Git fail closed as scanner errors, not Hard Rules findings.
 
 Detectors are structural and **anchored**. There is no organization-abbreviation
 list. Ordinary English (`equal`, `manual`, `actual`) is not a hit.
 Documentation ranges (`192.0.2.0/24`, `example.com`, `555-0100`, IANA
 documentation MACs, `SITE01`) are allowed. RFC1918 and other non-documentation
-addresses fail closed.
+addresses fail closed. CIDRs must fit entirely within an allowed range.
+IPv4-mapped IPv6 addresses use the IPv4 allowlist; embedded IPv4 or MAC-shaped
+substrings of a complete IPv6 literal are not judged as separate addresses.
 
 Keyword-anchored classes (k8s identifiers, network policy names, serials,
 session and trace IDs, firmware builds, GPS) match on the assigned value, not
@@ -38,7 +43,7 @@ identifiers `site_id`, `site_name`, `dc_name`, and `site-packages` are not.
 
 | Surface | Content |
 | --- | --- |
-| GitHub check / job logs | `publish-policy violation` for findings, `publish-policy error` for scanner or portal failures, plus a LAN portal URL |
+| GitHub check / job logs | `publish-policy ok` on success; `publish-policy violation` for findings or `publish-policy error` for scanner or portal failures, with an optional LAN portal URL |
 | Discord / off-LAN notice | `GET /v1/firewall/verdicts/{id}/notice` — no snippets |
 | LAN portal | axi-shaped run/step/finding records with file, line, class, snippet |
 
@@ -66,7 +71,7 @@ no-mistakes axi firewall respond --run <id> --action acknowledge
 ```
 
 `respond` records that an operator saw the verdict. It does not green the
-GitHub check. A new head SHA is required to pass.
+GitHub check. A successful check run is required to pass.
 
 Portal HTTP contract: [Portal API](/no-mistakes/reference/portal-api/).
 Environment variables: [Environment](/no-mistakes/reference/environment/).

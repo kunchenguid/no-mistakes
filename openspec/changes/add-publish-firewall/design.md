@@ -31,17 +31,17 @@ A required GitHub check can enforce this without a second forge. GitHub Actions 
   - Alternative considered: GitHub-hosted `ubuntu-latest` — rejected because job logs and workspaces leave the LAN and the portal is unreachable without a public ingest VIP.
   - Alternative considered: GitHub App inbound webhook on a public VIP — only if required checks cannot run on self-hosted runners; they can.
 
-- Decision: Scan the **entire PR diff** (added and removed lines), filenames, PR title, commit messages, and PR body. A cleanup PR that deletes a captured value still publishes that value in the public diff.
+- Decision: Scan coverage follows the [publish-firewall requirement](specs/publish-firewall/spec.md#requirement-surfaces-that-count), including introduced commit history and live PR metadata.
 
 - Decision: Detectors are **structural and anchored**. No organization-abbreviation dictionary. Documentation ranges (RFC 5737/3849/2606, IANA TEST-NET MAC `00:00:5e:00:53:00/24`, `555-01xx`, `example.com`/`example.net`/`example.org`, `SITE01` / `host01.example.com`) are allowlisted. RFC1918 and other non-documentation addresses fail closed.
 
 - Decision: Firewall state is a **separate SQLite file** (`$NM_HOME/firewall.sqlite`) and a **separate `firewall serve` process**. Cluster `NM_HOME` is not the Mac daemon root.
 
-- Decision: Public GitHub output is `publish-policy ok` on success, `publish-policy violation` for findings, or `publish-policy error` for scanner or portal failures, plus an optional LAN portal URL. Class counts may appear on the LAN public-notice JSON without snippets, filenames, titles, or customer names. Discord must use that notice object, never finding descriptions.
+- Decision: Public GitHub output is `publish-policy ok` on success, `publish-policy violation` for findings, or `publish-policy error` for scanner or portal failures, plus an optional LAN portal URL. Discord must use the notice object documented in the [Portal API](../../../docs/src/content/docs/reference/portal-api.md), never finding descriptions.
 
 - Decision: Portal ingest failure fails the check (fail closed). A clean scan is the only success path.
 
-- Decision: `respond` on a firewall verdict records acknowledgement only. It does not green the GitHub check; a new head SHA is required.
+- Decision: `respond` on a firewall verdict records acknowledgement only. It does not green the GitHub check; a successful check run is required.
 
 ## Risks / Trade-offs
 

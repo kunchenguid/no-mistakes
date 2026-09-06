@@ -12,13 +12,13 @@
 ## 3. Portal contract
 
 - [x] 3.1 SQLite store for axi-shaped run/step/finding/respond plus firewall verdicts
-- [x] 3.2 HTTP API: home/status/logs/respond/abort + verdict ingest/public/notice
+- [x] 3.2 HTTP API: home/status/logs/respond/abort + verdict ingest/notice
 - [x] 3.3 Public and notice payloads omit match content; LAN findings keep details
 - [x] 3.4 `respond` acknowledges only; does not pass the GitHub check
 
 ## 4. CLI and GitHub action
 
-- [x] 4.1 `no-mistakes firewall` scan/serve/github-check and `no-mistakes axi firewall`
+- [x] 4.1 `no-mistakes firewall` serve/github-check and `no-mistakes axi firewall`
 - [x] 4.2 Composite action + reusable workflow on self-hosted `no-mistakes` runners
 - [x] 4.3 Action tests: generic public output, fail closed, no snippet leak
 

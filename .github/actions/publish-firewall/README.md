@@ -45,9 +45,10 @@ The first configured public product repository is `carverauto/serviceradar`.
 Add others by pinning this action and requiring the `publish-policy` check in
 the repository ruleset.
 
-The action reads current PR title and body through the GitHub API using the
-job token and `pull-requests: read`; failed lookups fail closed. It scans the
-aggregate diff and every introduced commit’s content changes.
+The action uses the job token and `pull-requests: read` to collect current PR
+metadata, including the PR URL stored with the verdict. See the
+[scan coverage guide](../../../docs/src/content/docs/guides/publish-firewall.md#what-is-scanned)
+for covered surfaces and fail-closed behavior.
 
 ## Inputs
 
@@ -59,4 +60,5 @@ aggregate diff and every introduced commit’s content changes.
 | `pr-number` | event payload | Pull request number |
 
 A missing `no-mistakes` binary, a missing diff, or a scanner error fails
-closed with the same generic public phrase.
+closed with `publish-policy error`. The `conclusion` output distinguishes
+`failure` from `error`; either causes the Actions job to fail.
