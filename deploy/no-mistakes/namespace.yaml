@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: no-mistakes
+  labels:
+    app.kubernetes.io/name: no-mistakes
+    app.kubernetes.io/component: publish-firewall
