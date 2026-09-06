@@ -35,11 +35,10 @@
       "/home/jon/.treehouse/no-mistakes-4c46bb/4",
       "/home/jon/.treehouse/no-mistakes-4c46bb/5",
       "/opt/ra/firstmate/projects",
-      "/home/jon/.no-mistakes/worktrees"
+      "/home/jon/.no-mistakes/worktrees/58bde5a5eb74"
     ],
     "worktreeGlobs": [
-      "/home/jon/.treehouse/no-mistakes-4c46bb/*/no-mistakes",
-      "/home/jon/.no-mistakes/worktrees/*/no-mistakes*"
+      "/home/jon/.no-mistakes/worktrees/58bde5a5eb74/*"
     ],
     "minUserTurns": 2
   },

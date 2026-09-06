@@ -116,7 +116,7 @@ The rationale lives in the `resolveRun` doc comment and the status-rendering com
 
 ## Backpass
 
-Agent-memory backpasses run from the gpu-host-specific `.backpassrc.json` (cloneRoots point at this host's treehouse pool slots); run `bunx backpass@latest scan --force --json` then `bunx backpass@latest` on that host - never commit `.backpass/`.
+Agent-memory backpasses run from the gpu-host-specific `.backpassrc.json` (cloneRoots point at this host's treehouse pool slots and this repo's gate worktree dir); run `bunx backpass@latest scan --force --json` then `bunx backpass@latest` on that host - never commit `.backpass/`.
 
 ## Maintaining this file
 
