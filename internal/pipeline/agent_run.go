@@ -31,7 +31,7 @@ func AgentTimeout(cfg *config.Config) time.Duration {
 // call. The parent StepContext.Ctx is left unchanged so post-agent work
 // (commits, git, parsing) is not cancelled by the invocation budget.
 //
-// If the parent context already has a deadline (review's round budget, Test's
+// If the parent context already has a deadline (a Review or Test invocation's
 // explicit wrap, intent extraction, caller cancellation), that bound is
 // honored and no shorter default is stacked. Otherwise AgentTimeout is
 // applied. A late successful return after the deadline is rejected.
@@ -44,13 +44,13 @@ func (sctx *StepContext) RunAgent(opts agent.RunOpts) (*agent.Result, error) {
 }
 
 // RunAgentContext is RunAgent with an explicit parent, used when a step has
-// already installed a more specific deadline (review round, Test invocation).
+// already installed a more specific per-invocation deadline (Review or Test).
 func (sctx *StepContext) RunAgentContext(parent context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, "")
 }
 
 // RunAgentSessionContext is RunAgentSession with an explicit parent so a
-// fixer turn can share a round budget (review) or a per-invocation wrap (Test).
+// fixer turn can use a step-specific per-invocation wall-clock limit.
 func (sctx *StepContext) RunAgentSessionContext(parent context.Context, role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(parent, opts, role)
 }
@@ -245,7 +245,7 @@ func classifyAgentRun(ctx context.Context, applied time.Duration, activity *agen
 			return diagnoseAgentTimeout(
 				fmt.Sprintf("agent timed out after %s", applied), activity, err, cause)
 		}
-		// The budget belongs to the caller (a review round, a Test invocation).
+		// The budget belongs to the caller (a Review or Test invocation).
 		// Keep its cause identity so the caller's own classifier still matches,
 		// and hand it the measurement plus whatever the adapter managed to say.
 		return diagnoseAgentTimeout("", activity, err, cause)
@@ -333,7 +333,7 @@ func (a *timeoutAgent) Close() error { return a.inner.Close() }
 
 func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	if _, bounded := ctx.Deadline(); bounded {
-		// An outer seam (RunAgent, a review round, a Test wrap) already owns the
+		// An outer seam (RunAgent or a Review/Test invocation) already owns the
 		// budget and the diagnosis for this invocation; re-diagnosing here would
 		// nest the same measurement inside itself. The backstop this wrapper
 		// exists for still holds: a result produced after the deadline is
