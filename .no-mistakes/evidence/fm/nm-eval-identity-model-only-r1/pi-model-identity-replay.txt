@@ -1,0 +1,13 @@
+=== RUN   TestReplayPiModelIdentityComparison
+=== RUN   TestReplayPiModelIdentityComparison/bare_request
+=== RUN   TestReplayPiModelIdentityComparison/qualified_request
+=== RUN   TestReplayPiModelIdentityComparison/true_mismatch
+--- PASS: TestReplayPiModelIdentityComparison (1.58s)
+    --- PASS: TestReplayPiModelIdentityComparison/bare_request (0.49s)
+    --- PASS: TestReplayPiModelIdentityComparison/qualified_request (0.17s)
+    --- PASS: TestReplayPiModelIdentityComparison/true_mismatch (0.19s)
+=== RUN   TestReplayPiAcceptsRequestedModelWithDifferentProviderSidecar
+    replay_model_test.go:115: replay accepted requested model "meta/muse-spark-1.3-contributor" as served model "meta/muse-spark-1.3-contributor" with Pi provider sidecar "different-sidecar"; persisted status=completed
+--- PASS: TestReplayPiAcceptsRequestedModelWithDifferentProviderSidecar (1.17s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/eval	3.082s
