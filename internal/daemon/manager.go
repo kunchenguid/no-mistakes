@@ -173,7 +173,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, fmt.Errorf("resolve forge profile: %w", err)
 	}
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
+	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), workDir, exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	return cfg, nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot, workDir string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
@@ -280,6 +280,13 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 				_ = existing.Close()
 			}
 			return nil, fmt.Errorf("create agent %s: %w", name, err)
+		}
+		if err := agent.ValidateConfiguration(ctx, next, workDir); err != nil {
+			_ = next.Close()
+			for _, existing := range created {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("validate agent %s configuration: %w", name, err)
 		}
 		created = append(created, agent.WithSteering(next, evidenceRoot))
 	}
@@ -1352,6 +1359,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
 				trackStartFailure("create_agent")
 				return "", fmt.Errorf("create agent %s: %w", name, agErr)
+			}
+			if agErr := agent.ValidateConfiguration(ctx, next, wtDir); agErr != nil {
+				_ = next.Close()
+				for _, existing := range created {
+					_ = existing.Close()
+				}
+				m.db.UpdateRunError(run.ID, fmt.Sprintf("validate agent %s configuration: %s", name, agErr))
+				trackStartFailure("validate_agent_configuration")
+				return "", fmt.Errorf("validate agent %s configuration: %w", name, agErr)
 			}
 			// Steer every pipeline agent to keep writes inside the worktree and
 			// avoid mutating system state (e.g. brew/Homebrew touching

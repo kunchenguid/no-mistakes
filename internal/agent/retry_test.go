@@ -2,12 +2,46 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+// A malformed structured payload is a stochastic prose turn ending like any
+// other for the shared classifier: the step's real work is typically already
+// complete, so the cold retry must stay available even when the payload itself
+// mentions a transient-looking status. Only the Pi adapter suppresses it.
+func TestClassifyTransient_MalformedOutputStillRetriesOutsidePi(t *testing.T) {
+	_, err := finalizeTextResult("codex", "upstream returned 503 before the JSON verdict", json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	var malformed *malformedAgentOutputError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("finalizeTextResult error = %T, want *malformedAgentOutputError", err)
+	}
+	label, ok := classifyTransient(err)
+	if !ok {
+		t.Fatalf("classifyTransient(%v) = %q, false; want a retryable prose ending", err, label)
+	}
+	if !strings.Contains(label, "prose") {
+		t.Fatalf("label = %q, want the prose turn-ending label", label)
+	}
+}
+
+func TestPiClassifyTransient_TerminalForMalformedOutputAndTransientOtherwise(t *testing.T) {
+	_, err := finalizeTextResult("pi", "upstream returned 503 before the JSON verdict", json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	var malformed *malformedAgentOutputError
+	if !errors.As(err, &malformed) {
+		t.Fatalf("finalizeTextResult error = %T, want *malformedAgentOutputError", err)
+	}
+	if label, ok := piClassifyTransient(err); ok {
+		t.Fatalf("piClassifyTransient(%v) = %q, true; want a terminal malformed-output diagnosis", err, label)
+	}
+	if label, ok := piClassifyTransient(errors.New("connection refused")); !ok || !strings.Contains(label, "connection refused") {
+		t.Fatalf("piClassifyTransient(connection refused) = %q, %v; want delegation to the shared classifier", label, ok)
+	}
+}
 
 func TestClassifyTransient_Positive(t *testing.T) {
 	cases := []struct {
