@@ -538,6 +538,67 @@ func TestPushStep_AttestsHeadBeforePush(t *testing.T) {
 	}
 }
 
+func TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, priorHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	priorAttestedBody := compliantPipelineBody(t, priorHead)
+	if err := os.WriteFile(filepath.Join(dir, "new-work.txt"), []byte("new work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "new work")
+	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, newHead, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.PRURL = &prURL
+	setupGateMirror(t, sctx)
+	recordReviewApproval(t, sctx, newHead)
+
+	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
+	if err := os.WriteFile(bodyFile, []byte(priorAttestedBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(t.TempDir(), "gh.log")
+	sctx.Env = append(fakeCIGH(t, "OPEN", `[]`),
+		"FAKE_CLI_AUTH_ERR=authentication temporarily unavailable",
+		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
+		"FAKE_CLI_LOG="+logFile,
+	)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("push step failed: %v", err)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != newHead {
+		t.Fatalf("remote head = %s, want %s", remoteHead, newHead)
+	}
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != priorAttestedBody {
+		t.Fatal("unavailable SCM host unexpectedly changed the PR attestation")
+	}
+	if got, out := runVerifyPy(t, string(body), newHead); got != "failure" || !strings.Contains(out, "does not match") {
+		t.Fatalf("stale attestation must fail closed at the pushed head, got %s\n%s", got, out)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "auth status") || strings.Contains(string(logData), "pr edit") {
+		t.Fatalf("expected an unavailable-host skip before any PR write:\n%s", logData)
+	}
+}
+
 // TestPushStep_AttestationWriteFailureAbortsBeforePush is the ordering proof
 // from the write side: when the attestation write itself cannot settle,
 // Push fails before ever touching the remote. Silently continuing here would

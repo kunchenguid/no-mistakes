@@ -145,6 +145,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
 
+	// This protocol has single-publisher scope: the daemon's
+	// startRunWithIntentSourceLocked enforces one active run per repo branch, so
+	// coordination with independent authorized publishers is outside its scope.
 	if err := attestHeadBeforePush(sctx, headBeingPushed, attestationSteps); err != nil {
 		return err
 	}
