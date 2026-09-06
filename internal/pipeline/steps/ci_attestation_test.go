@@ -116,15 +116,22 @@ func TestRebindPipelineAttestationHead_VerifyPyRoundTrip(t *testing.T) {
 
 type attestationTestHost struct {
 	scm.Host
-	title       string
-	body        string
-	updated     scm.PRContent
-	updates     int
-	failUpdates int
+	title              string
+	body               string
+	bodyAfterFirstRead string
+	updated            scm.PRContent
+	updates            int
+	reads              int
+	failUpdates        int
 }
 
 func (h *attestationTestHost) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
-	return scm.PRContent{Title: h.title, Body: h.body}, nil
+	h.reads++
+	content := scm.PRContent{Title: h.title, Body: h.body}
+	if h.reads == 1 && h.bodyAfterFirstRead != "" {
+		h.body = h.bodyAfterFirstRead
+	}
+	return content, nil
 }
 
 func (h *attestationTestHost) UpdatePR(_ context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
@@ -203,14 +210,22 @@ func TestRestampPRAttestation_PreservesContentEditedWhilePreparingRewrite(t *tes
 	t.Parallel()
 	originalHead := testPipelineHeadSHA
 	repairHead := strings.Repeat("34", 20)
-	body := compliantPipelineBody(t, originalHead) + "\n\nUser edit made during settlement."
+	originalBody := compliantPipelineBody(t, originalHead)
+	concurrentBody := originalBody + "\n\nUser edit made during settlement."
 	host := &attestationTestHost{
-		title: "title edited by the user",
-		body:  body,
+		title:              "title edited by the user",
+		body:               originalBody,
+		bodyAfterFirstRead: concurrentBody,
 	}
 
 	if err := restampPRAttestation(context.Background(), host, &scm.PR{Number: "42"}, repairHead, nil); err != nil {
 		t.Fatal(err)
+	}
+	if host.reads < 4 {
+		t.Fatalf("GetPRContent calls = %d, want the changed body to be read and confirmed before writing", host.reads)
+	}
+	if host.updates != 1 {
+		t.Fatalf("UpdatePR calls = %d, want no write until the concurrent body is incorporated", host.updates)
 	}
 	if host.updated.Title != "" {
 		t.Fatalf("restamp must not write a title, got %q", host.updated.Title)

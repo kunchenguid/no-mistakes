@@ -582,11 +582,22 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 			if !rebound || updated == content.Body {
 				return nil
 			}
-			// Body-only write of the just-read body with the marker rewritten.
-			// Do not send title: a full-content UpdatePR would clobber a
-			// concurrent title edit. rebindPipelineAttestationWithSteps already
-			// leaves every other body byte untouched.
-			_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
+
+			// UpdatePR replaces the complete body and GitHub offers no atomic
+			// marker-only edit. Confirm that the body is still the version we
+			// prepared before writing it. If someone edited it meanwhile, retry
+			// from their version instead of overwriting their changes.
+			latest, readErr := reader.GetPRContent(ctx, pr)
+			switch {
+			case readErr != nil:
+				err = readErr
+			case latest.Body != content.Body:
+				err = errors.New("pull request body changed while preparing attestation update")
+			default:
+				// Do not send title: a body-only write leaves a concurrent title
+				// edit untouched.
+				_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
+			}
 		}
 		if err == nil {
 			if logfn != nil {
