@@ -76,7 +76,8 @@ func handleFakeCLI(mode string) {
 		// attestation write) and a faked git (to inject a push-time race) in
 		// the same sctx.Env, so this dispatches on the binary name rather
 		// than a second, mutually exclusive FAKE_CLI_MODE.
-		if filepath.Base(os.Args[0]) == "git" {
+		binaryName := filepath.Base(os.Args[0])
+		if strings.TrimSuffix(binaryName, filepath.Ext(binaryName)) == "git" {
 			fakeGitInterveningPushPassthroughHandler(args)
 		} else {
 			fakeCIGHHandler(args)

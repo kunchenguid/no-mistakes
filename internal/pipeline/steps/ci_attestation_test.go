@@ -692,9 +692,9 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "new work")
 	newHead := gitCmd(t, dir, "rev-parse", "HEAD")
 
-	realGit := testGitExecutable
-	if realGit == "" {
-		t.Fatal("git executable was not resolved at test startup")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
 	}
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "git")
@@ -728,7 +728,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 		"FAKE_CLI_INTERLOPER_REF=feature",
 	}
 
-	_, err := (&PushStep{}).Execute(sctx)
+	_, err = (&PushStep{}).Execute(sctx)
 	if err == nil {
 		t.Fatal("expected the push to fail against the intervening remote advance")
 	}
