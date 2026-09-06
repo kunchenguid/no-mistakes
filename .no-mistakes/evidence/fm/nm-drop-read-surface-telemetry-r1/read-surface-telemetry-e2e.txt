@@ -1,0 +1,13 @@
+Compiled CLI telemetry HTTP probe
+
+Telemetry sink control:
+  no-mistakes doctor requests received: 1
+
+Polling workload through the real CLI executable:
+  10 x no-mistakes axi
+  10 x no-mistakes axi status
+  10 x no-mistakes axi logs --step review
+  10 x no-mistakes status
+  10 x no-mistakes runs
+
+Remote telemetry HTTP requests received from 50 read-only invocations: 0
