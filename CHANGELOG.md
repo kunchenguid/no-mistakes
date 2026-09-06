@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.67.0](https://github.com/kunchenguid/no-mistakes/compare/v1.66.0...v1.67.0) (2026-09-06)
+
+
+### Features
+
+* **daemon:** add atomic nonce-bound launch receipts ([#895](https://github.com/kunchenguid/no-mistakes/issues/895)) ([f093de2](https://github.com/kunchenguid/no-mistakes/commit/f093de2923ce1178812762dba61574a1d6089c8d))
+
+
+### Bug Fixes
+
+* **cli:** keep AXI attached to slow daemons ([#988](https://github.com/kunchenguid/no-mistakes/issues/988)) ([e9c3b44](https://github.com/kunchenguid/no-mistakes/commit/e9c3b4418e69b0e9d8ec5b38aae57242e165bab0))
+
 ## [1.66.0](https://github.com/kunchenguid/no-mistakes/compare/v1.65.4...v1.66.0) (2026-09-05)
 
 
