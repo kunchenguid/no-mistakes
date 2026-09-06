@@ -236,7 +236,7 @@ func detectIPs(s surface) []Finding {
 		} else {
 			ip = net.ParseIP(tok)
 		}
-		if ip == nil || ip.To4() != nil {
+		if ip == nil {
 			continue
 		}
 		if isDocIPv6(ip, network) {

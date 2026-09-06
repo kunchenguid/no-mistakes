@@ -401,11 +401,12 @@ func newCheckScriptEnv(t *testing.T) *checkScriptEnv {
 
 	event := map[string]any{
 		"pull_request": map[string]any{
-			"number": 4211,
-			"title":  "import " + capturedValues[0] + " inventory",
-			"body":   "Imported from the lab collector; contact " + capturedValues[4],
-			"base":   map[string]any{"sha": base},
-			"head":   map[string]any{"sha": head, "ref": "feat/import"},
+			"number":   4211,
+			"html_url": "https://github.com/owner/product/pull/4211",
+			"title":    "import " + capturedValues[0] + " inventory",
+			"body":     "Imported from the lab collector; contact " + capturedValues[4],
+			"base":     map[string]any{"sha": base},
+			"head":     map[string]any{"sha": head, "ref": "feat/import"},
 		},
 	}
 	payload, err := json.Marshal(event)
@@ -593,12 +594,15 @@ func TestPublishFirewallAction_LiveMetadataOverridesArchivedEvent(t *testing.T) 
 	env.fakeScanner(t, 0, "")
 	write(t, env.eventPath, `{"pull_request":{"title":"clean","body":"clean"}}`)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"title": "bind 10.0.0.5", "body": "network ::/0"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"title": "bind 10.0.0.5", "body": "network ::/0", "html_url": "https://github.com/owner/product/pull/4211"})
 	}))
 	defer api.Close()
 	out, code := env.run(t, map[string]string{"GITHUB_API_URL": api.URL})
 	if code != 0 {
 		t.Fatalf("exit=%d output=%q", code, out)
+	}
+	if !strings.Contains(env.scannerArgs(t), "--pr-url https://github.com/owner/product/pull/4211") {
+		t.Fatal("live PR URL was not forwarded to the scanner")
 	}
 	for _, name := range []string{"title", "body"} {
 		data, err := os.ReadFile(filepath.Join(env.dir, "runner-temp", "nm-firewall."+name))

@@ -284,6 +284,16 @@ func inIPRanges(ip net.IP, n *net.IPNet, ranges []*net.IPNet) bool {
 }
 
 func isDocIPv6(ip net.IP, n *net.IPNet) bool {
+	if mapped := ip.To4(); mapped != nil {
+		if n != nil {
+			ones, bits := n.Mask.Size()
+			if bits != 128 || ones < 96 {
+				return false
+			}
+			n = &net.IPNet{IP: n.IP.To4(), Mask: net.CIDRMask(ones-96, 32)}
+		}
+		return isDocIPv4(mapped, n)
+	}
 	return inIPRanges(ip, n, docIPv6)
 }
 

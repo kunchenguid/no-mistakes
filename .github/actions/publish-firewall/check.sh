@@ -36,7 +36,7 @@ else
   generic_fail
 fi
 
-if ! NM_TITLE_FILE="$TITLE" NM_BODY_FILE="$BODY" "$PY" - 2>/dev/null <<'PYTHON'
+if ! PR_URL=$(NM_TITLE_FILE="$TITLE" NM_BODY_FILE="$BODY" "$PY" - 2>/dev/null <<'PYTHON'
 import json, os, urllib.request
 repo = os.environ["NM_REPO"]
 number = int(os.environ["NM_PR_NUMBER"])
@@ -47,13 +47,14 @@ url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/") + f
 request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
 with urllib.request.urlopen(request, timeout=30) as response:
     pr = json.load(response)
-title, body = pr["title"], pr["body"]
-if not isinstance(title, str) or (body is not None and not isinstance(body, str)):
+title, body, pr_url = pr["title"], pr["body"], pr["html_url"]
+if not isinstance(title, str) or (body is not None and not isinstance(body, str)) or not isinstance(pr_url, str) or not pr_url:
     raise ValueError("invalid PR metadata")
 open(os.environ["NM_TITLE_FILE"], "w", encoding="utf-8").write(title)
 open(os.environ["NM_BODY_FILE"], "w", encoding="utf-8").write(body or "")
+print(pr_url)
 PYTHON
-then
+); then
   generic_fail
 fi
 
@@ -88,6 +89,7 @@ no-mistakes firewall github-check \
   --commits-file "$COMMITS" \
   --repo "${NM_REPO:-}" \
   --pr-number "${NM_PR_NUMBER:-0}" \
+  --pr-url "$PR_URL" \
   --branch "${NM_HEAD_REF:-}" \
   --head "${HEAD_SHA}" \
   --base "${BASE_SHA}" \

@@ -506,3 +506,32 @@ func TestScan_GPSContextRequiresAdjacentLinesOnSameSide(t *testing.T) {
 		}
 	}
 }
+
+func TestScan_IPv4MappedIPv6UsesIPv4Allowlist(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		blocked bool
+	}{
+		{"::ffff:a00:5", true}, {"::ffff:a00:5/128", true},
+		{"::ffff:c000:307/119", true}, {"::ffff:c000:207/119", true},
+		{"::ffff:c000:207/95", true}, {"::ffff:0:0/96", true},
+		{"::ffff:c000:207", false}, {"::ffff:c000:207/120", false},
+		{"::ffff:c000:207/121", false}, {"::ffff:c000:207/128", false},
+		{"::ffff:7f00:1", false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			in := Input{Title: "bind " + tc.value}
+			if got := hasClass(Scan(in), ClassIPAddress); got != tc.blocked {
+				t.Fatalf("blocked=%v want=%v", got, tc.blocked)
+			}
+			out, code, err := GitHubCheck(in, CheckOptions{})
+			wantCode := 0
+			if tc.blocked {
+				wantCode = ExitViolation
+			}
+			if code != wantCode || err != nil || out != PublicText("", tc.blocked) {
+				t.Fatalf("out=%q code=%d err=%v", out, code, err)
+			}
+		})
+	}
+}
