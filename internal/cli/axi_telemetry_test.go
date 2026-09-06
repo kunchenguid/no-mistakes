@@ -3,10 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
-	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // TestAxiMutationCommandsEmitPageviews verifies that state-changing axi
@@ -51,19 +49,17 @@ func TestAxiMutationCommandsEmitPageviews(t *testing.T) {
 	}
 }
 
-// TestAxiReadSurfacesEmitNoPageview verifies the high-frequency read-only axi
-// surfaces no longer double-emit: no pageview at all, and a single command
-// event that carries the surface's segmentation fields.
-func TestAxiReadSurfacesEmitNoPageview(t *testing.T) {
+// TestAxiReadSurfacesEmitNoTelemetry verifies high-frequency read-only axi
+// surfaces emit neither a pageview nor a command event. Agent polling of
+// these commands was the dominant remote telemetry volume.
+func TestAxiReadSurfacesEmitNoTelemetry(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		path    string
-		command string
+		name string
+		args []string
 	}{
-		{"home", []string{"axi"}, "/axi", "axi-home"},
-		{"status", []string{"axi", "status"}, "/axi/status", "axi-status"},
-		{"logs", []string{"axi", "logs", "--step", "review"}, "/axi/logs", "axi-logs"},
+		{"home", []string{"axi"}},
+		{"status", []string{"axi", "status"}},
+		{"logs", []string{"axi", "logs", "--step", "review"}},
 	}
 
 	for _, tc := range cases {
@@ -78,22 +74,18 @@ func TestAxiReadSurfacesEmitNoPageview(t *testing.T) {
 
 			_, _ = executeCmd(tc.args...)
 
-			if event := recorder.find("pageview", "path", tc.path); event != nil {
-				t.Fatalf("read surface %v must not emit a pageview, got %v", tc.args, event.fields)
-			}
-			if event := recorder.find("command", "command", tc.command); event == nil {
-				t.Fatalf("expected a single %s command event", tc.command)
+			if got := recorder.count("pageview") + recorder.count("command"); got != 0 {
+				t.Fatalf("read surface %v emitted %d telemetry events, want 0", tc.args, got)
 			}
 		})
 	}
 }
 
-// TestReadSurfaceTelemetryStaysBoundedUnderPolling reproduces the telemetry
+// TestReadSurfacesEmitZeroTelemetryUnderPolling reproduces the telemetry
 // firehose: an agent polling axi status/home (and a human looping status/runs)
-// every few seconds. Before the diet each poll emitted a pageview plus a
-// command event without bound; now an unchanged state must emit exactly once
-// until the heartbeat interval elapses.
-func TestReadSurfaceTelemetryStaysBoundedUnderPolling(t *testing.T) {
+// every few seconds. These read-only commands must emit nothing, even across
+// dozens of unchanged polls.
+func TestReadSurfacesEmitZeroTelemetryUnderPolling(t *testing.T) {
 	cases := [][]string{
 		{"axi"},
 		{"axi", "status"},
@@ -107,32 +99,16 @@ func TestReadSurfaceTelemetryStaysBoundedUnderPolling(t *testing.T) {
 			t.Setenv("NM_HOME", t.TempDir())
 			chdir(t, tmpDir)
 
-			now := time.Unix(1_700_000_000, 0)
-			readSurfaceNow = func() time.Time { return now }
-			defer func() { readSurfaceNow = nil }()
-
 			recorder := &telemetryRecorder{}
 			restore := telemetry.SetDefaultForTesting(recorder)
 			defer restore()
 
-			// A 5-second polling loop for 5 minutes: 60 invocations.
 			for i := 0; i < 60; i++ {
 				_, _ = executeCmd(args...)
-				now = now.Add(5 * time.Second)
 			}
 
-			if got := recorder.count("command"); got != 1 {
-				t.Fatalf("60 unchanged polls emitted %d command events, want 1", got)
-			}
-			if got := recorder.count("pageview"); got != 0 {
-				t.Fatalf("read surface polling emitted %d pageviews, want 0", got)
-			}
-
-			// After the heartbeat interval the surface reports once more.
-			now = now.Add(readSurfaceHeartbeat)
-			_, _ = executeCmd(args...)
-			if got := recorder.count("command"); got != 2 {
-				t.Fatalf("heartbeat emit count = %d command events, want 2", got)
+			if got := recorder.count("command") + recorder.count("pageview"); got != 0 {
+				t.Fatalf("60 unchanged polls emitted %d telemetry events, want 0", got)
 			}
 		})
 	}
@@ -164,76 +140,6 @@ func TestAxiRunPageviewCarriesFlags(t *testing.T) {
 	}
 	if got := event.fields["has_skip"]; got != true {
 		t.Fatalf("has_skip = %v, want true", got)
-	}
-}
-
-// TestAxiLogsCommandEventCarriesStep verifies the logs command event records
-// which step and whether a specific run was requested (fields that used to
-// ride on the now-removed pageview).
-func TestAxiLogsCommandEventCarriesStep(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("NM_HOME", t.TempDir())
-	chdir(t, tmpDir)
-
-	recorder := &telemetryRecorder{}
-	restore := telemetry.SetDefaultForTesting(recorder)
-	defer restore()
-
-	_, _ = executeCmd("axi", "logs", "--step", "test", "--run", "run-123")
-
-	event := recorder.find("command", "command", "axi-logs")
-	if event == nil {
-		t.Fatal("expected axi-logs command event")
-	}
-	if got := event.fields["step"]; got != "test" {
-		t.Fatalf("step = %v, want test", got)
-	}
-	if got := event.fields["explicit_run_id"]; got != true {
-		t.Fatalf("explicit_run_id = %v, want true", got)
-	}
-}
-
-func TestRunStateFingerprintIncludesStepStatuses(t *testing.T) {
-	rv := runView{
-		ID:      "run-1",
-		Branch:  "feature/test",
-		Status:  string(types.RunRunning),
-		HeadSHA: "head-one",
-		PRURL:   "https://example.test/pr/1",
-		Steps:   []stepView{{Name: "review", Status: string(types.StepStatusRunning)}},
-	}
-	before := runStateFingerprint(rv)
-	rv.Steps[0].Status = string(types.StepStatusCompleted)
-	if after := runStateFingerprint(rv); before == after {
-		t.Fatal("changing a step status must change the logs state fingerprint")
-	}
-	rv.HeadSHA = "head-two"
-	if after := runStateFingerprint(rv); before == after {
-		t.Fatal("changing the displayed head must change the status fingerprint")
-	}
-	rv.PRURL = "https://example.test/pr/2"
-	if after := runStateFingerprint(rv); before == after {
-		t.Fatal("changing the displayed PR must change the status fingerprint")
-	}
-}
-
-func TestAxiLogsCommandEventSanitizesInvalidStep(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("NM_HOME", t.TempDir())
-	chdir(t, tmpDir)
-
-	recorder := &telemetryRecorder{}
-	restore := telemetry.SetDefaultForTesting(recorder)
-	defer restore()
-
-	_, _ = executeCmd("axi", "logs", "--step", "secret user text")
-
-	event := recorder.find("command", "command", "axi-logs")
-	if event == nil {
-		t.Fatal("expected axi-logs command event")
-	}
-	if got := event.fields["step"]; got != "invalid" {
-		t.Fatalf("step = %v, want invalid", got)
 	}
 }
 

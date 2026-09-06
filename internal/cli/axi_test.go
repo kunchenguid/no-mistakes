@@ -835,7 +835,7 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiHome(cmd); err != nil {
+	if err := runAxiHome(cmd); err != nil {
 		t.Fatalf("axi home: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -858,26 +858,6 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("axi home should not tell the agent to act on another branch via %q, got:\n%s", forbidden, got)
 		}
-	}
-}
-
-func TestRenderedRunsFingerprintChangesForEveryDisplayedRun(t *testing.T) {
-	runs := []*db.Run{
-		{ID: "newer", Branch: "feature/newer", HeadSHA: "head-newer", Status: types.RunRunning},
-		{ID: "older", Branch: "feature/older", HeadSHA: "head-older", Status: types.RunCompleted},
-	}
-	before := renderedRunsFingerprint(runs, 10)
-	runs[1].Status = types.RunFailed
-	after := renderedRunsFingerprint(runs, 10)
-	if before == after {
-		t.Fatal("changing a displayed older run must change the fingerprint")
-	}
-
-	limitedBefore := renderedRunsFingerprint(runs, 1)
-	runs[1].Status = types.RunCompleted
-	limitedAfter := renderedRunsFingerprint(runs, 1)
-	if limitedBefore != limitedAfter {
-		t.Fatal("a hidden run must not change the displayed-run fingerprint")
 	}
 }
 
@@ -913,7 +893,7 @@ func TestAxiStatusEscapesControlBytesInAwaitingTestGate(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
+	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
 		t.Fatalf("axi status: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -955,7 +935,7 @@ func TestAxiLogsFullEscapesControlByteOutsideTailWithoutRewritingLog(t *testing.
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiLogs(cmd, "test", dbRun.ID, true); err != nil {
+	if err := runAxiLogs(cmd, "test", dbRun.ID, true); err != nil {
 		t.Fatalf("axi logs --full: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -1023,7 +1003,7 @@ func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
+	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
 		t.Fatalf("axi status should not fail on invalid global config: %v\n%s", err, out.String())
 	}
 	got := out.String()
