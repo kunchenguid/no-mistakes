@@ -1,8 +1,9 @@
 name: Publish firewall
 description: >-
   Scan a pull request for live-system values that must not be published.
-  Public logs emit only "publish-policy violation" plus an optional LAN
-  portal URL. Match details stay on the LAN portal.
+  Public logs emit "publish-policy ok" on success, "publish-policy violation"
+  for findings, or "publish-policy error" for scanner or portal failures,
+  with an optional LAN portal URL. Match details stay on the LAN portal.
 
 inputs:
   portal-url:

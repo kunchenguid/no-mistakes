@@ -250,8 +250,7 @@ func (s *Store) Respond(id, action string) (*Verdict, error) {
 	if err != nil {
 		return nil, fmt.Errorf("insert response: %w", err)
 	}
-	// Acknowledgement is recorded only. The GitHub check stays failed until
-	// a new head SHA is scanned.
+	// Acknowledgement is recorded only; it never changes the GitHub conclusion.
 	return s.Get(id)
 }
 

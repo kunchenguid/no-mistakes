@@ -71,7 +71,9 @@ no-mistakes axi firewall respond --run <id> --action acknowledge
 ```
 
 `respond` records that an operator saw the verdict. It does not green the
-GitHub check. A successful check run is required to pass.
+GitHub check. A successful check run is required to pass. A rerun can pass
+after correcting PR metadata or restoring portal availability without a new
+head SHA, provided all scanned surfaces are clean.
 
 Portal HTTP contract: [Portal API](/no-mistakes/reference/portal-api/).
 Environment variables: [Environment](/no-mistakes/reference/environment/).
