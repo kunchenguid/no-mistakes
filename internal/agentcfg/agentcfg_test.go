@@ -320,6 +320,7 @@ func TestServedMatchesRequested(t *testing.T) {
 		{name: "bare request matches qualified served id", requested: "grok-4.6", served: "xai/grok-4.6", want: true},
 		{name: "bare request matches despite contradictory provider metadata", requested: "grok-4.6", served: "xai/grok-4.6", servedProvider: "openai", want: true},
 		{name: "meta contributor model matches across provider sidecars", requested: "meta/muse-spark-1.3-contributor", served: "meta/muse-spark-1.3-contributor", servedProvider: "different-sidecar", want: true},
+		{name: "multi-segment model ids compare final segment", requested: "openrouter/meta-llama/llama-3", served: "meta-llama/llama-3", servedProvider: "openrouter", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
