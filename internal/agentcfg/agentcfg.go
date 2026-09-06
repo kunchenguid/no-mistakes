@@ -231,34 +231,30 @@ func SplitProviderModel(model string) (provider, id string, ok bool) {
 }
 
 // ServedMatchesRequested reports whether an adapter's served model is the same
-// identity the operator requested. Pi reports a bare model id plus a separate
-// provider while candidates commonly use the provider/model spelling
-// (xai/grok-4.6). A different model id or provider is a mismatch, including
-// contradictory provider metadata; an empty provider cannot satisfy a
-// qualified request when the served model is bare.
+// model identity the operator requested. Identity is the model id alone - the
+// part after a provider/model spelling's final "/" - never the provider: Pi
+// commonly serves a requested model through a different provider sidecar than
+// the one named in the request (or than the one it reports alongside the
+// served model), and that must still count as a match. servedProvider is
+// accepted for call-site compatibility and error-message context only; it is
+// never compared.
 func ServedMatchesRequested(requested, served, servedProvider string) bool {
 	requested = strings.TrimSpace(requested)
 	served = strings.TrimSpace(served)
-	servedProvider = strings.TrimSpace(servedProvider)
 	if requested == "" || served == "" {
 		return requested == served
 	}
 
-	reqProvider, reqID, requestedQualified := SplitProviderModel(requested)
-	embeddedProvider, servedID, servedQualified := SplitProviderModel(served)
-	if servedQualified {
-		if servedProvider != "" && servedProvider != embeddedProvider {
-			return false
-		}
-		servedProvider = embeddedProvider
-	} else {
+	_, reqID, requestedQualified := SplitProviderModel(requested)
+	if !requestedQualified {
+		reqID = requested
+	}
+	_, servedID, servedQualified := SplitProviderModel(served)
+	if !servedQualified {
 		servedID = served
 	}
 
-	if requestedQualified {
-		return servedID == reqID && servedProvider == reqProvider
-	}
-	return servedID == requested
+	return servedID == reqID
 }
 
 // harnesses is the whole mapping. Every native flag here was read off the
