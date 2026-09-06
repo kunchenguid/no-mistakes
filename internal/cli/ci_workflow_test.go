@@ -2,12 +2,24 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// initGitRepo makes dir a minimal git repository so generateCIWorkflow's
+// git.FindGitRoot resolution (added to root the command at the repo
+// toplevel) succeeds against it.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "init", "--quiet", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+}
 
 func TestGenerateCIWorkflow(t *testing.T) {
 	tests := []struct {
@@ -123,6 +135,7 @@ func TestGenerateCIWorkflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
+			initGitRepo(t, dir)
 
 			// Setup
 			if tt.setup != nil {
@@ -173,6 +186,108 @@ func TestGenerateCIWorkflow(t *testing.T) {
 				tt.validate(t, workflow)
 			}
 		})
+	}
+}
+
+func TestGenerateCIWorkflow_RootsAtGitToplevel(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	if err := os.WriteFile(
+		filepath.Join(dir, ".no-mistakes.yaml"),
+		[]byte("commands:\n  test: \"go test ./...\"\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	subdir := filepath.Join(dir, "cmd", "sub")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	// Run from a subdirectory: the workflow must land at the repo root's
+	// .github/workflows, not under the subdirectory, so GitHub discovers it.
+	if err := generateCIWorkflow(subdir, false); err != nil {
+		t.Fatalf("generateCIWorkflow() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".github", "workflows", "ci.yml")); err != nil {
+		t.Errorf("workflow not created at repo root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(subdir, ".github")); !os.IsNotExist(err) {
+		t.Errorf("workflow should not be created under the subdirectory, stat err = %v", err)
+	}
+}
+
+func TestGenerateCIWorkflow_RefusesSymlinkedWorkflowsDir(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".github"), 0755); err != nil {
+		t.Fatalf("mkdir .github: %v", err)
+	}
+	// A repository-controlled symlink standing in for the workflows
+	// directory must not be followed to write outside the repo.
+	if err := os.Symlink(outside, filepath.Join(dir, ".github", "workflows")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := os.WriteFile(
+		filepath.Join(dir, ".no-mistakes.yaml"),
+		[]byte("commands:\n  test: \"go test ./...\"\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := generateCIWorkflow(dir, false)
+	if err == nil {
+		t.Fatal("generateCIWorkflow() expected error for symlinked workflows dir, got nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "ci.yml")); !os.IsNotExist(statErr) {
+		t.Errorf("workflow should not have been written through the symlink, stat err = %v", statErr)
+	}
+}
+
+func TestGenerateCIWorkflow_RefusesSymlinkedWorkflowFile(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	outsideFile := filepath.Join(t.TempDir(), "evil.yml")
+	if err := os.WriteFile(outsideFile, []byte("original"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	workflowDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0755); err != nil {
+		t.Fatalf("mkdir workflows: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(workflowDir, "ci.yml")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := os.WriteFile(
+		filepath.Join(dir, ".no-mistakes.yaml"),
+		[]byte("commands:\n  test: \"go test ./...\"\n"),
+		0644,
+	); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// force=true must still refuse: overwriting the symlink destination
+	// would write attacker-chosen content to a path outside the repo.
+	err := generateCIWorkflow(dir, true)
+	if err == nil {
+		t.Fatal("generateCIWorkflow() expected error for symlinked workflow file, got nil")
+	}
+	content, readErr := os.ReadFile(outsideFile)
+	if readErr != nil {
+		t.Fatalf("read outside file: %v", readErr)
+	}
+	if string(content) != "original" {
+		t.Errorf("outside file was overwritten through the symlink: %q", content)
 	}
 }
 

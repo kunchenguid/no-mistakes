@@ -110,4 +110,4 @@ no-mistakes ci-workflow --force
 
 - The generated workflow is Go-focused (uses `setup-go` action). Non-Go repos can adapt the template as needed.
 - Commands are inserted verbatim from `.no-mistakes.yaml`, so ensure they're portable to GitHub's Ubuntu runner.
-- The workflow runs on `push: main` and all `pull_request` events.
+- The workflow runs on push to the repository's default branch and on all `pull_request` events.
