@@ -231,34 +231,20 @@ func SplitProviderModel(model string) (provider, id string, ok bool) {
 }
 
 // ServedMatchesRequested reports whether an adapter's served model is the same
-// identity the operator requested. Pi reports a bare model id plus a separate
-// provider while candidates commonly use the provider/model spelling
-// (xai/grok-4.6). A different model id or provider is a mismatch, including
-// contradictory provider metadata; an empty provider cannot satisfy a
-// qualified request when the served model is bare.
+// model identity the operator requested. Identity is the final path segment of
+// the model id; provider metadata is never compared.
 func ServedMatchesRequested(requested, served, servedProvider string) bool {
-	requested = strings.TrimSpace(requested)
-	served = strings.TrimSpace(served)
-	servedProvider = strings.TrimSpace(servedProvider)
-	if requested == "" || served == "" {
-		return requested == served
-	}
-
-	reqProvider, reqID, requestedQualified := SplitProviderModel(requested)
-	embeddedProvider, servedID, servedQualified := SplitProviderModel(served)
-	if servedQualified {
-		if servedProvider != "" && servedProvider != embeddedProvider {
-			return false
+	modelName := func(model string) string {
+		model = strings.TrimSpace(model)
+		if slash := strings.LastIndexByte(model, '/'); slash >= 0 {
+			model = strings.TrimSpace(model[slash+1:])
 		}
-		servedProvider = embeddedProvider
-	} else {
-		servedID = served
+		return model
 	}
 
-	if requestedQualified {
-		return servedID == reqID && servedProvider == reqProvider
-	}
-	return servedID == requested
+	requestedName := modelName(requested)
+	servedName := modelName(served)
+	return requestedName != "" && requestedName == servedName
 }
 
 // harnesses is the whole mapping. Every native flag here was read off the

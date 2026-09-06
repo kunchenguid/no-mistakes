@@ -17,6 +17,10 @@ const piServedGrok46Reply = `{"type":"message_end","message":{"role":"assistant"
 {"type":"agent_end","messages":[]}
 `
 
+const piServedMuseReply = `{"type":"message_end","message":{"role":"assistant","provider":"different-sidecar","model":"meta/muse-spark-1.3-contributor","content":[{"type":"text","text":"{\"findings\":[],\"risk_level\":\"low\",\"risk_rationale\":\"clean\",\"risk_scope\":\"source-or-external\"}"}]}}
+{"type":"agent_end","messages":[]}
+`
+
 func TestReplayPiModelIdentityComparison(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
@@ -72,6 +76,43 @@ func TestReplayPiModelIdentityComparison(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReplayPiAcceptsRequestedModelWithDifferentProviderSidecar(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+
+	fakeDir := t.TempDir()
+	installFakePiJSONL(t, fakeDir, piServedMuseReply)
+	t.Setenv("PATH", fakeDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	const requested = "meta/muse-spark-1.3-contributor"
+	_, evaluations, err := Replay(ctx, store, ReplayOptions{
+		Set:       "all",
+		Candidate: Candidate{Agent: types.AgentPi, Model: requested},
+		Repeats:   1,
+	})
+	if err != nil {
+		t.Fatalf("Replay: %v (evaluations=%#v)", err, evaluations)
+	}
+	if len(evaluations) != 1 {
+		t.Fatalf("evaluations = %#v, want one persisted replay result", evaluations)
+	}
+	got := evaluations[0]
+	if got.Status != "completed" || got.Model != "meta/muse-spark-1.3-contributor" {
+		t.Fatalf("evaluation = %#v, want completed replay under the served model", got)
+	}
+	t.Logf("replay accepted requested model %q as served model %q with Pi provider sidecar %q; persisted status=%s", requested, got.Model, "different-sidecar", got.Status)
 }
 
 func installFakePiJSONL(t *testing.T, fakeDir, reply string) {

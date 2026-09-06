@@ -209,8 +209,8 @@ type Result struct {
 	// against the requested candidate.
 	Model string
 	// ModelProvider is the provider that served the model (e.g. "openai",
-	// "anthropic"), when the adapter can report it. Eval replay uses it to
-	// normalize provider-qualified candidate identities.
+	// "anthropic"), when the adapter can report it. Instrumentation records it
+	// as telemetry; eval model identity matching deliberately ignores it.
 	ModelProvider string
 	// Provider is the adapter provider that served this invocation. It lets
 	// fallback wrappers persist a session against the provider that minted it.
