@@ -62,7 +62,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['main']
   pull_request:
 
 permissions:
