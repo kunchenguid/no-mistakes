@@ -68,7 +68,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
+	// This run's own review/test/document have already completed by now (see
+	// AllSteps' fixed order), so these are honest statuses to attest for the
+	// head about to be pushed - see attestHeadBeforePush.
+	attestationSteps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load step results for attestation: %w", err)
+	}
+	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, attestationSteps); err != nil {
 		return nil, err
 	}
 
@@ -97,7 +104,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // It deliberately does not relax the review-approved-head check for anyone.
 // Whether a CI repair may be published at all is decided before publication, by
 // ciRepairContinuityGap.
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) error {
+//
+// attestationSteps is forwarded to attestHeadBeforePush, which writes this
+// run's pipeline attestation for headBeingPushed BEFORE it is pushed - see
+// that function's doc comment for why this ordering, not a post-push write,
+// closes the push-then-attest race. Pass nil to carry an existing
+// attestation's own step statuses forward (a CI repair published without
+// revalidation); pass this run's current steps (sctx.DB.GetStepsByRun) for
+// the ordinary Push step.
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -129,6 +144,11 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
+
+	if err := attestHeadBeforePush(sctx, headBeingPushed, attestationSteps); err != nil {
+		return err
+	}
+
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).

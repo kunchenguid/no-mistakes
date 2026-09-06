@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
@@ -19,6 +20,16 @@ import (
 // ciFailingCheckFixRules is the CI-repair prompt contract for a failing check.
 // The narrow-fix sentence matches the review fixer so both apply one discipline.
 var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
+
+// errAttestationWriteFailed marks a failure specifically inside
+// attestHeadBeforePush (PR discovery or the attestation write itself), as
+// opposed to any other publishRunHead failure (review-approved-head
+// continuity, the force-push decision, the git push, remote verification,
+// the gate mirror, or the durable publication write). publishRepair uses
+// errors.Is against this to decide whether to apply the CI-specific
+// errCIAttestationUnsettled treatment; the ordinary Push step just
+// propagates whatever publishRunHead returns.
+var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 
 const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code (a broken test, build, lint, or similar defect in the change), you MUST produce file changes that fix it and set code_change_needed to true. A real failing test or build must still be fixed.
 		- If a failing check is not caused by the code under review (a stale or superseded check run, an infrastructure or attestation check such as "PR must be raised via no-mistakes" that fails only because a later pipeline push moved the head, or any failure external to the code), you MAY conclude that no code change is warranted. Set code_change_needed to false and report that conclusion in summary instead of editing files. Do not invent work to satisfy a check the code did not cause.
@@ -463,53 +474,98 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // the database write have all succeeded, so a partial failure leaves the run on
 // the pre-repair head and the next fix attempt re-enters this path.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
-	if err := publishRunHead(sctx, headSHA, headSHA); err != nil {
+	if err := publishRunHead(sctx, headSHA, headSHA, nil); err != nil {
+		if errors.Is(err, errAttestationWriteFailed) {
+			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
+		}
 		return ciRepairResult{}, err
-	}
-	if err := restampPublishedAttestation(sctx, headSHA); err != nil {
-		return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
 	}
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
 }
 
-// restampPublishedAttestation rebinds an existing pipeline attestation in the
-// PR body to the head that was just published. Settlement applies only when
-// the host both emits that HTML attestation and can rewrite the PR body
-// (GitHub today). Every other provider is a no-op: there is no stale
-// attestation to leave. A PR that never carried an attestation is left
-// unchanged, so a contribution that did not come through no-mistakes still
-// fails the gate. Failure to read or update a body that does carry a live
-// attestation is returned to the caller; the push itself has already succeeded.
-func restampPublishedAttestation(sctx *pipeline.StepContext, headSHA string) error {
-	if sctx == nil || sctx.Run == nil || sctx.Run.PRURL == nil || strings.TrimSpace(*sctx.Run.PRURL) == "" {
+// attestHeadBeforePush writes this run's pipeline attestation for headSHA
+// into any existing PR body BEFORE that head is pushed, so no check racing
+// the push can ever observe a legitimate head without a matching
+// attestation. See publishRunHead for why this ordering - not a post-push
+// write - is the fix for the push-then-attest race: every known consumer of
+// the shared require-no-mistakes action pins an immutable revision whose
+// verifier reads the PR body from the frozen `synchronize` event payload, so
+// no post-push write, however fast, can ever land before that payload is
+// read. Attesting first means the payload already carries the correct
+// attestation for the head it describes.
+//
+// steps is nil for a CI repair published without revalidation (carry the
+// existing attestation's own step statuses forward, since review/test/
+// document are deliberately not re-run for that repair - see
+// ciRepairContinuityGap) and the run's own current steps for the ordinary
+// Push step (which always runs after this run's review/test/document have
+// already completed).
+//
+// It is a no-op - not an error - when: the provider is not GitHub (only
+// GitHub emits the HTML attestation comment and implements PRContentReader);
+// the branch is the configured PR base branch (the PR step never manages a
+// PR there either, see effectivePRBaseBranch); the SCM host is unavailable
+// (matches the PR step's own skip semantics); or no PR exists yet for this
+// branch. It never mints an attestation for a PR that was not raised through
+// no-mistakes - restampPRAttestationWithSteps already enforces that. Any
+// other failure (PR discovery errors, or a discoverable PR whose write does
+// not settle) is wrapped in errAttestationWriteFailed and returned.
+func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
+	provider := resolvedProvider(sctx)
+	if provider != scm.ProviderGitHub {
 		return nil
 	}
-	provider := resolvedProvider(sctx)
+	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
+	if branch == effectivePRBaseBranch(sctx) {
+		return nil
+	}
 	host, reason := buildHost(sctx, provider)
 	if host == nil {
-		if sctx.Log != nil {
-			if strings.TrimSpace(reason) == "" {
-				reason = "SCM host is unavailable"
-			}
-			sctx.Log(fmt.Sprintf("skipping attestation rebind: %s", reason))
+		if sctx.Log != nil && strings.TrimSpace(reason) != "" {
+			sctx.Log(fmt.Sprintf("skipping attestation write: %s", reason))
 		}
 		return nil
 	}
-	pr := &scm.PR{URL: strings.TrimSpace(*sctx.Run.PRURL)}
-	if n, err := scm.ExtractPRNumber(pr.URL); err == nil {
-		pr.Number = n
+	if err := host.Available(sctx.Ctx); err != nil {
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("skipping attestation write: %v", err))
+		}
+		return nil
 	}
-	return restampPRAttestation(sctx.Ctx, host, pr, headSHA, sctx.Log)
+	discovered, err := host.FindPR(sctx.Ctx, branch, "")
+	if err != nil {
+		return fmt.Errorf("%w: find pull request: %v", errAttestationWriteFailed, err)
+	}
+	pr, err := bindExistingPR(sctx, host, discovered)
+	if err != nil {
+		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
+	}
+	if pr == nil {
+		return nil
+	}
+	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log); err != nil {
+		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
+	}
+	return nil
 }
 
 // restampPRAttestation re-reads the current PR body, rewrites only the live
 // pipeline-attestation marker to newHeadSHA, and writes the body back without
 // sending a title. It does not insert an attestation that was not already
 // there. A host without PRContentReader is skipped with a warning rather than
-// failed: missing-reader is not a GitHub settlement miss, and making it fatal
-// parks every non-GitHub repair after a successful push.
+// failed: missing-reader is not a settlement miss, and making it fatal parks
+// every non-GitHub publish.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
+	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn)
+}
+
+// restampPRAttestationWithSteps is restampPRAttestation with an explicit step
+// list. A nil steps keeps whatever statuses the existing attestation already
+// carried (rebindPipelineAttestationWithSteps' nil behavior); a non-nil steps
+// replaces them outright. See attestHeadBeforePush for why a caller picks
+// one over the other.
+func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string)) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
 		if logfn != nil && !ok {
@@ -522,13 +578,13 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound := rebindPipelineAttestationHead(content.Body, newHeadSHA)
+			updated, rebound := rebindPipelineAttestationWithSteps(content.Body, newHeadSHA, steps)
 			if !rebound || updated == content.Body {
 				return nil
 			}
 			// Body-only write of the just-read body with the marker rewritten.
 			// Do not send title: a full-content UpdatePR would clobber a
-			// concurrent title edit. rebindPipelineAttestationHead already
+			// concurrent title edit. rebindPipelineAttestationWithSteps already
 			// leaves every other body byte untouched.
 			_, err = host.UpdatePR(ctx, pr, scm.PRContent{Body: updated})
 		}

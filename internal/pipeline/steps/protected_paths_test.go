@@ -96,9 +96,19 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			f.sctx.Config.Commands.Test = "git cat-file -e HEAD:fix.go"
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			green := fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			green := append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
+				// attestHeadBeforePush discovers the PR via FindPR before every
+				// publish, matching the persisted PRURL the fixture set up.
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+			)
 			ci := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error { cancel(); return ctx.Err() }}
-			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, &PushStep{}, reconcileEnvStep{step: ci, env: green}}
+			// Push now also attests the PR's pipeline before every push (see
+			// attestHeadBeforePush), so it needs the same fake gh reachability
+			// CI already gets here - real production code shares one process
+			// environment across every step, but the executor this test drives
+			// resets StepContext.Env per step and this fixture only injects it
+			// explicitly via reconcileEnvStep.
+			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, reconcileEnvStep{step: &PushStep{}, env: green}, reconcileEnvStep{step: ci, env: green}}
 			reviews := 0
 			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 				reviews++
@@ -252,7 +262,8 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 			persistCIRefusal(t, f, outcome)
 			f.sctx.Fixing = true
 			f.sctx.PreviousFindings = outcome.Findings
-			f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
 			outcome, err = f.run(t)
 			if err != nil || outcome == nil || !pipeline.HasProtectedPathRefusal(outcome.Findings) || calls != 1 || f.localHead(t) != f.headSHA {
 				t.Fatalf("unresolved retry bypassed refusal or reran fixer: %+v, %v calls=%d", outcome, err, calls)
@@ -260,7 +271,8 @@ func TestCIStep_ProtectedPathRetryFinishesRetainedRepairWithGreenChecks(t *testi
 			if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
 				t.Fatal(err)
 			}
-			f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+			f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
+				`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
 			outcome, err = f.run(t)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("retry: %+v, %v\n%s", outcome, err, f.log())
@@ -308,7 +320,8 @@ func TestCIStep_ProtectedPathRetryPublicationFailureKeepsRefusal(t *testing.T) {
 	if err := os.Remove(filepath.Join(f.dir, "package.lock")); err != nil {
 		t.Fatal(err)
 	}
-	f.sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`)
+	f.sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"SUCCESS","bucket":"pass"}]`),
+		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`)
 	hooks := t.TempDir()
 	gitCmd(t, f.upstream, "config", "core.hooksPath", hooks)
 	rejectPush := filepath.Join(hooks, "pre-receive")
