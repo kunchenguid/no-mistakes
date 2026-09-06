@@ -51,7 +51,6 @@ the repository ruleset.
 | --- | --- | --- |
 | `portal-url` | `""` | LAN portal base URL for ingest. When set, ingest failure fails the check. |
 | `portal-token` | `""` | Optional bearer token for ingest. |
-| `github-token` | `${{ github.token }}` | Read the PR. |
 | `repo` | `${{ github.repository }}` | owner/name |
 | `pr-number` | event payload | Pull request number |
 

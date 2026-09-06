@@ -5,10 +5,6 @@ description: >-
   portal URL. Match details stay on the LAN portal.
 
 inputs:
-  github-token:
-    description: Token used to read the PR diff and commits. Defaults to the job token.
-    required: false
-    default: ${{ github.token }}
   portal-url:
     description: LAN portal base URL (ClusterIP or LAN DNS). Empty skips ingest and still fails closed on hits.
     required: false
@@ -38,7 +34,6 @@ runs:
       id: scan
       shell: bash
       env:
-        GITHUB_TOKEN: ${{ inputs.github-token }}
         NM_PORTAL_URL: ${{ inputs.portal-url }}
         NM_PORTAL_TOKEN: ${{ inputs.portal-token }}
         NM_REPO: ${{ inputs.repo }}

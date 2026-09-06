@@ -442,3 +442,31 @@ func TestGitHubCheck_OversizedDiffFailsAsError(t *testing.T) {
 		t.Fatalf("out=%q code=%d err=%v", out, code, err)
 	}
 }
+
+func TestScan_CIDRRequiresCompleteAllowlistContainment(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		blocked bool
+	}{
+		{"192.0.3.7/23", true},
+		{"192.0.2.7/23", true},
+		{"198.51.100.7/22", true},
+		{"203.0.113.7/23", true},
+		{"0.0.0.0/0", true},
+		{"127.0.0.1/7", true},
+		{"192.0.2.0/24", false},
+		{"192.0.2.7/25", false},
+		{"192.0.2.7/32", false},
+		{"198.51.100.7/24", false},
+		{"203.0.113.7/24", false},
+		{"0.0.0.0/32", false},
+		{"127.0.0.1/8", false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			res := Scan(Input{Diff: unified("config.txt", []string{"network: " + tc.value})})
+			if got := hasClass(res, ClassIPAddress); got != tc.blocked {
+				t.Fatalf("blocked=%v, want %v", got, tc.blocked)
+			}
+		})
+	}
+}

@@ -266,15 +266,17 @@ func parseIPv4Candidate(tok string) (net.IP, *net.IPNet, bool) {
 }
 
 func isDocIPv4(ip net.IP, n *net.IPNet) bool {
-	if n != nil {
-		ones, bits := n.Mask.Size()
-		if bits == 32 && ones < 32 {
-			// A published CIDR is a network plan. Only documentation
-			// prefixes themselves are allowed.
-			return inCIDRs(n.IP, docIPv4)
+	if n == nil {
+		return inCIDRs(ip, docIPv4)
+	}
+	ones, bits := n.Mask.Size()
+	for _, allowed := range docIPv4 {
+		allowedOnes, allowedBits := allowed.Mask.Size()
+		if bits == allowedBits && ones >= allowedOnes && allowed.Contains(n.IP) {
+			return true
 		}
 	}
-	return inCIDRs(ip, docIPv4)
+	return false
 }
 
 func isDocIPv6(ip net.IP) bool {

@@ -138,3 +138,44 @@ func TestAxiFirewallRespondDoesNotChangeConclusion(t *testing.T) {
 		t.Fatalf("expected conclusion failure still present: %q", out.String())
 	}
 }
+
+func TestFirewallGitHubCheck_MetadataFileReadFailures(t *testing.T) {
+	for _, flag := range []string{"--title-file", "--body-file", "--commits-file"} {
+		for _, kind := range []string{"missing", "directory", "empty"} {
+			t.Run(flag+"/"+kind, func(t *testing.T) {
+				t.Setenv("NM_HOME", t.TempDir())
+				t.Setenv("NO_MISTAKES_FIREWALL_PORTAL_URL", "")
+				path := filepath.Join(t.TempDir(), "metadata")
+				if kind == "directory" {
+					if err := os.Mkdir(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				} else if kind == "empty" {
+					if err := os.WriteFile(path, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				root := newRootCmd()
+				var out, stderr bytes.Buffer
+				root.SetOut(&out)
+				root.SetErr(&stderr)
+				root.SetIn(strings.NewReader("--- a/docs.md\n+++ b/docs.md\n@@ -0,0 +1 @@\n+use 192.0.2.1\n"))
+				root.SetArgs([]string{"firewall", "github-check", flag, path})
+				err := root.Execute()
+				if kind == "empty" {
+					if err != nil || out.String() != "publish-policy ok\n" {
+						t.Fatalf("empty metadata: err=%v out=%q", err, out.String())
+					}
+				} else {
+					var exit *exitError
+					if !errors.As(err, &exit) || exit.code != firewall.ExitError {
+						t.Fatalf("expected ExitError, got %v", err)
+					}
+					if out.String() != firewall.PublicErrorText("") || stderr.Len() != 0 {
+						t.Fatalf("non-generic output: stdout=%q stderr=%q", out.String(), stderr.String())
+					}
+				}
+			})
+		}
+	}
+}

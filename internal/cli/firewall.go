@@ -41,10 +41,16 @@ func newFirewallGitHubCheckCmd() *cobra.Command {
 				fmt.Fprint(cmd.OutOrStdout(), firewall.PublicErrorText(portalURL))
 				return &exitError{code: firewall.ExitError, err: err}
 			}
-			title, _ := readOptional(titleFile)
-			body, _ := readOptional(bodyFile)
-			commits, _ := readLines(commitsFile)
+			title, titleErr := readOptional(titleFile)
+			body, bodyErr := readOptional(bodyFile)
+			commits, commitsErr := readLines(commitsFile)
 			portal := firstNonEmpty(portalURL, os.Getenv("NO_MISTAKES_FIREWALL_PORTAL_URL"))
+			for _, readErr := range []error{titleErr, bodyErr, commitsErr} {
+				if readErr != nil {
+					fmt.Fprint(cmd.OutOrStdout(), firewall.PublicErrorText(portal))
+					return &exitError{code: firewall.ExitError}
+				}
+			}
 			opts := firewall.CheckOptions{
 				PortalURL:   portal,
 				PortalToken: firstNonEmpty(portalToken, os.Getenv("NO_MISTAKES_FIREWALL_INGEST_TOKEN")),
