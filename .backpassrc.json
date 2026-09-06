@@ -1,7 +1,6 @@
 {
   "memoryFiles": [
-    "AGENTS.md",
-    "CLAUDE.md"
+    "AGENTS.md"
   ],
   "budgetTokens": 5000,
   "skillsDir": ".agents/skills",
