@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.68.0](https://github.com/kunchenguid/no-mistakes/compare/v1.67.0...v1.68.0) (2026-09-06)
+
+
+### Features
+
+* **cli:** add ci-workflow subcommand to generate GitHub Actions CI from repo config ([#984](https://github.com/kunchenguid/no-mistakes/issues/984)) ([9862979](https://github.com/kunchenguid/no-mistakes/commit/9862979aa6f9631ddbcd3518dfa58df2084f0ebe))
+
+
+### Bug Fixes
+
+* **eval:** compare replay model names only ([#991](https://github.com/kunchenguid/no-mistakes/issues/991)) ([a24f920](https://github.com/kunchenguid/no-mistakes/commit/a24f920b7c322d2996fca65700fafe6d4a563964))
+* **pipeline:** attest PR heads before pushing ([#994](https://github.com/kunchenguid/no-mistakes/issues/994)) ([80ab4d8](https://github.com/kunchenguid/no-mistakes/commit/80ab4d88e685d648fac7e1080c925407f2c21f00))
+* **pipeline:** isolate review agent timeout budgets ([#962](https://github.com/kunchenguid/no-mistakes/issues/962)) ([8a82308](https://github.com/kunchenguid/no-mistakes/commit/8a82308ded6e3de2e0e574ed3d89424e151b3df4))
+
+## [1.67.0](https://github.com/kunchenguid/no-mistakes/compare/v1.66.0...v1.67.0) (2026-09-06)
+
+
+### Features
+
+* **daemon:** add atomic nonce-bound launch receipts ([#895](https://github.com/kunchenguid/no-mistakes/issues/895)) ([f093de2](https://github.com/kunchenguid/no-mistakes/commit/f093de2923ce1178812762dba61574a1d6089c8d))
+
+
+### Bug Fixes
+
+* **cli:** keep AXI attached to slow daemons ([#988](https://github.com/kunchenguid/no-mistakes/issues/988)) ([e9c3b44](https://github.com/kunchenguid/no-mistakes/commit/e9c3b4418e69b0e9d8ec5b38aae57242e165bab0))
+
+## [1.66.0](https://github.com/kunchenguid/no-mistakes/compare/v1.65.4...v1.66.0) (2026-09-05)
+
+
+### Features
+
+* **pipeline:** add opt-in protected paths for automatic commits ([#970](https://github.com/kunchenguid/no-mistakes/issues/970)) ([bb821d3](https://github.com/kunchenguid/no-mistakes/commit/bb821d3fb9966821834ac25ebb415b81194f20c3))
+
+
+### Bug Fixes
+
+* **axi:** qualify automatic publication and CI skips ([#975](https://github.com/kunchenguid/no-mistakes/issues/975)) ([5700d0f](https://github.com/kunchenguid/no-mistakes/commit/5700d0f80b17378cf51cb0cbcee275dd00318e79))
+* **daemon:** refuse reruns that differ from the clean caller HEAD ([#972](https://github.com/kunchenguid/no-mistakes/issues/972)) ([68ae62f](https://github.com/kunchenguid/no-mistakes/commit/68ae62f18d6d2925fffaa680fec5f2c7ab0cc56d))
+* **eval:** normalize provider-qualified model identities ([#982](https://github.com/kunchenguid/no-mistakes/issues/982)) ([9b6d998](https://github.com/kunchenguid/no-mistakes/commit/9b6d99828c8465f9eb387c92c9a44548a3bf4b71))
+
 ## [1.65.4](https://github.com/kunchenguid/no-mistakes/compare/v1.65.3...v1.65.4) (2026-09-05)
 
 

@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS runs (
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
+    launch_nonce         TEXT,
+    launch_validation_generation TEXT,
+    launch_intent_digest TEXT,
+    launch_receipt_claimed_at INTEGER,
+    pr_base_branch       TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -256,6 +261,15 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// Proof bindings remain nullable for ordinary and historical rows. The
+	// partial unique index is the cross-process duplicate defense.
+	`ALTER TABLE runs ADD COLUMN launch_nonce TEXT`,
+	`ALTER TABLE runs ADD COLUMN launch_validation_generation TEXT`,
+	`ALTER TABLE runs ADD COLUMN launch_intent_digest TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce ON runs (repo_id, branch, launch_nonce) WHERE launch_nonce IS NOT NULL`,
+	// The first successful conditional update marks the sole `created`
+	// observer; all later claims are durable replays.
+	`ALTER TABLE runs ADD COLUMN launch_receipt_claimed_at INTEGER`,
 	// Per-run PR target branch chosen by the operator (e.g. axi run
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.

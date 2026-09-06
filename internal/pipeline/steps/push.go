@@ -45,10 +45,13 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// evidence is deliberately not among them: it is collected outside the
 	// worktree and published to the orphan evidence branch (internal/evidence),
 	// so no artifact ever enters the pushed branch or the default branch's history.
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("check agent changes: %w", err)
+	}
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		if err := stagePipelineChanges(sctx); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
 		if err := commitPipelineCorrection(ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {
@@ -65,7 +68,14 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA); err != nil {
+	// This run's own review/test/document have already completed by now (see
+	// AllSteps' fixed order), so these are honest statuses to attest for the
+	// head about to be pushed - see attestHeadBeforePush.
+	attestationSteps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load step results for attestation: %w", err)
+	}
+	if err := publishRunHead(sctx, headBeingPushed, newHeadSHA, attestationSteps); err != nil {
 		return nil, err
 	}
 
@@ -94,7 +104,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // It deliberately does not relax the review-approved-head check for anyone.
 // Whether a CI repair may be published at all is decided before publication, by
 // ciRepairContinuityGap.
-func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string) error {
+//
+// attestationSteps is forwarded to attestHeadBeforePush, which writes this
+// run's pipeline attestation for headBeingPushed BEFORE it is pushed - see
+// that function's doc comment for why this ordering, not a post-push write,
+// closes the push-then-attest race. Pass nil to carry an existing
+// attestation's own step statuses forward (a CI repair published without
+// revalidation); pass this run's current steps (sctx.DB.GetStepsByRun) for
+// the ordinary Push step.
+func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate string, attestationSteps []*db.StepResult) error {
 	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
@@ -126,6 +144,14 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err != nil {
 		return fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
+
+	// This protocol has single-publisher scope: the daemon's
+	// startRunWithIntentSourceLocked enforces one active run per repo branch, so
+	// coordination with independent authorized publishers is outside its scope.
+	if err := attestHeadBeforePush(sctx, headBeingPushed, attestationSteps); err != nil {
+		return err
+	}
+
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).

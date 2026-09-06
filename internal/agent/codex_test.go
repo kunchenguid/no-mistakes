@@ -313,6 +313,37 @@ sleep 100
 	}
 }
 
+func TestCodexAgent_ProgressWithoutTerminalCompletionIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	progress := `{"findings":[],"risk_level":"low"}`
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"findings\":[],\"risk_level\":\"low\"}"}}'
+sleep 100
+	`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"findings\\\":[],\\\"risk_level\\\":\\\"low\\\"}\"}}",
+		"ping -n 101 127.0.0.1 > nul",
+	}, "\r\n"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var chunks []string
+	result, err := (&codexAgent{bin: bin}).Run(ctx, RunOpts{
+		Prompt:  "review",
+		CWD:     dir,
+		OnChunk: func(text string) { chunks = append(chunks, text) },
+	})
+	if err == nil {
+		t.Fatal("expected progress-only turn to fail without native completion")
+	}
+	if result != nil {
+		t.Fatalf("progress-only result = %+v, want nil", result)
+	}
+	if len(chunks) != 1 || chunks[0] != progress {
+		t.Fatalf("streamed progress = %q, want %q", chunks, progress)
+	}
+}
+
 func TestCodexAgent_RunIncludesJSONLErrorOnExitFailure(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh

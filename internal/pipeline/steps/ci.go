@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -230,18 +231,42 @@ func verifyMergedProof(ctx context.Context, host scm.Host, pr *scm.PR, expectedH
 	return nil
 }
 
-func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
-		return nil, err
-	}
+func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutcome, err error) {
+	refusalFindings := ""
 	if sctx.StepResultID != "" {
 		stepResult, err := sctx.DB.GetStepResult(sctx.StepResultID)
 		if err != nil {
-			return nil, fmt.Errorf("restore CI auto-fix attempts: %w", err)
+			return nil, fmt.Errorf("restore CI auto-fix attempts and refusal: %w", err)
 		}
 		if stepResult != nil {
 			s.ciFixAttempts = max(s.ciFixAttempts, stepResult.CIFixAttempts)
+			if stepResult.FindingsJSON != nil {
+				refusalFindings = *stepResult.FindingsJSON
+			}
 		}
+	}
+	retryRefusal := sctx.Fixing && pipeline.HasProtectedPathRefusal(refusalFindings)
+	manualFixAttempted := retryRefusal
+	defer func() {
+		if !retryRefusal {
+			return
+		}
+		if refusal := pipeline.ProtectedPathOutcome(err); refusal != nil {
+			outcome, err = refusal, nil
+			return
+		}
+		findings, _ := types.ParseFindingsJSON(refusalFindings)
+		findings.Summary = "Retained CI repair could not finish; resolve the failure and retry with fix"
+		if err != nil {
+			findings.Summary += ": " + safeurl.RedactText(err.Error())
+		} else if outcome != nil && outcome.SkipReason != "" {
+			findings.Summary += ": " + safeurl.RedactText(outcome.SkipReason)
+		}
+		encoded, _ := types.MarshalFindingsJSON(findings)
+		outcome, err = &pipeline.StepOutcome{NeedsApproval: true, Findings: encoded}, nil
+	}()
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
 	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the
@@ -285,6 +310,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
 	pr := &scm.PR{Number: prNumber, URL: prURL}
+	if retryRefusal {
+		if err := setCIMonitorReadiness(sctx, false, false); err != nil {
+			return nil, err
+		}
+		repair, err := s.retryProtectedPathRepair(sctx)
+		if err != nil {
+			return nil, err
+		}
+		retryRefusal = false
+		if repair.Revalidate {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+	}
 	baseBranch := effectivePRBaseBranch(sctx)
 	// A resumed run may have a different trusted configuration than the run
 	// that created this PR. Re-read the forge record without a base filter so
@@ -333,7 +371,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	// poll-interval and grace-period pacing are unaffected by re-arming.
 	timeoutAnchor := started
 	lastBaseTip := ""
-	manualFixAttempted := false
 	mergeabilityBlockedReason := ""
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
@@ -630,6 +667,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+						return outcome, nil
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
@@ -676,6 +716,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					repair, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
+					if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+						return outcome, nil
+					}
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}

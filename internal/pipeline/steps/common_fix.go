@@ -26,6 +26,10 @@ type fixExecutionOptions struct {
 	FallbackSummary         string
 	AfterAgentRun           func(*agent.Result) error
 	AgentContext            context.Context
+	// RunAgent overrides the agent-call seam while leaving preparation and
+	// post-agent commit work on the step context. Review uses it to create a
+	// fresh review_agent_timeout context at the instant each fixer starts.
+	RunAgent func(agent.RunOpts) (*agent.Result, error)
 	// SessionRole, when set, runs the fix turn in that durable review-loop
 	// session (the review step's fixer role). Steps outside the review loop
 	// leave it empty and stay session-isolated.
@@ -189,7 +193,10 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("check %s changes: %w", stepName, err)
+	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no agent changes to commit")
 		return nil
@@ -204,7 +211,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	if err := stagePipelineChanges(sctx); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
@@ -281,12 +288,21 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Purpose:    purpose,
 		Workload:   opts.Workload,
 	}
-	agentCtx := sctx.Ctx
-	if opts.AgentContext != nil {
-		agentCtx = opts.AgentContext
+	var result *agent.Result
+	var err error
+	if opts.RunAgent != nil {
+		result, err = opts.RunAgent(runOpts)
+	} else {
+		agentCtx := sctx.Ctx
+		if opts.AgentContext != nil {
+			agentCtx = opts.AgentContext
+		}
+		result, err = sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
 	}
-	result, err := sctx.RunAgentSessionContext(agentCtx, opts.SessionRole, runOpts)
 	if err != nil {
+		if opts.ErrorPrefix == "" {
+			return "", err
+		}
 		return "", fmt.Errorf("%s: %w", opts.ErrorPrefix, err)
 	}
 	if opts.AfterAgentRun != nil {

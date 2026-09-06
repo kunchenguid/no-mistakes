@@ -5,19 +5,24 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fallbackTestAgent struct {
 	name      string
 	run       func() (*Result, error)
+	runCtx    func(context.Context) (*Result, error)
 	calls     int
 	resumable bool
 }
 
 func (a *fallbackTestAgent) Name() string { return a.name }
 
-func (a *fallbackTestAgent) Run(context.Context, RunOpts) (*Result, error) {
+func (a *fallbackTestAgent) Run(ctx context.Context, _ RunOpts) (*Result, error) {
 	a.calls++
+	if a.runCtx != nil {
+		return a.runCtx(ctx)
+	}
 	return a.run()
 }
 
@@ -144,5 +149,64 @@ func TestFallbackAgent_ReportsEveryAttempt(t *testing.T) {
 	}
 	if attempts[1].Agent != "claude" || attempts[1].Result == nil || attempts[1].Result.Text != "ok" {
 		t.Fatalf("second attempt = %+v", attempts[1])
+	}
+}
+
+func TestFallbackAgent_ExpiredPrimaryDoesNotAnnounceOrStartFallback(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		runCtx: func(ctx context.Context) (*Result, error) {
+			<-ctx.Done()
+			return nil, errors.New("codex exited: signal: terminated")
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "must not start"}, nil
+		},
+	}
+	var lifecycle []LifecycleEvent
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := NewFallback([]Agent{first, second}).Run(ctx, RunOpts{
+		OnLifecycle: func(event LifecycleEvent) { lifecycle = append(lifecycle, event) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "codex exited") {
+		t.Fatalf("Run() error = %v, want primary timeout report preserved", err)
+	}
+	if first.calls != 1 || second.calls != 0 {
+		t.Fatalf("calls = first %d second %d, want 1/0", first.calls, second.calls)
+	}
+	for _, event := range lifecycle {
+		if event.Phase == LifecyclePhaseFallback {
+			t.Fatalf("announced fallback on an expired context: %+v", event)
+		}
+	}
+}
+
+func TestFallbackAgent_AlreadyExpiredContextStartsNoCandidate(t *testing.T) {
+	first := &fallbackTestAgent{
+		name: "codex",
+		run: func() (*Result, error) {
+			return &Result{Text: "must not start"}, nil
+		},
+	}
+	second := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return &Result{Text: "must not start"}, nil
+		},
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err := NewFallback([]Agent{first, second}).Run(ctx, RunOpts{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want context deadline", err)
+	}
+	if first.calls != 0 || second.calls != 0 {
+		t.Fatalf("calls = first %d second %d, want 0/0", first.calls, second.calls)
 	}
 }

@@ -65,10 +65,20 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
+	sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`),
+		// attestHeadBeforePush discovers the PR via FindPR before every publish
+		// (Push and a CI repair alike), so the fixture's fake gh must be able to
+		// resolve the same PR the fixture's own persisted PRURL names.
+		`FAKE_CLI_PR_LIST_JSON=[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"main"}]`,
+	)
 	sctx.Run.PRURL = &prURL
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Repo.UpstreamURL = upstream
+	// resolveUpstreamURL prefers the worktree's real "origin" remote (set to
+	// the local bare upstream above) for the actual git push, so this
+	// GitHub-shaped value only drives provider/host/repo-slug resolution -
+	// it must match FAKE_CLI_PR_LIST_JSON above for FindPR's own repo-slug
+	// cross-check to accept the discovered PR.
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 	sctx.Config.CI.RevalidateRepairs = revalidate

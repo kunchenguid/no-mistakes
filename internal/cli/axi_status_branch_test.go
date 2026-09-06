@@ -46,7 +46,7 @@ func axiStatusOutput(t *testing.T, runID string) string {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, runID); err != nil {
+	if err := runAxiStatus(cmd, runID); err != nil {
 		t.Fatalf("axi status: %v\n%s", err, out.String())
 	}
 	return out.String()
@@ -319,7 +319,7 @@ func TestAxiStatusExplicitRunWithUnknownCallerBranchCannotOfferMutationCommands(
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, other.ID); err != nil {
+	if err := runAxiStatus(cmd, other.ID); err != nil {
 		t.Fatalf("explicit axi status after branch lookup failure: %v\n%s", err, out.String())
 	}
 	doc := decodeStatusDoc(t, out.String())
@@ -390,7 +390,7 @@ func TestAxiLogsDoesNotReadAnotherBranchesRunLogs(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiLogs(cmd, "review", "", false); err == nil {
+	if err := runAxiLogs(cmd, "review", "", false); err == nil {
 		t.Fatalf("axi logs resolved another branch's run:\n%s", out.String())
 	}
 	got := out.String()
@@ -426,7 +426,7 @@ func TestAxiLogsExplicitRunTailHelpKeepsRunID(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiLogs(cmd, "review", other.ID, false); err != nil {
+	if err := runAxiLogs(cmd, "review", other.ID, false); err != nil {
 		t.Fatalf("axi logs explicit run: %v\n%s", err, out.String())
 	}
 	want := "axi logs --run " + other.ID + " --step review --full"
@@ -452,7 +452,7 @@ func TestAxiLogsUnknownExplicitRunIDReportsNotFound(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiLogs(cmd, "review", "missing-run", false); err == nil {
+	if err := runAxiLogs(cmd, "review", "missing-run", false); err == nil {
 		t.Fatalf("axi logs unexpectedly found missing explicit run:\n%s", out.String())
 	}
 	var doc struct {
@@ -492,7 +492,7 @@ func TestAxiStatusNoRunRenderingUsesResolutionSnapshot(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
-	if _, err := emitNoRunForCaller(cmd, &axiEnv{d: database, repo: repo}, "feature/mine", runs); err != nil {
+	if err := emitNoRunForCaller(cmd, &axiEnv{d: database, repo: repo}, "feature/mine", runs); err != nil {
 		t.Fatalf("render no-run status: %v", err)
 	}
 	if strings.Contains(out.String(), inserted.ID) {
@@ -510,7 +510,7 @@ func TestAxiStatusBranchLookupFailureIsNotDetachedHEAD(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(ctx)
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, ""); err == nil {
+	if err := runAxiStatus(cmd, ""); err == nil {
 		t.Fatalf("axi status succeeded after branch lookup failed:\n%s", out.String())
 	}
 	got := out.String()
@@ -544,7 +544,7 @@ func TestAxiDetachedHEADHelpOffersOnlyValidActions(t *testing.T) {
 		cmd := &cobra.Command{}
 		cmd.SetContext(context.Background())
 		cmd.SetOut(&out)
-		if _, err := runAxiLogs(cmd, "review", "", false); err == nil {
+		if err := runAxiLogs(cmd, "review", "", false); err == nil {
 			t.Fatalf("detached logs unexpectedly found a run:\n%s", out.String())
 		}
 		got := out.String()

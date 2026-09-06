@@ -6,13 +6,14 @@ package cli
 // PR merged first). The live CI monitor keeps running after checks pass and
 // auto-rebases onto the base, resolves the conflict, revalidates from Review,
 // and re-pushes itself, so the agent runs no command and never hand-rebases. `no-mistakes
-// rerun` is only the recovery for a monitor that is no longer running.
+// rerun` is only the recovery for a monitor that is no longer running, and a
+// known clean caller head must match the head rerun already selects.
 //
-// This same guidance is mirrored in the skill body (internal/skill/skill.go)
-// and the published agents guide (docs/.../guides/agents.md); the repo treats
-// agent-driving guidance as a multi-surface contract, and
-// TestStaleMonitorGuidance_SyncedAcrossSurfaces keeps the three in sync.
-const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes it through Push automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`."
+// The skill body (internal/skill/skill.go) owns the full driving guidance; the
+// agents guide (docs/.../guides/agents.md) keeps the monitor invariant and links
+// to the CLI reference for restart conditions.
+// TestStaleMonitorGuidance_SyncedAcrossSurfaces guards that contract.
+const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes it through Push automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) use `no-mistakes rerun` to validate the selected gate or preserved head; it refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits."
 
 // preserveGateFixCommitsGuidance is the canonical, point-of-use guidance an
 // agent reads when it needs to make another fix after a gate round already

@@ -11,9 +11,37 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/muesli/termenv"
 )
+
+func TestModel_Yolo_ProtectedPathRefusalSendsNoAutomaticResponse(t *testing.T) {
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			outcome := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"})
+			run.Steps = []ipc.StepResultInfo{{StepName: types.StepDocument, Status: status, FindingsJSON: &outcome.Findings}}
+			m := NewModel(sock, client, run)
+			m.yoloMode = true
+			m.stepDiffLoaded[types.StepDocument] = true
+			for range 2 {
+				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+					if msg := cmd(); msg != nil {
+						t.Fatalf("automatic response failed: %v", msg)
+					}
+				}
+			}
+			if calls := snapshot(); len(calls) != 0 {
+				t.Fatalf("protected-path refusal sent automatic responses: %+v", calls)
+			}
+			if m.yoloFixed[types.StepDocument] || m.yoloApproved[types.StepDocument] {
+				t.Fatal("refusal consumed yolo bookkeeping without an operator decision")
+			}
+		})
+	}
+}
 
 func TestModel_Update_YoloKeyTogglesMode(t *testing.T) {
 	run := testRun()

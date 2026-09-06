@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -101,6 +102,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	}
 	step := awaitingStep(m.steps)
 	if step == nil || m.yoloApproved[step.StepName] {
+		return nil
+	}
+	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
 	if !m.approvalReady(step) {
