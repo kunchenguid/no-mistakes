@@ -38,7 +38,7 @@ var (
 	// figure, never the size of a live estate.
 	fleetScale  = regexp.MustCompile(`(?i)\b\d{3,}(?:,\d{3})*\s+(?:devices?|sites?|endpoints?)\b`)
 	captureName = regexp.MustCompile(`(?i)\.(?:pcap|pcapng|cap|dmp)$`)
-	ipv6Loose   = regexp.MustCompile(`(?i)[0-9a-f:]*:[0-9a-f:]+(?:/\d+)?`)
+	ipv6Loose   = regexp.MustCompile(`(?i)[0-9a-f:]*:[0-9a-f:]+(?:(?:\.\d{1,3}){3})?(?:/\d+)?`)
 )
 
 var docIPv4 = mustCIDRs(

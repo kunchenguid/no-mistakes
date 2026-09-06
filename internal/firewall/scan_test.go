@@ -512,6 +512,10 @@ func TestScan_IPv4MappedIPv6UsesIPv4Allowlist(t *testing.T) {
 		value   string
 		blocked bool
 	}{
+		{"::ffff:192.0.2.7", false}, {"::ffff:192.0.2.7/120", false},
+		{"::ffff:192.0.2.7/128", false}, {"::ffff:192.0.2.7/119", true},
+		{"::ffff:192.0.3.7/119", true}, {"::ffff:192.0.2.7/95", true},
+		{"::ffff:10.0.0.5", true}, {"::ffff:10.0.0.5/128", true},
 		{"::ffff:a00:5", true}, {"::ffff:a00:5/128", true},
 		{"::ffff:c000:307/119", true}, {"::ffff:c000:207/119", true},
 		{"::ffff:c000:207/95", true}, {"::ffff:0:0/96", true},
