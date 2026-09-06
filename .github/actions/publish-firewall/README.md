@@ -45,6 +45,10 @@ The first configured public product repository is `carverauto/serviceradar`.
 Add others by pinning this action and requiring the `publish-policy` check in
 the repository ruleset.
 
+The action reads current PR title and body through the GitHub API using the
+job token and `pull-requests: read`; failed lookups fail closed. It scans the
+aggregate diff and every introduced commit’s content changes.
+
 ## Inputs
 
 | Input | Default | Purpose |

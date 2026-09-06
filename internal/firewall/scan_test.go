@@ -470,3 +470,39 @@ func TestScan_CIDRRequiresCompleteAllowlistContainment(t *testing.T) {
 		})
 	}
 }
+
+func TestScan_IPv6CIDRContainment(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		blocked bool
+	}{
+		{"::/0", true}, {"::1/127", true}, {"2001:db8::1/31", true},
+		{"2001:db9::1/31", true}, {"fe80::1/64", true},
+		{"::/128", false}, {"::1/128", false}, {"2001:db8::/32", false}, {"2001:db8::1/64", false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			res := Scan(Input{Title: "network: " + tc.value})
+			if got := hasClass(res, ClassIPAddress); got != tc.blocked {
+				t.Fatalf("blocked=%v want=%v", got, tc.blocked)
+			}
+		})
+	}
+}
+
+func TestScan_GPSContextRequiresAdjacentLinesOnSameSide(t *testing.T) {
+	for _, tc := range []struct {
+		diff    string
+		blocked bool
+	}{
+		{"@@ -0,0 +1,2 @@\n+gps measurement\n+12.345, 67.890\n", true},
+		{"@@ -1,2 +0,0 @@\n-gps measurement\n-12.345, 67.890\n", true},
+		{"@@ -0,0 +1 @@\n+gps measurement\n@@ -200,0 +202 @@\n+12.345, 67.890\n", false},
+		{"@@ -1 +1 @@\n-gps measurement\n+12.345, 67.890\n", false},
+		{"@@ -1,1 +1,3 @@\n+gps measurement\n unchanged\n+12.345, 67.890\n", false},
+	} {
+		res := Scan(Input{Diff: "--- a/data.txt\n+++ b/data.txt\n" + tc.diff})
+		if got := hasClass(res, ClassGPS); got != tc.blocked {
+			t.Fatalf("blocked=%v want=%v diff=%q", got, tc.blocked, tc.diff)
+		}
+	}
+}

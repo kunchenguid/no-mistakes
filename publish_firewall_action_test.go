@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/kunchenguid/no-mistakes/internal/firewall"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +43,7 @@ type checkScriptEnv struct {
 	base       string
 	head       string
 	path       string
+	apiURL     string
 }
 
 func TestPublishFirewallAction_IsACompositeActionThatRunsTheScannedCheck(t *testing.T) {
@@ -144,8 +148,8 @@ func TestPublishFirewallAction_FailsClosed(t *testing.T) {
 		env        map[string]string
 		conclusion string
 	}{
-		{name: "event payload missing", scanExit: 0, env: map[string]string{"GITHUB_EVENT_PATH": ""}, conclusion: "error"},
-		{name: "event payload unreadable", scanExit: 0, env: map[string]string{"GITHUB_EVENT_PATH": "/nonexistent/event.json"}, conclusion: "error"},
+		{name: "API unavailable", scanExit: 0, env: map[string]string{"GITHUB_API_URL": "http://127.0.0.1:1"}, conclusion: "error"},
+		{name: "token missing", scanExit: 0, env: map[string]string{"GITHUB_TOKEN": ""}, conclusion: "error"},
 		{name: "scanner binary absent", omitBinary: true, conclusion: "error"},
 		{name: "base sha unknown to git", scanExit: 0, env: map[string]string{"NM_BASE_SHA": "0000000000000000000000000000000000000000"}, conclusion: "error"},
 		{name: "no base or head sha", scanExit: 0, env: map[string]string{"NM_BASE_SHA": "", "NM_HEAD_SHA": ""}, conclusion: "error"},
@@ -417,6 +421,14 @@ func newCheckScriptEnv(t *testing.T) *checkScriptEnv {
 	outputPath := filepath.Join(dir, "github_output")
 	write(t, outputPath, "")
 
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/product/pulls/4211" || r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(event["pull_request"])
+	}))
+	t.Cleanup(api.Close)
 	return &checkScriptEnv{
 		dir:        dir,
 		binDir:     binDir,
@@ -425,6 +437,7 @@ func newCheckScriptEnv(t *testing.T) *checkScriptEnv {
 		base:       base,
 		head:       head,
 		path:       binDir,
+		apiURL:     api.URL,
 	}
 }
 
@@ -471,6 +484,8 @@ func (e *checkScriptEnv) run(t *testing.T, overrides map[string]string) (string,
 		"NM_HOME":           filepath.Join(e.dir, "nmhome"),
 		"RUNNER_TEMP":       filepath.Join(e.dir, "runner-temp"),
 		"GITHUB_EVENT_PATH": e.eventPath,
+		"GITHUB_API_URL":    e.apiURL,
+		"GITHUB_TOKEN":      "test-token",
 		"GITHUB_OUTPUT":     e.outputPath,
 		"NM_REPO":           "owner/product",
 		"NM_PR_NUMBER":      "4211",
@@ -570,5 +585,84 @@ func TestPublishFirewallAction_CommitCollectionFailureBlocksScan(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.dir, "scanner-args.txt")); !os.IsNotExist(err) {
 		t.Fatal("scanner invoked after collection failed")
+	}
+}
+
+func TestPublishFirewallAction_LiveMetadataOverridesArchivedEvent(t *testing.T) {
+	env := newCheckScriptEnv(t)
+	env.fakeScanner(t, 0, "")
+	write(t, env.eventPath, `{"pull_request":{"title":"clean","body":"clean"}}`)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"title": "bind 10.0.0.5", "body": "network ::/0"})
+	}))
+	defer api.Close()
+	out, code := env.run(t, map[string]string{"GITHUB_API_URL": api.URL})
+	if code != 0 {
+		t.Fatalf("exit=%d output=%q", code, out)
+	}
+	for _, name := range []string{"title", "body"} {
+		data, err := os.ReadFile(filepath.Join(env.dir, "runner-temp", "nm-firewall."+name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !firewall.Scan(firewall.Input{Title: string(data)}).Failed() {
+			t.Fatalf("live %s was not collected", name)
+		}
+		if strings.Contains(out, string(data)) {
+			t.Fatal("metadata leaked publicly")
+		}
+	}
+}
+
+func TestPublishFirewallAction_InvalidLiveMetadataFailsClosed(t *testing.T) {
+	for _, payload := range []string{`{`, `{}`, `{"title":42,"body":null}`} {
+		t.Run(payload, func(t *testing.T) {
+			env := newCheckScriptEnv(t)
+			env.fakeScanner(t, 0, "")
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(payload)) }))
+			defer api.Close()
+			out, code := env.run(t, map[string]string{"GITHUB_API_URL": api.URL})
+			if code == 0 || strings.TrimSpace(out) != "publish-policy error" {
+				t.Fatalf("code=%d output=%q", code, out)
+			}
+			if _, err := os.Stat(filepath.Join(env.dir, "scanner-args.txt")); !os.IsNotExist(err) {
+				t.Fatal("scanner invoked")
+			}
+		})
+	}
+}
+
+func TestPublishFirewallAction_CollectsIntermediateCommitContent(t *testing.T) {
+	env := newCheckScriptEnv(t)
+	env.fakeScanner(t, 0, "")
+	repo := filepath.Join(env.dir, "repo")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_COUNT=0", "HOME="+env.dir, "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git: %v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write(t, filepath.Join(repo, "fixtures", "switch_inventory.yaml"), "devices: []\n")
+	git("add", "-A")
+	git("commit", "-qm", "remove fixture")
+	env.head = git("rev-parse", "HEAD")
+	if diff := git("diff", env.base+"..."+env.head); diff != "" {
+		t.Fatal("aggregate diff should be empty")
+	}
+	out, code := env.run(t, nil)
+	if code != 0 {
+		t.Fatalf("code=%d output=%q", code, out)
+	}
+	data, err := os.ReadFile(filepath.Join(env.dir, "runner-temp", "nm-firewall.diff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !firewall.Scan(firewall.Input{Diff: string(data)}).Failed() {
+		t.Fatal("intermediate capture not scanned")
 	}
 }

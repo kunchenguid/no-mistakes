@@ -223,11 +223,21 @@ func detectIPs(s surface) []Finding {
 		if strings.Count(tok, ":") < 2 {
 			continue
 		}
-		ip := net.ParseIP(tok)
+		var ip net.IP
+		var network *net.IPNet
+		if strings.Contains(tok, "/") {
+			var err error
+			ip, network, err = net.ParseCIDR(tok)
+			if err != nil {
+				continue
+			}
+		} else {
+			ip = net.ParseIP(tok)
+		}
 		if ip == nil || ip.To4() != nil {
 			continue
 		}
-		if isDocIPv6(ip) {
+		if isDocIPv6(ip, network) {
 			continue
 		}
 		hits = append(hits, hit(s, ClassIPAddress, tok))
@@ -364,7 +374,8 @@ func gpsKeywordNear(all []surface, i int) bool {
 }
 
 func adjacentContent(a, b surface) bool {
-	return a.file == b.file && isContentKind(a.kind) && isContentKind(b.kind)
+	return a.file == b.file && a.kind == b.kind && isContentKind(a.kind) &&
+		(a.line == b.line+1 || b.line == a.line+1)
 }
 
 func isContentKind(kind string) bool {

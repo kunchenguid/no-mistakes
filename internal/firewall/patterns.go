@@ -38,7 +38,7 @@ var (
 	// figure, never the size of a live estate.
 	fleetScale  = regexp.MustCompile(`(?i)\b\d{3,}(?:,\d{3})*\s+(?:devices?|sites?|endpoints?)\b`)
 	captureName = regexp.MustCompile(`(?i)\.(?:pcap|pcapng|cap|dmp)$`)
-	ipv6Loose   = regexp.MustCompile(`(?i)[0-9a-f:]*:[0-9a-f:]+`)
+	ipv6Loose   = regexp.MustCompile(`(?i)[0-9a-f:]*:[0-9a-f:]+(?:/\d+)?`)
 )
 
 var docIPv4 = mustCIDRs(
@@ -266,11 +266,15 @@ func parseIPv4Candidate(tok string) (net.IP, *net.IPNet, bool) {
 }
 
 func isDocIPv4(ip net.IP, n *net.IPNet) bool {
+	return inIPRanges(ip, n, docIPv4)
+}
+
+func inIPRanges(ip net.IP, n *net.IPNet, ranges []*net.IPNet) bool {
 	if n == nil {
-		return inCIDRs(ip, docIPv4)
+		return inCIDRs(ip, ranges)
 	}
 	ones, bits := n.Mask.Size()
-	for _, allowed := range docIPv4 {
+	for _, allowed := range ranges {
 		allowedOnes, allowedBits := allowed.Mask.Size()
 		if bits == allowedBits && ones >= allowedOnes && allowed.Contains(n.IP) {
 			return true
@@ -279,8 +283,8 @@ func isDocIPv4(ip net.IP, n *net.IPNet) bool {
 	return false
 }
 
-func isDocIPv6(ip net.IP) bool {
-	return inCIDRs(ip, docIPv6)
+func isDocIPv6(ip net.IP, n *net.IPNet) bool {
+	return inIPRanges(ip, n, docIPv6)
 }
 
 func isDocMAC(s string) bool {

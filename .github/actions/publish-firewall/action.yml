@@ -34,6 +34,7 @@ runs:
       id: scan
       shell: bash
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         NM_PORTAL_URL: ${{ inputs.portal-url }}
         NM_PORTAL_TOKEN: ${{ inputs.portal-token }}
         NM_REPO: ${{ inputs.repo }}
