@@ -178,7 +178,27 @@ func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
 // head changes. It returns the original body and false when no live
 // attestation is present, so callers cannot mint one for a PR that was not
 // raised through no-mistakes.
+//
+// This is the CI-repair-without-revalidation shape: review/test/document are
+// deliberately not re-run for that repair commit (see ciRepairContinuityGap),
+// so the only honest statuses to (re)publish are the ones the last real
+// attestation already carried.
 func rebindPipelineAttestationHead(body, newHeadSHA string) (string, bool) {
+	return rebindPipelineAttestationWithSteps(body, newHeadSHA, nil)
+}
+
+// rebindPipelineAttestationWithSteps rewrites the first live v1 attestation
+// comment to bind newHeadSHA. When steps is nil it behaves exactly like
+// rebindPipelineAttestationHead, keeping whatever step statuses the existing
+// attestation already carried. When steps is non-nil, it replaces the
+// attestation's step list outright with the caller's own statuses instead of
+// reusing the old ones - for a caller (the Push step) that attests a head it
+// is about to push using this run's own current step statuses, rather than
+// borrowing whatever an older, possibly different, attestation claimed. It
+// still returns the original body and false when no live attestation is
+// present, so a caller cannot mint one for a PR that was not raised through
+// no-mistakes.
+func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.StepResult) (string, bool) {
 	newHeadSHA = strings.TrimSpace(newHeadSHA)
 	if newHeadSHA == "" {
 		return body, false
@@ -197,9 +217,11 @@ func rebindPipelineAttestationHead(body, newHeadSHA string) (string, bool) {
 	if err := json.Unmarshal([]byte(body[payloadStart:end]), &attestation); err != nil {
 		return body, false
 	}
-	steps := make([]*db.StepResult, 0, len(attestation.Steps))
-	for _, s := range attestation.Steps {
-		steps = append(steps, &db.StepResult{StepName: s.Step, Status: s.Status})
+	if steps == nil {
+		steps = make([]*db.StepResult, 0, len(attestation.Steps))
+		for _, s := range attestation.Steps {
+			steps = append(steps, &db.StepResult{StepName: s.Step, Status: s.Status})
+		}
 	}
 	rebuilt := buildPipelineAttestation(steps, newHeadSHA)
 	if rebuilt == "" {

@@ -49,6 +49,8 @@ func handleFakeCLI(mode string) {
 		fakeGitPassthroughHandler(args)
 	case "git-move-head-passthrough":
 		fakeGitMoveHeadPassthroughHandler(args)
+	case "git-intervening-push-passthrough":
+		fakeGitInterveningPushPassthroughHandler(args)
 	case "git-reset-after-commit-passthrough":
 		fakeGitResetAfterCommitPassthroughHandler(args)
 	case "git-require-noninteractive-env":
@@ -69,6 +71,17 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabSequenceHandler(args)
 	case "ci-gh-reconcile":
 		fakeCIGHReconcileHandler(args)
+	case "ci-gh-with-intervening-push":
+		// A single step invocation can need both a faked gh (for the PR
+		// attestation write) and a faked git (to inject a push-time race) in
+		// the same sctx.Env, so this dispatches on the binary name rather
+		// than a second, mutually exclusive FAKE_CLI_MODE.
+		binaryName := filepath.Base(os.Args[0])
+		if strings.TrimSuffix(binaryName, filepath.Ext(binaryName)) == "git" {
+			fakeGitInterveningPushPassthroughHandler(args)
+		} else {
+			fakeCIGHHandler(args)
+		}
 	default:
 		os.Exit(1)
 	}
@@ -192,6 +205,34 @@ func fakeGitMoveHeadPassthroughHandler(args []string) {
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+	}
+	fakeGitForward(args, realGit)
+}
+
+// fakeGitInterveningPushPassthroughHandler models a genuine push-time race:
+// right before forwarding the pipeline's own push, it pushes an
+// already-prepared interloper commit to the same remote ref from a second
+// clone, so the pipeline's real force-with-lease push - resolved against the
+// remote state as it was at decision time, moments earlier - is rejected by
+// git's own lease check exactly as it would be against a real concurrent
+// push. FAKE_CLI_INTERLOPER_DIR is the second clone (with the interloper
+// commit already committed but not yet pushed); FAKE_CLI_INTERLOPER_REMOTE
+// and FAKE_CLI_INTERLOPER_REF name where to push it.
+func fakeGitInterveningPushPassthroughHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if fakeGitSubcommand(args) == "push" {
+		interloperDir := os.Getenv("FAKE_CLI_INTERLOPER_DIR")
+		interloperRemote := os.Getenv("FAKE_CLI_INTERLOPER_REMOTE")
+		interloperRef := os.Getenv("FAKE_CLI_INTERLOPER_REF")
+		if interloperDir != "" && interloperRemote != "" && interloperRef != "" {
+			push := exec.Command(realGit, "-C", interloperDir, "push", interloperRemote, interloperRef)
+			push.Stdout = io.Discard
+			push.Stderr = os.Stderr
+			if err := push.Run(); err != nil {
+				fmt.Fprintln(os.Stderr, "interloper push failed:", err)
+				os.Exit(1)
+			}
 		}
 	}
 	fakeGitForward(args, realGit)
@@ -461,9 +502,21 @@ func fakeCIGHHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		if authErr := os.Getenv("FAKE_CLI_AUTH_ERR"); authErr != "" {
+			fmt.Fprintln(os.Stderr, authErr)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	fakeGHHandlePRContentCommands(args, joined)
+	if strings.Contains(joined, "pr list") {
+		if prListJSON := os.Getenv("FAKE_CLI_PR_LIST_JSON"); prListJSON != "" {
+			fmt.Print(prListJSON)
+		} else {
+			fmt.Println("[]")
+		}
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
 		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
 		os.Exit(0)
