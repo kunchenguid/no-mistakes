@@ -67,6 +67,26 @@ If you copy an initialized working directory while the original still exists, th
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
 
+## no-mistakes ci-workflow
+
+Generate `.github/workflows/ci.yml` from the repository's `.no-mistakes.yaml` commands, so GitHub Actions registers real checks that the gate's CI step can monitor.
+
+```sh
+no-mistakes ci-workflow
+no-mistakes ci-workflow --force
+```
+
+| Flag            | Type   | Default | Description                      |
+| --------------- | ------ | ------- | -------------------------------- |
+| `-f`, `--force` | `bool` | `false` | Overwrite existing workflow file |
+
+Run it from anywhere inside a repository with a `.no-mistakes.yaml`; the config is read from and the workflow written at the git toplevel, and `commands.test` must be configured or the command errors.
+The generated workflow runs the configured test command (and lint command when `commands.lint` is set; with an empty `commands.lint` it emits a test-only workflow, since lint runs as the combined document+lint agent pass) on push to the repository's default branch, resolved from the `origin` remote and falling back to `main`, and on all pull requests.
+Commands are inserted verbatim into YAML block scalars, with multi-line commands indented to stay inside the scalar.
+The template is Go-focused (it uses `actions/setup-go` with `go-version-file: go.mod`); non-Go repos can adapt the generated file.
+An existing `.github/workflows/ci.yml` is never overwritten without `--force`, overwrites are atomic, and the command refuses to write through a symlinked `.github`, `workflows`, or `ci.yml`.
+Commit and push the generated file to enable the checks.
+
 ## no-mistakes axi
 
 Agent eXperience Interface for non-interactive agents.
