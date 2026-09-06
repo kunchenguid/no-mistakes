@@ -34,6 +34,7 @@ demo_raw.gif
 .env.local
 .no-mistakes/evidence/
 
+<<<<<<< HEAD
 # Agent scratch HOME inside a run worktree
 # The CI-repair agent reproduces a failing check locally by pointing HOME at a
 # directory in the worktree, which fills it with Go module and OS caches. The
@@ -43,3 +44,7 @@ demo_raw.gif
 
 # Worktree-local gh release used to pin the user-attachments upload contract.
 .scratch-gh/
+
+# Backpass scratch (never commit)
+.backpass/
+evidence/

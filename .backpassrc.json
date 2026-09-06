@@ -1,0 +1,47 @@
+{
+  "memoryFiles": [
+    "AGENTS.md",
+    "CLAUDE.md"
+  ],
+  "budgetTokens": 5000,
+  "skillsDir": ".agents/skills",
+  "minGapEvidence": 2,
+  "maxTranscripts": 40,
+  "analysis": {
+    "agent": "pi",
+    "model": "zai-general/glm-5.3-flash",
+    "effort": "medium"
+  },
+  "synthesis": {
+    "agent": "pi",
+    "model": "zai-general/glm-5.3-flash",
+    "effort": "high"
+  },
+  "discovery": {
+    "harnesses": [
+      "claude",
+      "codex",
+      "pi",
+      "opencode",
+      "grok",
+      "cursor",
+      "hermes"
+    ],
+    "since": "30d",
+    "cloneRoots": [
+      "/home/jon/.treehouse/no-mistakes-4c46bb/1",
+      "/home/jon/.treehouse/no-mistakes-4c46bb/2",
+      "/home/jon/.treehouse/no-mistakes-4c46bb/3",
+      "/home/jon/.treehouse/no-mistakes-4c46bb/4",
+      "/home/jon/.treehouse/no-mistakes-4c46bb/5",
+      "/opt/ra/firstmate/projects",
+      "/home/jon/.no-mistakes/worktrees"
+    ],
+    "worktreeGlobs": [
+      "/home/jon/.treehouse/no-mistakes-4c46bb/*/no-mistakes",
+      "/home/jon/.no-mistakes/worktrees/*/no-mistakes*"
+    ],
+    "minUserTurns": 2
+  },
+  "jobs": 4
+}

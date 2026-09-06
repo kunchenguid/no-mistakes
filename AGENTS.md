@@ -74,6 +74,14 @@ Safest local verification sequence after non-trivial changes:
 
 - `publishRunHead` must write an existing GitHub PR attestation for the proposed head before pushing it. The protocol has single-publisher scope because the daemon enforces one active run per repository branch; do not add cross-publisher coordination without a separate requirement. Detailed behavior is owned by `docs/src/content/docs/reference/pipeline-steps.md`; local rationale lives in `attestHeadBeforePush` and `publishRunHead`. Regressions: `TestPushStep_AttestsHeadBeforePush`, `TestPushStep_AttestationWriteFailureAbortsBeforePush`, `TestPushStep_UnavailableSCMLeavesStaleAttestationFailingClosed`, `TestPushStep_PushFailureAfterAttestationLeavesBodyAhead`, and `TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes`.
 
+**Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
+
+- The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.
+  The dedicated Test and Lint steps are the authoritative gates, although their coverage may be focused when commands are unconfigured.
+  This is a prompt contract, not an enforced sandbox.
+  Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
+- Keep the findings array for actual code findings only; never emit no-op placeholder findings as progress updates ("Status update only; review is in progress"). Progress chatter belongs in the summary, never the findings array.
+
 **Custody Recovery (`internal/branchsync`)**
 
 - Missing-head keep-local (#958): `classifyPipelineOwned` checks `missingHeadKeepLocalRuns` first. When a verified recorded head is absent from both the worktree and an accessible gate and recovery refs are compatible, status offers `recover_custody` with `--recover --keep-local` as the explicit discard of those unpublished commits. `Recover` takes that early keep-local path, then ordinary keep-local uses `recoverKeepLocalAtCurrentHead` / `finishKeepLocalRecover` so a stranded stack is preflighted, available heads are anchored, and custody stamps atomically. Unverified or conflicting evidence stays manual reconciliation; plain `--recover` still refuses.
@@ -104,6 +112,11 @@ The rationale lives in the `resolveRun` doc comment and the status-rendering com
 - Read-only surfaces (`axi` home/status/logs, `status`, `runs`) emit NO remote telemetry at all. Agent status polling made those commands the dominant Umami volume; do not reintroduce `trackCommand`/`trackAxiSurface`/`ReadSurfaceGate` on them. Mutation surfaces stay full-fidelity via `trackAxiSurface`/`trackCommand`.
 - Detailed performance evidence is LOCAL-ONLY (`agent_invocations` rows plus `runs.parked_ms`); never store prompts, outputs, diffs, or raw command arguments there (shape-guard test `TestAgentInvocations_PrivacySafeShape`) and never send run IDs, paths, session identities, or per-invocation records to Umami - the only remote perf data is three bounded counts on the terminal `run finished` event. The local/remote split is documented in `docs/src/content/docs/reference/environment.md`; read locally with `no-mistakes stats`.
 - Session-fidelity metric counts and timing boundaries have ONE authoritative home, `internal/agent/invocationmetrics.go` (tool-category classifier, `InvocationMetrics`, `FreshInputTokens`, `PerRoundTokens`, `ModelTimeMS`); the codex adapter fills them from its live `exec --json` event stream (`codex_metrics.go`) and the additive fidelity fields plus cache-creation usage are nullable so a not-reported datum is stored as NULL, never a fabricated zero. Codex's live stream exposes neither the model (resolved best-effort from the `~/.codex/sessions` rollout) nor internal model-request counts (it batches one exec into a single `turn.completed`, so round-trips are counted from completed items and subprocess wait is the reader-timed tool-item interval); codex usage is cumulative across a resumed session, so per-round deltas subtract the same session's prior cumulative (`Result.SessionUsageCumulative`). Regressions: `internal/agent/invocationmetrics_test.go`, `internal/agent/codex_metrics_test.go`, `internal/pipeline/instrument_fidelity_test.go`, `internal/db/agent_invocation_test.go` (`TestOpenMigratesSessionFidelityColumns`).
+
+
+## Backpass
+
+Agent-memory backpasses run from the gpu-host-specific `.backpassrc.json` (cloneRoots point at this host's treehouse pool slots); run `bunx backpass@latest scan --force --json` then `bunx backpass@latest` on that host - never commit `.backpass/`.
 
 ## Maintaining this file
 
