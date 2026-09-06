@@ -152,6 +152,7 @@ Previous test findings to address:
 		}
 		evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
 		result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
+			Purpose: "test-evidence",
 			Prompt: fmt.Sprintf(
 				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 

@@ -235,6 +235,9 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
 	}
+	if ag.calls[0].Purpose != "rebase" {
+		t.Fatalf("rebase invocation purpose = %q", ag.calls[0].Purpose)
+	}
 	if !strings.Contains(ag.calls[0].Prompt, "shared.txt") {
 		t.Error("expected agent prompt to mention conflicting file")
 	}

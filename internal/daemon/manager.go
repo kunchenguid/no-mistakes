@@ -273,6 +273,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
 			Profile:                cfg.AgentProfileFor(name),
+			StageEfforts:           cfg.StageEffort[string(name)],
 			Environment:            environment,
 		})
 		if err != nil {
@@ -1346,6 +1347,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 				DisableProjectSettings: cfg.DisableProjectSettings,
 				Profile:                cfg.AgentProfileFor(name),
+				StageEfforts:           cfg.StageEffort[string(name)],
 				Environment:            forgeEnvironment(forgeCtx),
 			})
 			if agErr != nil {

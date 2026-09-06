@@ -51,6 +51,10 @@ type Action struct {
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
+
+	// WaitForFile holds the response until the test driver releases it. Unlike
+	// DelayMS this keeps active-run assertions independent of machine speed.
+	WaitForFile string `yaml:"wait_for_file,omitempty"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the
@@ -133,6 +137,14 @@ func applyAction(action Action) error {
 }
 
 func applyActionInDir(wd string, action Action) error {
+	if action.WaitForFile != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		err := waitForReleaseFile(ctx, action.WaitForFile)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
 	if action.DelayMS > 0 {
 		time.Sleep(time.Duration(action.DelayMS) * time.Millisecond)
 	}

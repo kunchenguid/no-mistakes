@@ -565,6 +565,9 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	if len(ag.calls) != 1 {
 		t.Fatalf("expected 1 evidence agent call, got %d", len(ag.calls))
 	}
+	if ag.calls[0].Purpose != "test-evidence" {
+		t.Fatalf("test invocation purpose = %q", ag.calls[0].Purpose)
+	}
 	prompt := ag.calls[0].Prompt
 
 	assertTestQualityRulePrompt(t, prompt)
