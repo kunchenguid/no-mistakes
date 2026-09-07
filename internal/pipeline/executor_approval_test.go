@@ -189,9 +189,13 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
 	done := make(chan error, 1)
 	released := false
+	finished := false
 	defer func() {
 		if !released {
 			close(releaseFix)
+		}
+		if finished {
+			return
 		}
 		select {
 		case err := <-done:
@@ -242,6 +246,15 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	close(releaseFix)
 	released = true
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		finished = true
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
+	}
 
 	if len(fake.calls) != 2 {
 		t.Fatalf("agent invocations = %d, want fixer and rereviewer", len(fake.calls))

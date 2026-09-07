@@ -241,6 +241,30 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunObjectRendersLegacyActiveStepWithoutRoundClock(t *testing.T) {
+	restore := nowUnix
+	nowUnix = func() int64 { return 1_000_000 }
+	defer func() { nowUnix = restore }()
+
+	started := int64(1_000_000 - 2*60)
+	rv := runView{
+		ID:      "legacy-run",
+		Branch:  "feature/legacy",
+		Status:  string(types.RunRunning),
+		HeadSHA: "abcdef1234567890",
+		Steps: []stepView{{
+			Name:      "review",
+			Status:    string(types.StepStatusRunning),
+			StartedAt: &started,
+		}},
+	}
+
+	out := axiDoc(runObjectField(rv))
+	if !strings.Contains(out, `review,running,2m0s,"",unknown,"",starting`) {
+		t.Fatalf("legacy active step should retain its step clock and leave the unavailable round clock blank:\n%s", out)
+	}
+}
+
 func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 	database := openTestDB(t)
 	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
