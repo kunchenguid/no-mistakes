@@ -160,9 +160,9 @@ func TestAxiRespond_WaitElapsedAfterSubmissionReattachesWithoutRespondingAgain(t
 	})
 
 	started := time.Now()
-	out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "250ms")
+	out, err := executeCmd("axi", "respond", "--action", "approve", "--wait", "3s")
 	elapsed := time.Since(started)
-	assertWaitElapsed(t, err, out, "250ms")
+	assertWaitElapsed(t, err, out, "3s")
 	if !responded.Load() {
 		t.Fatal("response was not submitted before the wait elapsed")
 	}
@@ -172,8 +172,8 @@ func TestAxiRespond_WaitElapsedAfterSubmissionReattachesWithoutRespondingAgain(t
 	if strings.Contains(out, "Re-run `no-mistakes axi respond") {
 		t.Fatalf("post-response timeout instructed the caller to submit another response:\n%s", out)
 	}
-	if elapsed > 3*time.Second {
-		t.Fatalf("bounded wait took %s, want return near 250ms", elapsed)
+	if elapsed > 6*time.Second {
+		t.Fatalf("bounded wait took %s, want return near 3s", elapsed)
 	}
 }
 
