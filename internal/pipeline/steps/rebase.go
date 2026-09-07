@@ -72,8 +72,8 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// Stop before rebasing when the gated branch carries commits that live on
 	// the contributor's local default branch but were never pushed to
 	// origin/<default>. Rebasing onto the fresh remote default keeps those
-	// commits in the branch's history, so the PR would silently bundle another
-	// workstream's unpushed work. Surface it for a human decision instead.
+	// commits in the branch's history, so the PR may bundle another
+	// workstream's unpushed work. Surface the ambiguity for a human decision.
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
 	}
@@ -99,12 +99,24 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	if sctx.Fixing {
+		before, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, err
+		}
 		for _, target := range targets {
 			if err := rebaseWithAgent(ctx, sctx, target); err != nil {
 				return nil, err
 			}
 		}
-		return updateHeadSHA(ctx, sctx)
+		outcome, err := updateHeadSHA(ctx, sctx)
+		if err == nil {
+			if sctx.Run.HeadSHA == before {
+				outcome.FixSummary = "no changes applied: branch already up to date"
+			} else {
+				outcome.FixSummary = "rebased branch onto upstream"
+			}
+		}
+		return outcome, err
 	}
 
 	// Normal mode: try all rebases, track which targets had conflicts
@@ -192,7 +204,9 @@ func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
 //
 // It only flags commits the branch actually carries: it reads the local default
 // tip from the working repo, confirms that tip is ahead of origin/<default> and
-// is an ancestor of the branch HEAD, then enumerates the unpushed commits.
+// is a strict ancestor of the branch HEAD, then enumerates the unpushed commits.
+// Equal tips are the common commit-on-main-then-name-a-branch workflow, not
+// evidence of an additional bundled workstream.
 // Detection is best-effort - if the local default tip advanced past the branch
 // point, or the working repo cannot be read, it returns nil rather than guess.
 func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepContext, branch, defaultBranch string) *pipeline.StepOutcome {
@@ -229,21 +243,45 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 		return nil
 	}
 
+	// A delivery branch created at local main's tip carries only that intended
+	// work, not an additional workstream beneath its own commits (#998).
+	head, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err == nil && head == localTip {
+		return nil
+	}
+
 	subjects, err := git.Run(ctx, sctx.WorkDir, "log", "--oneline", "--no-decorate", remoteRef+".."+localTip)
 	if err != nil || strings.TrimSpace(subjects) == "" {
 		return nil
 	}
 	commits := strings.Split(strings.TrimSpace(subjects), "\n")
-	files, _ := git.DiffNameOnly(ctx, sctx.WorkDir, remoteRef, localTip)
+	// Report the proposed PR, not a two-dot comparison that can count
+	// upstream-only changes as removals from an outdated local default tip.
+	base, baseErr := git.Run(ctx, sctx.WorkDir, "merge-base", remoteRef, "HEAD")
+	var files []string
+	var filesErr error
+	if baseErr == nil {
+		files, filesErr = git.DiffNameOnly(ctx, sctx.WorkDir, base, "HEAD")
+	}
+	fileEvidence := "PR file count unavailable"
+	if baseErr == nil && filesErr == nil {
+		fileEvidence = fmt.Sprintf("proposed PR changes %d file(s)", len(files))
+	}
 	firstFile := ""
 	if len(files) > 0 {
 		firstFile = files[0]
 	}
 
 	description := fmt.Sprintf(
-		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to origin/%s; rebasing would bundle this unrelated work (%d file(s)) into the PR:\n- %s\n\nPush %s to origin, or rebase your branch onto origin/%s, before gating.",
-		len(commits), defaultBranch, defaultBranch, len(files), strings.Join(commits, "\n- "), defaultBranch, defaultBranch,
+		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to origin/%s; these may be unintended bundled work (%s):\n- %s\n\nConfirm these commits belong in this PR before approving, or manually separate the intended work onto origin/%s before gating.",
+		len(commits), defaultBranch, defaultBranch, fileEvidence, strings.Join(commits, "\n- "), defaultBranch,
 	)
+	fixSummary := ""
+	if sctx.Fixing {
+		fixSummary = "no changes applied: bundled local-default commits require manual separation or explicit approval"
+		description += "\n\n" + fixSummary + "; the rebase conflict resolver cannot safely select commits to discard."
+		sctx.Log(fixSummary)
+	}
 	findingsJSON, _ := json.Marshal(Findings{
 		Items: []Finding{{
 			Severity:    "warning",
@@ -261,6 +299,7 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 		NeedsApproval: true,
 		AutoFixable:   false,
 		Findings:      string(findingsJSON),
+		FixSummary:    fixSummary,
 	}
 }
 

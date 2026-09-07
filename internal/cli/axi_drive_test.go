@@ -649,7 +649,7 @@ func TestRenderDriveResult_ChecksPassedWithFixes(t *testing.T) {
 		"outcome: checks-passed",
 		"fixes[2]{step,summary}:",
 		"review,handle nil pointer in executor",
-		"test,fix applied (no summary recorded)",
+		"test,fix attempted (no result recorded)",
 		"Summarize this pipeline run for the user",
 		"acknowledge the misses and list each fix so the user can review them",
 	} {

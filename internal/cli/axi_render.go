@@ -320,16 +320,15 @@ func (rv runView) findingsTally() string {
 	return joinComma(parts)
 }
 
-// fixRows flattens the fixes the pipeline applied across all steps into
-// renderable rows, in step then round order. A fix round that recorded no
-// summary still produced a fix commit, so it gets an explicit placeholder
-// rather than being dropped.
+// fixRows flattens fix-attempt summaries in step then round order. Dispatching
+// a fix round does not prove a change was applied; legacy empty summaries
+// must not manufacture that claim.
 func (rv runView) fixRows() []fixRow {
 	var rows []fixRow
 	for _, s := range rv.Steps {
 		for _, summary := range s.FixSummaries {
 			if summary == "" {
-				summary = "fix applied (no summary recorded)"
+				summary = "fix attempted (no result recorded)"
 			}
 			rows = append(rows, fixRow{Step: s.Name, Summary: summary})
 		}

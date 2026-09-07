@@ -58,6 +58,15 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "my fix")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD") // D0 + U + M
 
+	// Upstream-only files must not inflate the proposed PR evidence.
+	gitCmd(t, working, "checkout", "-b", "upstream-advance", d0)
+	if err := os.WriteFile(filepath.Join(working, "aaa_upstream_only.txt"), []byte("upstream"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "advance upstream independently")
+	gitCmd(t, working, "push", "origin", "HEAD:main")
+
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, d0, headSHA, config.Commands{})
 	sctx.Run.Branch = "refs/heads/feature"
@@ -88,6 +97,17 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits(t *testing.T) {
 	}
 	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
+	}
+	if !strings.Contains(outcome.Findings, "proposed PR changes 3 file(s)") || findings.Items[0].File != "my_fix.txt" {
+		t.Fatalf("expected actual PR file evidence: %s", outcome.Findings)
+	}
+	sctx.Fixing = true
+	outcome, err = step.Execute(sctx)
+	if err != nil || !outcome.NeedsApproval || !strings.Contains(outcome.FixSummary, "no changes applied") {
+		t.Fatalf("expected explicit unsupported fix: %#v, %v", outcome, err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("unsupported fix moved HEAD to %s", got)
 	}
 }
 
@@ -149,5 +169,57 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush(t *testi
 	}
 	if !strings.Contains(outcome.Findings, "unrelated local main work") {
 		t.Fatalf("expected findings to mention the bundled local main commit, got: %s", outcome.Findings)
+	}
+}
+
+// Issue #998: committing intended work on main before naming its delivery
+// branch is not evidence of a separate bundled workstream.
+func TestRebaseStep_LocalDefaultTipIsIntendedDelivery(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	for _, name := range []string{"package.json", "package-lock.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("base"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	base := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	for _, name := range []string{"package.json", "package-lock.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("upgrade"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "intended dependency upgrade")
+	head := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.WorkingPath = dir
+	for _, fixing := range []bool{false, true} {
+		sctx.Fixing = fixing
+		outcome, err := (&RebaseStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.NeedsApproval || outcome.SkipRemaining {
+			t.Fatalf("intended work rejected: %#v", outcome)
+		}
+		if fixing && !strings.Contains(outcome.FixSummary, "no changes applied") {
+			t.Fatalf("no-op misreported: %#v", outcome)
+		}
+		if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != head {
+			t.Fatalf("HEAD moved: %s", got)
+		}
 	}
 }
