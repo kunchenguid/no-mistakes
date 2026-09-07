@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -113,6 +114,9 @@ func TestTestStep_FailingBaselineStillRunsEvidenceTurn(t *testing.T) {
 		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
 	}}
 	testCmd := "printf 'baseline broke'; exit 7"
+	if runtime.GOOS == "windows" {
+		testCmd = "echo baseline broke && exit /b 7"
+	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
 
 	outcome, err := (&TestStep{}).Execute(sctx)

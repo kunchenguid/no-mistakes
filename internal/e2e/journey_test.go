@@ -2181,8 +2181,8 @@ func assertFailingTestCommandRun(t *testing.T, h *Harness) {
 	if findings.Items[0].ID != "test-1" {
 		t.Fatalf("expected normalized failing test finding ID test-1, got %q", findings.Items[0].ID)
 	}
-	if len(findings.Tested) != 1 || findings.Tested[0] != "nm-test-fails-e2e" {
-		t.Fatalf("expected failing test command to be recorded, got %+v", findings.Tested)
+	if len(findings.Tested) < 2 || findings.Tested[0] != "nm-test-fails-e2e" {
+		t.Fatalf("expected failing test command followed by live evidence checks, got %+v", findings.Tested)
 	}
 	if testStep.DurationMS == nil {
 		t.Fatal("expected awaiting failing test step to expose execution duration")
