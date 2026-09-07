@@ -1392,8 +1392,8 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	checksJSON := `[{"name":"greptile","state":"FAILURE","bucket":"fail"}]`
-	env := fakeCIGH(t, "OPEN", checksJSON)
+	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"},{"name":"Greptile Review","state":"FAILURE","bucket":"fail","app":"greptile-apps"}]`
+	env := append(fakeCIGH(t, "OPEN", checksJSON), `FAKE_CLI_REVIEW_COMMENTS=[{"author":"greptile-apps[bot]","path":"main.go","line":4,"body":"deferred bot finding"}]`)
 
 	var invocations int
 	ag := &mockAgent{
@@ -1442,24 +1442,31 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
 		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
 	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("findings = %#v, want one gate finding", findings.Items)
+	if len(findings.Items) != 3 {
+		t.Fatalf("findings = %#v, want timeout, selected check, and deferred bot findings", findings.Items)
 	}
-	item := findings.Items[0]
-	if item.Action != types.ActionAskUser {
-		t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
+	byCategory := map[string]Finding{}
+	var timeout Finding
+	for _, item := range findings.Items {
+		if item.Action != types.ActionAskUser {
+			t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
+		}
+		byCategory[item.Category] = item
+		if strings.Contains(item.Description, "produced no output at all") {
+			timeout = item
+		}
 	}
-	if !strings.Contains(item.Description, "greptile") {
-		t.Fatalf("finding %q, want the check it was repairing named", item.Description)
+	if byCategory[types.FindingCategoryCICheck].Check != "test" || byCategory[types.FindingCategoryCIReviewBot].Check != "Greptile Review" {
+		t.Fatalf("findings = %#v, want selected test and deferred review-bot findings", findings.Items)
 	}
-	if !strings.Contains(item.Description, "produced no output at all") {
-		t.Fatalf("finding %q, want the measured silence carried into the gate", item.Description)
+	if timeout.Description == "" {
+		t.Fatalf("findings = %#v, want the measured silence carried into the gate", findings.Items)
 	}
-	if strings.Contains(item.Description, "operator:secret") {
-		t.Fatalf("finding %q leaked adapter URL credentials", item.Description)
+	if strings.Contains(timeout.Description, "operator:secret") {
+		t.Fatalf("finding %q leaked adapter URL credentials", timeout.Description)
 	}
-	if !strings.Contains(item.Description, "https://redacted@example.com/owner/repo.git") {
-		t.Fatalf("finding %q, want the adapter URL preserved with credentials redacted", item.Description)
+	if !strings.Contains(timeout.Description, "https://redacted@example.com/owner/repo.git") {
+		t.Fatalf("finding %q, want the adapter URL preserved with credentials redacted", timeout.Description)
 	}
 }
 

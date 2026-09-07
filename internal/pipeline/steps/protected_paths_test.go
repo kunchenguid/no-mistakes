@@ -152,7 +152,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				t.Fatal("refusal did not resume")
 			}
 			refused, err := types.ParseFindingsJSON(outcome.Findings)
-			if err != nil || len(refused.Items) != 1 {
+			if err != nil || len(refused.Items) < 1 || refused.Items[0].ID != "protected-path-refusal" {
 				t.Fatalf("invalid refusal: %+v, %v", refused, err)
 			}
 			selected := []string{refused.Items[0].ID}
@@ -336,8 +336,17 @@ func TestCIStep_ProtectedPathRetryPublicationFailureKeepsRefusal(t *testing.T) {
 	}
 	persistCIRefusal(t, f, outcome)
 	findings, err := types.ParseFindingsJSON(outcome.Findings)
-	if err != nil || len(findings.Items) != 1 || findings.Items[0].File != "package.lock" || !strings.Contains(findings.Items[0].Description, `rule "*.lock"`) {
-		t.Fatalf("retry lost original path or rule: %+v, %v", findings, err)
+	if err != nil {
+		t.Fatalf("retry findings: %+v, %v", findings, err)
+	}
+	var refusal types.Finding
+	for _, finding := range findings.Items {
+		if finding.File == "package.lock" {
+			refusal = finding
+		}
+	}
+	if !strings.Contains(refusal.Description, `rule "*.lock"`) {
+		t.Fatalf("retry lost original path or rule: %+v", findings)
 	}
 	if strings.Contains(f.log(), ciChecksPassedMsg) || f.remoteHead(t) != f.headSHA {
 		t.Fatal("unfinished publication advanced remote or reported checks passed")
@@ -382,7 +391,7 @@ func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) 
 				return &agent.Result{Output: json.RawMessage(`{"summary":"repair checks","code_change_needed":true,"findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 			}}
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-			sctx.Env = fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
+			sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"},{"name":"Greptile Review","state":"FAILURE","bucket":"fail","app":"greptile-apps"}]`), `FAKE_CLI_REVIEW_COMMENTS=[{"author":"greptile-apps[bot]","path":"main.go","line":4,"body":"deferred bot finding"}]`)
 			prURL := "https://github.com/test/repo/pull/42"
 			sctx.Run.PRURL = &prURL
 			sctx.Config.ProtectedPaths = []string{"*.lock"}
@@ -391,6 +400,7 @@ func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) 
 			sctx.Fixing = manual
 			if manual {
 				sctx.PreviousFindings = ciGateFindingsJSON("test")
+				sctx.DeferredFindings = `{"findings":[{"id":"ci-2","severity":"warning","description":"deferred bot finding","action":"ask-user","category":"ci-review-bot","check":"Greptile Review"}],"summary":"review bot finding"}`
 			}
 			polls := 0
 			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
@@ -402,12 +412,22 @@ func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) 
 				t.Fatalf("refusal must park for an operator: outcome=%+v err=%v", outcome, err)
 			}
 			findings, err := types.ParseFindingsJSON(outcome.Findings)
-			if err != nil || len(findings.Items) != 1 {
+			if err != nil || len(findings.Items) != 3 {
 				t.Fatalf("refusal findings=%+v err=%v", findings, err)
 			}
-			finding := findings.Items[0]
-			if finding.File != "package.lock" || finding.Action != types.ActionAskUser || !strings.Contains(finding.Description, `rule "*.lock"`) {
-				t.Errorf("refusal lost the path, rule, or decision: %+v", finding)
+			var refusal types.Finding
+			byCategory := map[string]types.Finding{}
+			for _, finding := range findings.Items {
+				if finding.File == "package.lock" {
+					refusal = finding
+				}
+				byCategory[finding.Category] = finding
+			}
+			if refusal.Action != types.ActionAskUser || !strings.Contains(refusal.Description, `rule "*.lock"`) {
+				t.Errorf("refusal lost the path, rule, or decision: %+v", refusal)
+			}
+			if byCategory[types.FindingCategoryCICheck].Check != "test" || byCategory[types.FindingCategoryCIReviewBot].Check != "Greptile Review" {
+				t.Errorf("refusal lost selected or deferred findings: %+v", findings.Items)
 			}
 			if invocations != 1 || polls != 0 {
 				t.Errorf("refusal retried: invocations=%d polls=%d", invocations, polls)

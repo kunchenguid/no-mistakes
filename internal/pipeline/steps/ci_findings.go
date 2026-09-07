@@ -363,16 +363,45 @@ func (t ciFixTargets) description() string {
 func ciRepairParkOutcome(findings Findings, deferredRaw, summary string) *pipeline.StepOutcome {
 	parked := types.FindingsMetadata(findings)
 	parked.Summary = summary
-	for _, item := range findings.Items {
-		item.Action = types.ActionAskUser
+	encoded, _ := json.Marshal(parked)
+	return ciTerminalRepairOutcome(&pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}, findings, deferredRaw)
+}
+
+func ciTerminalRepairOutcome(outcome *pipeline.StepOutcome, selected Findings, deferredRaw string) *pipeline.StepOutcome {
+	parked, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		parked = Findings{}
+	}
+	seenIDs := make(map[string]bool, len(parked.Items))
+	seenItems := make(map[Finding]bool, len(parked.Items))
+	for _, item := range parked.Items {
+		if item.ID != "" {
+			seenIDs[item.ID] = true
+		}
+		seenItems[item] = true
+	}
+	appendFinding := func(item Finding) {
+		if item.ID != "" && seenIDs[item.ID] || seenItems[item] {
+			return
+		}
 		parked.Items = append(parked.Items, item)
+		if item.ID != "" {
+			seenIDs[item.ID] = true
+		}
+		seenItems[item] = true
+	}
+	for _, item := range selected.Items {
+		item.Action = types.ActionAskUser
+		appendFinding(item)
 	}
 	if deferred, err := types.ParseFindingsJSON(deferredRaw); err == nil {
-		parked.Items = append(parked.Items, deferred.Items...)
+		for _, item := range deferred.Items {
+			appendFinding(item)
+		}
 	}
 	encoded, _ := json.Marshal(parked)
-	return &pipeline.StepOutcome{
-		NeedsApproval: true,
-		Findings:      string(encoded),
-	}
+	outcome.NeedsApproval = true
+	outcome.AutoFixable = false
+	outcome.Findings = string(encoded)
+	return outcome
 }

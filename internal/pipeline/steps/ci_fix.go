@@ -73,10 +73,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
-		return outcome, nil
+		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
-		return outcome, nil
+		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
