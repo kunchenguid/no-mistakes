@@ -47,7 +47,10 @@ type commitSummary struct {
 
 var errRejectedCommitSummary = errors.New("rejected commit summary")
 
-const noChangesAppliedSummary = "no changes applied"
+const (
+	noChangesAppliedSummary = "no changes applied"
+	changesAppliedSummary   = "changes applied"
+)
 
 const fixerRemovalRule = `
 
@@ -191,17 +194,22 @@ func commitPipelineCorrectionWithCleanup(
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
+	_, err := commitAgentFixesWithResult(sctx, stepName, summary, fallbackSummary)
+	return err
+}
+
+func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) (bool, error) {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
+		return false, err
 	}
 	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if err != nil {
-		return fmt.Errorf("check %s changes: %w", stepName, err)
+		return false, fmt.Errorf("check %s changes: %w", stepName, err)
 	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no agent changes to commit")
-		return nil
+		return false, nil
 	}
 	if summary == "" {
 		summary = fallbackSummary
@@ -211,24 +219,24 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	}
 	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
 	if err != nil {
-		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+		return false, fmt.Errorf("render %s fix commit message: %w", stepName, err)
 	}
 	if err := stagePipelineChanges(sctx); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
+		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
+		return false, fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+		return false, fmt.Errorf("resolve head after %s commit: %w", stepName, err)
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
+		return false, err
 	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {
@@ -236,13 +244,20 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	}
 	sctx.Run.HeadSHA = headSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-		return err
+		return false, err
 	}
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
 	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
-	return nil
+	return true, nil
+}
+
+func fixResultSummary(committed bool) string {
+	if committed {
+		return changesAppliedSummary
+	}
+	return noChangesAppliedSummary
 }
 
 func extractCommitSummary(result *agent.Result) (string, error) {
@@ -271,10 +286,6 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
 		return "", errors.New(opts.MissingFindingsError)
 	}
-	headBefore, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve head before %s fix: %w", stepName, err)
-	}
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
 	}
@@ -291,6 +302,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Workload:   opts.Workload,
 	}
 	var result *agent.Result
+	var err error
 	if opts.RunAgent != nil {
 		result, err = opts.RunAgent(runOpts)
 	} else {
@@ -318,15 +330,9 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
-	if err := commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary); err != nil {
+	committed, err := commitAgentFixesWithResult(sctx, stepName, summary, opts.FallbackSummary)
+	if err != nil {
 		return "", err
 	}
-	headAfter, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve head after %s fix: %w", stepName, err)
-	}
-	if headAfter == headBefore {
-		return noChangesAppliedSummary, nil
-	}
-	return summary, nil
+	return fixResultSummary(committed), nil
 }

@@ -1012,6 +1012,50 @@ func TestExecuteFixMode_NoWorktreeChangesCanonicalizesAgentSummary(t *testing.T)
 	}
 }
 
+func TestExecuteFixMode_WorktreeChangesCanonicalizesMisleadingAgentSummary(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(opts.CWD, "fix.go"), []byte("package fix\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"no changes applied: checked formatting"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	summary, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{FallbackSummary: "apply review fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != changesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", summary, changesAppliedSummary)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got == headSHA {
+		t.Fatal("expected committed fix to advance HEAD")
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"fixable warning"}],"summary":"1 warning"}`
+	md, _ := BuildPipelineSummary(
+		[]*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}},
+		map[string][]*db.StepRound{"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings},
+			{Round: 2, Trigger: "auto_fix", FixSummary: &summary},
+		}},
+		testPipelineHeadSHA,
+	)
+	if !strings.Contains(md, "🔧 **Review** - 1 issue found → auto-fixed ✅") {
+		t.Fatalf("expected committed fix in PR summary, got:\n%s", md)
+	}
+	if strings.Contains(md, "no changes applied") {
+		t.Fatalf("did not expect misleading agent prose in PR summary, got:\n%s", md)
+	}
+}
+
 func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

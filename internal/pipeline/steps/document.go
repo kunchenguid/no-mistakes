@@ -149,7 +149,8 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
 	}
-	if err := commitAgentFixes(sctx, s.Name(), commitSummary, fallbackSummary); err != nil {
+	committed, err := commitAgentFixesWithResult(sctx, s.Name(), commitSummary, fallbackSummary)
+	if err != nil {
 		return nil, err
 	}
 
@@ -187,7 +188,7 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		NeedsApproval: needsApproval,
 		AutoFixable:   false,
 		Findings:      string(findingsJSON),
-		FixSummary:    docFindings.Summary,
+		FixSummary:    fixResultSummary(committed),
 	}, nil
 }
 

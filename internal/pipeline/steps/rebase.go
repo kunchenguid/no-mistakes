@@ -111,9 +111,11 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		outcome, err := updateHeadSHA(ctx, sctx)
 		if err == nil {
 			if sctx.Run.HeadSHA == before {
-				outcome.FixSummary = "no changes applied: branch already up to date"
+				outcome.FixSummary = noChangesAppliedSummary
+				sctx.Log("no changes applied: branch already up to date")
 			} else {
-				outcome.FixSummary = "rebased branch onto upstream"
+				outcome.FixSummary = changesAppliedSummary
+				sctx.Log("rebased branch onto upstream")
 			}
 		}
 		return outcome, err
@@ -278,9 +280,10 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	)
 	fixSummary := ""
 	if sctx.Fixing {
-		fixSummary = "no changes applied: bundled local-default commits require manual separation or explicit approval"
-		description += "\n\n" + fixSummary + "; the rebase conflict resolver cannot safely select commits to discard."
-		sctx.Log(fixSummary)
+		fixSummary = noChangesAppliedSummary
+		const explanation = "no changes applied: bundled local-default commits require manual separation or explicit approval"
+		description += "\n\n" + explanation + "; the rebase conflict resolver cannot safely select commits to discard."
+		sctx.Log(explanation)
 	}
 	findingsJSON, _ := json.Marshal(Findings{
 		Items: []Finding{{

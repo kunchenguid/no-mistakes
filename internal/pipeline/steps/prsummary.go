@@ -1327,12 +1327,12 @@ func buildFixResultText(rounds []*db.StepRound) string {
 			summary = strings.TrimSpace(*r.FixSummary)
 		}
 		switch {
-		case summary == "":
-			unreportedRounds++
-		case strings.HasPrefix(strings.ToLower(summary), noChangesAppliedSummary):
+		case summary == noChangesAppliedSummary:
 			noChangeRounds++
-		default:
+		case summary == changesAppliedSummary:
 			autoFixRounds++
+		default:
+			unreportedRounds++
 		}
 	}
 
@@ -1364,9 +1364,8 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // buildStepDetails renders the collapsible body for a step as an
 // issue -> fix -> outcome narrative rather than a round-by-round log. Each
 // round is shown as the review state observed at its end; a fix round is
-// prefixed with the fix the agent applied (its commit summary) so a reader can
-// see what was wrong and what was done about it without mentally replaying
-// "rounds".
+// prefixed with its recorded outcome so a reader can follow the result without
+// mentally replaying rounds.
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
 	var inner strings.Builder
 	if len(rounds) == 0 {
@@ -1465,10 +1464,14 @@ func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
 	if r.FixSummary != nil {
 		summary = strings.TrimSpace(*r.FixSummary)
 	}
-	if summary == "" {
+	switch summary {
+	case noChangesAppliedSummary:
+		return "🔧 No changes applied."
+	case changesAppliedSummary:
+		return "🔧 Fix applied."
+	default:
 		return "🔧 Fix attempted; result not reported."
 	}
-	return fmt.Sprintf("🔧 Fix: %s", escapePRText(summary, flavor))
 }
 
 // writeFindingItems renders each finding as a `file:line - description` bullet,

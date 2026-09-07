@@ -89,7 +89,7 @@ func TestBuildPipelineSummary_BitbucketCloudKeepsFixNarrativeWithoutHTML(t *test
 func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 	t.Parallel()
 	findings1 := `{"findings":[{"id":"doc-1","severity":"warning","file":"internal/agent/server.go","line":129,"description":"waitForHealth doc comment still references the old 30s deadline"}],"summary":"1 warning"}`
-	fixSummary := "reference the configured 60s health-check deadline in the waitForHealth comment"
+	fixSummary := changesAppliedSummary
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
@@ -103,8 +103,8 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 
 	// The fix the agent actually applied must be surfaced - this is the data
 	// the old round-by-round layout dropped on the floor.
-	if !strings.Contains(md, "🔧 Fix: "+fixSummary) {
-		t.Errorf("expected the fix summary to be surfaced, got:\n%s", md)
+	if !strings.Contains(md, "🔧 Fix applied.") {
+		t.Errorf("expected recorded applied fix result, got:\n%s", md)
 	}
 	if !strings.Contains(md, "🔧 **Document** - 1 issue found → auto-fixed ✅") {
 		t.Errorf("expected recorded applied fix in status line, got:\n%s", md)
@@ -137,7 +137,7 @@ func TestBuildPipelineSummary_AutoFixRetainsExplicitNoChangeSummary(t *testing.T
 
 	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-	if !strings.Contains(md, "🔧 Fix: no changes applied") {
+	if !strings.Contains(md, "🔧 No changes applied.") {
 		t.Errorf("expected explicit no-change result, got:\n%s", md)
 	}
 	if !strings.Contains(md, "🔧 **Rebase** - 1 issue found → no changes applied ✅") {

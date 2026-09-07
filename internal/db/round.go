@@ -52,9 +52,7 @@ type StepRound struct {
 	// deliberately left unselected.
 	SelectedFindingIDs *string
 	SelectionSource    *string
-	// FixSummary, when non-nil, is the agent's one-line commit summary for
-	// the fix attempt performed during this round. It is only set when the
-	// round itself was a fix round (trigger=="auto_fix").
+	// FixSummary, when non-nil, records a fix round's result.
 	FixSummary *string
 	DurationMS int64
 	CreatedAt  int64
@@ -83,8 +81,7 @@ func (r *StepRound) IsFixRound() bool {
 	return r.Trigger == "auto_fix" || r.Trigger == "user_fix"
 }
 
-// StepFixSummaries returns one entry per fix round for a step, in round order:
-// the agent's one-line fix summary, or "" when the round recorded none.
+// StepFixSummaries returns one result per fix round for a step, in round order.
 func (d *DB) StepFixSummaries(stepResultID string) ([]string, error) {
 	rounds, err := d.GetRoundsByStep(stepResultID)
 	if err != nil {

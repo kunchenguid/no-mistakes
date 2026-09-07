@@ -109,10 +109,7 @@ type StepOutcome struct {
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
-	// FixSummary, when non-empty, is the agent's one-line commit summary for
-	// the fix attempt performed during this round. Steps populate it in fix
-	// mode so the executor can persist it on the round record and later
-	// rounds can reference what was previously attempted.
+	// FixSummary, when non-empty, records the result of a fix attempt.
 	FixSummary string
 	// ReviewApprovedHeadSHA is set only by a successfully executed full review
 	// round. The executor durably records it only when the review step actually

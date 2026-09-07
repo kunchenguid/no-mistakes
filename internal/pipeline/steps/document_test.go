@@ -46,6 +46,9 @@ func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) 
 	if outcome.AutoFixable {
 		t.Error("expected no auto-fix loop in agent-managed document mode")
 	}
+	if outcome.FixSummary != changesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
+	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after doc commit, got %q", status)
 	}
@@ -133,6 +136,9 @@ func TestDocumentStep_AgentManaged_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 	}
 	if outcome.AutoFixable {
 		t.Error("expected unresolved documentation findings not to trigger an auto-fix round")
+	}
+	if outcome.FixSummary != noChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, noChangesAppliedSummary)
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
