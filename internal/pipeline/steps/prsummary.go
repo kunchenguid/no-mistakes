@@ -1329,7 +1329,7 @@ func buildFixResultText(rounds []*db.StepRound) string {
 		switch {
 		case summary == "":
 			unreportedRounds++
-		case strings.HasPrefix(strings.ToLower(summary), "no changes applied"):
+		case strings.HasPrefix(strings.ToLower(summary), noChangesAppliedSummary):
 			noChangeRounds++
 		default:
 			autoFixRounds++

@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -967,6 +968,47 @@ func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	}
 	if sctx.Run.HeadSHA != originalHeadSHA {
 		t.Errorf("HeadSHA changed unexpectedly: %s -> %s", originalHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestExecuteFixMode_NoWorktreeChangesCanonicalizesAgentSummary(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"no changes were necessary"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+
+	summary, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{FallbackSummary: "apply review fix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != noChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", summary, noChangesAppliedSummary)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD after no-op fix = %q, want %q", got, headSHA)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"accepted warning"}],"summary":"1 warning"}`
+	md, _ := BuildPipelineSummary(
+		[]*db.StepResult{{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted}},
+		map[string][]*db.StepRound{"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings},
+			{Round: 2, Trigger: "auto_fix", FixSummary: &summary},
+		}},
+		testPipelineHeadSHA,
+	)
+	if !strings.Contains(md, "🔧 **Review** - 1 issue found → no changes applied ✅") {
+		t.Fatalf("expected canonical no-change result in PR summary, got:\n%s", md)
+	}
+	if strings.Contains(md, "auto-fixed") {
+		t.Fatalf("did not expect no-op fix to be called auto-fixed, got:\n%s", md)
 	}
 }
 

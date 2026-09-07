@@ -47,6 +47,8 @@ type commitSummary struct {
 
 var errRejectedCommitSummary = errors.New("rejected commit summary")
 
+const noChangesAppliedSummary = "no changes applied"
+
 const fixerRemovalRule = `
 
 Removal-first rule:
@@ -262,16 +264,16 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 	return cleaned, nil
 }
 
-// executeFixMode runs the fix agent and commits any resulting changes. It
-// returns the agent's one-line fix summary (empty when the agent returned
-// nothing parseable), which the caller should place on StepOutcome.FixSummary
-// so the executor can persist it on the round record.
 func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
 	if !sctx.Fixing {
 		return "", nil
 	}
 	if opts.RequirePreviousFindings && sctx.PreviousFindings == "" {
 		return "", errors.New(opts.MissingFindingsError)
+	}
+	headBefore, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve head before %s fix: %w", stepName, err)
 	}
 	if opts.LogMessage != "" {
 		sctx.Log(opts.LogMessage)
@@ -289,7 +291,6 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		Workload:   opts.Workload,
 	}
 	var result *agent.Result
-	var err error
 	if opts.RunAgent != nil {
 		result, err = opts.RunAgent(runOpts)
 	} else {
@@ -319,6 +320,13 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	if err := commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary); err != nil {
 		return "", err
+	}
+	headAfter, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve head after %s fix: %w", stepName, err)
+	}
+	if headAfter == headBefore {
+		return noChangesAppliedSummary, nil
 	}
 	return summary, nil
 }
