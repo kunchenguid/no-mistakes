@@ -41,14 +41,14 @@ func isCIFalseNegativeCategory(category string) bool {
 // run surfaced, confirmed, and fixed.
 //
 // The CI step already persists its structured findings on each round
-// (FindingsJSON) together with the IDs it selected for repair
-// (SelectedFindingIDs); this reads them back. A finding counts as confirmed and
-// fixed when it was selected for a fix round AND the CI step completed genuinely
-// green - the run reached RunCompleted and the CI step is completed with no
-// approval override (a passed-with-override CI step is a human accepting an
-// unresolved condition, not a fix). Findings that were never selected
-// (dismissed at the gate), ci-transient / provider-infra failures, and merge
-// conflicts are excluded.
+// (FindingsJSON), the IDs selected for repair (SelectedFindingIDs), and the
+// following fix round's result (FixSummary); this reads them back. A finding
+// counts as confirmed and fixed only when it was selected by auto-fix or an
+// explicit user fix, the immediately following fix round records a published
+// repair, and the run has positive post-repair check readiness. Findings that
+// were never selected, repairs that produced or published no change,
+// ci-transient / provider-infra failures, merge conflicts, no-CI declarations,
+// and terminal PR completion before checks passed are excluded.
 //
 // It never fabricates: a run that did not finish, whose CI step did not
 // complete cleanly green, or that has no such fixed finding yields nothing. It
@@ -64,7 +64,7 @@ func CIFalseNegativesFromRun(database *db.DB, runID string) ([]FindingGold, erro
 	if err != nil {
 		return nil, fmt.Errorf("read source run: %w", err)
 	}
-	if run == nil || run.Status != types.RunCompleted {
+	if run == nil || run.Status != types.RunCompleted || run.CIReadyAt == nil || run.CIReadyNoCI {
 		return nil, nil
 	}
 	steps, err := database.GetStepsByRun(runID)
@@ -90,8 +90,11 @@ func CIFalseNegativesFromRun(database *db.DB, runID string) ([]FindingGold, erro
 	}
 	var gold []FindingGold
 	seen := map[string]bool{}
-	for _, round := range rounds {
-		if round.FindingsJSON == nil || round.SelectedFindingIDs == nil {
+	for i, round := range rounds {
+		if round.FindingsJSON == nil || round.SelectedFindingIDs == nil || !repairLandedAfter(rounds, i) {
+			continue
+		}
+		if round.SelectionSource == nil || (*round.SelectionSource != db.RoundSelectionSourceAutoFix && *round.SelectionSource != db.RoundSelectionSourceUser) {
 			continue
 		}
 		selected := parseSelectedFindingIDs(*round.SelectedFindingIDs)
@@ -119,6 +122,14 @@ func CIFalseNegativesFromRun(database *db.DB, runID string) ([]FindingGold, erro
 		}
 	}
 	return gold, nil
+}
+
+func repairLandedAfter(rounds []*db.StepRound, selectedIndex int) bool {
+	if selectedIndex+1 >= len(rounds) {
+		return false
+	}
+	repair := rounds[selectedIndex+1]
+	return repair.IsFixRound() && repair.FixSummary != nil && strings.TrimSpace(*repair.FixSummary) != ""
 }
 
 // AutoIngestCIFalseNegatives writes false-negative gold for a finished run's

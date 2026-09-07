@@ -30,6 +30,11 @@ const ciObservationFindings = `{"findings":[
 // CI steps are completed and the run is marked completed.
 func setupRunWithGreenReviewAndCI(t *testing.T, ctx context.Context, selected, overrideReason string) (*paths.Paths, *db.DB, *db.Run, *db.StepRound) {
 	t.Helper()
+	return setupRunWithCIRepairEvidence(t, ctx, selected, overrideReason, "fixed and published", true, false)
+}
+
+func setupRunWithCIRepairEvidence(t *testing.T, ctx context.Context, selected, overrideReason, repairSummary string, checksPassed, declaredNoCI bool) (*paths.Paths, *db.DB, *db.Run, *db.StepRound) {
+	t.Helper()
 	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
 
 	steps, err := sourceDB.GetStepsByRun(run.ID)
@@ -59,6 +64,16 @@ func setupRunWithGreenReviewAndCI(t *testing.T, ctx context.Context, selected, o
 		if err := sourceDB.SetStepRoundSelection(ciRound.ID, &selected, db.RoundSelectionSourceAutoFix); err != nil {
 			t.Fatal(err)
 		}
+		var summary *string
+		if repairSummary != "" {
+			summary = &repairSummary
+		}
+		if _, err := sourceDB.InsertStepRound(ciStep.ID, 2, "auto_fix", nil, summary, 40); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sourceDB.SetRunCIReadyWithReason(run.ID, checksPassed, declaredNoCI); err != nil {
+		t.Fatal(err)
 	}
 	if err := sourceDB.UpdateStepStatus(ciStep.ID, types.StepStatusCompleted); err != nil {
 		t.Fatal(err)
@@ -144,6 +159,75 @@ func TestCIFalseNegativesFromRun_ExcludesOverriddenAndUnselected(t *testing.T) {
 	}
 	if len(gold) != 0 {
 		t.Fatalf("no-selection gold = %#v, want none", gold)
+	}
+}
+
+func TestCIFalseNegativesFromRun_IngestsUserSelectedLandedRepair(t *testing.T) {
+	ctx := context.Background()
+	_, sourceDB, run, _ := setupRunWithGreenReviewAndCI(t, ctx, `["ci-2"]`, "")
+	defer sourceDB.Close()
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := sourceDB.GetRoundsByStep(steps[len(steps)-1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["ci-2"]`
+	if err := sourceDB.SetStepRoundSelection(rounds[0].ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	gold, err := CIFalseNegativesFromRun(sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gold) != 1 || gold[0].Description != "greptile[bot]: possible nil dereference here" {
+		t.Fatalf("gold = %#v, want the user-selected repaired finding", gold)
+	}
+}
+
+func TestCIFalseNegativesFromRun_RequiresLandedRepairAndPassedChecks(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name          string
+		repairSummary string
+		checksPassed  bool
+		declaredNoCI  bool
+	}{
+		{name: "repair produced no published change", checksPassed: true},
+		{name: "repair landed but checks never passed", repairSummary: "fixed and published"},
+		{name: "no-CI declaration is not check evidence", repairSummary: "fixed and published", checksPassed: true, declaredNoCI: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, sourceDB, run, _ := setupRunWithCIRepairEvidence(t, ctx, `["ci-1"]`, "", tc.repairSummary, tc.checksPassed, tc.declaredNoCI)
+			defer sourceDB.Close()
+			gold, err := CIFalseNegativesFromRun(sourceDB, run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gold) != 0 {
+				t.Fatalf("gold = %#v, want none without both a landed repair and passed checks", gold)
+			}
+		})
+	}
+}
+
+func TestCIFalseNegativesFromRun_TerminalPRBeforeChecksPassesNothing(t *testing.T) {
+	ctx := context.Background()
+	_, sourceDB, run, _ := setupRunWithCIRepairEvidence(t, ctx, `["ci-1"]`, "", "fixed and published", false, false)
+	defer sourceDB.Close()
+	if err := sourceDB.UpdateRunPRState(run.ID, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	gold, err := CIFalseNegativesFromRun(sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gold) != 0 {
+		t.Fatalf("gold = %#v, want none when the PR closed before checks passed", gold)
 	}
 }
 
