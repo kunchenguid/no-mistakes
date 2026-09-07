@@ -164,6 +164,18 @@ func unmarshalRequiredTestFindings(raw []byte, findings *Findings) error {
 			}
 		}
 	}
+	// no-surface is the ask-user park for a change with nothing to drive
+	// live. A pass, fail, or live mark means there was a live-exercisable
+	// scenario, so treating that as no-surface would let a skipped or
+	// failed live validation masquerade as "nothing to test".
+	if *payload.Verdict == types.TestVerdictNoSurface && !types.NoLiveExercisableScenarios(findings.Scenarios) {
+		for i, scenario := range findings.Scenarios {
+			if scenario.Live || scenario.Result != types.ScenarioResultUntested {
+				return fmt.Errorf("verdict %q contradicts live-exercisable scenario %d", *payload.Verdict, i)
+			}
+		}
+		return fmt.Errorf("verdict %q contradicts live-exercisable scenario", *payload.Verdict)
+	}
 	return nil
 }
 
@@ -255,8 +267,8 @@ var testFindingsSchema = json.RawMessage(`{
 		},
 		"verdict": {
 			"type": "string",
-			"enum": ["go", "no-go", "inconclusive"],
-			"description": "go when every scenario that could be driven passed and nothing untested puts the intent in doubt; no-go when a scenario failed or the change is not safe to ship; inconclusive when too little could be driven live to judge"
+			"enum": ["go", "no-go", "inconclusive", "no-surface"],
+			"description": "go when every scenario that could be driven passed and nothing untested puts the intent in doubt; no-go when a scenario failed or the change is not safe to ship; inconclusive when the change has a live-exercisable product surface but too little could be driven live to judge; no-surface when this change has no runtime product surface no-mistakes can drive live"
 		}
 	},
 	"required": ["findings", "summary", "tested", "testing_summary", "artifacts", "scenarios", "verdict"]

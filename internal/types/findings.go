@@ -105,15 +105,25 @@ const (
 
 // Test verdict constants: the test step's own conclusion about whether the
 // change is safe to ship, independent of individual findings.
+//
+// TestVerdictNoSurface is the honest answer when the change itself has no
+// runtime product no-mistakes can drive live - a CI-workflow-only change, a
+// docs-only change, a pure non-runtime refactor, or anything else with no
+// live-exercisable scenario. It is not a silent skip: the Test step parks
+// for a human to decide whether proceeding without live validation is
+// acceptable. A change that has a live surface and was not driven still
+// uses pass/fail/untested plus go/no-go/inconclusive; claiming no-surface
+// while any scenario is live or pass/fail is a contract violation.
 const (
 	TestVerdictGo           = "go"
 	TestVerdictNoGo         = "no-go"
 	TestVerdictInconclusive = "inconclusive"
+	TestVerdictNoSurface    = "no-surface"
 )
 
 var (
 	knownScenarioResults = []string{ScenarioResultPass, ScenarioResultFail, ScenarioResultUntested}
-	knownTestVerdicts    = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive}
+	knownTestVerdicts    = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive, TestVerdictNoSurface}
 )
 
 // IsKnownScenarioResult reports whether result is part of the scenario result
@@ -177,6 +187,23 @@ func LiveScenarioCounts(scenarios []TestScenario) (live, total int) {
 		}
 	}
 	return live, total
+}
+
+// NoLiveExercisableScenarios reports whether every scenario is untested and
+// none were driven live. That is the only shape the Test step will accept as
+// "this change has no live-validatable surface": a pass or fail, or any live
+// mark, means there was something to exercise and no-surface must not cover
+// it.
+func NoLiveExercisableScenarios(scenarios []TestScenario) bool {
+	if len(scenarios) == 0 {
+		return false
+	}
+	for _, s := range scenarios {
+		if s.Live || s.Result != ScenarioResultUntested {
+			return false
+		}
+	}
+	return true
 }
 
 // TestArtifact describes evidence produced by the test step for human review.

@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -53,6 +55,10 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 		// The verdict and what it does.
 		`Return a "verdict"`,
 		`A "no-go" verdict parks this step for a decision`,
+		`A "no-surface" verdict parks for a human to decide whether to proceed without live validation`,
+		"no runtime product surface no-mistakes can drive live",
+		"never mark those as pass",
+		"never use no-surface to skip live validation of a change that does have a product surface",
 		"Untested scenarios are listed on the pull request and do not park by themselves",
 		// The targeted-validation boundary survives the rewrite.
 		"Do NOT run the complete repository test suite",
@@ -156,7 +162,8 @@ const passingScenarioFindingsJSON = `{
 
 // TestTestStep_VerdictPolicy proves captain's call C2 = a end to end: a no-go
 // verdict parks the step with a blocking finding, an untested scenario passes
-// through without parking, and a go verdict adds nothing. All three keep the
+// through without parking, a go verdict adds nothing, and a no-surface
+// verdict parks as ask-user rather than hard-failing. All four keep the
 // scenario record on the step so the PR can render it.
 func TestTestStep_VerdictPolicy(t *testing.T) {
 	t.Parallel()
@@ -165,6 +172,7 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 		output            string
 		wantApproval      bool
 		wantDescription   string
+		wantAction        string
 		wantScenarioCount int
 	}{
 		{
@@ -190,6 +198,7 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 				"verdict":"no-go"}`,
 			wantApproval:      true,
 			wantDescription:   "live validation verdict: no-go",
+			wantAction:        types.ActionAutoFix,
 			wantScenarioCount: 1,
 		},
 		{
@@ -199,6 +208,17 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 				"verdict":"inconclusive"}`,
 			wantApproval:      true,
 			wantDescription:   "live validation verdict: inconclusive",
+			wantAction:        types.ActionAskUser,
+			wantScenarioCount: 1,
+		},
+		{
+			name: "no-surface parks as ask-user",
+			output: `{"findings":[],"summary":"","tested":["inspected .github/workflows/ci.yml"],"testing_summary":"CI workflow has no running product to drive","artifacts":[],
+				"scenarios":[{"name":"Windows git-heavy shard runs the git-backed packages","result":"untested","live":false,"evidence":"","reason":"CI workflow YAML has no running product no-mistakes can drive"}],
+				"verdict":"no-surface"}`,
+			wantApproval:      true,
+			wantDescription:   "this change has no live-validatable surface; proceed without live validation?",
+			wantAction:        types.ActionAskUser,
 			wantScenarioCount: 1,
 		},
 	} {
@@ -231,7 +251,7 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 			}
 			if tc.wantDescription == "" {
 				for _, item := range findings.Items {
-					if strings.Contains(item.Description, "live validation verdict") {
+					if strings.Contains(item.Description, "live validation verdict") || strings.Contains(item.Description, "no live-validatable surface") {
 						t.Fatalf("unexpected verdict finding on a passing run: %q", item.Description)
 					}
 				}
@@ -248,6 +268,9 @@ func TestTestStep_VerdictPolicy(t *testing.T) {
 			}
 			if matched.Severity == types.FindingSeverityInfo {
 				t.Fatalf("verdict finding must block, got severity %q", matched.Severity)
+			}
+			if tc.wantAction != "" && matched.Action != tc.wantAction {
+				t.Fatalf("verdict finding action = %q, want %q", matched.Action, tc.wantAction)
 			}
 		})
 	}
@@ -330,6 +353,16 @@ func TestTestStep_MissingScenarioContractFails(t *testing.T) {
 			wantErr: `verdict "inconclusive" contradicts failed scenario`,
 		},
 		{
+			name:    "no-surface cannot cover a live pass",
+			output:  `{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"x","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"no-surface"}`,
+			wantErr: `verdict "no-surface" contradicts live-exercisable scenario`,
+		},
+		{
+			name:    "no-surface cannot cover a claimed pass without live",
+			output:  `{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"x","result":"pass","live":false,"evidence":"ok","reason":""}],"verdict":"no-surface"}`,
+			wantErr: "requires live validation",
+		},
+		{
 			name:    "protocol vocabulary is exact",
 			output:  `{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"x","result":"Pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`,
 			wantErr: "is not one of",
@@ -352,4 +385,90 @@ func TestTestStep_MissingScenarioContractFails(t *testing.T) {
 			}
 		})
 	}
+}
+
+const noSurfaceCIWorkflowFindingsJSON = `{
+  "findings": [],
+  "summary": "",
+  "tested": ["inspected .github/workflows/ci.yml"],
+  "testing_summary": "CI workflow split has no running product to drive",
+  "artifacts": [],
+  "scenarios": [{"name":"Windows git-heavy shard runs the git-backed packages","result":"untested","live":false,"evidence":"","reason":"CI workflow YAML has no running product no-mistakes can drive"}],
+  "verdict": "no-surface"
+}`
+
+// TestTestStep_NoLiveSurfaceCIWorkflowAsksUser models the captain's
+// windows-shard failure: a CI-workflow-only change has nothing no-mistakes
+// can drive live. The evidence turn must park as ask-user with the reason,
+// not hard-fail the step the way pass+live:false used to.
+func TestTestStep_NoLiveSurfaceCIWorkflowAsksUser(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	headSHA := commitCIWorkflowOnlyChange(t, dir, baseSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(noSurfaceCIWorkflowFindingsJSON)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Split the Windows CI job into a git-heavy shard and a core remainder"
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("no-surface must park, not hard-fail: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatalf("NeedsApproval = false, want ask-user park (findings: %s)", outcome.Findings)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings.Verdict != types.TestVerdictNoSurface {
+		t.Fatalf("verdict = %q, want %q", findings.Verdict, types.TestVerdictNoSurface)
+	}
+	if !types.NoLiveExercisableScenarios(findings.Scenarios) {
+		t.Fatalf("scenarios = %+v, want all untested and not live", findings.Scenarios)
+	}
+	var matched *types.Finding
+	for i, item := range findings.Items {
+		if strings.Contains(item.Description, "this change has no live-validatable surface; proceed without live validation?") {
+			matched = &findings.Items[i]
+			break
+		}
+	}
+	if matched == nil {
+		t.Fatalf("missing no-surface ask-user finding in %s", outcome.Findings)
+	}
+	if matched.Action != types.ActionAskUser {
+		t.Fatalf("action = %q, want %q", matched.Action, types.ActionAskUser)
+	}
+	if matched.Severity != types.FindingSeverityWarning {
+		t.Fatalf("severity = %q, want warning so the step parks without treating this as a defect", matched.Severity)
+	}
+	if !strings.Contains(matched.Description, "CI workflow YAML has no running product no-mistakes can drive") {
+		t.Fatalf("finding omitted the scenario reason: %q", matched.Description)
+	}
+	if len(types.AutoFixableFindings(findings).Items) != 0 {
+		t.Fatalf("no-surface must not be auto-fixable, got %s", outcome.Findings)
+	}
+}
+
+func commitCIWorkflowOnlyChange(t *testing.T, dir, baseSHA string) string {
+	t.Helper()
+	gitCmd(t, dir, "checkout", "-B", "feature", baseSHA)
+	workflowDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workflowDir, "ci.yml")
+	body := "name: CI\non: push\njobs:\n  test:\n    runs-on: windows-latest\n    steps:\n      - run: go test ./internal/git/...\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "split windows git shard")
+	return gitCmd(t, dir, "rev-parse", "HEAD")
 }

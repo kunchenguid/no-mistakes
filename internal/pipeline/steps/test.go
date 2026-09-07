@@ -176,8 +176,8 @@ Drive each scenario:
 - Mark a scenario "live": true ONLY when you drove it against the real product in this run. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
 - When a scenario cannot be driven live here, return it with result "untested" and a reason naming the specific tool, credential, permission, or authority that stopped you, and how to provide it. Never guess a pass, and never mark a scenario live because you believe it would work.
 - Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
-- Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when too little could be driven live to judge.
-- A "no-go" verdict parks this step for a decision. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" costs nothing and a guessed "pass" costs everything.
+- Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
+- A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" costs nothing and a guessed "pass" costs everything.
 - A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
 
 Evidence:
@@ -289,16 +289,24 @@ func trustedTestInstructionsSection(sctx *pipeline.StepContext) string {
 // verdictFindings turns the evidence turn's own verdict into findings, which
 // is what stops a verdict from being decoration on a green step.
 //
-// The policy is deliberately asymmetric (captain's call C2 = a):
+// The policy is deliberately asymmetric (captain's call C2 = a, plus the
+// 2026-09-07 no-surface ask-user decision):
 //
 //   - "no-go" is an error finding, so hasBlockingFindings parks the step for a
 //     decision. It is auto-fixable because a failed scenario is a defect the
 //     fix round can attack, exactly like a failed configured test command;
 //     escalating every failed scenario to a human instead would make the
 //     contract too expensive to keep switched on.
-//   - "inconclusive" is a warning finding: too little could be driven live to
-//     judge, which is a question for the human rather than something a fix
-//     round can repair, so it parks and asks.
+//   - "inconclusive" is a warning finding: the change has a live-exercisable
+//     surface but too little could be driven live to judge, which is a
+//     question for the human rather than something a fix round can repair,
+//     so it parks and asks.
+//   - "no-surface" is a warning finding: the change itself has nothing
+//     no-mistakes can drive live, so it parks and asks whether proceeding
+//     without live validation is acceptable. It is not a silent pass and
+//     not a hard fail. A change that claimed a pass/fail or drove anything
+//     live cannot reach this branch (unmarshalRequiredTestFindings rejects
+//     that masquerade).
 //   - "go" adds nothing.
 //
 // Untested scenarios never produce a finding at any verdict. They are listed
@@ -321,6 +329,12 @@ func verdictFindings(findings Findings) []Finding {
 			Action:      types.ActionAskUser,
 			Description: fmt.Sprintf("live validation verdict: inconclusive (%s)%s", coverage, untestedScenarioSuffix(findings.Scenarios)),
 		}}
+	case types.TestVerdictNoSurface:
+		return []Finding{{
+			Severity:    types.FindingSeverityWarning,
+			Action:      types.ActionAskUser,
+			Description: fmt.Sprintf("this change has no live-validatable surface; proceed without live validation? (%s)%s", coverage, untestedScenarioReasonSuffix(findings.Scenarios)),
+		}}
 	default:
 		return nil
 	}
@@ -332,6 +346,32 @@ func failedScenarioSuffix(scenarios []types.TestScenario) string {
 
 func untestedScenarioSuffix(scenarios []types.TestScenario) string {
 	return scenarioNameSuffix(scenarios, types.ScenarioResultUntested, "untested")
+}
+
+// untestedScenarioReasonSuffix names each untested scenario together with the
+// reason it could not be driven, so a no-surface park carries why there is
+// nothing to validate rather than only the scenario titles.
+func untestedScenarioReasonSuffix(scenarios []types.TestScenario) string {
+	var parts []string
+	for _, scenario := range scenarios {
+		if scenario.Result != types.ScenarioResultUntested {
+			continue
+		}
+		name := strings.TrimSpace(scenario.Name)
+		reason := strings.TrimSpace(scenario.Reason)
+		switch {
+		case name != "" && reason != "":
+			parts = append(parts, name+": "+reason)
+		case name != "":
+			parts = append(parts, name)
+		case reason != "":
+			parts = append(parts, reason)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "; " + strings.Join(parts, "; ")
 }
 
 func scenarioNameSuffix(scenarios []types.TestScenario, result, label string) string {

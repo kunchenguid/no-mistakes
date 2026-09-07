@@ -126,3 +126,24 @@ func TestRequireActionDoesNotAdjudicateTheVerdict(t *testing.T) {
 		t.Fatalf("gate must certify step lifecycle only, got: %s", result.output)
 	}
 }
+
+func TestRequireActionAcceptsAttestationCarryingNoSurface(t *testing.T) {
+	body := liveValidatedPipelineBody(t, []types.TestScenario{
+		{Name: "Windows git-heavy shard runs the git-backed packages", Result: types.ScenarioResultUntested, Reason: "CI workflow YAML has no running product no-mistakes can drive"},
+	}, types.TestVerdictNoSurface)
+	payload := attestationPayload(t, body)
+	live, ok := payload["live_validation"].(map[string]any)
+	if !ok {
+		t.Fatalf("attestation carries no live_validation object: %v", payload)
+	}
+	if live["verdict"] != types.TestVerdictNoSurface {
+		t.Errorf("live_validation.verdict = %v, want %q", live["verdict"], types.TestVerdictNoSurface)
+	}
+	if live["live"] != float64(0) || live["total"] != float64(1) {
+		t.Errorf("live_validation coverage = %v of %v, want 0 of 1", live["live"], live["total"])
+	}
+	result := runRequireAction(t, actionRun{body: body, headSHA: requiredWorkflowTestHeadSHA, number: "1568"})
+	if result.conclusion != "success" {
+		t.Fatalf("gate must certify a no-surface attestation: %s", result.output)
+	}
+}
