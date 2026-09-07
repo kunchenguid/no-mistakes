@@ -172,14 +172,15 @@ func TestStartStep(t *testing.T) {
 	}
 }
 
-func TestStartStepFixRoundResetsOnlyRoundClock(t *testing.T) {
+func TestStartStepFixRoundResetsRoundClockAndUpdatesLimit(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
 
 	const stepStarted = int64(123)
-	if _, err := d.sql.Exec(`UPDATE step_results SET started_at = ?, round_started_at = ? WHERE id = ?`, stepStarted, stepStarted, step.ID); err != nil {
+	const priorAutoFixLimit = 1
+	if _, err := d.sql.Exec(`UPDATE step_results SET started_at = ?, round_started_at = ?, auto_fix_limit = ? WHERE id = ?`, stepStarted, stepStarted, priorAutoFixLimit, step.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.StartStepFixRound(step.ID, 2); err != nil {
@@ -199,7 +200,7 @@ func TestStartStepFixRoundResetsOnlyRoundClock(t *testing.T) {
 		t.Errorf("round_started_at = %v, want reset", got.RoundStartedAt)
 	}
 	if got.AutoFixLimit == nil || *got.AutoFixLimit != 2 {
-		t.Errorf("auto-fix limit = %v, want 2", got.AutoFixLimit)
+		t.Errorf("auto-fix limit = %v, want newly configured 2 instead of prior %d", got.AutoFixLimit, priorAutoFixLimit)
 	}
 }
 

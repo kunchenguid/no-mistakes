@@ -209,11 +209,12 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 }
 
 // StartStepFixRound marks the beginning of a distinct fix execution while
-// preserving started_at as the clock for the enclosing step. It also backfills
-// the effective auto-fix limit for runs started before that value was stored.
+// preserving started_at as the clock for the enclosing step. Recovery can use
+// a newly loaded trusted configuration, so its supplied limit replaces the
+// one recorded by an earlier execution.
 func (d *DB) StartStepFixRound(id string, autoFixLimit int) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, auto_fix_limit = COALESCE(auto_fix_limit, ?) WHERE id = ?`, types.StepStatusFixing, ts, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), autoFixLimitDBValue(autoFixLimit), id)
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, auto_fix_limit = ? WHERE id = ?`, types.StepStatusFixing, ts, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step fix round: %w", err)
 	}
