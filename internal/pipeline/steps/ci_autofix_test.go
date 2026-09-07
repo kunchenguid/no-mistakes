@@ -1471,8 +1471,13 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 		t.Fatalf("findings = %#v, want timeout, selected check, and deferred bot findings", findings.Items)
 	}
 	byCategory := map[string]Finding{}
+	seenIDs := map[string]bool{}
 	var timeout Finding
 	for _, item := range findings.Items {
+		if item.ID == "" || seenIDs[item.ID] {
+			t.Fatalf("finding ID %q is empty or duplicated in %+v", item.ID, findings.Items)
+		}
+		seenIDs[item.ID] = true
 		if item.Action != types.ActionAskUser {
 			t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", item.Action, types.ActionAskUser)
 		}
@@ -1484,8 +1489,8 @@ func TestCIStep_FixAgentBudgetExhaustionParksForADecisionInsteadOfRetrying(t *te
 	if byCategory[types.FindingCategoryCICheck].Check != "test" || byCategory[types.FindingCategoryCIReviewBot].Check != "Greptile Review" {
 		t.Fatalf("findings = %#v, want selected test and deferred review-bot findings", findings.Items)
 	}
-	if timeout.Description == "" {
-		t.Fatalf("findings = %#v, want the measured silence carried into the gate", findings.Items)
+	if timeout.ID != "ci-fix-agent-timeout" || timeout.Description == "" {
+		t.Fatalf("findings = %#v, want an independently addressable timeout diagnostic", findings.Items)
 	}
 	if strings.Contains(timeout.Description, "operator:secret") {
 		t.Fatalf("finding %q leaked adapter URL credentials", timeout.Description)

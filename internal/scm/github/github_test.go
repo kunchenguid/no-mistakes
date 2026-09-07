@@ -1391,6 +1391,22 @@ func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T)
 	}
 }
 
+func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {stdout: `[{"databaseId":102,"name":"CI"}]` + "\n"},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"lint","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 201 --log": {stdout: "build failed\n"},
+		"gh run view 102 --job 202 --log": {stderr: "expired", code: 1},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:201"}, {ProviderID: "github-check-run:202"}})
+	if logs != "build failed" || err == nil || !strings.Contains(err.Error(), "job 202") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want retained partial logs and job 202 error", logs, err)
+	}
+}
+
 // A GitHub Actions action-download outage fails a job inside "Set up job",
 // before any repository step runs. PreRunFailures must flag exactly that job -
 // read structurally from the setup step's conclusion, never from log text - and

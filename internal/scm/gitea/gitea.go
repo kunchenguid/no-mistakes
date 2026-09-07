@@ -492,19 +492,23 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	}
 	jobIDs := findFailedGiteaJobTargetIDs(jobs, targets)
 	var logs []string
+	var logErrors []error
 	for _, jobID := range jobIDs {
 		logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
 			"--job", strconv.Itoa(jobID),
 			"--repo", h.repoSlug,
 			"--login", h.login,
 		)
-		if out, err := logsCmd.Output(); err == nil {
-			if log := stripGiteaLogsHeader(string(out)); log != "" {
-				logs = append(logs, log)
-			}
+		out, err := logsCmd.Output()
+		if err != nil {
+			logErrors = append(logErrors, fmt.Errorf("fetch Gitea job %d log: %w", jobID, err))
+			continue
+		}
+		if log := stripGiteaLogsHeader(string(out)); log != "" {
+			logs = append(logs, log)
 		}
 	}
-	return strings.Join(logs, "\n\n"), nil
+	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
 }
 
 func findFailedGiteaJobTargetIDs(jobs []giteaJob, checkTargets []scm.CheckTarget) []int {

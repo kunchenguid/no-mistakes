@@ -344,7 +344,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	}
 }
 
-func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
+func TestCIStep_BitbucketAutoFixAggregatesSelectedPipelineLogs(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -372,15 +372,15 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-2"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-1"},{"name":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-2"}]}`)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"},{"uuid":"{pipeline-2}"}]}`
 	api.stepsByPath = map[string]string{
 		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps": `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
 		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps": `{"values":[{"uuid":"{step-2}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`,
 	}
 	api.stepLogsByPath = map[string]string{
-		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log": "wrong pipeline log",
-		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps/{step-2}/log": "matching pipeline log",
+		"/2.0/repositories/test/repo/pipelines/{pipeline-1}/steps/{step-1}/log": "build pipeline log",
+		"/2.0/repositories/test/repo/pipelines/{pipeline-2}/steps/{step-2}/log": "test pipeline log",
 	}
 	api.prSourceSHA = headSHA
 
@@ -421,14 +421,11 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	if capturedPrompt == "" {
 		t.Fatal("expected Bitbucket auto-fix to call the agent")
 	}
-	if !strings.Contains(capturedPrompt, "matching pipeline log") {
-		t.Fatalf("expected prompt to include matching pipeline log, got:\n%s", capturedPrompt)
+	if !strings.Contains(capturedPrompt, "build pipeline log") || !strings.Contains(capturedPrompt, "test pipeline log") {
+		t.Fatalf("expected prompt to include both selected pipeline logs, got:\n%s", capturedPrompt)
 	}
-	if strings.Contains(capturedPrompt, "wrong pipeline log") {
-		t.Fatalf("expected prompt to exclude unrelated pipeline log, got:\n%s", capturedPrompt)
-	}
-	if api.stepLogCalls != 1 {
-		t.Fatalf("expected exactly one Bitbucket step log fetch, got %d", api.stepLogCalls)
+	if api.stepLogCalls != 2 {
+		t.Fatalf("expected both Bitbucket step logs to be fetched, got %d", api.stepLogCalls)
 	}
 }
 

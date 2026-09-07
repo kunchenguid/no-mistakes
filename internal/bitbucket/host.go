@@ -132,6 +132,8 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 	if err != nil {
 		return "", nil
 	}
+	var logs []string
+	var logErrors []error
 	for _, pipelineRun := range pipelines {
 		if len(targets) > 0 {
 			if _, ok := targets[normalizePipelineUUID(pipelineRun.UUID)]; !ok {
@@ -140,6 +142,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 		}
 		steps, err := h.client.ListPipelineSteps(ctx, h.repo, pipelineRun.UUID)
 		if err != nil {
+			logErrors = append(logErrors, fmt.Errorf("list Bitbucket pipeline %s steps: %w", pipelineRun.UUID, err))
 			continue
 		}
 		for _, step := range steps {
@@ -147,13 +150,16 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 				continue
 			}
 			logOutput, err := h.client.GetStepLog(ctx, h.repo, pipelineRun.UUID, step.UUID)
-			if err != nil || strings.TrimSpace(logOutput) == "" {
+			if err != nil {
+				logErrors = append(logErrors, fmt.Errorf("fetch Bitbucket pipeline %s step %s log: %w", pipelineRun.UUID, step.UUID, err))
 				continue
 			}
-			return strings.TrimSpace(logOutput), nil
+			if log := strings.TrimSpace(logOutput); log != "" {
+				logs = append(logs, log)
+			}
 		}
 	}
-	return "", nil
+	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
 }
 
 func (h *Host) toPR(pr *PullRequest) *scm.PR {

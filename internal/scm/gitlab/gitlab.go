@@ -503,15 +503,19 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	}
 	jobIDs := findFailedJobTargetIDs(jobsOut, targets)
 	var logs []string
+	var logErrors []error
 	for _, jobID := range jobIDs {
 		traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
-		if traceOut, err := traceCmd.Output(); err == nil {
-			if log := strings.TrimSpace(string(traceOut)); log != "" {
-				logs = append(logs, log)
-			}
+		traceOut, err := traceCmd.Output()
+		if err != nil {
+			logErrors = append(logErrors, fmt.Errorf("fetch GitLab job %d trace: %w", jobID, err))
+			continue
+		}
+		if log := strings.TrimSpace(string(traceOut)); log != "" {
+			logs = append(logs, log)
 		}
 	}
-	return strings.Join(logs, "\n\n"), nil
+	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
 }
 
 func parseMRPayload(out []byte) (mrPayload, bool) {

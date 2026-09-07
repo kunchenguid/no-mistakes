@@ -341,6 +341,7 @@ func ciFixAgentTimeoutOutcome(issueDesc string, dirtyWorktree string, err error)
 	findings := Findings{
 		Summary: "CI auto-fix agent exceeded its invocation budget",
 		Items: []Finding{{
+			ID:          "ci-fix-agent-timeout",
 			Severity:    "warning",
 			Description: description,
 			Action:      types.ActionAskUser,
