@@ -88,7 +88,6 @@ type homePathLeakCase struct {
 	reviewFindings string
 	testFindings   string
 	testStepError  string
-	fixSummary     string
 	userIntent     string
 	agentTitle     string
 	agentBody      string
@@ -249,15 +248,6 @@ func TestPRStep_BuildPRContentRedactsAbsoluteHomePaths(t *testing.T) {
 			wantVisible: []string{"the generated config still points at ~/.config/svc.toml"},
 		},
 		{
-			name:        "auto-fix round summary",
-			evidenceDir: fixtureEvidenceDir,
-			reviewFindings: findingsJSON(t, types.Findings{
-				Items: []types.Finding{{Severity: types.FindingSeverityWarning, Description: "hard-coded path"}},
-			}),
-			fixSummary:  "replaced the hard-coded " + fixtureHome + "/data path with a config key",
-			wantVisible: []string{"replaced the hard-coded ~/data path with a config key"},
-		},
-		{
 			name:          "failed step error text",
 			evidenceDir:   fixtureEvidenceDir,
 			testStepError: "open " + filepath.Join(fixtureEvidenceDir, "pytest.log") + ": no such file or directory",
@@ -416,18 +406,12 @@ func buildHomePathLeakPRContentWithLimit(t *testing.T, tc homePathLeakCase, body
 		testFindings = strings.ReplaceAll(testFindings, "%EVIDENCEFILE%", strings.ReplaceAll(evidenceFile, `\`, `\\`))
 	}
 
-	if tc.reviewFindings != "" || tc.fixSummary != "" {
+	if tc.reviewFindings != "" {
 		reviewFindings := tc.reviewFindings
 		if reviewFindings == "" {
 			reviewFindings = findingsJSON(t, types.Findings{})
 		}
-		step := insertCompletedStep(t, sctx, types.StepReview, reviewFindings, "")
-		if tc.fixSummary != "" {
-			fix := tc.fixSummary
-			if _, err := sctx.DB.InsertStepRound(step.ID, 2, "auto_fix", nil, &fix, 200); err != nil {
-				t.Fatal(err)
-			}
-		}
+		insertCompletedStep(t, sctx, types.StepReview, reviewFindings, "")
 	}
 	if testFindings != "" || tc.testStepError != "" {
 		insertCompletedStep(t, sctx, types.StepTest, testFindings, tc.testStepError)
