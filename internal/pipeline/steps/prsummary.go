@@ -1439,15 +1439,14 @@ func isTautologicalStepInner(inner string) bool {
 	}
 }
 
-// fixRoundLine renders the one-line summary of the fix the agent applied in a
-// fix round, falling back to a generic note when no summary was captured.
+// fixRoundLine renders the one-line summary of a fix round.
 func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
 	summary := ""
 	if r.FixSummary != nil {
 		summary = strings.TrimSpace(*r.FixSummary)
 	}
 	if summary == "" {
-		return "🔧 Fix applied."
+		return "🔧 Fix attempted; result not reported."
 	}
 	return fmt.Sprintf("🔧 Fix: %s", escapePRText(summary, flavor))
 }

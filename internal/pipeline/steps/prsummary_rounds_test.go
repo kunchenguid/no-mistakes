@@ -36,8 +36,11 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 	if !strings.Contains(md, "unused import") {
 		t.Errorf("expected finding description in details, got:\n%s", md)
 	}
-	if !strings.Contains(md, "🔧 Fix applied.") {
-		t.Errorf("expected a fix line in details, got:\n%s", md)
+	if !strings.Contains(md, "🔧 Fix attempted; result not reported.") {
+		t.Errorf("expected an honest no-result fix line in details, got:\n%s", md)
+	}
+	if strings.Contains(md, "🔧 Fix applied.") {
+		t.Errorf("did not expect an unsupported applied-fix claim, got:\n%s", md)
 	}
 	if !strings.Contains(md, "✅ Re-checked - no issues remain.") {
 		t.Errorf("expected a verification line in details, got:\n%s", md)
@@ -66,7 +69,7 @@ func TestBuildPipelineSummary_BitbucketCloudKeepsFixNarrativeWithoutHTML(t *test
 	for _, want := range []string{
 		"### ⚠️ **Lint** - 1 warning",
 		"unused import",
-		"🔧 Fix applied.",
+		"🔧 Fix attempted; result not reported.",
 		"1 warning still open:",
 		"missing error check",
 	} {
@@ -112,6 +115,28 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 	// Round-numbered framing is the thing we are replacing.
 	if strings.Contains(md, "Round 1") || strings.Contains(md, "Round 2") {
 		t.Errorf("did not expect round-numbered framing, got:\n%s", md)
+	}
+}
+
+func TestBuildPipelineSummary_AutoFixRetainsExplicitNoChangeSummary(t *testing.T) {
+	t.Parallel()
+	findings := `{"findings":[{"id":"rebase-1","severity":"warning","file":"cmd/no-mistakes/main.go","line":1,"description":"local default branch requires manual reconciliation"}],"summary":"1 warning"}`
+	noChanges := "no changes applied"
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepRebase, Status: types.StepStatusCompleted}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {
+			{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 800},
+			{Round: 2, Trigger: "auto_fix", FixSummary: &noChanges, DurationMS: 600},
+		},
+	}
+
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
+
+	if !strings.Contains(md, "🔧 Fix: no changes applied") {
+		t.Errorf("expected explicit no-change result, got:\n%s", md)
+	}
+	if strings.Contains(md, "🔧 Fix attempted; result not reported.") {
+		t.Errorf("did not expect an explicit no-change result to be treated as unreported, got:\n%s", md)
 	}
 }
 
@@ -169,7 +194,7 @@ func TestBuildPipelineSummary_LegacyUserFixRoundsRenderAsAutoFix(t *testing.T) {
 	}
 	// A legacy user_fix round must render as a normal fix, not surface the
 	// "user" trigger wording anywhere.
-	if !strings.Contains(md, "🔧 Fix applied.") || !strings.Contains(md, "✅ Re-checked - no issues remain.") {
+	if !strings.Contains(md, "🔧 Fix attempted; result not reported.") || !strings.Contains(md, "✅ Re-checked - no issues remain.") {
 		t.Errorf("expected legacy user_fix round to render as an auto-fix, got:\n%s", md)
 	}
 	if strings.Contains(md, "user-fix") || strings.Contains(md, "user-fixed") {
