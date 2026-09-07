@@ -1322,16 +1322,12 @@ func buildFixResultText(rounds []*db.StepRound) string {
 		if !r.IsFixRound() {
 			continue
 		}
-		summary := ""
-		if r.FixSummary != nil {
-			summary = strings.TrimSpace(*r.FixSummary)
-		}
-		switch {
-		case summary == noChangesAppliedSummary:
+		switch fixRoundOutcome(r) {
+		case fixOutcomeNoChange:
 			noChangeRounds++
-		case summary == changesAppliedSummary:
+		case fixOutcomeApplied:
 			autoFixRounds++
-		default:
+		case fixOutcomeUnreported:
 			unreportedRounds++
 		}
 	}
@@ -1458,17 +1454,38 @@ func isTautologicalStepInner(inner string) bool {
 	}
 }
 
-// fixRoundLine renders the one-line summary of a fix round.
+type fixOutcome uint8
+
+const (
+	fixOutcomeUnreported fixOutcome = iota
+	fixOutcomeNoChange
+	fixOutcomeApplied
+)
+
+func fixRoundOutcome(r *db.StepRound) fixOutcome {
+	if r.FixSummary == nil || strings.TrimSpace(*r.FixSummary) == "" {
+		return fixOutcomeUnreported
+	}
+	if strings.TrimSpace(*r.FixSummary) == noChangesAppliedSummary {
+		return fixOutcomeNoChange
+	}
+	return fixOutcomeApplied
+}
+
+// fixRoundLine renders the one-line result of a fix round.
 func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
 	summary := ""
 	if r.FixSummary != nil {
 		summary = strings.TrimSpace(*r.FixSummary)
 	}
-	switch summary {
-	case noChangesAppliedSummary:
+	switch fixRoundOutcome(r) {
+	case fixOutcomeNoChange:
 		return "🔧 No changes applied."
-	case changesAppliedSummary:
-		return "🔧 Fix applied."
+	case fixOutcomeApplied:
+		if summary == changesAppliedSummary {
+			return "🔧 Fix applied."
+		}
+		return fmt.Sprintf("🔧 Fix applied: %s", escapePRText(summary, flavor))
 	default:
 		return "🔧 Fix attempted; result not reported."
 	}

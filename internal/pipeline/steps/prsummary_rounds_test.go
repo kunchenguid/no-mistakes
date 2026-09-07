@@ -89,7 +89,7 @@ func TestBuildPipelineSummary_BitbucketCloudKeepsFixNarrativeWithoutHTML(t *test
 func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 	t.Parallel()
 	findings1 := `{"findings":[{"id":"doc-1","severity":"warning","file":"internal/agent/server.go","line":129,"description":"waitForHealth doc comment still references the old 30s deadline"}],"summary":"1 warning"}`
-	fixSummary := changesAppliedSummary
+	fixSummary := "updated the waitForHealth doc comment"
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
@@ -103,7 +103,7 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 
 	// The fix the agent actually applied must be surfaced - this is the data
 	// the old round-by-round layout dropped on the floor.
-	if !strings.Contains(md, "🔧 Fix applied.") {
+	if !strings.Contains(md, "🔧 Fix applied: updated the waitForHealth doc comment") {
 		t.Errorf("expected recorded applied fix result, got:\n%s", md)
 	}
 	if !strings.Contains(md, "🔧 **Document** - 1 issue found → auto-fixed ✅") {
