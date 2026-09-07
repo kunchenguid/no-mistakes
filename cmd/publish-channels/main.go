@@ -35,7 +35,7 @@ func main() {
 func run() error {
 	repo := strings.TrimSpace(os.Getenv("GH_REPO"))
 	if repo == "" {
-		repo = "kunchenguid/no-mistakes"
+		return fmt.Errorf("GH_REPO is required")
 	}
 
 	latest, err := ghAPIOptional("repos/" + repo + "/releases/latest")

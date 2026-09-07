@@ -11,6 +11,15 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
 
+func TestRunRequiresExplicitRepository(t *testing.T) {
+	t.Setenv("GH_REPO", "")
+
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "GH_REPO is required") {
+		t.Fatalf("run error = %v, want missing GH_REPO error", err)
+	}
+}
+
 func TestRunPublishesHighestSemverBetaAndGitHubLatestStable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("publish-channels is invoked from Ubuntu GitHub Actions")
