@@ -1,10 +1,7 @@
 name: publish-channels
 
 # Refreshes channels.json when a GitHub release is published or edited
-# (including a manual promote-to-latest) and on workflow_dispatch. The
-# release.yml publish-channels job covers the automated prerelease path; this
-# workflow is the catch-all so a later `gh release edit --prerelease=false`
-# still updates the stable channel.
+# (including a manual promote-to-latest) and on workflow_dispatch.
 on:
   workflow_dispatch:
   release:

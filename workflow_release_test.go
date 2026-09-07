@@ -187,28 +187,6 @@ func TestReleaseWorkflowPublishesPrereleaseOnlyAfterAssetsComplete(t *testing.T)
 	}
 }
 
-func TestReleaseWorkflowPublishesChannelManifestAfterFinalize(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/release.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-	block := extractJobBlock(t, content, "publish-channels")
-	for _, req := range []string{
-		"needs.finalize.result == 'success'",
-		"needs.release-please.outputs.release_created == 'true'",
-		"go run ./cmd/publish-channels",
-		"GH_TOKEN: ${{ github.token }}",
-	} {
-		if !strings.Contains(block, req) {
-			t.Fatalf("publish-channels job must contain %q so the CDN manifest is refreshed after the versioned release is published", req)
-		}
-	}
-	if !strings.Contains(block, "- finalize") {
-		t.Fatal("publish-channels job must run after finalize")
-	}
-}
-
 func TestExtractJobBlockHandlesCRLF(t *testing.T) {
 	lf := "jobs:\n  foo:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo foo\n  bar:\n    runs-on: ubuntu-latest\n"
 	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
