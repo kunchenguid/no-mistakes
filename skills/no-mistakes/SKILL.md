@@ -164,8 +164,8 @@ Run the pipeline and decide on its findings as they come up:
    send `axi respond`. The field is observability only: it does not change
    gate resolution, auto-resume the run, or make `--yes` the default.
    While a step is actively `running` or `fixing`, `axi status` may include
-   `active_steps` with `active_for`, `last_activity`, a native `agent_pid` when
-   a subprocess agent is running, and the current round such as `round 1`,
+   `active_steps` with step-scoped `active_for`, current-round `round_active_for`,
+   `last_activity`, a native `agent_pid` when a subprocess agent is running, and the current round such as `round 1`,
    `auto-fix 1/3`, or `fix 2`. If `last_activity` is prefixed with
    `quiet`, no step log or native-agent lifecycle activity has arrived for
    longer than `step_quiet_warning`. Treat that as a liveness clue, not as
@@ -348,7 +348,7 @@ no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside 
 - Output is TOON: `key: value` pairs, `name[N]{cols}:` tables, and `help[N]:` hints.
 - `axi status` is scoped to your current branch when `--run` is omitted: with a known current branch, an implicitly resolved `run:` is this branch's. A run under `other_branch_run:` is one you named with `--run <id>` that belongs to another branch - never read its status or outcome as your own work. An explicit `--run <id>` rendered under `run:` while the current branch is unknown (detached `HEAD` or a branch-lookup failure) encodes no branch relationship. In a successful status response, no run object at all means this branch has no run yet, whatever the recent-runs table lists; an `error:` response proves nothing about run ownership, so act on the error instead of concluding the branch is idle.
 - A non-terminal run object may include `awaiting_agent: parked <duration>` immediately after `status`; that means the run is parked at a gate. Only an implicitly resolved current-branch gate offers `axi respond`; an explicit `--run <id>` status is inspection-only even when its branch matches, because the branch may have a newer active run. Follow the response's `help`.
-- A run object with a `running` or `fixing` step may include an `active_steps` table. Use it to see the active duration, latest activity, native agent PID, and current execution or fix round.
+- A run object with a `running` or `fixing` step may include an `active_steps` table. `active_for` is the enclosing step duration; `round_active_for` is the displayed execution or fix round duration and resets for a fix round. Older runs without round timing leave `round_active_for` empty.
 - The `help` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
 - Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.

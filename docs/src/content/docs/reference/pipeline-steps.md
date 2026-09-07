@@ -350,6 +350,6 @@ Each step progresses through these statuses:
 
 When a non-terminal run has a step in `awaiting_approval` or `fix_review`, AXI run objects also expose `awaiting_agent: parked <duration>` as a run-level observability signal.
 The signal clears as soon as the approval wait ends, including `axi respond` and cancellation, and does not change how gates resolve.
-When a step is `running` or `fixing`, AXI run objects expose an `active_steps` table. `active_for` is the elapsed enclosing step duration; `round_active_for` is the displayed execution or fix round duration and resets when a fix round begins. Older runs without recorded round timing leave `round_active_for` empty. The table also includes latest activity, native subprocess PID when present, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+For the `active_steps` status fields, including active-round timing and compatibility with older runs, see [`axi status`](/no-mistakes/reference/cli/#no-mistakes-axi-status).
 If the latest activity is older than `step_quiet_warning`, AXI prefixes it with `quiet` to make possible wedges visible without changing the run state.
 Step logs also record native subprocess start, exit, and retry lifecycle lines plus explicit auto-fix and user-fix round markers.
