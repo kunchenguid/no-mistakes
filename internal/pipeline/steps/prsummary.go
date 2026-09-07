@@ -1166,7 +1166,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 	hasRoundParseFailure := roundsHaveParseFailure(rounds)
 	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
 	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
-	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+	findingsCleared := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
 	riskLevel := ""
 	if sr.StepName == types.StepReview {
 		src := finalFindings
@@ -1198,7 +1198,7 @@ func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlav
 		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
 	}
 
-	if wasFixed {
+	if findingsCleared {
 		result := buildFixResultText(rounds)
 		line := fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
 		return buildDetail(line)
@@ -1317,10 +1317,21 @@ func buildFixResultText(rounds []*db.StepRound) string {
 		}
 	}
 
-	// Categorize fix rounds. Legacy "user_fix" rounds are rendered as auto-fix.
-	autoFixRounds := 0
+	var autoFixRounds, noChangeRounds, unreportedRounds int
 	for _, r := range rounds[1:] {
-		if r.IsFixRound() {
+		if !r.IsFixRound() {
+			continue
+		}
+		summary := ""
+		if r.FixSummary != nil {
+			summary = strings.TrimSpace(*r.FixSummary)
+		}
+		switch {
+		case summary == "":
+			unreportedRounds++
+		case strings.HasPrefix(strings.ToLower(summary), "no changes applied"):
+			noChangeRounds++
+		default:
 			autoFixRounds++
 		}
 	}
@@ -1332,10 +1343,19 @@ func buildFixResultText(rounds []*db.StepRound) string {
 
 	parts := []string{fmt.Sprintf("%d %s found", initialCount, noun)}
 
-	if autoFixRounds > 1 {
-		parts = append(parts, fmt.Sprintf("auto-fixed (%d)", autoFixRounds))
-	} else if autoFixRounds == 1 {
-		parts = append(parts, "auto-fixed")
+	for _, result := range []struct {
+		count int
+		text  string
+	}{
+		{autoFixRounds, "auto-fixed"},
+		{noChangeRounds, "no changes applied"},
+		{unreportedRounds, "fix attempted; result not reported"},
+	} {
+		if result.count == 1 {
+			parts = append(parts, result.text)
+		} else if result.count > 1 {
+			parts = append(parts, fmt.Sprintf("%s (%d)", result.text, result.count))
+		}
 	}
 
 	return strings.Join(parts, " → ")

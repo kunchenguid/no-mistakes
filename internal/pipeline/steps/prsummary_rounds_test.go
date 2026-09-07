@@ -23,13 +23,15 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 	}
 	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-	// Should show wrench emoji for auto-fixed
+	// Should show wrench emoji for a fix attempt.
 	if !strings.Contains(md, "🔧") {
-		t.Errorf("expected wrench emoji for auto-fixed step, got:\n%s", md)
+		t.Errorf("expected wrench emoji for fix attempt, got:\n%s", md)
 	}
-	// Status line should mention auto-fixed
-	if !strings.Contains(md, "auto-fixed") {
-		t.Errorf("expected 'auto-fixed' in status line, got:\n%s", md)
+	if !strings.Contains(md, "🔧 **Lint** - 2 issues found → fix attempted; result not reported ✅") {
+		t.Errorf("expected unreported fix result in status line, got:\n%s", md)
+	}
+	if strings.Contains(md, "auto-fixed") {
+		t.Errorf("did not expect an unreported fix result to be called auto-fixed, got:\n%s", md)
 	}
 	// Details should show the issue, then the fix, then the verification -
 	// not a round-by-round log.
@@ -104,6 +106,9 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 	if !strings.Contains(md, "🔧 Fix: "+fixSummary) {
 		t.Errorf("expected the fix summary to be surfaced, got:\n%s", md)
 	}
+	if !strings.Contains(md, "🔧 **Document** - 1 issue found → auto-fixed ✅") {
+		t.Errorf("expected recorded applied fix in status line, got:\n%s", md)
+	}
 	// The original problem must still be shown next to its fix.
 	if !strings.Contains(md, "waitForHealth doc comment still references the old 30s deadline") {
 		t.Errorf("expected the original finding alongside the fix, got:\n%s", md)
@@ -134,6 +139,12 @@ func TestBuildPipelineSummary_AutoFixRetainsExplicitNoChangeSummary(t *testing.T
 
 	if !strings.Contains(md, "🔧 Fix: no changes applied") {
 		t.Errorf("expected explicit no-change result, got:\n%s", md)
+	}
+	if !strings.Contains(md, "🔧 **Rebase** - 1 issue found → no changes applied ✅") {
+		t.Errorf("expected explicit no-change result in status line, got:\n%s", md)
+	}
+	if strings.Contains(md, "auto-fixed") {
+		t.Errorf("did not expect an explicit no-change result to be called auto-fixed, got:\n%s", md)
 	}
 	if strings.Contains(md, "🔧 Fix attempted; result not reported.") {
 		t.Errorf("did not expect an explicit no-change result to be treated as unreported, got:\n%s", md)
@@ -170,8 +181,8 @@ func TestBuildPipelineSummary_MultiRoundWithFollowUpFix(t *testing.T) {
 	if strings.Contains(md, "user-fix") || strings.Contains(md, "user-fixed") {
 		t.Errorf("did not expect user-fix wording, got:\n%s", md)
 	}
-	if !strings.Contains(md, "auto-fixed (2)") {
-		t.Errorf("expected consolidated auto-fix count, got:\n%s", md)
+	if !strings.Contains(md, "🔧 **Test** - 2 issues found → fix attempted; result not reported (2) ✅") {
+		t.Errorf("expected consolidated unreported-fix count, got:\n%s", md)
 	}
 }
 
@@ -189,8 +200,11 @@ func TestBuildPipelineSummary_LegacyUserFixRoundsRenderAsAutoFix(t *testing.T) {
 	}
 	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-	if !strings.Contains(md, "auto-fixed") {
-		t.Errorf("expected legacy user_fix round to render as auto-fixed, got:\n%s", md)
+	if !strings.Contains(md, "🔧 **Review** - 1 issue found → fix attempted; result not reported ✅") {
+		t.Errorf("expected legacy user_fix round to preserve its unreported result, got:\n%s", md)
+	}
+	if strings.Contains(md, "auto-fixed") {
+		t.Errorf("did not expect legacy user_fix round without a result to be called auto-fixed, got:\n%s", md)
 	}
 	// A legacy user_fix round must render as a normal fix, not surface the
 	// "user" trigger wording anywhere.
