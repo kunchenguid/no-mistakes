@@ -44,10 +44,13 @@ func TestUpdaterCheckLatestAndRefreshCache(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/repos/kunchenguid/no-mistakes/releases/latest" {
+				if strings.Contains(r.URL.Path, "/repos/") {
+					t.Fatalf("stable update must not call the GitHub REST API, got %q", r.URL.Path)
+				}
+				if r.URL.Path != "/releases/download/channels/channels.json" {
 					t.Fatalf("unexpected path %q", r.URL.Path)
 				}
-				fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}`,
+				fmt.Fprintf(w, `{"schema_version":1,"stable":{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}}`,
 					tt.archiveName,
 				)
 			}))
@@ -60,6 +63,7 @@ func TestUpdaterCheckLatestAndRefreshCache(t *testing.T) {
 				currentVersion: "v1.2.2",
 				platform:       tt.platform,
 				apiBaseURL:     server.URL,
+				manifestURL:    server.URL + "/releases/download/channels/channels.json",
 				httpClient:     server.Client(),
 				cachePath:      cachePath,
 				now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
@@ -107,8 +111,8 @@ func TestUpdaterRunReplacesExecutable(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/kunchenguid/no-mistakes/releases/latest":
-			fmt.Fprintf(w, `{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}`,
+		case "/releases/download/channels/channels.json":
+			fmt.Fprintf(w, `{"schema_version":1,"stable":{"tag_name":"v1.2.3","assets":[{"name":%q,"browser_download_url":%q},{"name":"checksums.txt","browser_download_url":%q}]}}`,
 				archiveName,
 				server.URL+"/archive",
 				server.URL+"/checksums",
@@ -118,6 +122,9 @@ func TestUpdaterRunReplacesExecutable(t *testing.T) {
 		case "/checksums":
 			fmt.Fprint(w, checksums)
 		default:
+			if strings.Contains(r.URL.Path, "/repos/") {
+				t.Fatalf("update download path must not call the GitHub REST API, got %q", r.URL.Path)
+			}
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 	}))
@@ -135,6 +142,7 @@ func TestUpdaterRunReplacesExecutable(t *testing.T) {
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
 		apiBaseURL:     server.URL,
+		manifestURL:    server.URL + "/releases/download/channels/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
 		stdout:         stdout,
@@ -931,6 +939,53 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 		if spawned {
 			t.Fatalf("%v should not spawn background refresh", versionArgs)
 		}
+	}
+}
+
+func TestUpdaterCheckLatestBetaUsesManifest(t *testing.T) {
+	allowInsecureDownloads = true
+	t.Cleanup(func() { allowInsecureDownloads = false })
+
+	archiveName := "no-mistakes-v1.3.0-beta.2-darwin-arm64.tar.gz"
+	var apiHits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/repos/") {
+			apiHits = append(apiHits, r.URL.Path)
+			http.Error(w, "rate limited", http.StatusForbidden)
+			return
+		}
+		fmt.Fprintf(w, `{"schema_version":1,"stable":{"tag_name":"v1.2.3","assets":[]},"beta":{"tag_name":"v1.3.0-beta.2","prerelease":true,"assets":[{"name":%q,"browser_download_url":"http://example.com/archive"},{"name":"checksums.txt","browser_download_url":"http://example.com/checksums"}]}}`, archiveName)
+	}))
+	defer server.Close()
+
+	u := &updater{
+		appName:            "no-mistakes",
+		repo:               "kunchenguid/no-mistakes",
+		currentVersion:     "v1.2.3",
+		platform:           platformSpec{GOOS: "darwin", GOARCH: "arm64"},
+		apiBaseURL:         server.URL,
+		manifestURL:        server.URL + "/releases/download/channels/channels.json",
+		httpClient:         server.Client(),
+		cachePath:          filepath.Join(t.TempDir(), "update-check.json"),
+		now:                func() time.Time { return time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC) },
+		includePrereleases: true,
+	}
+
+	plan, err := u.checkLatest(context.Background())
+	if err != nil {
+		t.Fatalf("checkLatest error = %v", err)
+	}
+	if !plan.UpdateAvailable {
+		t.Fatal("expected update to be available")
+	}
+	if plan.LatestVersion != "v1.3.0-beta.2" {
+		t.Fatalf("LatestVersion = %q", plan.LatestVersion)
+	}
+	if plan.ArchiveName != archiveName {
+		t.Fatalf("ArchiveName = %q", plan.ArchiveName)
+	}
+	if len(apiHits) != 0 {
+		t.Fatalf("REST API paths hit on the beta manifest path: %v", apiHits)
 	}
 }
 

@@ -73,6 +73,7 @@ This downloads the latest release from GitHub, verifies the SHA-256 checksum, at
 `no-mistakes update` installs the latest stable release.
 Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release.
 Use `no-mistakes update -y` to answer yes to the daemon-executable-mismatch prompt described below.
+Version discovery uses the GitHub release-asset CDN rather than the rate-limited REST API; see [`no-mistakes update`](/no-mistakes/reference/cli/#no-mistakes-update).
 
 Because `update` installs the latest official release binary, it installs a binary with the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 

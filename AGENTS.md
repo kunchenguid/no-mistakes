@@ -14,6 +14,10 @@ Safest local verification sequence after non-trivial changes:
 - `make e2e` when touching agent integrations, the e2e harness, or recorded fixtures
 - `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 
+**Self-update channel manifest (`internal/update`)**
+
+- `no-mistakes update` reads version metadata from `channels.json` on the GitHub release-asset CDN (`releases/download/channels/channels.json`), not `api.github.com`. The REST releases API is fallback-only and may use `GITHUB_TOKEN`/`GH_TOKEN` when present; a token is never required. Publisher: `cmd/publish-channels`, invoked from `.github/workflows/release.yml` and `.github/workflows/publish-channels.yml`. Regressions: `internal/update/channels_test.go`.
+
 **GitLab Backend (`internal/scm/gitlab`)**
 
 - The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, `glab mr update` has no `-y`/`--yes` flag at all (unlike `mr create`, which does, so `UpdatePR` must not pass it), and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.

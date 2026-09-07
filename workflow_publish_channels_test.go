@@ -1,0 +1,80 @@
+package main
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+func TestPublishChannelsWorkflowRefreshesManifestWithoutRESTForEndUsers(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/publish-channels.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	var wf struct {
+		On          map[string]any `yaml:"on"`
+		Permissions struct {
+			Contents string `yaml:"contents"`
+		} `yaml:"permissions"`
+		Jobs map[string]struct {
+			If    string `yaml:"if"`
+			Steps []struct {
+				Run string            `yaml:"run"`
+				Env map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse workflow: %v", err)
+	}
+	if _, ok := wf.On["workflow_dispatch"]; !ok {
+		t.Fatal("publish-channels workflow must allow workflow_dispatch so a manifest can be published without a new versioned release")
+	}
+	release, _ := wf.On["release"].(map[string]any)
+	types, _ := release["types"].([]any)
+	gotTypes := make([]string, 0, len(types))
+	for _, item := range types {
+		s, _ := item.(string)
+		gotTypes = append(gotTypes, s)
+	}
+	got := strings.Join(gotTypes, ",")
+	for _, want := range []string{"released", "prereleased", "edited"} {
+		found := false
+		for _, have := range gotTypes {
+			if have == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("release types = %q, want %q so promoting a prerelease to latest refreshes stable", got, want)
+		}
+	}
+	if wf.Permissions.Contents != "write" {
+		t.Fatalf("contents permission = %q, want write to upload the manifest asset", wf.Permissions.Contents)
+	}
+	job, ok := wf.Jobs["publish-channels"]
+	if !ok {
+		t.Fatal("missing publish-channels job")
+	}
+	if job.If != "github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'channels'" {
+		t.Fatalf("job if = %q, want a skip for the channels tag so uploading the manifest cannot recurse", job.If)
+	}
+	var sawPublish bool
+	for _, step := range job.Steps {
+		if step.Run == "go run ./cmd/publish-channels" {
+			sawPublish = true
+			if step.Env["GH_TOKEN"] != "${{ github.token }}" {
+				t.Fatalf("publisher GH_TOKEN = %q, want the workflow token", step.Env["GH_TOKEN"])
+			}
+			if step.Env["GH_REPO"] != "${{ github.repository }}" {
+				t.Fatalf("publisher GH_REPO = %q, want github.repository", step.Env["GH_REPO"])
+			}
+		}
+	}
+	if !sawPublish {
+		t.Fatal("publish-channels job must run go run ./cmd/publish-channels")
+	}
+}

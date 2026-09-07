@@ -47,6 +47,7 @@ type updater struct {
 	currentVersion     string
 	platform           platformSpec
 	apiBaseURL         string
+	manifestURL        string
 	httpClient         *http.Client
 	cachePath          string
 	executablePath     string
@@ -128,6 +129,7 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 		currentVersion:  buildinfo.CurrentVersion(),
 		platform:        platformSpec{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
 		apiBaseURL:      githubAPIBaseURL,
+		manifestURL:     defaultManifestURL(repoName),
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		cachePath:       p.UpdateCheckFile(),
 		executablePath:  execPath,

@@ -1,0 +1,36 @@
+name: publish-channels
+
+# Refreshes channels.json when a GitHub release is published or edited
+# (including a manual promote-to-latest) and on workflow_dispatch. The
+# release.yml publish-channels job covers the automated prerelease path; this
+# workflow is the catch-all so a later `gh release edit --prerelease=false`
+# still updates the stable channel.
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - released
+      - prereleased
+      - edited
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-channels
+  cancel-in-progress: false
+
+jobs:
+  publish-channels:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'channels'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Publish update channel manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: go run ./cmd/publish-channels

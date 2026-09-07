@@ -553,6 +553,7 @@ no-mistakes update --force
 Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails.
 By default this installs the latest stable release.
 Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release.
+Version discovery reads a `channels.json` manifest from the GitHub release-asset CDN (`releases/download/channels/channels.json`) so it does not consume the unauthenticated REST API rate limit; if that manifest is missing, the updater falls back to the GitHub REST API and will use `GITHUB_TOKEN` or `GH_TOKEN` when either is set.
 If the daemon is running from a different executable path, update still prompts before replacing it; pass `-y`/`--yes` to answer that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacement.
 If the daemon does not come back cleanly after a successful replacement, the command reports that failure.
