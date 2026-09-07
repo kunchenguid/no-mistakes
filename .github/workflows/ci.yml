@@ -49,14 +49,19 @@ jobs:
           - os: windows-latest
             name: test (windows-git)
             shard: git
+          - os: windows-latest
+            name: test (windows-steps)
+            shard: steps
     runs-on: ${{ matrix.os }}
     # Sized for each Windows shard, which still sets the floor: git.exe plus
     # Defender tax makes git-backed packages ~10x their Linux time (see the
     # Defender note below). A single Windows `./...` job compiled every binary
     # and then ran those packages sequentially, so total wall could exceed
     # timeout-minutes with no package hitting go test -timeout - an
-    # evidence-free cancellation. Splitting git-heavy packages from the rest
-    # drops each shard's wall below this cap so a real hang dumps goroutines.
+    # evidence-free cancellation. Git-heavy packages are split from the core
+    # remainder, and pipeline/steps is its own shard so it no longer serializes
+    # behind the other git-heavy packages on a 4-core GitHub-hosted runner.
+    # Each shard's wall stays below this cap so a real hang dumps goroutines.
     # 40 is a runaway guard, not a target - Linux and macOS finish far inside
     # it, and it still keeps a wedged runner well short of the six-hour default.
     timeout-minutes: 40
@@ -100,12 +105,19 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race ./...
 
-      # Git-heavy packages are the Windows wall floor. Keep this list in lockstep
-      # with NM_CI_WINDOWS_GIT_EXCLUDE on the core shard; the workflow tests
-      # resolve both through `go list` and fail if they drift.
+      # Git-heavy packages are the Windows wall floor. NM_CI_WINDOWS_GIT_EXCLUDE
+      # on the core shard is the union of the git and steps shards; the workflow
+      # tests resolve every shard through `go list` and fail if they drift or
+      # overlap. pipeline/steps is its own shard (~10 min) so it runs in
+      # parallel with the remaining git-heavy packages instead of setting a
+      # ~21 min serial floor.
       - name: Test on Windows (git-heavy)
         if: runner.os == 'Windows' && matrix.shard == 'git'
-        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/pipeline/steps/... ./internal/daemon ./internal/eval
+        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/daemon ./internal/eval
+
+      - name: Test on Windows (pipeline/steps)
+        if: runner.os == 'Windows' && matrix.shard == 'steps'
+        run: go test -v -timeout=15m ./internal/pipeline/steps/...
 
       - name: Test on Windows (core)
         if: runner.os == 'Windows' && matrix.shard == 'core'
