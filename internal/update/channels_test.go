@@ -132,9 +132,7 @@ func TestFetchLatestRelease_ManifestPathDoesNotCallGitHubRESTAPI(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 
 	u := &updater{
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/releases/download/channels/channels.json",
 		httpClient:     server.Client(),
 	}
@@ -174,8 +172,6 @@ func TestFetchLatestRelease_ManifestSucceedsWhenRESTAPIReturns403(t *testing.T) 
 	defer server.Close()
 
 	u := &updater{
-		repo:        "kunchenguid/no-mistakes",
-		apiBaseURL:  server.URL,
 		manifestURL: server.URL + "/releases/download/channels/channels.json",
 		httpClient:  server.Client(),
 	}
@@ -204,8 +200,6 @@ func TestFetchLatestRelease_DoesNotUseRESTWhenManifestMissing(t *testing.T) {
 	defer server.Close()
 
 	u := &updater{
-		repo:        "kunchenguid/no-mistakes",
-		apiBaseURL:  server.URL,
 		manifestURL: server.URL + "/releases/download/channels/channels.json",
 		httpClient:  server.Client(),
 	}
@@ -274,10 +268,8 @@ func TestCheckLatest_ManifestStableAndBetaSelectDifferentHeads(t *testing.T) {
 
 	base := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 	}

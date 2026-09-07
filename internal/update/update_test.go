@@ -59,10 +59,8 @@ func TestUpdaterCheckLatestAndRefreshCache(t *testing.T) {
 			cachePath := filepath.Join(t.TempDir(), "update-check.json")
 			u := &updater{
 				appName:        "no-mistakes",
-				repo:           "kunchenguid/no-mistakes",
 				currentVersion: "v1.2.2",
 				platform:       tt.platform,
-				apiBaseURL:     server.URL,
 				manifestURL:    server.URL + "/releases/download/channels/channels.json",
 				httpClient:     server.Client(),
 				cachePath:      cachePath,
@@ -138,10 +136,8 @@ func TestUpdaterRunReplacesExecutable(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/releases/download/channels/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -202,10 +198,8 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 	resetCalled := false
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -291,10 +285,8 @@ func TestUpdaterRunRefusesWithActiveRunsAndListsThem(t *testing.T) {
 	resetCalled := false
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -420,10 +412,8 @@ func TestUpdaterRunFailsWhenDaemonResetFails(t *testing.T) {
 	stderr := new(bytes.Buffer)
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -495,10 +485,8 @@ func TestUpdaterRunFailsWhenDaemonResetLeavesDaemonOffline(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -587,10 +575,8 @@ func TestUpdaterRunFailsWhenDaemonUsesDifferentExecutable(t *testing.T) {
 	resetCalled := false
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -695,10 +681,8 @@ func TestUpdaterRunReplacesDaemonWhenDifferentExecutableConfirmed(t *testing.T) 
 			stderr := new(bytes.Buffer)
 			u := &updater{
 				appName:        "no-mistakes",
-				repo:           "kunchenguid/no-mistakes",
 				currentVersion: "v1.2.2",
 				platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-				apiBaseURL:     server.URL,
 				manifestURL:    server.URL + "/channels.json",
 				httpClient:     server.Client(),
 				executablePath: execPath,
@@ -796,10 +780,8 @@ func TestUpdaterRunFailsWhenDaemonExecutableCannotBeResolved(t *testing.T) {
 	resetCalled := false
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -865,10 +847,8 @@ func TestUpdaterRunSkipsDaemonExecutableCheckWhenAlreadyUpToDate(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	u := &updater{
 		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
 		currentVersion: "v1.2.2",
 		platform:       platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:     server.URL,
 		manifestURL:    server.URL + "/channels.json",
 		httpClient:     server.Client(),
 		executablePath: execPath,
@@ -968,10 +948,8 @@ func TestUpdaterCheckLatestBetaUsesManifest(t *testing.T) {
 
 	u := &updater{
 		appName:            "no-mistakes",
-		repo:               "kunchenguid/no-mistakes",
 		currentVersion:     "v1.2.3",
 		platform:           platformSpec{GOOS: "darwin", GOARCH: "arm64"},
-		apiBaseURL:         server.URL,
 		manifestURL:        server.URL + "/releases/download/channels/channels.json",
 		httpClient:         server.Client(),
 		cachePath:          filepath.Join(t.TempDir(), "update-check.json"),

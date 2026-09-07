@@ -28,7 +28,6 @@ const (
 )
 
 var allowInsecureDownloads bool
-var githubAPIBaseURL = "https://api.github.com"
 var currentGOOS = runtime.GOOS
 var daemonIsRunning = daemon.IsRunning
 var daemonExecutablePath = runningDaemonExecutablePath
@@ -43,10 +42,8 @@ type platformSpec struct {
 
 type updater struct {
 	appName            string
-	repo               string
 	currentVersion     string
 	platform           platformSpec
-	apiBaseURL         string
 	manifestURL        string
 	httpClient         *http.Client
 	cachePath          string
@@ -125,10 +122,8 @@ func defaultUpdater(stdout, stderr io.Writer) (*updater, error) {
 	}
 	return &updater{
 		appName:         appName,
-		repo:            repoName,
 		currentVersion:  buildinfo.CurrentVersion(),
 		platform:        platformSpec{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
-		apiBaseURL:      githubAPIBaseURL,
 		manifestURL:     defaultManifestURL(repoName),
 		httpClient:      &http.Client{Timeout: 30 * time.Second},
 		cachePath:       p.UpdateCheckFile(),
