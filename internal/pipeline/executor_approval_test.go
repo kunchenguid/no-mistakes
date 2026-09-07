@@ -186,7 +186,10 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 			return &StepOutcome{ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
 		},
 	}
-	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
+	exec := NewExecutor(database, p, &config.Config{
+		SessionReuse: true,
+		AutoFix:      config.AutoFix{Review: 2},
+	}, fake, []Step{step}, nil)
 	done := make(chan error, 1)
 	released := false
 	finished := false
@@ -243,6 +246,9 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	if fixing.RoundStartedAt == nil || *fixing.RoundStartedAt <= initialStartedAt {
 		t.Errorf("recovered fixing round_started_at = %v, want after %d", fixing.RoundStartedAt, initialStartedAt)
+	}
+	if fixing.AutoFixLimit == nil || *fixing.AutoFixLimit != 2 {
+		t.Errorf("recovered fixing auto-fix limit = %v, want 2", fixing.AutoFixLimit)
 	}
 	close(releaseFix)
 	released = true

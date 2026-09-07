@@ -182,7 +182,7 @@ func TestStartStepFixRoundResetsOnlyRoundClock(t *testing.T) {
 	if _, err := d.sql.Exec(`UPDATE step_results SET started_at = ?, round_started_at = ? WHERE id = ?`, stepStarted, stepStarted, step.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.StartStepFixRound(step.ID); err != nil {
+	if err := d.StartStepFixRound(step.ID, 2); err != nil {
 		t.Fatalf("start fix round: %v", err)
 	}
 	got, err := d.GetStepResult(step.ID)
@@ -197,6 +197,9 @@ func TestStartStepFixRoundResetsOnlyRoundClock(t *testing.T) {
 	}
 	if got.RoundStartedAt == nil || *got.RoundStartedAt == stepStarted {
 		t.Errorf("round_started_at = %v, want reset", got.RoundStartedAt)
+	}
+	if got.AutoFixLimit == nil || *got.AutoFixLimit != 2 {
+		t.Errorf("auto-fix limit = %v, want 2", got.AutoFixLimit)
 	}
 }
 
