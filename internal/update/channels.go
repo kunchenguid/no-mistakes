@@ -4,14 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
-
-var errManifestSkipped = errors.New("channel manifest URL not configured")
 
 const (
 	channelsReleaseTag = "channels"
@@ -78,12 +74,7 @@ func EncodeChannelsManifest(latestStableJSON, allReleasesJSON []byte) ([]byte, e
 		copied := *release
 		manifest.Beta = &copied
 	}
-	if stable := decodeLatestStable(latestStableJSON); stable != nil {
-		manifest.Stable = stable
-	} else if release := highestRelease(all, false); release != nil {
-		copied := *release
-		manifest.Stable = &copied
-	}
+	manifest.Stable = decodeLatestStable(latestStableJSON)
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode channel manifest: %w", err)
@@ -138,9 +129,6 @@ func usableChannelRelease(r releaseResponse, includePrereleases bool) bool {
 }
 
 func (u *updater) fetchReleaseFromManifest(ctx context.Context) (*releaseResponse, error) {
-	if strings.TrimSpace(u.manifestURL) == "" {
-		return nil, errManifestSkipped
-	}
 	if err := ensureHTTPS(u.manifestURL); err != nil {
 		return nil, err
 	}

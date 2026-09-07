@@ -98,8 +98,8 @@ func TestEncodeChannelsManifestOmitsUnusableLatestStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseChannelsManifest error = %v", err)
 	}
-	if manifest.Stable == nil || manifest.Stable.TagName != "v1.2.3" {
-		t.Fatalf("stable = %+v, want computed v1.2.3 after rejecting the channels tag", manifest.Stable)
+	if manifest.Stable != nil {
+		t.Fatalf("stable = %+v, want omitted after rejecting latest release", manifest.Stable)
 	}
 }
 
