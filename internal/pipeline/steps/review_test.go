@@ -19,10 +19,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// cleanReviewFindings is a clean structured response. It also carries the
+// Test step's evidence contract, because whole-pipeline tests drive every step
+// with one mock agent and the evidence turn now always runs: the review step
+// ignores the extra fields, and the test step would otherwise reject the
+// payload as an incomplete contract.
 func cleanReviewFindings() Findings {
 	return Findings{
-		Items:         []Finding{},
-		Summary:       "clean",
+		Items:          []Finding{},
+		Summary:        "clean",
+		Tested:         []string{"go test ./..."},
+		TestingSummary: "drove the change end to end",
+		Artifacts:      []types.TestArtifact{{Kind: "command-output", Label: "suite", Content: "ok"}},
+		Scenarios: []types.TestScenario{{
+			Name:     "the change works for a user",
+			Result:   types.ScenarioResultPass,
+			Live:     true,
+			Evidence: "go test ./...",
+		}},
+		Verdict:       types.TestVerdictGo,
 		RiskLevel:     "low",
 		RiskRationale: "clean",
 		RiskScope:     types.FindingsRiskScopeSourceOrExternal,

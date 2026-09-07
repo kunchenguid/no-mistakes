@@ -48,6 +48,13 @@ func configurableFixCommitScenario(t *testing.T) string {
       risk_scope: source-or-external
       tested: ["fakeagent: focused verification"]
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "fix: guard unsafe value"
       body: "configurable fix commit journey"

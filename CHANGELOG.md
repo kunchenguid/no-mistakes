@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.69.0](https://github.com/kunchenguid/no-mistakes/compare/v1.68.0...v1.69.0) (2026-09-07)
+
+
+### Features
+
+* **pipeline:** add live validation to the test gate ([#999](https://github.com/kunchenguid/no-mistakes/issues/999)) ([f0a8858](https://github.com/kunchenguid/no-mistakes/commit/f0a8858037a2e798a503cafe3a491e216a25919e))
+
 ## [1.68.0](https://github.com/kunchenguid/no-mistakes/compare/v1.67.0...v1.68.0) (2026-09-06)
 
 

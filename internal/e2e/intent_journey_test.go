@@ -98,7 +98,33 @@ func TestIntentJourney(t *testing.T) {
 		t.Errorf("review prompt does not contain the canned intent body; review prompt was:\n%s", truncate(reviewPrompt, 2000))
 	}
 
-	// 4. Every agent invocation - including the summarizer - must have run
+	// 4. The Test step receives the same intent through the real executor and
+	// persists the live-validation contract returned by the evidence turn.
+	testPrompt := findInvocationContaining(invocations, "You are validating a code change by driving the product itself")
+	if testPrompt == "" {
+		t.Fatalf("no test-step evidence prompt observed; agent invocations:\n%s", dumpPrompts(invocations))
+	}
+	for _, want := range []string{"Bar()", "scenarios", "verdict", `"live": true`} {
+		if !strings.Contains(testPrompt, want) {
+			t.Errorf("test prompt missing %q; prompt was:\n%s", want, truncate(testPrompt, 3000))
+		}
+	}
+	testStep, ok := findStep(run.Steps, types.StepTest)
+	if !ok || testStep.FindingsJSON == nil {
+		t.Fatalf("completed run has no persisted Test findings: %+v", testStep)
+	}
+	testFindings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse persisted Test findings: %v", err)
+	}
+	if len(testFindings.Scenarios) == 0 || testFindings.Verdict != types.TestVerdictGo {
+		t.Fatalf("persisted Test contract = scenarios %+v, verdict %q", testFindings.Scenarios, testFindings.Verdict)
+	}
+	if testFindings.TestedHeadSHA != run.HeadSHA {
+		t.Fatalf("Test validated head %q, want run head %q", testFindings.TestedHeadSHA, run.HeadSHA)
+	}
+
+	// 5. Every agent invocation - including the summarizer - must have run
 	// with the worktree as its cwd. Backends like opencode spawn a
 	// long-lived server and lock its cwd from the first call; if the
 	// summarizer is invoked without setting CWD, the server roots itself
@@ -220,6 +246,13 @@ func writeIntentScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"

@@ -51,6 +51,13 @@ func writePipelineOwnedPRScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: open PR A"
       body: "## Summary\nOpen PR A unmerged"
@@ -88,6 +95,13 @@ func writeExternalPRScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: change"
       body: "## Summary\nchange"

@@ -89,6 +89,52 @@ const (
 	FindingCategoryLint          = "lint"
 )
 
+// Test scenario result constants: the vocabulary the test step's evidence
+// prompt instructs the agent to use for each derived scenario.
+//
+// ScenarioResultUntested is the honest answer for a scenario this machine
+// could not drive against the real product - a missing tool, credential,
+// permission, or authority. It is reported on the pull request and never
+// blocks by itself; only the run's verdict parks the step (see
+// TestVerdictNoGo).
+const (
+	ScenarioResultPass     = "pass"
+	ScenarioResultFail     = "fail"
+	ScenarioResultUntested = "untested"
+)
+
+// Test verdict constants: the test step's own conclusion about whether the
+// change is safe to ship, independent of individual findings.
+const (
+	TestVerdictGo           = "go"
+	TestVerdictNoGo         = "no-go"
+	TestVerdictInconclusive = "inconclusive"
+)
+
+var (
+	knownScenarioResults = []string{ScenarioResultPass, ScenarioResultFail, ScenarioResultUntested}
+	knownTestVerdicts    = []string{TestVerdictGo, TestVerdictNoGo, TestVerdictInconclusive}
+)
+
+// IsKnownScenarioResult reports whether result is part of the scenario result
+// vocabulary.
+func IsKnownScenarioResult(result string) bool {
+	return slices.Contains(knownScenarioResults, result)
+}
+
+// IsKnownTestVerdict reports whether verdict is part of the verdict vocabulary.
+func IsKnownTestVerdict(verdict string) bool {
+	return slices.Contains(knownTestVerdicts, verdict)
+}
+
+// KnownScenarioResults returns the scenario result vocabulary, for error
+// messages that have to name what they accept.
+func KnownScenarioResults() []string { return slices.Clone(knownScenarioResults) }
+
+// KnownTestVerdicts returns the verdict vocabulary, for error messages that
+// have to name what they accept.
+func KnownTestVerdicts() []string { return slices.Clone(knownTestVerdicts) }
+
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
 	ID               string `json:"id,omitempty"`
@@ -103,6 +149,34 @@ type Finding struct {
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates. Empty everywhere else.
 	Category string `json:"category,omitempty"`
+}
+
+// TestScenario is one named end-to-end scenario the test step derived from the
+// user intent and the change, and the result of driving it.
+//
+// Live is the whole point of the record: it is true ONLY when the scenario was
+// driven against the real product in this run. A unit test, a stub, a recorded
+// fixture, or reading the code is not live, and a scenario that could not be
+// driven here is reported with Result ScenarioResultUntested plus the Reason
+// that stopped it rather than being guessed at.
+type TestScenario struct {
+	Name     string `json:"name"`
+	Result   string `json:"result"`
+	Live     bool   `json:"live"`
+	Evidence string `json:"evidence"`
+	Reason   string `json:"reason"`
+}
+
+// LiveScenarioCounts returns how many of scenarios were driven live against
+// the real product, and how many there are in total.
+func LiveScenarioCounts(scenarios []TestScenario) (live, total int) {
+	for _, s := range scenarios {
+		total++
+		if s.Live {
+			live++
+		}
+	}
+	return live, total
 }
 
 // TestArtifact describes evidence produced by the test step for human review.
@@ -129,12 +203,20 @@ type findingWire struct {
 }
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
+//
+// Scenarios and Verdict are the test step's live-validation contract. Both are
+// omitempty and both decode as their zero values from every findings payload
+// written before the contract existed, so an older recorded run still parses
+// and simply renders no scenario table.
 type Findings struct {
 	Items          []Finding      `json:"findings"`
 	Summary        string         `json:"summary"`
 	Tested         []string       `json:"tested,omitempty"`
 	TestingSummary string         `json:"testing_summary,omitempty"`
 	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
+	Scenarios      []TestScenario `json:"scenarios,omitempty"`
+	Verdict        string         `json:"verdict,omitempty"`
+	TestedHeadSHA  string         `json:"tested_head_sha,omitempty"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
 	RiskScope      string         `json:"risk_scope,omitempty"`
@@ -147,6 +229,9 @@ type findingsWire struct {
 	Tested         []string       `json:"tested"`
 	TestingSummary string         `json:"testing_summary"`
 	Artifacts      []TestArtifact `json:"artifacts"`
+	Scenarios      []TestScenario `json:"scenarios"`
+	Verdict        string         `json:"verdict"`
+	TestedHeadSHA  string         `json:"tested_head_sha"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
 	RiskScope      string         `json:"risk_scope"`
@@ -163,7 +248,34 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale, RiskScope: wire.RiskScope}, nil
+	return Findings{
+		Items:          items,
+		Summary:        wire.Summary,
+		Tested:         wire.Tested,
+		TestingSummary: wire.TestingSummary,
+		Artifacts:      wire.Artifacts,
+		Scenarios:      wire.Scenarios,
+		Verdict:        wire.Verdict,
+		TestedHeadSHA:  wire.TestedHeadSHA,
+		RiskLevel:      wire.RiskLevel,
+		RiskRationale:  wire.RiskRationale,
+		RiskScope:      wire.RiskScope,
+	}, nil
+}
+
+// FindingsMetadata returns findings with its items dropped, so every helper
+// that re-selects items keeps the whole evidence payload - tested commands,
+// artifacts, scenarios, verdict, risk - without re-enumerating those fields at
+// each call site. Enumerating them is how a new evidence field gets silently
+// dropped by a filter written before it existed; the artifact list was already
+// being lost that way by the pipeline's own merge and filter helpers.
+//
+// It is exported because those helpers live in internal/pipeline rather than
+// here: this package owns what the payload contains, so it owns the answer to
+// "keep everything except the items".
+func FindingsMetadata(findings Findings) Findings {
+	findings.Items = nil
+	return findings
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -186,7 +298,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
+	filtered := FindingsMetadata(findings)
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
@@ -207,7 +319,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		excluded[id] = true
 	}
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
+	result := FindingsMetadata(findings)
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
@@ -220,7 +332,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.
 func AutoFixableFindings(findings Findings) Findings {
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
+	result := FindingsMetadata(findings)
 	for _, item := range findings.Items {
 		if item.ActionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
@@ -234,15 +346,7 @@ func AutoFixableFindings(findings Findings) Findings {
 // Source stamped to FindingSourceUser and receive deterministic "user-N" IDs
 // if they do not carry an ID. The original Findings is not mutated.
 func MergeUserOverrides(findings Findings, instructions map[string]string, added []Finding) Findings {
-	result := Findings{
-		Summary:        findings.Summary,
-		Tested:         findings.Tested,
-		TestingSummary: findings.TestingSummary,
-		Artifacts:      findings.Artifacts,
-		RiskLevel:      findings.RiskLevel,
-		RiskRationale:  findings.RiskRationale,
-		RiskScope:      findings.RiskScope,
-	}
+	result := FindingsMetadata(findings)
 	if len(findings.Items) > 0 {
 		result.Items = make([]Finding, len(findings.Items))
 		copy(result.Items, findings.Items)

@@ -55,7 +55,7 @@ func TestTestEvidenceLivesUnderAppRootNotSharedTemp(t *testing.T) {
 
 	// The test step tells the agent exactly where to write evidence. That
 	// instruction is the run's own statement of where evidence goes.
-	testPrompt := findInvocationContaining(h.AgentInvocations(), "You are validating a code change by testing it")
+	testPrompt := findInvocationContaining(h.AgentInvocations(), "You are validating a code change by driving the product itself")
 	if testPrompt == "" {
 		t.Fatal("the test step never ran, so this test proves nothing")
 	}

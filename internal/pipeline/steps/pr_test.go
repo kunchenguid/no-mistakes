@@ -1041,7 +1041,7 @@ func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) 
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusFailed},
 	}
-	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	attestation := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
@@ -1175,7 +1175,7 @@ func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *test
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusSkipped},
 	}
-	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	attestation := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review round - "+strings.Repeat("x", 1000), 100))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
@@ -1192,7 +1192,7 @@ func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusFailed},
 	}
-	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	attestation := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest("review round 001")
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 

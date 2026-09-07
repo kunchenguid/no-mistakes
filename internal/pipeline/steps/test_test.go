@@ -23,7 +23,7 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 		name: "hanging-evidence-agent",
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			<-ctx.Done()
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -64,7 +64,7 @@ func TestTestStep_EvidenceAgentCallIsDeadlineBounded(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			_, sawDeadline = ctx.Deadline()
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["ok"],"testing_summary":"ok","artifacts":[],"scenarios":[{"name":"user runs the command","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -180,7 +180,7 @@ func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
 				return nil, err
 			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -213,7 +213,7 @@ func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *test
 				return nil, err
 			}
 			<-ctx.Done()
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix tests","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -243,7 +243,7 @@ func TestTestStep_FixMode(t *testing.T) {
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"  \"fix test failures.\"  "}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"  \"fix test failures.\"  ","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -258,8 +258,8 @@ func TestTestStep_FixMode(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Error("expected no approval after fix + passing tests")
 	}
-	if callCount != 1 {
-		t.Errorf("expected 1 agent call (fix), got %d", callCount)
+	if callCount != 2 {
+		t.Errorf("expected 2 agent calls (fix, then the unconditional evidence turn), got %d", callCount)
 	}
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
@@ -307,7 +307,7 @@ func TestTestStep_FixMode_UsesConfiguredCommitMessage(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix test failures","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -332,11 +332,19 @@ func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
+	// Only the FIX turn returns the malformed payload this test is about; the
+	// unconditional evidence turn that follows answers the scenario contract
+	// normally, so the fallback-summary behaviour is what the test isolates.
+	fixTurnDone := false
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"not_summary":"oops"}`)}, nil
+			if !fixTurnDone {
+				fixTurnDone = true
+				os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"not_summary":"oops"}`)}, nil
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -367,7 +375,7 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 			callCount++
 			// Simulate agent creating a new test file during fix in another supported language
 			os.WriteFile(filepath.Join(dir, "component.spec.tsx"), []byte("export {}\n"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -383,8 +391,8 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 	if outcome.NeedsApproval {
 		t.Error("expected no approval for an informational new-test-file finding when tests pass")
 	}
-	if callCount != 1 {
-		t.Errorf("expected 1 agent call in fix mode, got %d", callCount)
+	if callCount != 2 {
+		t.Errorf("expected 2 agent calls in fix mode (fix, then the unconditional evidence turn), got %d", callCount)
 	}
 
 	var f Findings
@@ -403,6 +411,35 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 	}
 }
 
+func TestTestStep_ConfiguredCommandRunsEvidenceWithoutExtractedIntent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			calls++
+			return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("evidence agent calls = %d, want 1", calls)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Scenarios) == 0 || findings.Verdict != types.TestVerdictGo {
+		t.Fatalf("live findings = %+v, want scenarios and go verdict", findings)
+	}
+}
+
 func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -414,7 +451,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			callCount++
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"evidence demonstrates intent","tested":["manual screenshot review"],"testing_summary":"captured screenshot evidence","artifacts":[],"scenarios":[{"name":"reviewer sees the new screen","result":"pass","live":true,"evidence":"manual screenshot review","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
@@ -441,14 +478,14 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	prompt := ag.calls[0].Prompt
 	for _, want := range []string{
 		"Show users a success screen after checkout",
-		"Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied",
+		"Decide what evidence or artifacts would clearly demonstrate each scenario's result",
 		"Unit tests passing is not sufficient evidence by itself",
-		"Demonstrate the user intent working end-to-end in a way consistent with how an end user would actually experience it",
+		"drive each scenario end-to-end against that running product",
 		"Prefer product-level artifacts",
 		"Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior",
 		"Configured test command already ran successfully as baseline",
 		testCmd,
-		"The \"testing_summary\" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result",
+		"The \"testing_summary\" must account for the complete test step: baseline commands that already ran, scenarios driven, manual or evidence-producing checks, artifacts gathered, and the overall result",
 		"screenshots, GIFs, videos, rendered UI, CLI transcripts",
 		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
 		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
@@ -456,8 +493,8 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"Write new evidence files into this evidence directory, never into the worktree:",
 		sctx.EvidenceDir,
 		"Do not move, commit, or modify source files only to make evidence linkable",
-		"If no existing test produces sufficient evidence, write or improve a focused test",
-		"If automated testing cannot produce the needed evidence, execute manual verification steps",
+		"if no existing check drives a scenario, write or improve a focused test",
+		"perform manual verification with evidence",
 		"Always include an \"artifacts\" array",
 		"If sufficient evidence is not possible, report a warning finding",
 		"When the blocker is a host capability or OS permission the agent's own process lacks",
@@ -492,7 +529,7 @@ func TestTestStep_EvidenceDirectoryIsAlwaysOutsideTheWorktree(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[],"scenarios":[{"name":"user sees the change","result":"pass","live":true,"evidence":"manual evidence check","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -520,7 +557,7 @@ func TestTestStep_PublishedEvidenceGuidanceNamesTheEvidenceBranch(t *testing.T) 
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["manual evidence check"],"testing_summary":"checked evidence","artifacts":[],"scenarios":[{"name":"user sees the change","result":"pass","live":true,"evidence":"manual evidence check","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -553,7 +590,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["go test ./internal/cli -run TestDoctor -count=1"],"testing_summary":"targeted check passed","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["go test ./internal/cli -run TestDoctor -count=1"],"testing_summary":"targeted check passed","artifacts":[],"scenarios":[{"name":"doctor reports the new row","result":"pass","live":true,"evidence":"go test ./internal/cli -run TestDoctor -count=1","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -569,7 +606,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 
 	assertTestQualityRulePrompt(t, prompt)
 	for _, want := range []string{
-		"run the smallest relevant tests yourself",
+		"Derive the scenarios this change must satisfy, then run each one against the real running product",
 		"Do NOT run the complete repository test suite",
 		"Local Test is targeted validation of the requested intent",
 		"remote CI owns broad regression and remains mandatory before a PR is ready",
@@ -584,6 +621,9 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	for _, forbid := range []string{
 		"run the appropriate tests yourself",
 		"Run the tests, identify failures",
+		// Replaced by scenario derivation: "the smallest relevant tests" is
+		// what let a green unit-test run stand in for driving the product.
+		"run the smallest relevant tests yourself",
 	} {
 		if strings.Contains(prompt, forbid) {
 			t.Errorf("initial test prompt still carries open-ended suite language %q:\n%s", forbid, prompt)
@@ -603,7 +643,7 @@ func TestTestStep_FixMode_TargetedVerificationContract(t *testing.T) {
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix targeted failure"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix targeted failure","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -654,7 +694,7 @@ func TestTestStep_FixMode_DriverFullSuiteInstructionDoesNotOverrideContract(t *t
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
-			return &agent.Result{Output: json.RawMessage(`{"summary":"fix focused failure"}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix focused failure","findings":[],"tested":["go test ./..."],"testing_summary":"re-verified the repaired behaviour","artifacts":[],"scenarios":[{"name":"the repaired behaviour works for a user","result":"pass","live":true,"evidence":"go test ./...","reason":""}],"verdict":"go"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
@@ -685,7 +725,7 @@ func TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"no targeted test can prove the intent","action":"ask-user"}],"summary":"missing evidence","tested":["manual review of changed packages"],"testing_summary":"could not produce targeted evidence","artifacts":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"warning","description":"no targeted test can prove the intent","action":"ask-user"}],"summary":"missing evidence","tested":["manual review of changed packages"],"testing_summary":"could not produce targeted evidence","artifacts":[],"scenarios":[{"name":"user exercises the changed behavior","result":"untested","live":false,"evidence":"","reason":"no targeted product driver is available"}],"verdict":"inconclusive"}`)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})

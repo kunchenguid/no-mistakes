@@ -23,7 +23,7 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
   - match: "report only what you could not resolve.\n\nContext:\n- branch: analyzer-document-malformed-output"
     text: "documentation unavailable"
     structured_raw: '{"summary":123}'
-  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: analyzer-document-malformed-output"
+  - match: "You are validating a code change by driving the product itself. Derive the scenarios this change must satisfy, then run each one against the real running product.\n\nContext:\n- branch: analyzer-document-malformed-output"
     text: "tests passed"
     structured:
       findings: []
@@ -31,11 +31,18 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
       tested:
         - "fakeagent: targeted test"
       testing_summary: "targeted validation passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
   - match: "Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.\n\nContext:\n- branch: analyzer-lint-malformed-output"
     text: "lint unavailable"
     structured_raw: '{"summary":123}'
-  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: analyzer-lint-malformed-output"
+  - match: "You are validating a code change by driving the product itself. Derive the scenarios this change must satisfy, then run each one against the real running product.\n\nContext:\n- branch: analyzer-lint-malformed-output"
     text: "tests passed"
     structured:
       findings: []
@@ -43,6 +50,13 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
       tested:
         - "fakeagent: targeted test"
       testing_summary: "targeted validation passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
   - match: "branch: analyzer-review-null-findings"
     text: "review unavailable"
@@ -54,7 +68,7 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
       risk_level: low
       risk_rationale: "no source risks"
       risk_scope: source-or-external
-  - match: "You are validating a code change by testing it."
+  - match: "You are validating a code change by driving the product itself."
     text: "tests unavailable"
     structured_raw: '{"findings":[],"summary":""}'
 `
