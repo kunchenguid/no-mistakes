@@ -103,7 +103,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"FAILED"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","key":"build-linux","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-1"}]}`)
 
 	prURL := "https://bitbucket.org/test/repo/pull-requests/42"
 	ag := &mockAgent{name: "test"}
@@ -132,6 +132,9 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	}
 	if len(findings.Items) == 0 || !strings.Contains(findings.Items[0].Description, "build") {
 		t.Fatalf("expected failing Bitbucket check finding, got %+v", findings.Items)
+	}
+	if findings.Items[0].CheckID != "bitbucket-status:build-linux" {
+		t.Fatalf("Bitbucket finding CheckID = %q, want exact status identity", findings.Items[0].CheckID)
 	}
 }
 
@@ -214,7 +217,7 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-1"}]}`)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"}]}`
 	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
 	api.stepLog = "error log output"
@@ -290,7 +293,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","state":"FAILED"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"test","key":"test","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/pipeline-1"}]}`)
 	api.pipelinesJSON = `{"values":[{"uuid":"{pipeline-1}"}]}`
 	api.stepsJSON = `{"values":[{"uuid":"{step-1}","state":{"name":"COMPLETED","result":{"name":"FAILED"}}}]}`
 	api.stepLog = "error log output"

@@ -98,8 +98,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	checks := make([]scm.Check, 0, len(statuses))
 	for _, status := range statuses {
 		checks = append(checks, scm.Check{
-			Name:   statusName(status),
-			Bucket: statusBucket(status.State),
+			Name:       statusName(status),
+			ProviderID: statusProviderID(status),
+			Bucket:     statusBucket(status.State),
 		})
 	}
 	return checks, nil
@@ -109,8 +110,19 @@ func (h *Host) GetMergeableState(_ context.Context, _ *scm.PR) (scm.MergeableSta
 	return "", scm.ErrUnsupported
 }
 
-func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, failingNames []string) (string, error) {
+func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
+	targets := make([]scm.CheckTarget, 0, len(failingNames))
+	for _, name := range failingNames {
+		targets = append(targets, scm.CheckTarget{Name: name})
+	}
+	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+}
+
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, selected []scm.CheckTarget) (string, error) {
 	if h.client == nil {
+		return "", errors.New("Bitbucket client is not configured")
+	}
+	if len(selected) == 0 {
 		return "", nil
 	}
 	id, err := strconv.Atoi(pr.Number)
@@ -118,28 +130,33 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 		return "", err
 	}
 	commitSHA := strings.TrimSpace(headSHA)
-	var targets map[string]struct{}
 	if got, prErr := h.client.GetPR(ctx, h.repo, id); prErr == nil && got != nil && strings.TrimSpace(got.SourceCommitHash) != "" {
 		commitSHA = strings.TrimSpace(got.SourceCommitHash)
 	}
-	if statuses, statusErr := h.client.ListPRStatuses(ctx, h.repo, id); statusErr == nil {
-		targets = failedPipelineUUIDs(statuses, failingNames)
+	statuses, err := h.client.ListPRStatuses(ctx, h.repo, id)
+	if err != nil {
+		return "", fmt.Errorf("resolve selected Bitbucket checks: %w", err)
+	}
+	targets, err := failedPipelineUUIDTargets(statuses, selected)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(commitSHA) == "" {
-		return "", nil
+		return "", errors.New("resolve selected Bitbucket checks: pull request head commit is empty")
 	}
 	pipelines, err := h.client.ListPipelinesByCommit(ctx, h.repo, commitSHA)
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("list selected Bitbucket pipelines: %w", err)
 	}
 	var logs []string
 	var logErrors []error
+	found := map[string]bool{}
 	for _, pipelineRun := range pipelines {
-		if len(targets) > 0 {
-			if _, ok := targets[normalizePipelineUUID(pipelineRun.UUID)]; !ok {
-				continue
-			}
+		uuid := normalizePipelineUUID(pipelineRun.UUID)
+		if _, ok := targets[uuid]; !ok {
+			continue
 		}
+		found[uuid] = true
 		steps, err := h.client.ListPipelineSteps(ctx, h.repo, pipelineRun.UUID)
 		if err != nil {
 			logErrors = append(logErrors, fmt.Errorf("list Bitbucket pipeline %s steps: %w", pipelineRun.UUID, err))
@@ -157,6 +174,11 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 			if log := strings.TrimSpace(logOutput); log != "" {
 				logs = append(logs, log)
 			}
+		}
+	}
+	for uuid := range targets {
+		if !found[uuid] {
+			logErrors = append(logErrors, fmt.Errorf("selected Bitbucket pipeline %s was not found for commit %s", uuid, commitSHA))
 		}
 	}
 	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
@@ -226,6 +248,16 @@ func statusName(status CommitStatus) string {
 	return strings.TrimSpace(status.Key)
 }
 
+func statusProviderID(status CommitStatus) string {
+	if key := strings.TrimSpace(status.Key); key != "" {
+		return "bitbucket-status:" + key
+	}
+	if uuid := pipelineUUIDFromStatusURL(status.URL); uuid != "" {
+		return "bitbucket-pipeline:" + uuid
+	}
+	return ""
+}
+
 func statusBucket(state string) scm.CheckBucket {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "SUCCESSFUL", "SUCCESS":
@@ -269,32 +301,43 @@ func pipelineUUIDFromStatusURL(raw string) string {
 	return ""
 }
 
-func failedPipelineUUIDs(statuses []CommitStatus, failingNames []string) map[string]struct{} {
-	if len(failingNames) == 0 {
-		return nil
-	}
-	failing := make(map[string]struct{}, len(failingNames))
-	for _, name := range failingNames {
-		trimmed := strings.TrimSpace(name)
-		if trimmed != "" {
-			failing[trimmed] = struct{}{}
+func failedPipelineUUIDTargets(statuses []CommitStatus, selected []scm.CheckTarget) (map[string]struct{}, error) {
+	latest := LatestStatuses(statuses)
+	targets := make(map[string]struct{}, len(selected))
+	var resolveErrors []error
+	for _, target := range selected {
+		matched := false
+		for _, status := range latest {
+			if statusBucket(status.State) != scm.CheckBucketFail {
+				continue
+			}
+			if target.ProviderID != "" {
+				if statusProviderID(status) != target.ProviderID {
+					continue
+				}
+			} else if statusName(status) != strings.TrimSpace(target.Name) {
+				continue
+			}
+			matched = true
+			if uuid := pipelineUUIDFromStatusURL(status.URL); uuid != "" {
+				targets[uuid] = struct{}{}
+			} else {
+				resolveErrors = append(resolveErrors, fmt.Errorf("selected Bitbucket check %q has no pipeline identity", statusName(status)))
+			}
+		}
+		if !matched {
+			identity := target.ProviderID
+			if identity == "" {
+				identity = target.Name
+			}
+			resolveErrors = append(resolveErrors, fmt.Errorf("selected Bitbucket check %q was not found", identity))
 		}
 	}
-	if len(failing) == 0 {
-		return nil
-	}
-	targets := map[string]struct{}{}
-	for _, status := range LatestStatuses(statuses) {
-		if _, ok := failing[statusName(status)]; !ok {
-			continue
-		}
-		uuid := pipelineUUIDFromStatusURL(status.URL)
-		if uuid != "" {
-			targets[uuid] = struct{}{}
-		}
+	if err := errors.Join(resolveErrors...); err != nil {
+		return nil, err
 	}
 	if len(targets) == 0 {
-		return nil
+		return nil, errors.New("no selected Bitbucket checks resolved to pipelines")
 	}
-	return targets
+	return targets, nil
 }
