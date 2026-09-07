@@ -490,28 +490,24 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if err != nil || run.ID == "" {
 		return "", nil
 	}
-	jobID := findFailedGiteaJobTargetID(jobs, targets)
-	if jobID == 0 {
-		return "", nil
+	jobIDs := findFailedGiteaJobTargetIDs(jobs, targets)
+	var logs []string
+	for _, jobID := range jobIDs {
+		logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
+			"--job", strconv.Itoa(jobID),
+			"--repo", h.repoSlug,
+			"--login", h.login,
+		)
+		if out, err := logsCmd.Output(); err == nil {
+			if log := stripGiteaLogsHeader(string(out)); log != "" {
+				logs = append(logs, log)
+			}
+		}
 	}
-	logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
-		"--job", strconv.Itoa(jobID),
-		"--repo", h.repoSlug,
-		"--login", h.login,
-	)
-	out, _ := logsCmd.Output()
-	return stripGiteaLogsHeader(string(out)), nil
+	return strings.Join(logs, "\n\n"), nil
 }
 
-func findFailedGiteaJobID(jobs []giteaJob, failingNames []string) int {
-	targets := make([]scm.CheckTarget, 0, len(failingNames))
-	for _, name := range failingNames {
-		targets = append(targets, scm.CheckTarget{Name: name})
-	}
-	return findFailedGiteaJobTargetID(jobs, targets)
-}
-
-func findFailedGiteaJobTargetID(jobs []giteaJob, checkTargets []scm.CheckTarget) int {
+func findFailedGiteaJobTargetIDs(jobs []giteaJob, checkTargets []scm.CheckTarget) []int {
 	names := map[string]struct{}{}
 	ids := map[string]struct{}{}
 	for _, target := range checkTargets {
@@ -521,6 +517,7 @@ func findFailedGiteaJobTargetID(jobs []giteaJob, checkTargets []scm.CheckTarget)
 			names[name] = struct{}{}
 		}
 	}
+	var matched []int
 	for _, job := range jobs {
 		if giteaStatusBucket(job.Status, job.Conclusion) != scm.CheckBucketFail {
 			continue
@@ -528,10 +525,10 @@ func findFailedGiteaJobTargetID(jobs []giteaJob, checkTargets []scm.CheckTarget)
 		_, nameMatch := names[job.Name]
 		_, idMatch := ids[fmt.Sprintf("gitea-job:%d", job.ID)]
 		if nameMatch || idMatch || len(names)+len(ids) == 0 {
-			return job.ID
+			matched = append(matched, job.ID)
 		}
 	}
-	return 0
+	return matched
 }
 
 // stripGiteaLogsHeader removes the "Logs for job N:\n---\n" banner that `tea

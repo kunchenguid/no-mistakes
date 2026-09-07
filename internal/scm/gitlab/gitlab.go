@@ -482,7 +482,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if len(targets) == 0 {
 		return "", nil
 	}
-	// Get the MR's pipeline jobs, find a failed one whose name matches, trace it.
+	// Get the MR's pipeline jobs and trace the selected failures.
 	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
@@ -501,13 +501,17 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if err != nil {
 		return "", nil
 	}
-	jobID := findFailedJobTargetID(jobsOut, targets)
-	if jobID == 0 {
-		return "", nil
+	jobIDs := findFailedJobTargetIDs(jobsOut, targets)
+	var logs []string
+	for _, jobID := range jobIDs {
+		traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
+		if traceOut, err := traceCmd.Output(); err == nil {
+			if log := strings.TrimSpace(string(traceOut)); log != "" {
+				logs = append(logs, log)
+			}
+		}
 	}
-	traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
-	traceOut, _ := traceCmd.Output()
-	return strings.TrimSpace(string(traceOut)), nil
+	return strings.Join(logs, "\n\n"), nil
 }
 
 func parseMRPayload(out []byte) (mrPayload, bool) {
@@ -628,15 +632,7 @@ func jobsToChecks(jobs []gitlabJob) []scm.Check {
 	return checks
 }
 
-func findFailedJobID(out []byte, failingNames []string) int {
-	targets := make([]scm.CheckTarget, 0, len(failingNames))
-	for _, name := range failingNames {
-		targets = append(targets, scm.CheckTarget{Name: name})
-	}
-	return findFailedJobTargetID(out, targets)
-}
-
-func findFailedJobTargetID(out []byte, checkTargets []scm.CheckTarget) int {
+func findFailedJobTargetIDs(out []byte, checkTargets []scm.CheckTarget) []int {
 	names := map[string]struct{}{}
 	ids := map[string]struct{}{}
 	for _, target := range checkTargets {
@@ -649,6 +645,7 @@ func findFailedJobTargetID(out []byte, checkTargets []scm.CheckTarget) int {
 	// Best effort: scan whatever jobs parsed; a corrupt later page does not
 	// prevent locating a failed job that already decoded.
 	jobs, _ := decodeGitlabJobs(out)
+	var matched []int
 	for _, job := range jobs {
 		if !strings.EqualFold(job.Status, "failed") {
 			continue
@@ -656,10 +653,10 @@ func findFailedJobTargetID(out []byte, checkTargets []scm.CheckTarget) int {
 		_, nameMatch := names[job.Name]
 		_, idMatch := ids[fmt.Sprintf("gitlab-job:%d", job.ID)]
 		if nameMatch || idMatch || len(names)+len(ids) == 0 {
-			return job.ID
+			matched = append(matched, job.ID)
 		}
 	}
-	return 0
+	return matched
 }
 
 func gitlabStatusBucket(state string) scm.CheckBucket {

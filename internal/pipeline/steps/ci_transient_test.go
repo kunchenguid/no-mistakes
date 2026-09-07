@@ -225,8 +225,8 @@ func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T
 
 	outcome := ciObservationOutcome(ciObservationFindings(ciIssues{
 		checks: []scm.Check{
-			{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
-			{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+			{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
+			{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
 		},
 		unresolvedCancelled: []string{"build"},
 		reruns:              func(string) int { return 1 },
@@ -247,6 +247,13 @@ func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T
 	}
 	if !strings.Contains(findings.Items[1].Description, "provider cancelled") {
 		t.Fatalf("second description = %q, want cancellation diagnosis", findings.Items[1].Description)
+	}
+	if findings.Items[0].CheckID != "github-check-run:41" || findings.Items[1].CheckID != "github-check-run:42" {
+		t.Fatalf("findings = %+v, want each transient check's provider identity", findings.Items)
+	}
+	targets, err := parseCIFixTargets(outcome.Findings)
+	if err != nil || len(targets.Checks) != 2 || targets.Checks[0].ProviderID == targets.Checks[1].ProviderID {
+		t.Fatalf("targets = %+v, %v, want two exact repair targets", targets.Checks, err)
 	}
 }
 

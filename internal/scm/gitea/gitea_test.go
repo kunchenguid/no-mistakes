@@ -651,6 +651,32 @@ func TestFetchFailedCheckLogsStripsHeaderAndTargetsFailedJob(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
+	t.Parallel()
+
+	host := New(giteaTestCmdFactory(map[string]giteaTestResponse{
+		"tea pulls 7 --repo owner/repo --login work --output json": {
+			stdout: `{"index":7,"state":"open","head":"feature/x","headSha":"abc123"}`,
+		},
+		"tea actions runs list --repo owner/repo --login work --branch feature/x --output json": {
+			stdout: `[{"id":"10","status":"completed","branch":"feature/x","event":"push"}]`,
+		},
+		"tea api --login work /repos/owner/repo/actions/runs/10/jobs": {
+			stdout: `{"jobs":[{"id":10,"name":"build","status":"completed","conclusion":"failure","head_sha":"abc123"},{"id":11,"name":"lint","status":"completed","conclusion":"failure","head_sha":"abc123"}]}`,
+		},
+		"tea actions runs logs 10 --job 10 --repo owner/repo --login work": {stdout: "Logs for job 10:\n---\nbuild failed\n"},
+		"tea actions runs logs 10 --job 11 --repo owner/repo --login work": {stdout: "Logs for job 11:\n---\nlint failed\n"},
+	}), nil, "gitea.example.com", "work", "owner/repo")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []scm.CheckTarget{{Name: "build", ProviderID: "gitea-job:10"}, {Name: "lint", ProviderID: "gitea-job:11"}})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
+	}
+	if logs != "build failed\n\nlint failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %q, want both selected logs", logs)
+	}
+}
+
 func TestFetchFailedCheckLogsSelectsHighestIDRunWhenListOrderIsNotNewestFirst(t *testing.T) {
 	t.Parallel()
 

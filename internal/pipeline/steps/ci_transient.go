@@ -712,6 +712,7 @@ func unresolvedTransientFindings(names []string, checks []scm.Check, reruns func
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCITransient,
 			Check:       check.Name,
+			CheckID:     check.ProviderID,
 		})
 	}
 	return items, unresolvedTransientSummary(len(unresolved), preRunCount)
