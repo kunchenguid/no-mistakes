@@ -64,45 +64,6 @@ func TestApplyGitHubAuth(t *testing.T) {
 	})
 }
 
-func TestFetchLatestRelease_SendsAuthorizationHeaderFromEnvToken(t *testing.T) {
-	var gotAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		fmt.Fprint(w, `{"tag_name":"v1.2.3","assets":[]}`)
-	}))
-	defer server.Close()
-
-	u := &updater{
-		appName:        "no-mistakes",
-		repo:           "kunchenguid/no-mistakes",
-		currentVersion: "v1.2.2",
-		apiBaseURL:     server.URL,
-		httpClient:     server.Client(),
-	}
-
-	t.Run("token present", func(t *testing.T) {
-		t.Setenv("GITHUB_TOKEN", "env-token-value")
-		t.Setenv("GH_TOKEN", "")
-		if _, err := u.fetchLatestRelease(context.Background()); err != nil {
-			t.Fatalf("fetchLatestRelease error = %v", err)
-		}
-		if want := "Bearer env-token-value"; gotAuth != want {
-			t.Fatalf("Authorization header = %q, want %q", gotAuth, want)
-		}
-	})
-
-	t.Run("no token present", func(t *testing.T) {
-		t.Setenv("GITHUB_TOKEN", "")
-		t.Setenv("GH_TOKEN", "")
-		if _, err := u.fetchLatestRelease(context.Background()); err != nil {
-			t.Fatalf("fetchLatestRelease error = %v", err)
-		}
-		if gotAuth != "" {
-			t.Fatalf("Authorization header = %q, want empty", gotAuth)
-		}
-	})
-}
-
 func TestDownloadAsset_SendsAuthorizationHeaderFromEnvToken(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })

@@ -188,19 +188,18 @@ func TestFetchLatestRelease_ManifestSucceedsWhenRESTAPIReturns403(t *testing.T) 
 	}
 }
 
-func TestFetchLatestRelease_FallsBackToRESTWhenManifestMissing(t *testing.T) {
+func TestFetchLatestRelease_DoesNotUseRESTWhenManifestMissing(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
 
+	var apiHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/releases/download/channels/channels.json":
-			http.NotFound(w, r)
-		case "/repos/kunchenguid/no-mistakes/releases/latest":
+		if strings.Contains(r.URL.Path, "/repos/") {
+			apiHits++
 			fmt.Fprint(w, `{"tag_name":"v1.2.3","assets":[]}`)
-		default:
-			t.Fatalf("unexpected path %q", r.URL.Path)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
@@ -210,43 +209,17 @@ func TestFetchLatestRelease_FallsBackToRESTWhenManifestMissing(t *testing.T) {
 		manifestURL: server.URL + "/releases/download/channels/channels.json",
 		httpClient:  server.Client(),
 	}
-	release, err := u.fetchLatestRelease(context.Background())
-	if err != nil {
-		t.Fatalf("fetchLatestRelease error = %v", err)
+	if _, err := u.fetchLatestRelease(context.Background()); err == nil || !strings.Contains(err.Error(), "channel manifest") {
+		t.Fatalf("fetchLatestRelease error = %v, want channel manifest failure", err)
 	}
-	if release.TagName != "v1.2.3" {
-		t.Fatalf("tag = %q, want v1.2.3 from REST fallback", release.TagName)
+	if apiHits != 0 {
+		t.Fatalf("REST API hit %d times after manifest failure", apiHits)
 	}
 }
 
-func TestFetchLatestRelease_FallbackUsesEnvToken(t *testing.T) {
-	allowInsecureDownloads = true
-	t.Cleanup(func() { allowInsecureDownloads = false })
-
-	var gotAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/missing.json" {
-			http.NotFound(w, r)
-			return
-		}
-		gotAuth = r.Header.Get("Authorization")
-		fmt.Fprint(w, `{"tag_name":"v1.2.3","assets":[]}`)
-	}))
-	defer server.Close()
-
-	u := &updater{
-		repo:        "kunchenguid/no-mistakes",
-		apiBaseURL:  server.URL,
-		manifestURL: server.URL + "/missing.json",
-		httpClient:  server.Client(),
-	}
-	t.Setenv("GITHUB_TOKEN", "fallback-token")
-	t.Setenv("GH_TOKEN", "")
-	if _, err := u.fetchLatestRelease(context.Background()); err != nil {
-		t.Fatalf("fetchLatestRelease error = %v", err)
-	}
-	if got, want := gotAuth, "Bearer fallback-token"; got != want {
-		t.Fatalf("REST fallback Authorization = %q, want %q", got, want)
+func TestParseChannelsManifestRejectsMissingSchema(t *testing.T) {
+	if _, err := parseChannelsManifest([]byte(`{"stable":{"tag_name":"v1.0.0"}}`)); err == nil {
+		t.Fatal("parseChannelsManifest should reject a missing schema_version")
 	}
 }
 

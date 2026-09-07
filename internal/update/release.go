@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,9 +16,9 @@ import (
 )
 
 // githubToken reads a GitHub token from the environment, honoring GITHUB_TOKEN
-// before falling back to GH_TOKEN. The token is never required: the primary
+// before falling back to GH_TOKEN. The token is never required: the
 // channel-manifest fetch is anonymous over the release-asset CDN. When present,
-// the token authenticates the REST API fallback and asset downloads.
+// the token authenticates asset downloads.
 func githubToken() string {
 	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
 		return token
@@ -109,18 +108,7 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 	if u.httpClient == nil {
 		u.httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	release, manifestErr := u.fetchReleaseFromManifest(ctx)
-	if manifestErr == nil {
-		return release, nil
-	}
-	release, apiErr := u.fetchLatestReleaseFromAPI(ctx)
-	if apiErr == nil {
-		return release, nil
-	}
-	if errors.Is(manifestErr, errManifestSkipped) {
-		return nil, apiErr
-	}
-	return nil, fmt.Errorf("%v; REST API fallback: %w", manifestErr, apiErr)
+	return u.fetchReleaseFromManifest(ctx)
 }
 
 func (u *updater) fetchLatestReleaseFromAPI(ctx context.Context) (*releaseResponse, error) {

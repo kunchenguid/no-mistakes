@@ -38,9 +38,6 @@ func parseChannelsManifest(data []byte) (*channelsManifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse channel manifest: %w", err)
 	}
-	if m.SchemaVersion == 0 {
-		m.SchemaVersion = channelsSchemaV1
-	}
 	if m.SchemaVersion != channelsSchemaV1 {
 		return nil, fmt.Errorf("channel manifest schema_version %d is unsupported", m.SchemaVersion)
 	}

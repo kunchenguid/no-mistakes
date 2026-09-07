@@ -144,7 +144,7 @@ GitHub token used to authenticate updater release requests.
 | Type    | `string` |
 | Default | (none)   |
 
-When set, the updater sends the token as a Bearer authorization header for the REST API fallback (used only when the channel manifest is unavailable) and for release asset downloads. Version metadata is fetched from a GitHub release-asset manifest that does not require authentication and is not subject to the unauthenticated REST rate limit. `GITHUB_TOKEN` takes precedence over `GH_TOKEN`; when neither variable is set, these requests remain anonymous. The token is not printed, logged, or persisted.
+When set, the updater sends the token as a Bearer authorization header for release asset downloads. Version metadata is fetched anonymously from a GitHub release-asset manifest that is not subject to the unauthenticated REST rate limit. `GITHUB_TOKEN` takes precedence over `GH_TOKEN`; when neither variable is set, asset downloads remain anonymous. The token is not printed, logged, or persisted.
 
 ## `GH_TOKEN`
 

@@ -16,7 +16,7 @@ Safest local verification sequence after non-trivial changes:
 
 **Self-update channel manifest (`internal/update`)**
 
-- `no-mistakes update` reads version metadata from `channels.json` on the GitHub release-asset CDN (`releases/download/channels/channels.json`), not `api.github.com`. The REST releases API is fallback-only and may use `GITHUB_TOKEN`/`GH_TOKEN` when present; a token is never required. Publisher: `cmd/publish-channels`, invoked from `.github/workflows/release.yml` and `.github/workflows/publish-channels.yml`. Regressions: `internal/update/channels_test.go`.
+- `no-mistakes update` reads version metadata exclusively from `channels.json` on the GitHub release-asset CDN (`releases/download/channels/channels.json`), not `api.github.com`; a token is never required. Publisher: `cmd/publish-channels`, invoked from `.github/workflows/release.yml` and `.github/workflows/publish-channels.yml`. Regressions: `internal/update/channels_test.go`.
 
 **GitLab Backend (`internal/scm/gitlab`)**
 
