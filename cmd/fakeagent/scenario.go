@@ -79,7 +79,9 @@ func loadScenario(path string) (*Scenario, error) {
 
 // defaultScenario returns an "everything is clean" response that satisfies
 // every JSON schema no-mistakes hands to an agent: empty findings array,
-// low risk, a populated tested array for the test step.
+// low risk, and for the test step a populated tested array plus the
+// live-validation contract (one passing scenario and a go verdict) the step
+// now requires of every evidence turn.
 func defaultScenario() *Scenario {
 	return &Scenario{
 		Actions: []Action{{
@@ -93,8 +95,20 @@ func defaultScenario() *Scenario {
 				"tested":          []string{"fakeagent: simulated test run"},
 				"testing_summary": "simulated tests passed",
 				"artifacts":       []any{},
-				"title":           "feat: fakeagent change",
-				"body":            "## Summary\nfakeagent canned PR body",
+				"scenarios": []any{map[string]any{
+					"name":     "fakeagent: simulated end-to-end scenario",
+					"result":   "pass",
+					"live":     true,
+					"evidence": "fakeagent: simulated test run",
+					// Present-but-empty rather than omitted: the codex adapter
+					// rewrites every schema property as required-and-nullable,
+					// so a canned response that omits an optional field fails
+					// validation on that backend alone.
+					"reason": "",
+				}},
+				"verdict": "go",
+				"title":   "feat: fakeagent change",
+				"body":    "## Summary\nfakeagent canned PR body",
 			},
 		}},
 	}

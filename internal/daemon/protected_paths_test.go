@@ -272,6 +272,9 @@ func (s *protectedPathPushRetryStep) Execute(sctx *pipeline.StepContext) (*pipel
 }
 
 func TestProtectedPathPushApprovalCannotSkipPublicationOrDiscardEdits(t *testing.T) {
+	// Keep the push's attestation lookup inside the test: without a stub gh it
+	// leaves the machine (see writeMockGHNoPR).
+	t.Setenv("PATH", writeMockGHNoPR(t, t.TempDir())+string(os.PathListSeparator)+os.Getenv("PATH"))
 	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&protectedPathPushRetryStep{}}
 	})

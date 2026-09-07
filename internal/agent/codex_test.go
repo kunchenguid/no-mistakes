@@ -325,13 +325,23 @@ sleep 100
 		"ping -n 101 127.0.0.1 > nul",
 	}, "\r\n"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The turn is ended by the streamed progress arriving, not by a wall
+	// clock: the fake emits one line and then hangs forever, so a fixed
+	// millisecond budget was really a race between process spawn and the
+	// deadline, and it lost on a loaded machine. Cancelling from the chunk
+	// callback makes the same scenario deterministic - progress streamed,
+	// never a terminal completion - at any load. The outer budget only stops
+	// the test hanging if the chunk never arrives at all.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var chunks []string
 	result, err := (&codexAgent{bin: bin}).Run(ctx, RunOpts{
-		Prompt:  "review",
-		CWD:     dir,
-		OnChunk: func(text string) { chunks = append(chunks, text) },
+		Prompt: "review",
+		CWD:    dir,
+		OnChunk: func(text string) {
+			chunks = append(chunks, text)
+			cancel()
+		},
 	})
 	if err == nil {
 		t.Fatal("expected progress-only turn to fail without native completion")

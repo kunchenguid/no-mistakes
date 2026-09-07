@@ -123,7 +123,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
-	merged := types.Findings{Summary: existing.Summary, Tested: existing.Tested, TestingSummary: existing.TestingSummary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	merged := types.FindingsMetadata(existing)
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
 		seen[findingKey(item)] = true
@@ -167,7 +167,7 @@ func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
 	for _, item := range remove.Items {
 		toRemove[findingKey(item)] = true
 	}
-	filtered := types.Findings{Summary: existing.Summary, Tested: existing.Tested, TestingSummary: existing.TestingSummary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	filtered := types.FindingsMetadata(existing)
 	for _, item := range existing.Items {
 		if hasFindingMatch(item, toRemove, existingCounts, removeCounts) {
 			continue
@@ -202,7 +202,7 @@ func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 	for _, item := range keep.Items {
 		allowed[findingKey(item)] = true
 	}
-	filtered := types.Findings{Summary: existing.Summary, Tested: existing.Tested, TestingSummary: existing.TestingSummary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	filtered := types.FindingsMetadata(existing)
 	for _, item := range existing.Items {
 		if !hasFindingMatch(item, allowed, existingCounts, keepCounts) {
 			continue
@@ -307,14 +307,8 @@ func filterFindingsJSON(raw string, ids []string) string {
 	}
 	filtered := types.FilterFindings(findings, ids)
 	if len(ids) == 0 {
-		filtered = types.Findings{
-			Summary:        "0 selected findings",
-			Tested:         findings.Tested,
-			TestingSummary: findings.TestingSummary,
-			RiskLevel:      findings.RiskLevel,
-			RiskRationale:  findings.RiskRationale,
-			RiskScope:      findings.RiskScope,
-		}
+		filtered = types.FindingsMetadata(findings)
+		filtered.Summary = "0 selected findings"
 	}
 	filteredRaw, err := types.MarshalFindingsJSON(filtered)
 	if err != nil {

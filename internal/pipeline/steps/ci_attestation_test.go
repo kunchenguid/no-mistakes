@@ -114,6 +114,72 @@ func TestRebindPipelineAttestationHead_VerifyPyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRebindPipelineAttestationHead_OmitsPreviousLiveValidation(t *testing.T) {
+	t.Parallel()
+	findings := liveValidatedFindingsJSON(t, []types.TestScenario{{
+		Name:     "user reaches the success screen",
+		Result:   types.ScenarioResultPass,
+		Live:     true,
+		Evidence: "checkout.png",
+	}}, types.TestVerdictGo)
+	steps := []*db.StepResult{{
+		ID:           "test",
+		StepName:     types.StepTest,
+		Status:       types.StepStatusCompleted,
+		FindingsJSON: &findings,
+	}}
+	original := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
+	if parsePipelineAttestationForTest(t, original).LiveValidation == nil {
+		t.Fatal("original attestation is missing live validation")
+	}
+
+	rebound, ok := rebindPipelineAttestationHead(original, strings.Repeat("cd", 20))
+	if !ok {
+		t.Fatal("expected attestation to rebind")
+	}
+	if got := parsePipelineAttestationForTest(t, rebound).LiveValidation; got != nil {
+		t.Fatalf("rebound carried stale live validation: %+v", got)
+	}
+}
+
+func TestRebindPipelineAttestationWithSteps_UsesCurrentLiveValidation(t *testing.T) {
+	t.Parallel()
+	oldFindings := liveValidatedFindingsJSON(t, []types.TestScenario{{
+		Name:     "old scenario",
+		Result:   types.ScenarioResultPass,
+		Live:     true,
+		Evidence: "old.png",
+	}}, types.TestVerdictGo)
+	original := buildPipelineAttestation([]*db.StepResult{{
+		ID:           "old-test",
+		StepName:     types.StepTest,
+		Status:       types.StepStatusCompleted,
+		FindingsJSON: &oldFindings,
+	}}, nil, testPipelineHeadSHA)
+	currentFindings := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "live scenario", Result: types.ScenarioResultPass, Live: true, Evidence: "live.png"},
+		{Name: "blocked scenario", Result: types.ScenarioResultUntested, Reason: "browser unavailable"},
+	}, types.TestVerdictInconclusive)
+	currentSteps := []*db.StepResult{{
+		ID:           "current-test",
+		StepName:     types.StepTest,
+		Status:       types.StepStatusCompleted,
+		FindingsJSON: &currentFindings,
+	}}
+
+	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("ef", 20), currentSteps)
+	if !ok {
+		t.Fatal("expected attestation to rebind")
+	}
+	got := parsePipelineAttestationForTest(t, rebound).LiveValidation
+	if got == nil {
+		t.Fatal("rebound omitted current live validation")
+	}
+	if got.Verdict != types.TestVerdictInconclusive || got.Live != 1 || got.Total != 2 || got.Source != pipelineLiveValidationSourceTestStep {
+		t.Fatalf("rebound live validation = %+v, want current findings", got)
+	}
+}
+
 type attestationTestHost struct {
 	scm.Host
 	title              string

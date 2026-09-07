@@ -28,7 +28,7 @@ func writeFinalPRScopeScenario(t *testing.T) string {
       risk_level: medium
       risk_rationale: "medium risk because only two source files changed"
       risk_scope: source-or-external
-  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself."
+  - match: "You are validating a code change by driving the product itself. Derive the scenarios this change must satisfy, then run each one against the real running product."
     text: "two-file test evidence"
     structured:
       findings: []
@@ -36,6 +36,13 @@ func writeFinalPRScopeScenario(t *testing.T) string {
       tested:
         - "` + staleTwoFileEvidence + `"
       testing_summary: "Focused validation passed at the test step target commit."
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
   - match: "Perform the combined documentation and lint housekeeping pass for this change."
     text: "documentation updated"

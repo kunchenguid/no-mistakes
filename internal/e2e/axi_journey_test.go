@@ -53,6 +53,13 @@ func axiScenario(t *testing.T) string {
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
@@ -105,6 +112,13 @@ func branchSyncScenario(t *testing.T) string {
       risk_scope: source-or-external
       tested: ["fakeagent: focused verification"]
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: branch sync"
       body: "branch sync journey"
@@ -517,6 +531,13 @@ func rebaseCustodyScenario(t *testing.T) string {
       risk_scope: source-or-external
       tested: ["fakeagent: focused verification"]
       testing_summary: "simulated tests passed"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       title: "feat: rebase custody"
       body: "rebase custody journey"

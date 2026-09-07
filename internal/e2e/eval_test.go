@@ -39,6 +39,13 @@ func TestEvalJourney(t *testing.T) {
       summary: "clean"
       tested: ["fakeagent"]
       testing_summary: "simulated"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       risk_level: low
       risk_rationale: "clean"
@@ -140,6 +147,13 @@ func TestEvalAutoCaptureJourney(t *testing.T) {
       summary: "clean"
       tested: ["fakeagent"]
       testing_summary: "simulated"
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       artifacts: []
       risk_level: low
       risk_rationale: "clean"
