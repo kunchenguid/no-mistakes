@@ -135,6 +135,11 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err := database.StartStep(stepResult.ID); err != nil {
 		t.Fatal(err)
 	}
+	initial, err := database.GetStepResult(stepResult.ID)
+	if err != nil || initial == nil || initial.StartedAt == nil {
+		t.Fatalf("read initial step timing: step=%+v err=%v", initial, err)
+	}
+	initialStartedAt := *initial.StartedAt
 	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs a fix","action":"ask-user"}],"summary":"one issue"}`
 	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
 		t.Fatal(err)
@@ -160,12 +165,16 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 
 	fake := newFakeSessionAgent()
+	fixStarted := make(chan struct{})
+	releaseFix := make(chan struct{})
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			if !sctx.Fixing {
 				return nil, fmt.Errorf("recovered gate must not rerun its completed review pass")
 			}
+			close(fixStarted)
+			<-releaseFix
 			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
 				return nil, err
 			}
@@ -179,6 +188,25 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
 	done := make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(releaseFix)
+		}
+		select {
+		case err := <-done:
+			if err != nil && !t.Failed() {
+				t.Errorf("resume: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			if !t.Failed() {
+				t.Error("recovered executor timed out")
+			}
+		}
+	}()
+	for time.Now().Unix() <= initialStartedAt {
+		time.Sleep(10 * time.Millisecond)
+	}
 	go func() {
 		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
 	}()
@@ -195,13 +223,25 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("resume: %v", err)
-		}
+	case <-fixStarted:
 	case <-time.After(5 * time.Second):
-		t.Fatal("recovered executor timed out")
+		t.Fatal("recovered fix did not start")
 	}
+	fixing, err := database.GetStepResult(stepResult.ID)
+	if err != nil || fixing == nil {
+		t.Fatalf("read recovered fixing step: step=%+v err=%v", fixing, err)
+	}
+	if fixing.Status != types.StepStatusFixing {
+		t.Errorf("recovered fixing step status = %s, want %s", fixing.Status, types.StepStatusFixing)
+	}
+	if fixing.StartedAt == nil || *fixing.StartedAt != initialStartedAt {
+		t.Errorf("recovered fixing step started_at = %v, want preserved %d", fixing.StartedAt, initialStartedAt)
+	}
+	if fixing.RoundStartedAt == nil || *fixing.RoundStartedAt <= initialStartedAt {
+		t.Errorf("recovered fixing round_started_at = %v, want after %d", fixing.RoundStartedAt, initialStartedAt)
+	}
+	close(releaseFix)
+	released = true
 
 	if len(fake.calls) != 2 {
 		t.Fatalf("agent invocations = %d, want fixer and rereviewer", len(fake.calls))

@@ -704,11 +704,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
 
-	// Mark step as running
-	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
-		return false, "", fmt.Errorf("start step %s: %w", stepName, err)
+	if !state.fixing {
+		if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
+			return false, "", fmt.Errorf("start step %s: %w", stepName, err)
+		}
+		e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 	}
-	e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 
 	// Track execution-only time, excluding approval wait periods.
 	phaseStart := time.Now()
