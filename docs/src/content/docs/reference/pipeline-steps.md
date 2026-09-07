@@ -65,8 +65,9 @@ The integration branch used below is the [PR base branch](/no-mistakes/reference
 - If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `origin/<PR base branch>`
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
 - If the push rewrote the PR base branch and `origin/<PR base branch>` advanced after that rewrite, pauses for manual approval before updating the branch
-- If the branch carries commits from the contributor's local default branch that are not on `origin/<PR base branch>`, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
-- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<PR base branch>` and is an ancestor of the branch `HEAD`
+- If the local default tip equals the branch `HEAD`, treats those local-only commits as the intended delivery work and continues
+- If the local default tip is a strict ancestor of the branch `HEAD`, pauses with an `ask-user` finding instead of silently bundling potentially unrelated local work into the PR
+- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<PR base branch>` and a strict ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
 - If the diff against the PR base branch is empty after rebase, completes rebase and skips all remaining pipeline steps

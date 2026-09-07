@@ -176,11 +176,11 @@ If the overwrite is intentional, push manually to the actual remote after review
 
 ### Rebase pauses because the branch carries unpushed default-branch commits
 
-This means the branch was created from a local default branch that is ahead of `origin/<default_branch>`, so its history includes commits that exist only on your local default branch.
-`no-mistakes` pauses with an `ask-user` finding instead of silently bundling that unrelated local work into the PR.
+This means a local default branch ahead of `origin/<default_branch>` is a strict ancestor of your branch, so the branch may contain unrelated local-default work.
+`no-mistakes` pauses with an `ask-user` finding instead of silently bundling that ambiguous work into the PR. If the local default tip and your branch `HEAD` are equal, it treats the commits as the intended delivery work and continues.
 
-Push the default branch to `origin` if those commits belong in the shared base, or rebase your feature branch onto `origin/<default_branch>` to remove the unrelated work before running the gate again.
-Approve the finding only when you intentionally want that local default-branch work to stay in the branch.
+Push the default branch to `origin` if those commits belong in the shared base, or rebuild the feature branch from `origin/<default_branch>` to remove the unrelated work before running the gate again.
+Approve the finding only when you have confirmed the local default-branch work belongs in the delivery branch.
 
 ## `git push no-mistakes` doesn't start a pipeline
 
