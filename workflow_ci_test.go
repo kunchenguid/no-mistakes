@@ -1,36 +1,45 @@
 package main
 
 import (
-	"os"
-	"strings"
+	"slices"
 	"testing"
 )
 
 func TestCIWorkflowRunsTestsOnAllSupportedDesktopPlatforms(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
+	job := ciTestJob(t)
+	got := make(map[string]int)
+	for _, row := range job.Strategy.Matrix.Include {
+		got[row["os"]]++
 	}
 
-	content := string(data)
-	for _, osName := range []string{"ubuntu-latest", "macos-latest", "windows-latest"} {
-		if !strings.Contains(content, osName) {
-			t.Fatalf("CI workflow must test %q", osName)
+	want := map[string]int{
+		"ubuntu-latest":  1,
+		"macos-latest":   1,
+		"windows-latest": 3,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("test matrix operating systems = %v, want %v", got, want)
+	}
+	for osName, count := range want {
+		if got[osName] != count {
+			t.Errorf("test matrix rows for %q = %d, want %d", osName, got[osName], count)
 		}
 	}
 }
 
 func TestCIWorkflowUsesRaceTestsOnUnixRunners(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
+	job := ciTestJob(t)
+	commands := workflowCommandsMatching(job.Steps, func(step wfStep) bool {
+		return runnerOSCondition(step.If, "!=", "Windows")
+	})
 
-	content := string(data)
-	if !strings.Contains(content, "if: runner.os != 'Windows'") {
-		t.Fatalf("CI workflow must keep the Unix test branch so macOS runs the Unix suite")
+	var raceTests []workflowCommand
+	for _, command := range commands {
+		if command.name == "go" && slices.Equal(command.args, []string{"test", "-race", "./..."}) {
+			raceTests = append(raceTests, command)
+		}
 	}
-	if !strings.Contains(content, "run: go test -race ./...") {
-		t.Fatalf("CI workflow must run the race-enabled suite on Unix runners")
+	if len(raceTests) != 1 {
+		t.Fatalf("Unix-only go test -race ./... commands = %d, want 1; normalized commands: %#v", len(raceTests), commands)
 	}
 }

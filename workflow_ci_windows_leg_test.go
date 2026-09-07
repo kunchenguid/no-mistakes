@@ -59,17 +59,21 @@ type workflowCommand struct {
 	args []string
 }
 
-func windowsOnly(condition string) bool {
+func runnerOSCondition(condition, operator, osName string) bool {
 	condition = strings.TrimSpace(condition)
 	condition = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(condition, "${{"), "}}"))
 	for _, part := range strings.Split(condition, "&&") {
 		fields := strings.Fields(strings.TrimSpace(part))
-		if len(fields) == 3 && fields[0] == "runner.os" && fields[1] == "==" &&
-			(fields[2] == "'Windows'" || fields[2] == `"Windows"`) {
+		if len(fields) == 3 && fields[0] == "runner.os" && fields[1] == operator &&
+			(fields[2] == "'"+osName+"'" || fields[2] == `"`+osName+`"`) {
 			return true
 		}
 	}
 	return false
+}
+
+func windowsOnly(condition string) bool {
+	return runnerOSCondition(condition, "==", "Windows")
 }
 
 func windowsGoTestCommands(t *testing.T) []workflowCommand {
@@ -116,9 +120,13 @@ func goTestPackagePatterns(command workflowCommand) []string {
 }
 
 func workflowCommands(steps []wfStep) []workflowCommand {
+	return workflowCommandsMatching(steps, func(step wfStep) bool { return windowsOnly(step.If) })
+}
+
+func workflowCommandsMatching(steps []wfStep, include func(wfStep) bool) []workflowCommand {
 	var commands []workflowCommand
 	for stepIndex, step := range steps {
-		if !windowsOnly(step.If) {
+		if !include(step) {
 			continue
 		}
 		for lineIndex, line := range strings.Split(step.Run, "\n") {
