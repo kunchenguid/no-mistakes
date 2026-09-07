@@ -47,7 +47,7 @@ type ciIssues struct {
 // machinery acts on:
 //
 //   - a failing check the provider attributes to the job itself is an
-//     auto-fix error: the repair half fetches its logs by name and the fix
+//     auto-fix error: the repair half fetches its logs by provider identity and the fix
 //     agent, not this classifier, decides whether the code caused it (its
 //     no-code-change conclusion parks for a decision);
 //   - a merge conflict is an auto-fix error whose repair always revalidates;
@@ -66,13 +66,7 @@ type ciIssues struct {
 func ciObservationFindings(issues ciIssues) Findings {
 	var items []Finding
 	codeChecks, botChecks := 0, 0
-	seen := map[string]bool{}
-	for _, name := range issues.failing {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		check := firstFailingCheck(issues.checks, name)
+	for _, check := range selectedFailingChecks(issues.checks, issues.failing) {
 		if bot, ok := scm.ReviewBotForApp(check.App); ok {
 			botChecks++
 			items = append(items, reviewBotFindings(check, bot, issues.botComments)...)
@@ -83,7 +77,8 @@ func ciObservationFindings(issues ciIssues) Findings {
 			Severity:    types.FindingSeverityError,
 			Action:      types.ActionAutoFix,
 			Category:    types.FindingCategoryCICheck,
-			Check:       name,
+			Check:       check.Name,
+			CheckID:     check.ProviderID,
 			Description: ciCheckDescription(check),
 		})
 	}
@@ -141,13 +136,25 @@ func hasAutoFixFindings(items []Finding) bool {
 	return false
 }
 
-func firstFailingCheck(checks []scm.Check, name string) scm.Check {
-	for _, check := range checks {
-		if check.Name == name && check.Failing() {
-			return check
+func selectedFailingChecks(checks []scm.Check, names []string) []scm.Check {
+	used := make([]bool, len(checks))
+	selected := make([]scm.Check, 0, len(names))
+	for _, name := range names {
+		matched := false
+		for i, check := range checks {
+			if used[i] || !check.Failing() || check.Name != name {
+				continue
+			}
+			selected = append(selected, check)
+			used[i] = true
+			matched = true
+			break
+		}
+		if !matched {
+			selected = append(selected, scm.Check{Name: name, Bucket: scm.CheckBucketFail})
 		}
 	}
-	return scm.Check{Name: name, Bucket: scm.CheckBucketFail}
+	return selected
 }
 
 // ciCheckDescription keeps the "CI check failing: <name>" prefix every earlier
@@ -191,6 +198,7 @@ func reviewBotFindings(check scm.Check, bot scm.ReviewBot, comments []scm.Review
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCIReviewBot,
 			Check:       check.Name,
+			CheckID:     check.ProviderID,
 			File:        comment.Path,
 			Line:        comment.Line,
 			Description: fmt.Sprintf("%s: %s", strings.TrimSpace(comment.Author), body),
@@ -202,6 +210,7 @@ func reviewBotFindings(check scm.Check, bot scm.ReviewBot, comments []scm.Review
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCIReviewBot,
 			Check:       check.Name,
+			CheckID:     check.ProviderID,
 			Description: fmt.Sprintf("%s: %d more unresolved review comments were omitted from this gate; read them on the pull request", check.Name, omitted),
 		})
 	}
@@ -216,6 +225,7 @@ func reviewBotFindings(check scm.Check, bot scm.ReviewBot, comments []scm.Review
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCIReviewBot,
 			Check:       check.Name,
+			CheckID:     check.ProviderID,
 			Description: description,
 		})
 	}
@@ -275,11 +285,11 @@ func reviewBotComments(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, ch
 
 // ciFixTargets is what a CI fix round repairs: the findings the executor
 // selected for it (the auto-fix subset of the last observation, or whatever
-// the human selected at the gate), reduced to the check names whose logs the
+// the human selected at the gate), reduced to the exact checks whose logs the
 // repair fetches and whether a merge conflict is among them.
 type ciFixTargets struct {
 	Findings      Findings
-	Checks        []string
+	Checks        []scm.CheckTarget
 	MergeConflict bool
 }
 
@@ -298,21 +308,37 @@ func parseCIFixTargets(raw string) (ciFixTargets, error) {
 			targets.MergeConflict = true
 		}
 		name := strings.TrimSpace(item.Check)
-		if name == "" || seen[name] {
+		id := strings.TrimSpace(item.CheckID)
+		if name == "" || id != "" && seen[id] {
 			continue
 		}
-		seen[name] = true
-		targets.Checks = append(targets.Checks, name)
+		if id != "" {
+			seen[id] = true
+		}
+		targets.Checks = append(targets.Checks, scm.CheckTarget{Name: name, ProviderID: id})
 	}
-	sort.Strings(targets.Checks)
+	sort.Slice(targets.Checks, func(i, j int) bool {
+		if targets.Checks[i].Name == targets.Checks[j].Name {
+			return targets.Checks[i].ProviderID < targets.Checks[j].ProviderID
+		}
+		return targets.Checks[i].Name < targets.Checks[j].Name
+	})
 	return targets, nil
 }
 
 func (t ciFixTargets) empty() bool { return len(t.Findings.Items) == 0 }
 
 // description names the round's targets the way the CI step log always has.
+func (t ciFixTargets) checkNames() []string {
+	names := make([]string, 0, len(t.Checks))
+	for _, check := range t.Checks {
+		names = append(names, check.Name)
+	}
+	return names
+}
+
 func (t ciFixTargets) description() string {
-	desc := strings.Join(t.Checks, ", ")
+	desc := strings.Join(t.checkNames(), ", ")
 	switch {
 	case t.MergeConflict && desc != "":
 		desc += " + merge conflict"

@@ -846,11 +846,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// ordinary execution (the CI monitor after a published repair) reports
 	// that here, so the durable status and every subscriber see running
 	// again; step_started is the event the TUI already maps to running.
-	markRunning := func() {
-		if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); dbErr != nil {
-			slog.Warn("failed to return step status to running in db", "step", stepName, "error", dbErr)
+	markRunning := func() error {
+		if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); err != nil {
+			return fmt.Errorf("return step status to running: %w", err)
 		}
 		e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+		return nil
 	}
 	sctx := &StepContext{
 		Ctx:              ctx,

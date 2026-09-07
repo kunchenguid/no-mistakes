@@ -42,7 +42,9 @@ func TestExecutor_MarkRunningReturnsAFixingStepToRunning(t *testing.T) {
 		if sctx.MarkRunning == nil {
 			t.Fatal("MarkRunning must be wired on every step context")
 		}
-		sctx.MarkRunning()
+		if err := sctx.MarkRunning(); err != nil {
+			t.Fatalf("MarkRunning() error = %v", err)
+		}
 		after, err := sctx.DB.GetStepResult(sctx.StepResultID)
 		if err != nil || after == nil || after.Status != types.StepStatusRunning {
 			t.Errorf("status after MarkRunning = %v (%v), want running", after, err)

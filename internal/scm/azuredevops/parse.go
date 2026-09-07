@@ -27,6 +27,7 @@ type azPR struct {
 // policyEval is the subset of `az repos pr policy list` evaluation records we
 // consume. Branch policy evaluations are Azure DevOps's equivalent of PR checks.
 type policyEval struct {
+	EvaluationID  string `json:"evaluationId"`
 	Status        string `json:"status"` // queued | running | approved | rejected | notApplicable | broken
 	StartedDate   string `json:"startedDate"`
 	CompletedDate string `json:"completedDate"`

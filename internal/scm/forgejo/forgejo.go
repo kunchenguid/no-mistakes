@@ -616,10 +616,11 @@ func (h *Host) normalizeChecks(result checksResult) ([]scm.Check, error) {
 			return nil, err
 		}
 		check := scm.Check{
-			Name:   status.Context,
-			Bucket: bucket,
-			State:  status.State,
-			Link:   stringValue(status.TargetURL),
+			Name:       status.Context,
+			ProviderID: "forgejo-status:" + status.Context,
+			Bucket:     bucket,
+			State:      status.State,
+			Link:       stringValue(status.TargetURL),
 		}
 		if status.UpdatedAt != nil {
 			check.CompletedAt, err = time.Parse(time.RFC3339, *status.UpdatedAt)

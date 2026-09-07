@@ -447,8 +447,13 @@ func anyJobMatchesHeadSHA(jobs []giteaJob, sha string) bool {
 func jobsToChecks(jobs []giteaJob) []scm.Check {
 	checks := make([]scm.Check, 0, len(jobs))
 	for _, job := range jobs {
+		providerID := ""
+		if job.ID != 0 {
+			providerID = fmt.Sprintf("gitea-job:%d", job.ID)
+		}
 		checks = append(checks, scm.Check{
 			Name:        job.Name,
+			ProviderID:  providerID,
 			Bucket:      giteaStatusBucket(job.Status, job.Conclusion),
 			CompletedAt: job.completedAt(),
 			Link:        job.HTMLURL,
@@ -457,8 +462,16 @@ func jobsToChecks(jobs []giteaJob) []scm.Check {
 	return checks
 }
 
-func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, failingNames []string) (string, error) {
-	if len(failingNames) == 0 {
+func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
+	targets := make([]scm.CheckTarget, 0, len(failingNames))
+	for _, name := range failingNames {
+		targets = append(targets, scm.CheckTarget{Name: name})
+	}
+	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+}
+
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, targets []scm.CheckTarget) (string, error) {
+	if len(targets) == 0 {
 		return "", nil
 	}
 	view, err := h.viewPR(ctx, pr.Number)
@@ -477,7 +490,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 	if err != nil || run.ID == "" {
 		return "", nil
 	}
-	jobID := findFailedGiteaJobID(jobs, failingNames)
+	jobID := findFailedGiteaJobTargetID(jobs, targets)
 	if jobID == 0 {
 		return "", nil
 	}
@@ -491,18 +504,30 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 }
 
 func findFailedGiteaJobID(jobs []giteaJob, failingNames []string) int {
-	targets := map[string]struct{}{}
+	targets := make([]scm.CheckTarget, 0, len(failingNames))
 	for _, name := range failingNames {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			targets[name] = struct{}{}
+		targets = append(targets, scm.CheckTarget{Name: name})
+	}
+	return findFailedGiteaJobTargetID(jobs, targets)
+}
+
+func findFailedGiteaJobTargetID(jobs []giteaJob, checkTargets []scm.CheckTarget) int {
+	names := map[string]struct{}{}
+	ids := map[string]struct{}{}
+	for _, target := range checkTargets {
+		if id := strings.TrimSpace(target.ProviderID); id != "" {
+			ids[id] = struct{}{}
+		} else if name := strings.TrimSpace(target.Name); name != "" {
+			names[name] = struct{}{}
 		}
 	}
 	for _, job := range jobs {
 		if giteaStatusBucket(job.Status, job.Conclusion) != scm.CheckBucketFail {
 			continue
 		}
-		if _, ok := targets[job.Name]; ok || len(targets) == 0 {
+		_, nameMatch := names[job.Name]
+		_, idMatch := ids[fmt.Sprintf("gitea-job:%d", job.ID)]
+		if nameMatch || idMatch || len(names)+len(ids) == 0 {
 			return job.ID
 		}
 	}

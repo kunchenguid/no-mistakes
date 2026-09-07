@@ -16,6 +16,7 @@ func TestParseFindingsJSON_RoundTripsCICheckFields(t *testing.T) {
 			Action:      ActionAutoFix,
 			Category:    FindingCategoryCICheck,
 			Check:       "test (ubuntu-latest)",
+			CheckID:     "github-check-run:42",
 			Description: "CI check failing: test (ubuntu-latest)",
 		}},
 	})
@@ -30,7 +31,7 @@ func TestParseFindingsJSON_RoundTripsCICheckFields(t *testing.T) {
 		t.Fatalf("items = %+v, want one", parsed.Items)
 	}
 	item := parsed.Items[0]
-	if item.Check != "test (ubuntu-latest)" || item.Category != FindingCategoryCICheck {
+	if item.Check != "test (ubuntu-latest)" || item.CheckID != "github-check-run:42" || item.Category != FindingCategoryCICheck {
 		t.Fatalf("item = %+v, want the check name and category preserved", item)
 	}
 
@@ -38,7 +39,7 @@ func TestParseFindingsJSON_RoundTripsCICheckFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFindingsJSON(legacy) error = %v", err)
 	}
-	if legacy.Items[0].Check != "" || legacy.Items[0].Category != "" {
+	if legacy.Items[0].Check != "" || legacy.Items[0].CheckID != "" || legacy.Items[0].Category != "" {
 		t.Fatalf("legacy item = %+v, want empty CI fields", legacy.Items[0])
 	}
 	if legacy.Items[0].ActionOrDefault() != ActionAskUser {

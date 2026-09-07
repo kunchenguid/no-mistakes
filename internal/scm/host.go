@@ -153,9 +153,10 @@ const (
 
 // Check is a single CI check result on a PR.
 type Check struct {
-	Name   string
-	Bucket CheckBucket
-	Kind   CheckKind
+	Name       string
+	ProviderID string `json:"provider_id,omitempty"`
+	Bucket     CheckBucket
+	Kind       CheckKind
 	// State is the provider's own outcome string for the check (GitHub
 	// conclusions such as FAILURE, TIMED_OUT, CANCELLED). Buckets collapse
 	// several outcomes into one value, so callers that must tell an
@@ -278,6 +279,15 @@ var (
 )
 
 // ReviewComment represents a code review comment or bot finding on a pull request.
+type CheckTarget struct {
+	Name       string
+	ProviderID string `json:"provider_id,omitempty"`
+}
+
+type TargetedFailedCheckLogsHost interface {
+	FetchFailedCheckTargetLogs(ctx context.Context, pr *PR, branch, headSHA string, targets []CheckTarget) (string, error)
+}
+
 type ReviewComment struct {
 	ID        string
 	Author    string

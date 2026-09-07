@@ -18,10 +18,10 @@ func TestGetChecksCarriesCheckSuiteAppSlug(t *testing.T) {
 		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 		githubCommitChecksCommand("", "test/repo", "deadbeef"): {
 			stdout: githubCommitChecksResponse(`[
-				{"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/2","checkSuite":{"app":{"slug":"github-actions"}}},
-				{"__typename":"CheckRun","name":"Greptile Review","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://greptile.com/","checkSuite":{"app":{"slug":"greptile-apps"}}},
-				{"__typename":"CheckRun","name":"orphan","status":"COMPLETED","conclusion":"SUCCESS"},
-				{"__typename":"StatusContext","context":"ci/external","state":"SUCCESS","targetUrl":"https://ci.example/1"}
+				{"__typename":"CheckRun","databaseId":2,"name":"test","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/2","checkSuite":{"app":{"slug":"github-actions"}}},
+				{"__typename":"CheckRun","databaseId":3,"name":"Greptile Review","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://greptile.com/","checkSuite":{"app":{"slug":"greptile-apps"}}},
+				{"__typename":"CheckRun","databaseId":4,"name":"orphan","status":"COMPLETED","conclusion":"SUCCESS"},
+				{"__typename":"StatusContext","id":"status-5","context":"ci/external","state":"SUCCESS","targetUrl":"https://ci.example/1"}
 			]`),
 		},
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
@@ -33,17 +33,22 @@ func TestGetChecksCarriesCheckSuiteAppSlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChecks() error = %v", err)
 	}
-	want := map[string]string{"test": "github-actions", "Greptile Review": "greptile-apps", "orphan": "", "ci/external": ""}
+	want := map[string]struct{ app, id string }{
+		"test":            {app: "github-actions", id: "github-check-run:2"},
+		"Greptile Review": {app: "greptile-apps", id: "github-check-run:3"},
+		"orphan":          {id: "github-check-run:4"},
+		"ci/external":     {id: "github-status:status-5"},
+	}
 	if len(checks) != len(want) {
 		t.Fatalf("checks = %+v, want %d", checks, len(want))
 	}
 	for _, check := range checks {
-		app, ok := want[check.Name]
+		expected, ok := want[check.Name]
 		if !ok {
 			t.Fatalf("unexpected check %+v", check)
 		}
-		if check.App != app {
-			t.Fatalf("check %q App = %q, want %q", check.Name, check.App, app)
+		if check.App != expected.app || check.ProviderID != expected.id {
+			t.Fatalf("check %q identity = (%q, %q), want (%q, %q)", check.Name, check.App, check.ProviderID, expected.app, expected.id)
 		}
 	}
 }

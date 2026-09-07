@@ -1371,6 +1371,27 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {
+			stdout: `[{"databaseId":101,"name":"CI"},{"databaseId":102,"name":"CI"}]` + "\n",
+		},
+		"gh run view 101 --json jobs":  {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --json jobs":  {stdout: `{"jobs":[{"databaseId":202,"name":"build","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --log-failed": {stdout: "selected build failed\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{Name: "build", ProviderID: "github-check-run:202"}})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
+	}
+	if logs != "selected build failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %q, want selected check's logs", logs)
+	}
+}
+
 // A GitHub Actions action-download outage fails a job inside "Set up job",
 // before any repository step runs. PreRunFailures must flag exactly that job -
 // read structurally from the setup step's conclusion, never from log text - and

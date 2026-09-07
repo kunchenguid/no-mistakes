@@ -345,8 +345,13 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if bucket == "" {
 			continue
 		}
+		providerID := ""
+		if id := strings.TrimSpace(e.EvaluationID); id != "" {
+			providerID = "azure-policy-evaluation:" + id
+		}
 		checks = append(checks, scm.Check{
 			Name:        e.checkName(),
+			ProviderID:  providerID,
 			Bucket:      bucket,
 			CompletedAt: parseAzTime(e.CompletedDate),
 		})

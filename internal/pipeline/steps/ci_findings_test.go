@@ -134,8 +134,40 @@ func TestCIObservationFindings_ClassifiesEachIssueByProviderStructure(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !targets.MergeConflict || strings.Join(targets.Checks, ",") != "Greptile Review,ci/external,flaky,test" {
+	if !targets.MergeConflict || strings.Join(targets.checkNames(), ",") != "Greptile Review,ci/external,flaky,test" {
 		t.Fatalf("targets = %+v, want every check named once plus the conflict", targets)
+	}
+}
+
+func TestCIObservationFindings_PreservesSameNamedCheckIdentityAndClassification(t *testing.T) {
+	t.Parallel()
+	findings := ciObservationFindings(ciIssues{
+		checks: []scm.Check{
+			{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketFail, App: "github-actions"},
+			{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail, App: "greptile-apps"},
+		},
+		failing: []string{"build", "build"},
+	})
+	if len(findings.Items) != 2 {
+		t.Fatalf("findings = %+v, want one finding per failed check", findings.Items)
+	}
+	if findings.Items[0].CheckID != "github-check-run:41" || findings.Items[0].Action != types.ActionAutoFix {
+		t.Fatalf("first finding = %+v, want the Actions check identity and auto-fix", findings.Items[0])
+	}
+	if findings.Items[1].CheckID != "github-check-run:42" || findings.Items[1].Action != types.ActionAskUser {
+		t.Fatalf("second finding = %+v, want the review-bot identity and ask-user", findings.Items[1])
+	}
+
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := parseCIFixTargets(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets.Checks) != 2 || targets.Checks[0].ProviderID != "github-check-run:41" || targets.Checks[1].ProviderID != "github-check-run:42" {
+		t.Fatalf("targets = %+v, want both same-named provider identities", targets.Checks)
 	}
 }
 
@@ -330,8 +362,8 @@ func TestCIStep_MixedGreptileAndTestFailureRoutesOnlyTheTestToAutoFix(t *testing
 	if !strings.Contains(prompts[0], "- failing checks: test\n") {
 		t.Fatalf("prompt names %q as failing checks, want only test:\n%s", "failing checks", prompts[0])
 	}
-	if !strings.Contains(prompts[0], "### Unresolved PR Review Comments:") || !strings.Contains(prompts[0], "Missing mirror reports success") {
-		t.Fatalf("prompt lost the untrusted review-comment context:\n%s", prompts[0])
+	if strings.Contains(prompts[0], "Missing mirror reports success") {
+		t.Fatalf("prompt contains the unselected review-bot finding:\n%s", prompts[0])
 	}
 	if !strings.Contains(prompts[0], "Findings to address") || !strings.Contains(prompts[0], `"check":"test"`) {
 		t.Fatalf("prompt lost the selected findings:\n%s", prompts[0])
@@ -344,10 +376,21 @@ func TestCIStep_MixedGreptileAndTestFailureRoutesOnlyTheTestToAutoFix(t *testing
 // A published repair keeps every cost guardrail: one agent round, one push,
 // the step reports it is monitoring again, and the next poll that still
 // shows the repaired check waits for the provider instead of re-escalating.
+func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
+	f := newCIRepairFixture(t, false, writeCIFix)
+	markErr := errors.New("persist running status")
+	f.sctx.MarkRunning = func() error { return markErr }
+
+	outcome, err := f.run(t)
+	if outcome != nil || !errors.Is(err, markErr) {
+		t.Fatalf("outcome = %#v err = %v, want MarkRunning failure", outcome, err)
+	}
+}
+
 func TestCIStep_PublishedRepairResumesMonitoringAndWaitsForTheRerun(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
 	marked := 0
-	f.sctx.MarkRunning = func() { marked++ }
+	f.sctx.MarkRunning = func() error { marked++; return nil }
 
 	outcome, err := f.run(t)
 	if !errors.Is(err, context.Canceled) {
