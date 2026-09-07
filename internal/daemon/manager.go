@@ -1497,6 +1497,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		// pipeline's own outcome is already decided and reported above, so
 		// nothing below can change it.
 		m.autoCaptureEvalCase(runCtx, cfg, run.ID)
+		m.autoIngestCIFalseNegatives(runCtx, cfg, run.ID)
 	}()
 
 	return run.ID, nil
@@ -1554,6 +1555,48 @@ func (m *RunManager) autoCaptureEvalCase(ctx context.Context, cfg *config.Config
 		slog.Debug("run has no eval case to collect", "run_id", runID, "reason", result.Reason)
 	default:
 		slog.Info("collected eval case", "run_id", runID, "cases", result.Captured, "pruned", result.Pruned)
+	}
+}
+
+// autoIngestCIFalseNegatives writes false-negative gold for a finished run's
+// fixed CI findings onto its green review case. Any real code defect CI
+// surfaces (a failing ci-check or a review-bot comment), confirmed and fixed in
+// the run, is by definition a Review false negative: Review passed green and
+// missed it.
+//
+// Like autoCaptureEvalCase it is subordinate to the run: it swallows its own
+// panic, bounds its own time, shares the eval mutex so it never races capture,
+// and reports failure only to the log. It reads the CI findings the pipeline
+// already persisted per round, so it never fabricates a case.
+func (m *RunManager) autoIngestCIFalseNegatives(ctx context.Context, cfg *config.Config, runID string) {
+	if cfg == nil || !cfg.Eval.AutoCapture || !cfg.Eval.CaptureProvenance {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while ingesting CI false negatives", "run_id", runID, "panic", r)
+		}
+	}()
+	m.evalCaptureMu.Lock()
+	defer m.evalCaptureMu.Unlock()
+
+	if ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, evalAutoCaptureTimeout)
+	defer cancel()
+
+	result, skipped, err := eval.AutoIngestCIFalseNegatives(ctx, m.paths, m.db, runID)
+	switch {
+	case err != nil:
+		slog.Warn("failed to ingest CI false negatives", "run_id", runID, "error", err)
+	case skipped:
+		slog.Debug("run has no CI false negative to ingest", "run_id", runID)
+	default:
+		slog.Info("ingested CI false negatives", "run_id", runID, "case", result.CaseID, "added", result.Added, "total", result.Total)
 	}
 }
 
