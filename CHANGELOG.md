@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.70.1](https://github.com/kunchenguid/no-mistakes/compare/v1.70.0...v1.70.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **update:** fetch version metadata from release CDN ([#1007](https://github.com/kunchenguid/no-mistakes/issues/1007)) ([2db4b7f](https://github.com/kunchenguid/no-mistakes/commit/2db4b7f19224bde17018ebfcd38bbe56bd9486f4))
+
 ## [1.70.0](https://github.com/kunchenguid/no-mistakes/compare/v1.69.0...v1.70.0) (2026-09-07)
 
 
