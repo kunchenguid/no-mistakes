@@ -49,12 +49,12 @@ const (
 // A feature branch cannot self-declare that value. When checks exist, their
 // actual states are always processed normally - even on a declared no-CI repo.
 type CIStep struct {
-	lastFixedChecks      string               // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
-	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times at the observation the last repair targeted
-	observedCompletedAt  map[string]time.Time // terminally failed check completion times at the observation whose findings a fix round may repair
-	pendingFixSummary    string               // one-line summary of the repair this execution published, attached to the outcome it ends with
-	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
+	lastFixedChecks      string                    // encoded targets of the last published repair, so a poll that still shows them is not re-escalated
+	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
+	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
+	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
+	transientReruns      checkRerunBudget          // per-check rerun budget spent on provider-reported transient failures
+	pollIntervalOverride time.Duration             // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
@@ -577,7 +577,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			if terminalFailureCompletedAfter(checks, s.lastFixedCompletedAt) {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
-				sctx.DeferredFindings = ""
 			}
 
 			// Before any failure reaches the fix agent, re-run the checks the
@@ -658,7 +657,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
-					sctx.DeferredFindings = ""
 				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
@@ -698,7 +696,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			} else {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
-				sctx.DeferredFindings = ""
 				switch {
 				case !prStateKnown || !mergeabilityKnown:
 					clearCIMonitorReady(sctx)
@@ -719,6 +716,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// is common and must never look green. Elapsed time is not
 					// evidence; there is no grace-period promotion path.
 					if sctx.Config != nil && sctx.Config.NoCI {
+						sctx.DeferredFindings = ""
 						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 					} else {
 						clearCIMonitorReady(sctx)
@@ -726,6 +724,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
 				case allChecksPassed(checks):
+					sctx.DeferredFindings = ""
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)

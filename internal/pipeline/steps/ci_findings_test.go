@@ -468,18 +468,23 @@ func TestCIResumedRepairSnapshotsSelectedCheckCompletion(t *testing.T) {
 	if err != nil || outcome == nil || !outcome.NeedsApproval {
 		t.Fatalf("repair outcome = %#v, err = %v", outcome, err)
 	}
-	if got := step.observedCompletedAt["id:github-check-run:42"]; !got.Equal(completed) {
+	if host.headSHA != headSHA {
+		t.Fatalf("snapshot PR head = %q, want expected run head %q", host.headSHA, headSHA)
+	}
+	if got := step.observedCompletedAt["id:github-check-run:42"].CompletedAt; !got.Equal(completed) {
 		t.Fatalf("snapshotted completion = %v, want %v", got, completed)
 	}
 }
 
 type completionSnapshotHost struct {
 	scm.Host
-	checks []scm.Check
+	checks  []scm.Check
+	headSHA string
 }
 
 func (h *completionSnapshotHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
-func (h *completionSnapshotHost) GetChecks(context.Context, *scm.PR) ([]scm.Check, error) {
+func (h *completionSnapshotHost) GetChecks(_ context.Context, pr *scm.PR) ([]scm.Check, error) {
+	h.headSHA = pr.HeadSHA
 	return h.checks, nil
 }
 

@@ -502,10 +502,10 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
 
-	// Every poll fails to read checks (e.g. gh < v2.50 rejects `pr checks --json`).
-	// The first few are tolerated as transient warnings, but a persistent streak
+	// The first read observes a pending repair, then every later poll fails to
+	// read checks. The first few errors are tolerated, but a persistent streak
 	// must park at an ask-user gate instead of spinning to ci_timeout.
-	var checksSequence []string
+	checksSequence := []string{`[{"name":"build","state":"PENDING","bucket":"pending","provider_id":"github-check-run:42"}]`}
 	for i := 0; i < steps.ConsecutiveCheckErrorLimit()+3; i++ {
 		checksSequence = append(checksSequence, `not-json`)
 	}

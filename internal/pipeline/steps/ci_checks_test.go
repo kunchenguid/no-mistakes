@@ -116,7 +116,7 @@ func TestTerminalFailureCompletionTimesCoverCancelledChecks(t *testing.T) {
 	cancelled := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
 
 	before := terminalFailureCompletionTimes([]scm.Check{cancelled})
-	if got, ok := before["build"]; !ok || !got.Equal(completed) {
+	if got, ok := before["build"]; !ok || !got.CompletedAt.Equal(completed) {
 		t.Fatalf("completion times = %v, want the cancelled check recorded at %v", before, completed)
 	}
 
@@ -131,6 +131,18 @@ func TestTerminalFailureCompletionTimesCoverCancelledChecks(t *testing.T) {
 	}
 }
 
+func TestTerminalFailureFreshnessUsesExecutionIDWithoutCompletionTime(t *testing.T) {
+	t.Parallel()
+
+	before := terminalFailureCompletionTimes([]scm.Check{{Name: "build", ProviderID: "bitbucket-status:build", ExecutionID: "41", Bucket: scm.CheckBucketFail}})
+	if terminalFailureCompletedAfter([]scm.Check{{Name: "build", ProviderID: "bitbucket-status:build", ExecutionID: "41", Bucket: scm.CheckBucketFail}}, before) {
+		t.Fatal("the same provider execution must not read as a rerun")
+	}
+	if !terminalFailureCompletedAfter([]scm.Check{{Name: "build", ProviderID: "bitbucket-status:build", ExecutionID: "42", Bucket: scm.CheckBucketFail}}, before) {
+		t.Fatal("a new provider execution must read as a rerun without a completion time")
+	}
+}
+
 // The fail bucket keeps the behavior it always had.
 func TestTerminalFailureCompletionTimesStillCoverFailingChecks(t *testing.T) {
 	t.Parallel()
@@ -139,7 +151,7 @@ func TestTerminalFailureCompletionTimesStillCoverFailingChecks(t *testing.T) {
 	failing := scm.Check{Name: "lint", Bucket: scm.CheckBucketFail, State: "FAILURE", CompletedAt: completed}
 
 	before := terminalFailureCompletionTimes([]scm.Check{failing})
-	if got, ok := before["lint"]; !ok || !got.Equal(completed) {
+	if got, ok := before["lint"]; !ok || !got.CompletedAt.Equal(completed) {
 		t.Fatalf("completion times = %v, want the failing check recorded at %v", before, completed)
 	}
 

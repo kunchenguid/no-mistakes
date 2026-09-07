@@ -106,33 +106,42 @@ func unresolvedCheckNames(checks []scm.Check) []string {
 // fixTargets). Keying the snapshot on the fail bucket alone would leave a
 // cancelled-only fix round with no completion evidence at all, and the step
 // would then have no way to notice its own re-run.
-func terminalFailureCompletionTimes(checks []scm.Check) map[string]time.Time {
-	completedAt := make(map[string]time.Time)
+type checkFreshness struct {
+	CompletedAt time.Time
+	ExecutionID string
+}
+
+func terminalFailureCompletionTimes(checks []scm.Check) map[string]checkFreshness {
+	freshness := make(map[string]checkFreshness)
 	for _, c := range checks {
 		if !checkFailedTerminally(c) {
 			continue
 		}
-		if c.CompletedAt.IsZero() {
+		executionID := c.ExecutionID
+		if executionID == "" {
+			executionID = c.ProviderID
+		}
+		if c.CompletedAt.IsZero() && executionID == "" {
 			continue
 		}
 		key := checkTrackingKey(c)
-		previous := completedAt[key]
-		if previous.IsZero() || c.CompletedAt.After(previous) {
-			completedAt[key] = c.CompletedAt
+		previous := freshness[key]
+		if previous.CompletedAt.IsZero() || c.CompletedAt.After(previous.CompletedAt) {
+			freshness[key] = checkFreshness{CompletedAt: c.CompletedAt, ExecutionID: executionID}
 		}
 	}
-	if len(completedAt) == 0 {
+	if len(freshness) == 0 {
 		return nil
 	}
-	return completedAt
+	return freshness
 }
 
-func completionTimesForTargets(completedAt map[string]time.Time, targets []scm.CheckTarget) map[string]time.Time {
-	selected := make(map[string]time.Time, len(targets))
+func completionTimesForTargets(completedAt map[string]checkFreshness, targets []scm.CheckTarget) map[string]checkFreshness {
+	selected := make(map[string]checkFreshness, len(targets))
 	for _, target := range targets {
 		key := checkTargetTrackingKey(target)
-		if completed := completedAt[key]; !completed.IsZero() {
-			selected[key] = completed
+		if freshness, ok := completedAt[key]; ok {
+			selected[key] = freshness
 		}
 	}
 	if len(selected) == 0 {
@@ -141,16 +150,26 @@ func completionTimesForTargets(completedAt map[string]time.Time, targets []scm.C
 	return selected
 }
 
-func terminalFailureCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
+func terminalFailureCompletedAfter(checks []scm.Check, after map[string]checkFreshness) bool {
 	if len(after) == 0 {
 		return false
 	}
 	for _, c := range checks {
-		if !checkFailedTerminally(c) || c.CompletedAt.IsZero() {
+		if !checkFailedTerminally(c) {
 			continue
 		}
 		previous, ok := after[checkTrackingKey(c)]
-		if ok && c.CompletedAt.After(previous) {
+		if !ok {
+			continue
+		}
+		executionID := c.ExecutionID
+		if executionID == "" {
+			executionID = c.ProviderID
+		}
+		if executionID != "" && previous.ExecutionID != "" && executionID != previous.ExecutionID {
+			return true
+		}
+		if !c.CompletedAt.IsZero() && c.CompletedAt.After(previous.CompletedAt) {
 			return true
 		}
 	}

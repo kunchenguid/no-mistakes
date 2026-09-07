@@ -164,6 +164,7 @@ type Check struct {
 	// provider reported no state.
 	State       string
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
+	ExecutionID string    // provider execution discriminator when completion time is unavailable
 	// StartedAt is when this specific check run began. It is the ordering key
 	// backends use to collapse superseded same-name check runs (e.g. a raw
 	// commit rollup that keeps every run a commit ever had) down to the

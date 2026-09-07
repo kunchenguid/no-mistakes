@@ -66,6 +66,7 @@ func newCIRepairFixture(t *testing.T, revalidate bool, agentAction func(workDir 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = append(fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`),
+		"FAKE_CLI_PR_HEAD_SHA="+headSHA,
 		// attestHeadBeforePush discovers the PR via FindPR before every publish
 		// (Push and a CI repair alike), so the fixture's fake gh must be able to
 		// resolve the same PR the fixture's own persisted PRURL names.

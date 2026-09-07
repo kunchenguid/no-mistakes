@@ -98,9 +98,10 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	checks := make([]scm.Check, 0, len(statuses))
 	for _, status := range statuses {
 		checks = append(checks, scm.Check{
-			Name:       statusName(status),
-			ProviderID: statusProviderID(status),
-			Bucket:     statusBucket(status.State),
+			Name:        statusName(status),
+			ProviderID:  statusProviderID(status),
+			Bucket:      statusBucket(status.State),
+			ExecutionID: pipelineBuildNumberFromStatusURL(status.URL),
 		})
 	}
 	return checks, nil

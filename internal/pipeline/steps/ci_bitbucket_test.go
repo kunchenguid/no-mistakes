@@ -502,7 +502,7 @@ func TestLatestBitbucketStatusesDeduplicatesByKeyBeforeName(t *testing.T) {
 func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) {
 	t.Parallel()
 
-	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED"}]}`)
+	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"key":"build","state":"FAILED","url":"https://bitbucket.org/test/repo/addon/pipelines/home#!/results/42"}]}`)
 	client, err := bitbucket.NewClientFromEnv(fakeBitbucketEnv(api.server.URL))
 	if err != nil {
 		t.Fatalf("new bitbucket client: %v", err)
@@ -521,5 +521,8 @@ func TestCIStep_GetCIChecksBitbucketFallsBackToKeyWhenNameMissing(t *testing.T) 
 	}
 	if checks[0].Bucket != "fail" {
 		t.Fatalf("checks[0].Bucket = %q, want fail", checks[0].Bucket)
+	}
+	if checks[0].ExecutionID != "42" {
+		t.Fatalf("checks[0].ExecutionID = %q, want pipeline build number", checks[0].ExecutionID)
 	}
 }
