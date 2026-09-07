@@ -184,10 +184,75 @@ type Check struct {
 	// it can never be true for a genuine test or lint failure, whose job cleared
 	// setup and failed a later step.
 	PreRunFailure bool
+	// App identifies the provider application that published the check, when
+	// the provider reports one: on GitHub it is the check suite's app slug
+	// ("github-actions" for every Actions job, "greptile-apps" for Greptile's
+	// review check). It is structural provider identity, never a check name,
+	// so the CI step can tell a third-party review bot's verdict from the
+	// repository's own CI without matching names. Empty when unknown.
+	App string
 }
 
 // Failing reports whether the check is in a failed bucket.
 func (c Check) Failing() bool { return c.Bucket == CheckBucketFail }
+
+// ReviewBot describes a third-party review bot whose pull request check is an
+// opinion about the change rather than a job verdict on it. The CI step routes
+// such a check's failure to a human decision carrying the bot's unresolved
+// review comments, instead of spending an auto-fix round on it, and the
+// GitHub backend collects only these bots' review-thread comments.
+type ReviewBot struct {
+	// AppSlug is the provider app slug the bot publishes its check under.
+	AppSlug string
+	// Logins are the account logins the bot posts review comments as.
+	Logins []string
+}
+
+// ReviewBots is the registry of supported review bots. Both halves of the
+// integration - check identity and comment authorship - read it, so adding a
+// bot is one entry here.
+var ReviewBots = []ReviewBot{
+	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}},
+}
+
+// ReviewBotForApp returns the registered review bot that publishes checks
+// under slug. An empty slug never matches: a provider that reported no app
+// identity has not identified a bot.
+func ReviewBotForApp(slug string) (ReviewBot, bool) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		return ReviewBot{}, false
+	}
+	for _, bot := range ReviewBots {
+		if strings.EqualFold(bot.AppSlug, slug) {
+			return bot, true
+		}
+	}
+	return ReviewBot{}, false
+}
+
+// ReviewBotForLogin returns the registered review bot that posts review
+// comments as login.
+func ReviewBotForLogin(login string) (ReviewBot, bool) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	if login == "" {
+		return ReviewBot{}, false
+	}
+	for _, bot := range ReviewBots {
+		for _, known := range bot.Logins {
+			if strings.EqualFold(known, login) {
+				return bot, true
+			}
+		}
+	}
+	return ReviewBot{}, false
+}
+
+// IsReviewBotLogin reports whether login belongs to a registered review bot.
+func IsReviewBotLogin(login string) bool {
+	_, ok := ReviewBotForLogin(login)
+	return ok
+}
 
 // Pending reports whether the check is still running or queued.
 func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }

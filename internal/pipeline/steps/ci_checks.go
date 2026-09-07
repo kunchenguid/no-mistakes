@@ -196,18 +196,60 @@ func decodeLastFixedChecks(raw string) (lastFixedIssues, bool) {
 	return issues, true
 }
 
+// lastRepairStillUnverified reports whether every issue the last published
+// repair targeted is still terminally failed, meaning the provider has not
+// yet re-run those checks against the repaired head. The two clears that
+// prove a re-run happened - a newer completion (terminalFailureCompletedAfter)
+// and the fixed check observed pending (pendingCheckMatchesLastFixed) - empty
+// lastFixedChecks before this is asked, so an unverified repair is exactly
+// one whose targets are all still red as they were. A target that cleared, or
+// a conflict that resolved, is the provider acting on the repair and makes
+// the observation fresh.
+func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict bool) bool {
+	issues, ok := decodeLastFixedChecks(s.lastFixedChecks)
+	if !ok {
+		return false
+	}
+	if issues.MergeConflict && !mergeConflict {
+		return false
+	}
+	for _, name := range issues.Checks {
+		if !checkNameFailedTerminally(checks, name) {
+			return false
+		}
+	}
+	return true
+}
+
+func checkNameFailedTerminally(checks []scm.Check, name string) bool {
+	for _, check := range checks {
+		if check.Name == name && checkFailedTerminally(check) {
+			return true
+		}
+	}
+	return false
+}
+
+// ciFailureOutcome parks the step over issues that are still present when
+// the idle timeout ends monitoring. Nothing here is a fresh observation the
+// executor could act on, so every item is ask-user.
 func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {
 	findings := Findings{Summary: summary}
 	for _, name := range failing {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
 			Description: fmt.Sprintf("CI check failing: %s", name),
+			Action:      types.ActionAskUser,
+			Category:    types.FindingCategoryCICheck,
+			Check:       name,
 		})
 	}
 	if mergeConflict {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
 			Description: "PR has merge conflicts with the base branch",
+			Action:      types.ActionAskUser,
+			Category:    types.FindingCategoryCIMergeConflict,
 		})
 	}
 	findingsJSON, _ := json.Marshal(findings)

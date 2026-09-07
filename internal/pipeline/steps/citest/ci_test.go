@@ -221,6 +221,7 @@ func TestCIStep_Execute_FixMode_RemoteAlreadyUpdatedDoesNotReturnManualIntervent
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx.Run.PRURL = &prURL
 	sctx.Fixing = true
+	sctx.PreviousFindings = stepstest.CIGateFindingsJSON("build")
 	sctx.Config.CITimeout = 30 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())

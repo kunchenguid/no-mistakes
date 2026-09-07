@@ -549,6 +549,10 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		if strings.Contains(joined, "reviewThreads") {
+			printFakeReviewThreads(os.Getenv("FAKE_CLI_REVIEW_COMMENTS"))
+			os.Exit(0)
+		}
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
 			os.Exit(1)
@@ -858,12 +862,15 @@ func printFakeCommitChecks(raw string, args []string) {
 		Bucket      string `json:"bucket"`
 		CompletedAt string `json:"completedAt"`
 		Link        string `json:"link"`
+		// App is the check suite's app slug, rendered the way GitHub's
+		// GraphQL rollup reports it (checkSuite.app.slug). Empty omits it.
+		App string `json:"app"`
 	}
 	if err := json.Unmarshal([]byte(raw), &checks); err != nil {
 		fmt.Println(raw)
 		return
 	}
-	nodes := make([]map[string]string, 0, len(checks))
+	nodes := make([]map[string]any, 0, len(checks))
 	for _, check := range checks {
 		status := check.Status
 		if status == "" {
@@ -893,10 +900,14 @@ func printFakeCommitChecks(raw string, args []string) {
 		if repo := fakeGraphQLRepo(args); repo != "" {
 			link = strings.Replace(link, "github.com/test/repo/", "github.com/"+repo+"/", 1)
 		}
-		nodes = append(nodes, map[string]string{
+		node := map[string]any{
 			"__typename": "CheckRun", "name": check.Name, "status": status,
 			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": link,
-		})
+		}
+		if check.App != "" {
+			node["checkSuite"] = map[string]any{"app": map[string]any{"slug": check.App}}
+		}
+		nodes = append(nodes, node)
 	}
 	response := map[string]any{
 		"data": map[string]any{
@@ -907,6 +918,60 @@ func printFakeCommitChecks(raw string, args []string) {
 							"nodes":    nodes,
 							"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
 						},
+					},
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
+// printFakeReviewThreads renders FAKE_CLI_REVIEW_COMMENTS - a JSON array of
+// {author, path, line, body} - as the reviewThreads GraphQL response the
+// GitHub backend's GetReviewComments parses, one unresolved thread per
+// comment. An empty or invalid value renders a pull request with no threads.
+func printFakeReviewThreads(raw string) {
+	var comments []struct {
+		Author string `json:"author"`
+		Path   string `json:"path"`
+		Line   int    `json:"line"`
+		Body   string `json:"body"`
+	}
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &comments); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	threads := make([]map[string]any, 0, len(comments))
+	for i, comment := range comments {
+		threads = append(threads, map[string]any{
+			"isResolved": false,
+			"comments": map[string]any{
+				"nodes": []map[string]any{{
+					"databaseId": i + 1,
+					"body":       comment.Body,
+					"path":       comment.Path,
+					"line":       comment.Line,
+					"url":        fmt.Sprintf("https://github.com/test/repo/pull/42#discussion_r%d", i+1),
+					"createdAt":  "2026-09-07T00:00:00Z",
+					"author":     map[string]any{"login": comment.Author},
+				}},
+			},
+		})
+	}
+	response := map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"pullRequest": map[string]any{
+					"reviewThreads": map[string]any{
+						"nodes":    threads,
+						"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
 					},
 				},
 			},

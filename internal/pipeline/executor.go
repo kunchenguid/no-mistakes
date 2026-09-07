@@ -841,6 +841,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		ciReadyNoCI = declaredNoCI
 		e.emitCIReadinessEvent(run, repo, ready, declaredNoCI)
 	}
+	// A fix round is marked fixing before the step re-executes and only
+	// changes status when Execute returns. A step whose fix round ends with
+	// ordinary execution (the CI monitor after a published repair) reports
+	// that here, so the durable status and every subscriber see running
+	// again; step_started is the event the TUI already maps to running.
+	markRunning := func() {
+		if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); dbErr != nil {
+			slog.Warn("failed to return step status to running in db", "step", stepName, "error", dbErr)
+		}
+		e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
+	}
 	sctx := &StepContext{
 		Ctx:              ctx,
 		Run:              run,
@@ -866,6 +877,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 		CIReadinessChanged: ciReadinessChanged,
+		MarkRunning:        markRunning,
 		OnPRMerged:         e.onPRMerged,
 	}
 	if stepName == types.StepReview {
@@ -945,9 +957,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		var inserted *db.StepRound
 		var dbErr error
 		roundTrigger := nextTrigger
-		if stepName == types.StepCI && restartFrom != "" && !sctx.Fixing {
-			roundTrigger = "auto_fix"
-		}
 		if stepName == types.StepReview {
 			if e.config != nil && e.config.CaptureEvalProvenance {
 				inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, roundTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, e.config.TrustedConfigSHA, e.config.ReplayGlobalYAML, e.config.ReplayRepoYAML, roundDuration)

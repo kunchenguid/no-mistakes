@@ -180,13 +180,16 @@ func TestClassifyCheckFailure(t *testing.T) {
 func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 	t.Parallel()
 
-	outcome := ciUnresolvedCancelledOutcome(
-		[]string{"build"},
-		[]scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}},
-		func(string) int { return 1 },
-	)
+	outcome := ciObservationOutcome(ciObservationFindings(ciIssues{
+		checks:              []scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true}},
+		unresolvedCancelled: []string{"build"},
+		reruns:              func(string) int { return 1 },
+	}))
 	if !outcome.NeedsApproval {
 		t.Fatal("pre-run failure after its rerun must require approval")
+	}
+	if outcome.AutoFixable {
+		t.Fatal("a transient check no rerun will replace must never be auto-fixable")
 	}
 
 	var findings Findings
@@ -209,6 +212,9 @@ func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 	if findings.Items[0].Action != types.ActionAskUser {
 		t.Fatalf("action = %q, want ask-user parking", findings.Items[0].Action)
 	}
+	if findings.Items[0].Category != types.FindingCategoryCITransient || findings.Items[0].Check != "build" {
+		t.Fatalf("finding = %+v, want a ci-transient finding naming its check", findings.Items[0])
+	}
 }
 
 // Names identify shared rerun budgets, not unique checks. If two workflows use
@@ -217,14 +223,14 @@ func TestCIUnresolvedCancelledOutcomePreservesPreRunFailureCause(t *testing.T) {
 func TestCIUnresolvedCancelledOutcomeKeepsSameNamedCausesPositional(t *testing.T) {
 	t.Parallel()
 
-	outcome := ciUnresolvedCancelledOutcome(
-		[]string{"build"},
-		[]scm.Check{
+	outcome := ciObservationOutcome(ciObservationFindings(ciIssues{
+		checks: []scm.Check{
 			{Name: "build", Bucket: scm.CheckBucketCancel, State: "FAILURE", PreRunFailure: true},
 			{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
 		},
-		func(string) int { return 1 },
-	)
+		unresolvedCancelled: []string{"build"},
+		reruns:              func(string) int { return 1 },
+	}))
 
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {

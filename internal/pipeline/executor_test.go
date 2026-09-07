@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -99,14 +100,31 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 			return &StepOutcome{}, nil
 		}}
 	}
+	// The CI step behaves like the real one: its first observation reports an
+	// auto-fix finding, the executor's fix round repairs it and asks for
+	// revalidation, and the observation after the restart is green.
 	ciCalls := 0
-	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
 		order = append(order, types.StepCI)
 		ciCalls++
-		if ciCalls == 1 {
+		switch {
+		case ciCalls == 1:
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"error","description":"CI check failing: test","action":"auto-fix","category":"ci-check","check":"test"}],"summary":"1 CI check failing"}`,
+			}, nil
+		case ciCalls == 2:
+			if !sctx.Fixing || sctx.PreviousFindings == "" {
+				t.Errorf("fix round: Fixing=%v PreviousFindings=%q, want the auto-fix findings handed over", sctx.Fixing, sctx.PreviousFindings)
+			}
 			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		default:
+			if sctx.Fixing {
+				t.Error("post-restart observation must not run as a fix round")
+			}
+			return &StepOutcome{}, nil
 		}
-		return &StepOutcome{}, nil
 	}}
 	cycle := []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR}
 	steps := make([]Step, 0, len(cycle)+1)
@@ -114,16 +132,17 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 		steps = append(steps, pass(name))
 	}
 	steps = append(steps, ci)
-	exec := NewExecutor(database, p, nil, nil, steps, nil)
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{CI: 1}}, nil, steps, nil)
 
 	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if ciCalls != 2 {
-		t.Fatalf("CI executions = %d, want 2", ciCalls)
+	if ciCalls != 3 {
+		t.Fatalf("CI executions = %d, want 3 (observation, fix round, post-restart observation)", ciCalls)
 	}
-	want := append(append([]types.StepName{}, cycle...), types.StepCI)
-	want = append(want, want...)
+	want := append(append([]types.StepName{}, cycle...), types.StepCI, types.StepCI)
+	want = append(want, cycle...)
+	want = append(want, types.StepCI)
 	if !slices.Equal(order, want) {
 		t.Fatalf("execution order = %v, want %v", order, want)
 	}
@@ -136,15 +155,37 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetRoundsByStep(%s) error = %v", result.StepName, err)
 		}
+		if result.StepName == types.StepCI {
+			// The observation, the fix round that restarted validation, and
+			// the post-restart observation: the auto-fix trigger comes from
+			// the executor driving the round, not from a CI special case.
+			if len(rounds) != 3 || rounds[0].Round != 1 || rounds[1].Round != 2 || rounds[2].Round != 3 {
+				t.Errorf("CI rounds = %v, want [1 2 3]", roundNumbers(rounds))
+				continue
+			}
+			if rounds[0].Trigger != "initial" || rounds[1].Trigger != "auto_fix" || rounds[2].Trigger != "initial" {
+				t.Errorf("CI round triggers = [%s %s %s], want [initial auto_fix initial]", rounds[0].Trigger, rounds[1].Trigger, rounds[2].Trigger)
+			}
+			if rounds[0].SelectionSource == nil || *rounds[0].SelectionSource != db.RoundSelectionSourceAutoFix {
+				t.Errorf("observation round selection source = %v, want auto_fix so the attempt survives the restart", rounds[0].SelectionSource)
+			}
+			// The spent attempt is what a restarted or recovered executor
+			// restores: ResetStepsFrom leaves the round history alone.
+			state, err := exec.durableExecutionState(result.ID)
+			if err != nil {
+				t.Fatalf("durableExecutionState() error = %v", err)
+			}
+			if state.autoFixAttempts != 1 {
+				t.Errorf("durable auto-fix attempts after the restart = %d, want 1", state.autoFixAttempts)
+			}
+			continue
+		}
 		if len(rounds) != 2 {
 			t.Errorf("%s rounds = %v, want [1 2]", result.StepName, roundNumbers(rounds))
 			continue
 		}
 		if rounds[0].Round != 1 || rounds[1].Round != 2 {
 			t.Errorf("%s rounds = %v, want [1 2]", result.StepName, roundNumbers(rounds))
-		}
-		if result.StepName == types.StepCI && rounds[0].Trigger != "auto_fix" {
-			t.Errorf("first CI round trigger = %q, want auto_fix", rounds[0].Trigger)
 		}
 	}
 }

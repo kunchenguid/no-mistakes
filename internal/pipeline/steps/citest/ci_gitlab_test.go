@@ -69,7 +69,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 		return ctx.Err()
 	})
 	pinCIMonitorClock(step)
-	_, err := step.Execute(sctx)
+	_, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCIStep_GitLabMergedMRExitsEarly(t *testing.T) {
 
 	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
 	pinCIMonitorClock(step)
-	outcome, err := step.Execute(sctx)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestCIStep_GitLabFailureNeedsApproval(t *testing.T) {
 
 	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
 	pinCIMonitorClock(step)
-	outcome, err := step.Execute(sctx)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestCIStep_GitLabMergeConflictDetected(t *testing.T) {
 
 	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
 	pinCIMonitorClock(step)
-	outcome, err := step.Execute(sctx)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 		cancel()
 		return ctx.Err()
 	})
-	outcome, err := step.Execute(sctx)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	assertCIRestartsValidation(t, outcome, err)
 	if capturedPrompt == "" {
 		t.Fatal("expected GitLab auto-fix to call the agent")
@@ -300,7 +300,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 		return ctx.Err()
 	})
 	pinCIMonitorClock(step)
-	_, err := step.Execute(sctx)
+	_, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)
 	}

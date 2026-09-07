@@ -389,12 +389,15 @@ func TestCIStep_ProtectedPathRefusalStopsAutomaticAndManualRepair(t *testing.T) 
 			sctx.Config.AutoFix.CI = 3
 			sctx.Config.CITimeout = time.Minute
 			sctx.Fixing = manual
+			if manual {
+				sctx.PreviousFindings = ciGateFindingsJSON("test")
+			}
 			polls := 0
 			step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
 				polls++
 				return nil
 			}}
-			outcome, err := step.Execute(sctx)
+			outcome, err := driveCI(t, step, sctx)
 			if err != nil || outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
 				t.Fatalf("refusal must park for an operator: outcome=%+v err=%v", outcome, err)
 			}

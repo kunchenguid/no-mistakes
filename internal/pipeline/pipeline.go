@@ -80,6 +80,14 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// MarkRunning tells the executor that a step re-executing as a fix round
+	// has finished its repair and is executing normally again, so the step's
+	// status returns from fixing to running before Execute returns. The CI
+	// step needs it: a fix round that publishes a repair keeps monitoring the
+	// pull request afterwards, and both the TUI's active-CI indicator and the
+	// AXI checks-passed outcome read a running status. Nil in embeddings that
+	// never fix.
+	MarkRunning func()
 	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
 	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
 	OnPRMerged func(ctx context.Context, runID string)

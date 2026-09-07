@@ -417,6 +417,7 @@ The document step attempts documentation fixes during its initial pass, so unres
 For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
+The CI step reports each settled failure as an `auto-fix` finding and the shared auto-fix loop drives its fix rounds, exactly as for review; `ask-user` findings (a supported review bot's red check, a provider-attributed check no rerun will replace) never consume an attempt.
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -466,8 +467,8 @@ Once the provider publishes a conclusive replacement, no-mistakes durably stops 
 A provider-attributed check that no rerun is going to replace pauses the step for user approval when it is the only remaining issue, so the pull request never looks green.
 That includes a check that came back cancelled after its rerun and a detected GitHub setup failure that persisted after its budget.
 At the default budget of `0`, once the budget is spent, or on a provider with no rerun API, cancellation itself reaches this gate because the provider has published its conclusion and will not publish another one on its own.
-The check does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: it is not a verdict on the code, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
-Answering that gate with `fix` is still honored, and the fix round you asked for is told about the check alongside any other issue.
+The check is reported as an `ask-user` finding, so it does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: it is not a verdict on the code, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
+Answering that gate with `fix` is still honored: the fix round you asked for repairs the findings you selected, and a selected transient finding names its check to the agent alongside any other issue.
 
 Reruns are skipped when:
 

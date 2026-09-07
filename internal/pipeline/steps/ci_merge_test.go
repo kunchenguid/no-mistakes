@@ -41,7 +41,7 @@ func TestCIStep_MergeConflictDetected_ReturnsNeedsApproval(t *testing.T) {
 			return nil
 		},
 	}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	if err != nil {
 		t.Fatalf("expected outcome, got error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCIStep_MergeConflictAndCIFailure_FixPromptIncludesBoth(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	step.Execute(sctx)
+	driveCI(t, step, sctx)
 
 	if capturedPrompt == "" {
 		t.Fatal("expected agent to be called")
@@ -198,7 +198,7 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	step.Execute(sctx)
+	driveCI(t, step, sctx)
 
 	if !agentCalled {
 		t.Fatal("expected agent to be called to resolve merge conflict")
@@ -298,7 +298,7 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 		t.Fatalf("buildHost returned nil: %s", skip)
 	}
 	pr := &scm.PR{Number: "42", URL: prURL}
-	_, err := step.autoFixCI(sctx, host, pr, nil, true)
+	_, err := step.autoFixCI(sctx, host, pr, ciTargetsFor(nil, true))
 	if err != nil {
 		t.Fatalf("auto-fix CI: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestCIStep_AutoFixUsesExistingPRBaseAfterConfigChanges(t *testing.T) {
 	if host == nil {
 		t.Fatal(skip)
 	}
-	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, nil, true); err != nil {
+	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor(nil, true)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(prompt, "base commit: "+developTip) {

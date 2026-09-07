@@ -89,6 +89,20 @@ const (
 	FindingCategoryLint          = "lint"
 )
 
+// Finding category constants for the CI step's check findings. The CI step
+// turns each settled issue on the pull request into one finding and the fix
+// half routes by this category: a check finding names its provider check in
+// Finding.Check, a merge-conflict finding asks for a rebase, a transient
+// finding is a provider-attributed outcome no code change can clear, and a
+// review-bot finding carries one unresolved comment from a third-party
+// review bot's check.
+const (
+	FindingCategoryCICheck         = "ci-check"
+	FindingCategoryCIMergeConflict = "ci-merge-conflict"
+	FindingCategoryCITransient     = "ci-transient"
+	FindingCategoryCIReviewBot     = "ci-review-bot"
+)
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //
@@ -158,8 +172,13 @@ type Finding struct {
 	UserInstructions string `json:"user_instructions,omitempty"`
 	ReviewScope      string `json:"review_scope,omitempty"`
 	// Category separates the combined document+lint housekeeping pass's
-	// findings into their owning gates. Empty everywhere else.
+	// findings into their owning gates and the CI step's findings by kind
+	// (see the FindingCategoryCI* constants). Empty everywhere else.
 	Category string `json:"category,omitempty"`
+	// Check is the provider check name a CI finding was derived from, so the
+	// fix half can fetch that check's logs by name and a human sees which
+	// check is red. Empty on every non-CI finding.
+	Check string `json:"check,omitempty"`
 }
 
 // TestScenario is one named end-to-end scenario the test step derived from the
@@ -228,6 +247,7 @@ type findingWire struct {
 	UserInstructions    string `json:"user_instructions,omitempty"`
 	ReviewScope         string `json:"review_scope,omitempty"`
 	Category            string `json:"category,omitempty"`
+	Check               string `json:"check,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -521,6 +541,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.UserInstructions = wire.UserInstructions
 	f.ReviewScope = wire.ReviewScope
 	f.Category = wire.Category
+	f.Check = wire.Check
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

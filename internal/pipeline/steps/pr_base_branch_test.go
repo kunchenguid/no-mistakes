@@ -439,7 +439,7 @@ func TestCIStep_AutoFixStillPrefersExistingPRForgeBase(t *testing.T) {
 	if host == nil {
 		t.Fatal(skip)
 	}
-	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, nil, true); err != nil {
+	if _, err := (&CIStep{}).autoFixCI(sctx, host, pr, ciTargetsFor(nil, true)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(prompt, "base commit: "+developTip) {

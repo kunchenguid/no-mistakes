@@ -26,7 +26,6 @@ type StepResult struct {
 	LastActivity   *string
 	AgentPID       *int
 	AutoFixLimit   *int
-	CIFixAttempts  int
 	// OverrideReason is non-nil exactly when a human answered ActionApprove on
 	// this step's gate despite an unresolved external condition (currently:
 	// the CI step's live checks were still failing). See
@@ -39,17 +38,17 @@ type StepResult struct {
 
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
 
+// readableStepResultColumns tolerates databases that predate the optional
+// columns. The ci_fix_attempts column is no longer read: the CI step's fix
+// rounds are counted by the executor from the round history, exactly like
+// every other step's, and the column only remains because migrations are
+// append-only.
 func (d *DB) readableStepResultColumns() string {
 	columns := stepResultColumns
 	if d.hasColumn("step_results", "round_started_at") {
 		columns += ", round_started_at"
 	} else {
 		columns += ", NULL AS round_started_at"
-	}
-	if d.hasColumn("step_results", "ci_fix_attempts") {
-		columns += ", ci_fix_attempts"
-	} else {
-		columns += ", 0 AS ci_fix_attempts"
 	}
 	if d.hasColumn("step_results", "override_reason") {
 		columns += ", override_reason"
@@ -88,7 +87,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -110,7 +109,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -224,13 +223,6 @@ func (d *DB) StartStepFixRound(id string, autoFixLimit int) error {
 func (d *DB) SetStepAutoFixLimit(id string, autoFixLimit int) error {
 	if _, err := d.sql.Exec(`UPDATE step_results SET auto_fix_limit = ? WHERE id = ?`, autoFixLimitDBValue(autoFixLimit), id); err != nil {
 		return fmt.Errorf("set step auto-fix limit: %w", err)
-	}
-	return nil
-}
-
-func (d *DB) SetCIFixAttempts(id string, attempts int) error {
-	if _, err := d.sql.Exec(`UPDATE step_results SET ci_fix_attempts = ? WHERE id = ?`, attempts, id); err != nil {
-		return fmt.Errorf("set CI fix attempts: %w", err)
 	}
 	return nil
 }

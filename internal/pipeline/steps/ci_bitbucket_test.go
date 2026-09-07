@@ -43,7 +43,7 @@ func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	_, err := step.Execute(sctx)
+	_, err := driveCI(t, step, sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected Bitbucket CI pass to keep monitoring while PR is open, got %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCIStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	_, err := step.Execute(sctx)
+	_, err := driveCI(t, step, sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected Bitbucket CI pass to keep monitoring while PR is open, got %v", err)
 	}
@@ -115,7 +115,7 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
 	step := &CIStep{}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestCIStep_BitbucketStoppedCheckParksForADecision(t *testing.T) {
 			return nil
 		},
 	}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	if err != nil {
 		t.Fatalf("expected an approval outcome, got error: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestCIStep_BitbucketAutoFixIncludesPipelineLogs(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	assertCIRestartsValidation(t, outcome, err)
 	if capturedPrompt == "" {
 		t.Fatal("expected Bitbucket auto-fix to call the agent")
@@ -331,7 +331,7 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	assertCIRestartsValidation(t, outcome, err)
 	if capturedPrompt == "" {
 		t.Fatal("expected Bitbucket auto-fix to call the agent")
@@ -416,7 +416,7 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	outcome, err := step.Execute(sctx)
+	outcome, err := driveCI(t, step, sctx)
 	assertCIRestartsValidation(t, outcome, err)
 	if capturedPrompt == "" {
 		t.Fatal("expected Bitbucket auto-fix to call the agent")

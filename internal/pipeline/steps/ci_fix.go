@@ -41,6 +41,80 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 
+// repairFromFindings runs one CI fix round over the findings the executor
+// selected for it (sctx.PreviousFindings): the auto-fix subset of the last
+// settled observation for an automatic round, or whatever the human selected
+// at the gate, with their instructions, for a user-requested one. It is the
+// CI step's counterpart of the review step's fixer turn.
+//
+// It returns a non-nil outcome when the round ends this execution: a
+// protected-path refusal, a fix agent that burned its whole invocation
+// budget, a repair whose attestation could not be settled, a repair that must
+// revalidate from Review, or the agent's conclusion that no code change is
+// warranted - the last two of those park the selected findings as ask-user,
+// because a question the agent has already declined to answer with code is a
+// human's to answer. A nil outcome means monitoring resumes: either the
+// repair was published and the provider must re-run the checks against it,
+// or the agent produced nothing and the next settled observation re-emits
+// the same findings so the executor can retry while auto_fix.ci allows.
+func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (*pipeline.StepOutcome, error) {
+	targets, err := parseCIFixTargets(sctx.PreviousFindings)
+	if err != nil {
+		return nil, fmt.Errorf("parse CI fix targets: %w", err)
+	}
+	if targets.empty() {
+		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
+		return nil, nil
+	}
+	issueDesc := targets.description()
+	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))
+	previousHeadSHA := sctx.Run.HeadSHA
+	fixKey := encodeLastFixedChecks(targets.Checks, targets.MergeConflict)
+	fixCompletedAt := s.observedCompletedAt
+	repair, err := s.autoFixCI(sctx, host, pr, targets)
+	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
+		return outcome, nil
+	}
+	if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+		return outcome, nil
+	}
+	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
+		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
+		return ciRepairParkOutcome(targets.Findings, err.Error()), nil
+	}
+	if err != nil {
+		// An ordinary fix failure is cheap to repeat and often works the next
+		// time: the next settled observation re-emits the findings and the
+		// executor retries while auto_fix.ci allows.
+		sctx.Log(fmt.Sprintf("warning: CI fix failed: %v", err))
+		return nil, nil
+	}
+	if repair.HeadAdvanced || sctx.Run.HeadSHA != previousHeadSHA {
+		s.lastFixedChecks = fixKey
+		s.lastFixedCompletedAt = fixCompletedAt
+		s.pendingFixSummary = repair.Summary
+		if repair.Revalidate {
+			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		// The repair was published, so the monitor stays on this run and
+		// waits for the provider to re-run the checks against the new head.
+		// The executor marked the step fixing for this round; it is monitoring
+		// again now, and the readiness consumers (checks-passed, the TUI's
+		// active CI indicator) read a running status.
+		sctx.Log("CI repair published, resuming monitoring for the checks to re-run...")
+		if sctx.MarkRunning != nil {
+			sctx.MarkRunning()
+		}
+		return nil, nil
+	}
+	if repair.NoCodeChangeNeeded {
+		sctx.Log(fmt.Sprintf("CI fixer concluded no code change is needed: %s", repair.Summary))
+		return ciRepairParkOutcome(targets.Findings, repair.Summary), nil
+	}
+	sctx.Log("CI fix produced no changes, resuming monitoring...")
+	return nil, nil
+}
+
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
 // records the repair under the run's uniform continuity rule: published
 // immediately through the guarded push path when its continuity with the
@@ -48,8 +122,10 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 // ci.revalidate_repairs asks for it outright. See recordRepair.
 // The result reports whether the recorded head advanced and whether the repair
 // must revalidate; a zero result means the agent produced no changes.
-func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (ciRepairResult, error) {
+func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, targets ciFixTargets) (ciRepairResult, error) {
 	ctx := sctx.Ctx
+	failingNames := targets.Checks
+	mergeConflict := targets.MergeConflict
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return ciRepairResult{}, err
 	}
@@ -101,6 +177,9 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 		- Verify the rebase completes cleanly before finishing.`
+	case len(failingNames) == 0:
+		promptIntro = "Address the following findings selected at the CI gate of this PR."
+		promptRules = ciFailingCheckFixRules
 	default:
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = ciFailingCheckFixRules
@@ -140,6 +219,14 @@ CI logs:
 	if reviewCommentsSection != "" {
 		prompt += reviewCommentsSection
 	}
+	// The findings this round was asked to repair, with any instructions the
+	// human attached at the gate, in the same sanitized form every other
+	// fix-capable step hands its fixer.
+	if len(targets.Findings.Items) > 0 {
+		if encoded, encodeErr := types.MarshalFindingsJSON(targets.Findings); encodeErr == nil {
+			prompt += "\n\nFindings to address (selected for this fix round, with any user instructions):\n" + sanitizedPreviousFindingsForPrompt(encoded)
+		}
+	}
 	// Recorded human decisions, before the user intent and in the same order
 	// every other fix-capable step composes them. The intent is frozen at run
 	// start, so it always predates any decision a human made at a later gate;
@@ -177,8 +264,12 @@ CI logs:
 		}
 		return repair, errors.Join(err, recordErr)
 	}
-	if err != nil || repair.HeadAdvanced {
+	if err != nil {
 		return repair, err
+	}
+	if repair.HeadAdvanced {
+		repair.Summary = conclusion.Summary
+		return repair, nil
 	}
 	if !mergeConflict && conclusion.CodeChangeNeeded != nil && !*conclusion.CodeChangeNeeded {
 		repair.NoCodeChangeNeeded = true

@@ -513,7 +513,11 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 	return checks, nil
 }
 
-const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt startedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
+// commitChecksQuery reads the head commit's check rollup. A CheckRun also
+// carries its check suite's app slug: that is the structural identity the CI
+// step uses to tell a third-party review bot's check (scm.ReviewBots) from the
+// repository's own Actions jobs, without matching check names.
+const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt startedAt detailsUrl checkSuite{app{slug}}} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
 
 const reviewThreadsQuery = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:100){nodes{databaseId body path line url createdAt author{login}}}} pageInfo{hasNextPage endCursor}}}}}`
 
@@ -553,9 +557,14 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 									CompletedAt string `json:"completedAt"`
 									StartedAt   string `json:"startedAt"`
 									DetailsURL  string `json:"detailsUrl"`
-									Context     string `json:"context"`
-									State       string `json:"state"`
-									TargetURL   string `json:"targetUrl"`
+									CheckSuite  *struct {
+										App *struct {
+											Slug string `json:"slug"`
+										} `json:"app"`
+									} `json:"checkSuite"`
+									Context   string `json:"context"`
+									State     string `json:"state"`
+									TargetURL string `json:"targetUrl"`
 								} `json:"nodes"`
 								PageInfo struct {
 									HasNextPage bool   `json:"hasNextPage"`
@@ -592,6 +601,9 @@ func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check
 					check.Bucket = normalizeCheckBucket("", node.Status)
 				}
 				check.Link = strings.TrimSpace(node.DetailsURL)
+				if node.CheckSuite != nil && node.CheckSuite.App != nil {
+					check.App = strings.TrimSpace(node.CheckSuite.App.Slug)
+				}
 				if parsed, parseErr := time.Parse(time.RFC3339, node.CompletedAt); parseErr == nil {
 					check.CompletedAt = parsed
 				}
@@ -1347,7 +1359,7 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 				continue
 			}
 			for _, raw := range thread.Comments.Nodes {
-				if raw.Author == nil || !isSupportedReviewBot(raw.Author.Login) {
+				if raw.Author == nil || !scm.IsReviewBotLogin(raw.Author.Login) {
 					continue
 				}
 				line := 0
@@ -1374,13 +1386,4 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 		cursor = threads.PageInfo.EndCursor
 	}
 	return comments, nil
-}
-
-func isSupportedReviewBot(login string) bool {
-	switch strings.ToLower(strings.TrimSpace(login)) {
-	case "greptile-apps[bot]", "greptile-apps":
-		return true
-	default:
-		return false
-	}
 }

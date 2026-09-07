@@ -112,7 +112,7 @@ func (f *ciDecisionPromptFixture) capture(t *testing.T) string {
 		cancel()
 		return ctx.Err()
 	}}
-	step.Execute(f.sctx)
+	_, _ = driveCI(t, step, f.sctx)
 
 	if f.prompt == "" {
 		t.Fatal("the CI repair agent was never invoked, so no prompt was captured")
