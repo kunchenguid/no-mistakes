@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,7 +179,7 @@ func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 	check := scm.Check{Name: "Greptile Review", Bucket: scm.CheckBucketFail, App: "greptile-apps", Link: "https://greptile.com/"}
 	bot, _ := scm.ReviewBotForApp(check.App)
 
-	empty := reviewBotFindings(check, bot, nil)
+	empty := reviewBotFindings([]reviewBotCheck{{check: check, bot: bot}}, nil)
 	if len(empty) != 1 || empty[0].Action != types.ActionAskUser || empty[0].Check != check.Name || !strings.Contains(empty[0].Description, "no unresolved review comments") {
 		t.Fatalf("empty-case findings = %+v, want one ask-user finding for the check", empty)
 	}
@@ -187,15 +188,59 @@ func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 	for i := 0; i < maxReviewBotCommentFindings+7; i++ {
 		many = append(many, scm.ReviewComment{Author: "greptile-apps[bot]", Path: "a.go", Line: i + 1, Body: strings.Repeat("x", maxReviewBotCommentBytes+100)})
 	}
-	bounded := reviewBotFindings(check, bot, many)
-	if len(bounded) != maxReviewBotCommentFindings+1 {
-		t.Fatalf("got %d findings, want %d comment findings plus one omission notice", len(bounded), maxReviewBotCommentFindings+1)
+	bounded := reviewBotFindings([]reviewBotCheck{{check: check, bot: bot}}, many)
+	if len(bounded) > maxReviewBotCommentFindings {
+		t.Fatalf("got %d findings, want at most %d including the omission notice", len(bounded), maxReviewBotCommentFindings)
 	}
 	if len(bounded[0].Description) > maxReviewBotCommentBytes+64 {
 		t.Fatalf("comment description was not bounded: %d bytes", len(bounded[0].Description))
 	}
-	if !strings.Contains(bounded[len(bounded)-1].Description, "7 more unresolved review comments") {
+	totalBytes := 0
+	for _, finding := range bounded {
+		raw, _ := json.Marshal(finding)
+		totalBytes += len(raw)
+	}
+	if totalBytes > maxReviewBotObservationBytes {
+		t.Fatalf("descriptions use %d bytes, want at most %d", totalBytes, maxReviewBotObservationBytes)
+	}
+	if !strings.Contains(bounded[len(bounded)-1].Description, "review-bot findings were omitted") {
 		t.Fatalf("last finding = %+v, want the omission count", bounded[len(bounded)-1])
+	}
+}
+
+func TestReviewBotFindings_BoundsEntireObservationAcrossRepeatedChecks(t *testing.T) {
+	t.Parallel()
+	bot, _ := scm.ReviewBotForApp("greptile-apps")
+	checks := make([]reviewBotCheck, 100)
+	for i := range checks {
+		checks[i] = reviewBotCheck{check: scm.Check{Name: "Greptile Review", ProviderID: fmt.Sprintf("github-check-run:%d", i+1)}, bot: bot}
+	}
+	comments := make([]scm.ReviewComment, 50)
+	for i := range comments {
+		comments[i] = scm.ReviewComment{ID: fmt.Sprintf("comment-%d", i), Author: "greptile-apps[bot]", Body: fmt.Sprintf("finding-%d", i)}
+	}
+
+	findings := reviewBotFindings(checks, comments)
+	if len(findings) > maxReviewBotCommentFindings {
+		t.Fatalf("got %d findings across repeated checks, want at most %d", len(findings), maxReviewBotCommentFindings)
+	}
+	totalBytes := 0
+	seen := map[string]bool{}
+	for _, finding := range findings {
+		raw, _ := json.Marshal(finding)
+		totalBytes += len(raw)
+		if strings.HasPrefix(finding.Description, "greptile-apps[bot]: finding-") {
+			if seen[finding.Description] {
+				t.Fatalf("duplicated comment finding %q", finding.Description)
+			}
+			seen[finding.Description] = true
+		}
+	}
+	if totalBytes > maxReviewBotObservationBytes {
+		t.Fatalf("descriptions use %d bytes, want at most %d", totalBytes, maxReviewBotObservationBytes)
+	}
+	if !strings.Contains(findings[len(findings)-1].Description, "review-bot findings were omitted") {
+		t.Fatalf("last finding = %+v, want one aggregate omission notice", findings[len(findings)-1])
 	}
 }
 

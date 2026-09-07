@@ -17,9 +17,15 @@ import (
 // that left hundreds of comments is summarized past this point rather than
 // rendered in full.
 const (
-	maxReviewBotCommentFindings = 50
-	maxReviewBotCommentBytes    = 2 * 1024
+	maxReviewBotCommentFindings  = 50
+	maxReviewBotCommentBytes     = 2 * 1024
+	maxReviewBotObservationBytes = 64 * 1024
 )
+
+type reviewBotCheck struct {
+	check scm.Check
+	bot   scm.ReviewBot
+}
 
 // ciIssues is one settled observation of the pull request: what the monitor
 // concluded is wrong with the head once every check finished and every
@@ -65,11 +71,11 @@ type ciIssues struct {
 // review bot.
 func ciObservationFindings(issues ciIssues) Findings {
 	var items []Finding
-	codeChecks, botChecks := 0, 0
+	codeChecks := 0
+	var botChecks []reviewBotCheck
 	for _, check := range selectedFailingChecks(issues.checks, issues.failing) {
 		if bot, ok := scm.ReviewBotForApp(check.App); ok {
-			botChecks++
-			items = append(items, reviewBotFindings(check, bot, issues.botComments)...)
+			botChecks = append(botChecks, reviewBotCheck{check: check, bot: bot})
 			continue
 		}
 		codeChecks++
@@ -82,6 +88,7 @@ func ciObservationFindings(issues ciIssues) Findings {
 			Description: ciCheckDescription(check),
 		})
 	}
+	items = append(items, reviewBotFindings(botChecks, issues.botComments)...)
 	if issues.mergeConflict {
 		items = append(items, Finding{
 			Severity:    types.FindingSeverityError,
@@ -104,7 +111,7 @@ func ciObservationFindings(issues ciIssues) Findings {
 	if issues.mergeConflict {
 		parts = append(parts, "PR has merge conflicts with the base branch")
 	}
-	if botChecks > 0 {
+	if len(botChecks) > 0 {
 		parts = append(parts, reviewBotSummary(items))
 	}
 	if len(transient) > 0 {
@@ -171,65 +178,102 @@ func ciCheckDescription(check scm.Check) string {
 	return description
 }
 
-// reviewBotFindings renders a red review-bot check as one ask-user finding
-// per unresolved comment the bot left, so the human decides comment by
-// comment exactly as they do for the review step's own findings, and a
-// selected comment reaches the fix agent with its file and line. A red check
-// with no unresolved comment still needs a decision, so it becomes one
-// finding of its own rather than disappearing.
-func reviewBotFindings(check scm.Check, bot scm.ReviewBot, comments []scm.ReviewComment) []Finding {
-	var items []Finding
-	omitted := 0
-	for _, comment := range comments {
-		author, ok := scm.ReviewBotForLogin(comment.Author)
-		if !ok || author.AppSlug != bot.AppSlug {
+// reviewBotFindings renders red review-bot checks as ask-user findings for
+// their unresolved comments, bounded once across the complete observation.
+// A red check with no unresolved comment still needs a decision, so it becomes
+// one finding of its own rather than disappearing.
+func reviewBotFindings(checks []reviewBotCheck, comments []scm.ReviewComment) []Finding {
+	var candidates []Finding
+	seenComments := map[string]bool{}
+	for _, checked := range checks {
+		matched := false
+		hasComments := false
+		for _, comment := range comments {
+			author, ok := scm.ReviewBotForLogin(comment.Author)
+			if !ok || author.AppSlug != checked.bot.AppSlug {
+				continue
+			}
+			hasComments = true
+			key := "id:" + comment.ID
+			if comment.ID == "" {
+				key = fmt.Sprintf("content:%s\x00%s\x00%d\x00%s", comment.Author, comment.Path, comment.Line, comment.Body)
+			}
+			if seenComments[key] {
+				continue
+			}
+			seenComments[key] = true
+			matched = true
+			body := strings.TrimSpace(comment.Body)
+			if len(body) > maxReviewBotCommentBytes {
+				body = body[:maxReviewBotCommentBytes] + "..."
+			}
+			candidates = append(candidates, Finding{
+				Severity:    types.FindingSeverityWarning,
+				Action:      types.ActionAskUser,
+				Category:    types.FindingCategoryCIReviewBot,
+				Check:       checked.check.Name,
+				CheckID:     checked.check.ProviderID,
+				File:        comment.Path,
+				Line:        comment.Line,
+				Description: fmt.Sprintf("%s: %s", strings.TrimSpace(comment.Author), body),
+			})
+		}
+		if matched {
 			continue
 		}
-		if len(items) >= maxReviewBotCommentFindings {
-			omitted++
-			continue
-		}
-		body := strings.TrimSpace(comment.Body)
-		if len(body) > maxReviewBotCommentBytes {
-			body = body[:maxReviewBotCommentBytes] + "..."
-		}
-		items = append(items, Finding{
-			Severity:    types.FindingSeverityWarning,
-			Action:      types.ActionAskUser,
-			Category:    types.FindingCategoryCIReviewBot,
-			Check:       check.Name,
-			CheckID:     check.ProviderID,
-			File:        comment.Path,
-			Line:        comment.Line,
-			Description: fmt.Sprintf("%s: %s", strings.TrimSpace(comment.Author), body),
-		})
-	}
-	if omitted > 0 {
-		items = append(items, Finding{
-			Severity:    types.FindingSeverityWarning,
-			Action:      types.ActionAskUser,
-			Category:    types.FindingCategoryCIReviewBot,
-			Check:       check.Name,
-			CheckID:     check.ProviderID,
-			Description: fmt.Sprintf("%s: %d more unresolved review comments were omitted from this gate; read them on the pull request", check.Name, omitted),
-		})
-	}
-	if len(items) == 0 {
-		description := fmt.Sprintf("Review bot check failing: %s", check.Name)
-		if link := strings.TrimSpace(check.Link); link != "" {
+		description := fmt.Sprintf("Review bot check failing: %s", checked.check.Name)
+		if link := strings.TrimSpace(checked.check.Link); link != "" {
 			description += " - " + link
 		}
-		description += " - no unresolved review comments were found, so decide whether to proceed"
-		items = append(items, Finding{
+		if hasComments {
+			description += " - its unresolved comments are represented by another failed check from the same app"
+		} else {
+			description += " - no unresolved review comments were found, so decide whether to proceed"
+		}
+		candidates = append(candidates, Finding{
 			Severity:    types.FindingSeverityWarning,
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCIReviewBot,
-			Check:       check.Name,
-			CheckID:     check.ProviderID,
+			Check:       checked.check.Name,
+			CheckID:     checked.check.ProviderID,
 			Description: description,
 		})
 	}
-	return items
+	findingSize := func(item Finding) int {
+		raw, _ := json.Marshal(item)
+		return len(raw)
+	}
+	var items []Finding
+	bytesUsed := 0
+	omitted := 0
+	for i, item := range candidates {
+		size := findingSize(item)
+		if len(items) == maxReviewBotCommentFindings || bytesUsed+size > maxReviewBotObservationBytes {
+			omitted = len(candidates) - i
+			break
+		}
+		items = append(items, item)
+		bytesUsed += size
+	}
+	if omitted == 0 {
+		return items
+	}
+	marker := Finding{
+		Severity:    types.FindingSeverityWarning,
+		Action:      types.ActionAskUser,
+		Category:    types.FindingCategoryCIReviewBot,
+		Check:       checks[0].check.Name,
+		CheckID:     checks[0].check.ProviderID,
+		Description: fmt.Sprintf("%d more review-bot findings were omitted from this gate; read them on the pull request", omitted),
+	}
+	for len(items) > 0 && (len(items) >= maxReviewBotCommentFindings || bytesUsed+findingSize(marker) > maxReviewBotObservationBytes) {
+		last := items[len(items)-1]
+		items = items[:len(items)-1]
+		bytesUsed -= findingSize(last)
+		omitted++
+		marker.Description = fmt.Sprintf("%d more review-bot findings were omitted from this gate; read them on the pull request", omitted)
+	}
+	return append(items, marker)
 }
 
 func reviewBotSummary(items []Finding) string {

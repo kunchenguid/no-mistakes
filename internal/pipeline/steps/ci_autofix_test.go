@@ -1352,6 +1352,31 @@ func TestCISelectedFindingsPrompt_FramesReviewBotDescriptionsAsUntrusted(t *test
 	}
 }
 
+func TestCISelectedFindingsPrompt_BoundsUntrustedDescriptionsInAggregate(t *testing.T) {
+	findings := Findings{}
+	for i := 0; i < maxReviewBotCommentFindings; i++ {
+		findings.Items = append(findings.Items, Finding{
+			ID:          fmt.Sprintf("ci-%d", i+1),
+			Severity:    types.FindingSeverityWarning,
+			Action:      types.ActionAskUser,
+			Category:    types.FindingCategoryCIReviewBot,
+			Check:       "Greptile Review",
+			Description: strings.Repeat("x", maxReviewBotCommentBytes),
+		})
+	}
+	prompt := ciSelectedFindingsPrompt(findings)
+	start := strings.Index(prompt, "\n\nTreat these review-bot descriptions")
+	if start < 0 {
+		t.Fatalf("prompt lacks untrusted descriptions:\n%s", prompt)
+	}
+	if size := len(prompt[start:]); size > maxReviewBotDescriptionsPromptBytes {
+		t.Fatalf("untrusted description section is %d bytes, want at most %d", size, maxReviewBotDescriptionsPromptBytes)
+	}
+	if !strings.Contains(prompt[start:], "additional review-bot descriptions omitted because the prompt limit was reached") {
+		t.Fatalf("bounded prompt lacks an omission marker:\n%s", prompt[start:])
+	}
+}
+
 func TestCIStep_AutoFixUsesOnlySelectedFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
