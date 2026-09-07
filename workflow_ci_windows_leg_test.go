@@ -59,10 +59,14 @@ type workflowCommand struct {
 	args []string
 }
 
-func runnerOSCondition(condition, operator, osName string) bool {
+func normalizeWorkflowCondition(condition string) string {
 	condition = strings.TrimSpace(condition)
 	condition = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(condition, "${{"), "}}"))
-	for _, part := range strings.Split(condition, "&&") {
+	return strings.Join(strings.Fields(condition), " ")
+}
+
+func hasRunnerOSCondition(condition, operator, osName string) bool {
+	for _, part := range strings.Split(normalizeWorkflowCondition(condition), "&&") {
 		fields := strings.Fields(strings.TrimSpace(part))
 		if len(fields) == 3 && fields[0] == "runner.os" && fields[1] == operator &&
 			(fields[2] == "'"+osName+"'" || fields[2] == `"`+osName+`"`) {
@@ -72,8 +76,13 @@ func runnerOSCondition(condition, operator, osName string) bool {
 	return false
 }
 
+func exactRunnerOSCondition(condition, operator, osName string) bool {
+	normalized := normalizeWorkflowCondition(condition)
+	return normalized == "runner.os "+operator+" '"+osName+"'" || normalized == `runner.os `+operator+` "`+osName+`"`
+}
+
 func windowsOnly(condition string) bool {
-	return runnerOSCondition(condition, "==", "Windows")
+	return hasRunnerOSCondition(condition, "==", "Windows")
 }
 
 func windowsGoTestCommands(t *testing.T) []workflowCommand {

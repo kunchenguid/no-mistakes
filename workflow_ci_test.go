@@ -30,7 +30,7 @@ func TestCIWorkflowRunsTestsOnAllSupportedDesktopPlatforms(t *testing.T) {
 func TestCIWorkflowUsesRaceTestsOnUnixRunners(t *testing.T) {
 	job := ciTestJob(t)
 	commands := workflowCommandsMatching(job.Steps, func(step wfStep) bool {
-		return runnerOSCondition(step.If, "!=", "Windows")
+		return exactRunnerOSCondition(step.If, "!=", "Windows")
 	})
 
 	var raceTests []workflowCommand
