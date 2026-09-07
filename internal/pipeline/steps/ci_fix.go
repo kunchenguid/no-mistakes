@@ -110,7 +110,14 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		s.lastFixedCompletedAt = fixCompletedAt
 		s.pendingFixSummary = repair.Summary
 		if repair.Revalidate {
-			return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+			// Revalidation is not a fresh CI observation, so it cannot
+			// supersede findings that were left unselected for this repair.
+			// Carry them on the restart outcome: ask-user findings park before
+			// the restart, while an empty or informational set proceeds.
+			return &pipeline.StepOutcome{
+				RestartFrom: types.StepReview,
+				Findings:    sctx.DeferredFindings,
+			}, nil
 		}
 		// The repair was published, so the monitor stays on this run and
 		// waits for the provider to re-run the checks against the new head.

@@ -431,6 +431,16 @@ func TestCIStep_MixedGreptileAndTestFailureRoutesOnlyTheTestToAutoFix(t *testing
 
 	outcome, err := driveCI(t, step, sctx)
 	assertCIRestartsValidation(t, outcome, err)
+	deferred, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !types.HasAskUserFindings(deferred) {
+		t.Fatalf("outcome = %+v, want the deferred Greptile decision to block before restart", outcome)
+	}
+	if len(deferred.Items) != 1 || deferred.Items[0].Check != "Greptile Review" || deferred.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("deferred findings = %+v, want only the Greptile ask-user finding", deferred.Items)
+	}
 	if len(prompts) != 1 {
 		t.Fatalf("agent invocations = %d, want exactly one round for the test failure", len(prompts))
 	}
