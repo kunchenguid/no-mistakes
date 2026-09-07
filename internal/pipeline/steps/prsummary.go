@@ -1376,7 +1376,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	for _, r := range rounds {
 		isFixRound := r.IsFixRound()
 		if isFixRound {
-			inner.WriteString(fixRoundLine(r, flavor))
+			inner.WriteString(fixRoundLine(r))
 			inner.WriteString("\n")
 		}
 
@@ -1466,26 +1466,23 @@ func fixRoundOutcome(r *db.StepRound) fixOutcome {
 	if r.FixSummary == nil || strings.TrimSpace(*r.FixSummary) == "" {
 		return fixOutcomeUnreported
 	}
-	if strings.TrimSpace(*r.FixSummary) == noChangesAppliedSummary {
+	switch strings.TrimSpace(*r.FixSummary) {
+	case noChangesAppliedSummary:
 		return fixOutcomeNoChange
+	case changesAppliedSummary:
+		return fixOutcomeApplied
+	default:
+		return fixOutcomeUnreported
 	}
-	return fixOutcomeApplied
 }
 
 // fixRoundLine renders the one-line result of a fix round.
-func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
-	summary := ""
-	if r.FixSummary != nil {
-		summary = strings.TrimSpace(*r.FixSummary)
-	}
+func fixRoundLine(r *db.StepRound) string {
 	switch fixRoundOutcome(r) {
 	case fixOutcomeNoChange:
 		return "🔧 No changes applied."
 	case fixOutcomeApplied:
-		if summary == changesAppliedSummary {
-			return "🔧 Fix applied."
-		}
-		return fmt.Sprintf("🔧 Fix applied: %s", escapePRText(summary, flavor))
+		return "🔧 Fix applied."
 	default:
 		return "🔧 Fix attempted; result not reported."
 	}

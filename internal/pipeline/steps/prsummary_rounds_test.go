@@ -86,7 +86,7 @@ func TestBuildPipelineSummary_BitbucketCloudKeepsFixNarrativeWithoutHTML(t *test
 	}
 }
 
-func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
+func TestBuildPipelineSummary_DescriptiveFixSummaryDoesNotClaimAppliedFix(t *testing.T) {
 	t.Parallel()
 	findings1 := `{"findings":[{"id":"doc-1","severity":"warning","file":"internal/agent/server.go","line":129,"description":"waitForHealth doc comment still references the old 30s deadline"}],"summary":"1 warning"}`
 	fixSummary := "updated the waitForHealth doc comment"
@@ -101,13 +101,17 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 	}
 	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-	// The fix the agent actually applied must be surfaced - this is the data
-	// the old round-by-round layout dropped on the floor.
-	if !strings.Contains(md, "🔧 Fix applied: updated the waitForHealth doc comment") {
-		t.Errorf("expected recorded applied fix result, got:\n%s", md)
+	// A descriptive result is not evidence that a change was committed. Only
+	// the canonical result written after commitAgentFixes succeeds can support
+	// an applied-fix claim.
+	if !strings.Contains(md, "🔧 Fix attempted; result not reported.") {
+		t.Errorf("expected unreported fix result, got:\n%s", md)
 	}
-	if !strings.Contains(md, "🔧 **Document** - 1 issue found → auto-fixed ✅") {
-		t.Errorf("expected recorded applied fix in status line, got:\n%s", md)
+	if !strings.Contains(md, "🔧 **Document** - 1 issue found → fix attempted; result not reported ✅") {
+		t.Errorf("expected unreported fix in status line, got:\n%s", md)
+	}
+	if strings.Contains(md, "Fix applied") || strings.Contains(md, "auto-fixed") {
+		t.Errorf("did not expect descriptive fix summary to claim an applied fix, got:\n%s", md)
 	}
 	// The original problem must still be shown next to its fix.
 	if !strings.Contains(md, "waitForHealth doc comment still references the old 30s deadline") {
