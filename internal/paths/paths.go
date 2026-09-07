@@ -52,12 +52,6 @@ func (p *Paths) UpdateCheckFile() string {
 	return filepath.Join(p.root, "update-check.json")
 }
 
-// TelemetryGateFile persists the read-surface telemetry dedupe state so
-// high-frequency status polling stays rate-limited across CLI processes.
-func (p *Paths) TelemetryGateFile() string {
-	return filepath.Join(p.root, "telemetry-gate.json")
-}
-
 // EvalDir holds automatically collected local evaluation cases, shared object
 // pools, and their separate registry. EnsureDirs leaves creation to collection
 // and eval commands so disabling provenance and auto-capture creates no state.

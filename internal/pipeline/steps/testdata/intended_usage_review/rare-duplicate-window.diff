@@ -1,0 +1,17 @@
+diff --git a/jobs/finish.go b/jobs/finish.go
+index 1111111..2222222 100644
+--- a/jobs/finish.go
++++ b/jobs/finish.go
+@@ -1 +1,12 @@
+ package jobs
++
++func Finish(jobID string, result Result) error {
++	job := store.Get(jobID)
++	if job.Status == "done" {
++		return ErrAlreadyFinished
++	}
++	if job.Status != "running" {
++		return ErrAlreadyFinished
++	}
++	return store.Set(jobID, "done", result)
++}

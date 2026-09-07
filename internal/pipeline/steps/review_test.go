@@ -19,6 +19,86 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func cleanReviewFindings() Findings {
+	return Findings{
+		Items:         []Finding{},
+		Summary:       "clean",
+		RiskLevel:     "low",
+		RiskRationale: "clean",
+		RiskScope:     types.FindingsRiskScopeSourceOrExternal,
+	}
+}
+
+// TestReviewStep_UnrunAnalyzerDoesNotApprove pins issue #703's review half: a
+// review whose analyzer produced no structured output, or one whose risk
+// assessment is absent, must fail the step rather than approve on empty
+// findings.
+func TestReviewStep_UnrunAnalyzerDoesNotApprove(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		result *agent.Result
+		want   string
+	}{
+		{
+			name:   "no structured output",
+			result: &agent.Result{Text: "review unavailable"},
+			want:   "review analyzer returned no structured findings",
+		},
+		{
+			name:   "missing risk assessment",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)},
+			want:   "review analyzer findings missing risk assessment",
+		},
+		{
+			name:   "null findings array",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer findings missing findings array",
+		},
+		{
+			name:   "blank risk rationale",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":" \t","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer findings missing risk assessment",
+		},
+		{
+			name:   "unknown finding severity",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"critical","description":"unhandled error","action":"auto-fix"}],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer finding 0 missing severity",
+		},
+		{
+			name:   "invalid risk level",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"critical","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			want:   "review analyzer findings invalid risk level",
+		},
+		{
+			name:   "blank risk scope",
+			result: &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":" "}`)},
+			want:   "review analyzer findings missing risk assessment",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return tc.result, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Execute() error = %v, want %q", err, tc.want)
+			}
+			if outcome != nil {
+				t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+			}
+		})
+	}
+}
+
 func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
@@ -51,8 +131,8 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	// actually observed. An agent that never emitted anything is a different
 	// operator problem from one that streamed until the deadline, and the run
 	// error is the only place that distinction survives.
-	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired review budget named", got)
+	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
+		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
 	}
 	if !strings.Contains(got, "produced no output at all") {
 		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
@@ -62,13 +142,13 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport pins the other half
-// of the diagnostic contract at the review round budget: whatever the adapter
+// TestReviewStep_WallClockTimeoutPreservesTheAgentReport pins the other half
+// of the diagnostic contract at the review invocation limit: whatever the adapter
 // managed to report reaches the operator. For a native agent that error is the
 // killed subprocess's exit status and stderr - the only account of what the
 // process was actually doing - and it is what makes a silent 30-minute review
 // timeout diagnosable instead of a dead end.
-func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
+func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "reporting-review-agent",
@@ -82,7 +162,7 @@ func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
 
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected the review round budget to fail the run")
+		t.Fatal("expected the review invocation limit to fail the run")
 	}
 
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -96,29 +176,33 @@ func TestReviewStep_RoundBudgetTimeoutPreservesTheAgentReport(t *testing.T) {
 	if !strings.Contains(got, "provider authentication required") {
 		t.Fatalf("run error = %q, want the agent's own report preserved", got)
 	}
-	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired review budget named", got)
+	if !strings.Contains(got, "reached its absolute wall-clock limit after 20ms") {
+		t.Fatalf("run error = %q, want the expired review wall-clock limit named", got)
 	}
 }
 
-// TestReviewStep_EachRoundGetsItsOwnAgentBudget pins the documented
-// review_agent_timeout contract: the deadline bounds ONE review round -
-// its optional fix turn plus the rereview turn share a single budget - and
-// every later auto-fix round is derived fresh from the step's parent context.
-// Without the fresh derivation, a step context reused across rounds would
-// carry round 1's already-spent deadline into round 2 and fail a healthy agent.
-func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
+// TestReviewStep_EachAgentInvocationGetsItsOwnBudget pins the
+// review_agent_timeout ownership contract across two complete auto-fix cycles.
+// Each successful fixer consumes 29 of its 30 fake minutes; both independent
+// rereviewers must still start with a fresh full 30-minute allowance.
+func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	const timeout = time.Hour
+	const (
+		timeout    = 30 * time.Minute
+		fixerWork  = 29 * time.Minute
+		reviewWork = time.Minute
+	)
+	fakeNow := time.Now().Add(24 * time.Hour)
 	type call struct {
 		fixTurn  bool
 		deadline time.Time
+		started  time.Time
 	}
 	var calls []call
 
-	findings := `{"findings":[{"file":"a.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}]}`
+	findings := `{"findings":[{"file":"a.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}],"risk_level":"low","risk_rationale":"tidy finding","risk_scope":"source-or-external"}`
 	ag := &mockAgent{
 		name: "budget-probe",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -127,49 +211,205 @@ func TestReviewStep_EachRoundGetsItsOwnAgentBudget(t *testing.T) {
 				t.Errorf("agent call %d ran with no deadline", len(calls)+1)
 			}
 			isFix := strings.Contains(opts.Prompt, "Investigate previous review findings")
-			calls = append(calls, call{fixTurn: isFix, deadline: dl})
+			calls = append(calls, call{fixTurn: isFix, deadline: dl, started: fakeNow})
 			if isFix {
-				return &agent.Result{Output: json.RawMessage("fixed it")}, nil
+				fakeNow = fakeNow.Add(fixerWork)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"fixed it"}`)}, nil
 			}
-			// Round 1 raises an auto-fixable finding; later rounds are clean.
-			if len(calls) == 1 {
+			fakeNow = fakeNow.Add(reviewWork)
+			// Initial review and the first rereview each request another fix;
+			// the second independent rereview certifies the result.
+			if len(calls) == 1 || len(calls) == 3 {
 				return &agent.Result{Output: json.RawMessage(findings)}, nil
 			}
-			return &agent.Result{Output: json.RawMessage(`{"findings":[]}`)}, nil
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
 		},
 	}
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ReviewAgentTimeout = timeout
-	sctx.Config.AutoFix.Review = 1
+	sctx.Config.AutoFix.Review = 2
 
-	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	step := &ReviewStep{now: func() time.Time { return fakeNow }}
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{step}, nil)
 	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
-	// round 1: review. round 2: fix + rereview.
-	if len(calls) != 3 {
-		t.Fatalf("agent calls = %d, want 3 (review, fix, rereview); got %+v", len(calls), calls)
+	// round 1: review; rounds 2 and 3: fixer + independent rereviewer.
+	if len(calls) != 5 {
+		t.Fatalf("agent calls = %d, want 5 (review, fix, rereview, fix, rereview); got %+v", len(calls), calls)
 	}
-	if calls[0].fixTurn || !calls[1].fixTurn || calls[2].fixTurn {
-		t.Fatalf("turn order = %+v, want review, fix, rereview", calls)
+	wantFix := []bool{false, true, false, true, false}
+	for i := range calls {
+		if calls[i].fixTurn != wantFix[i] {
+			t.Fatalf("turn order = %+v, want review, fix, rereview, fix, rereview", calls)
+		}
+		remaining := calls[i].deadline.Sub(calls[i].started)
+		if remaining != timeout {
+			t.Errorf("call %d started with %v, want exactly %v", i+1, remaining, timeout)
+		}
 	}
+	if extension := calls[2].deadline.Sub(calls[1].deadline); extension != fixerWork {
+		t.Errorf("long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
+	}
+	if extension := calls[4].deadline.Sub(calls[3].deadline); extension != fixerWork {
+		t.Errorf("second long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
+	}
+	for i := 1; i < len(calls); i++ {
+		if !calls[i].deadline.After(calls[i-1].deadline) {
+			t.Errorf("call %d deadline %v did not refresh after call %d deadline %v", i+1, calls[i].deadline, i, calls[i-1].deadline)
+		}
+	}
+}
 
-	// The fix turn and the rereview turn of round 2 share one round budget.
-	if !calls[1].deadline.Equal(calls[2].deadline) {
-		t.Errorf("round 2 fix and rereview deadlines differ (%v vs %v); one round must share one budget",
-			calls[1].deadline, calls[2].deadline)
+func TestReviewFix_PostAgentCommitUsesStepParentContext(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	fakeNow := time.Now().Add(time.Hour)
+	var invocationDeadline time.Time
+	ag := &mockAgent{
+		name: "near-deadline-fixer",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("fixer context has no deadline")
+			}
+			invocationDeadline = deadline
+			if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fakeNow = deadline.Add(-time.Second)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix timeout ownership"}`)}, nil
+		},
 	}
-	// Round 2 is derived fresh, so its budget starts after round 1's.
-	if !calls[1].deadline.After(calls[0].deadline) {
-		t.Errorf("round 2 deadline %v is not later than round 1 deadline %v; the round budget leaked across rounds",
-			calls[1].deadline, calls[0].deadline)
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.Config.ReviewAgentTimeout = 30 * time.Minute
+	prepared := false
+	originalLog := sctx.Log
+	sctx.Log = func(message string) {
+		if message == "preparing fixer" {
+			prepared = true
+		}
+		originalLog(message)
 	}
-	// Each round's budget is the configured timeout, not a shrinking remainder.
-	if remaining := time.Until(calls[2].deadline); remaining <= timeout/2 {
-		t.Errorf("round 2 budget remaining %v is far below the configured %v; the round did not get a full budget",
-			remaining, timeout)
+	step := &ReviewStep{now: func() time.Time {
+		if !prepared {
+			t.Fatal("fixer deadline started before synchronous preparation")
+		}
+		return fakeNow
+	}}
+
+	summary, err := step.executeReviewFixWithTimeout(sctx, types.StepReview, fixExecutionOptions{
+		LogMessage:      "preparing fixer",
+		ErrorPrefix:     "agent fix failed",
+		FallbackSummary: "fix review findings",
+		AfterAgentRun: func(*agent.Result) error {
+			if remaining := invocationDeadline.Sub(fakeNow); remaining != time.Second {
+				t.Fatalf("post-agent work began with %v of the invocation budget, want 1s", remaining)
+			}
+			if _, ok := sctx.Ctx.Deadline(); ok {
+				t.Fatal("post-agent work inherited the invocation deadline")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("post-agent commit inherited invocation context: %v", err)
+	}
+	if summary != "fix timeout ownership" {
+		t.Fatalf("summary = %q", summary)
+	}
+	if invocationDeadline.IsZero() {
+		t.Fatal("fixer did not receive an invocation deadline")
+	}
+	if err := sctx.Ctx.Err(); err != nil {
+		t.Fatalf("step parent context was cancelled: %v", err)
+	}
+	if got := strings.TrimSpace(gitCmd(t, dir, "show", "--format=%s", "--no-patch", "HEAD")); !strings.Contains(got, "fix timeout ownership") {
+		t.Fatalf("post-agent commit missing from HEAD: %q", got)
+	}
+}
+
+func TestReviewStep_LateCompletionAfterInvocationDeadlineIsRejected(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "late-reviewer",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil || !errors.Is(err, errReviewAgentTimeout) {
+		t.Fatalf("error = %v, want expired review invocation", err)
+	}
+	if outcome != nil {
+		t.Fatalf("late review outcome = %+v, want nil", outcome)
+	}
+}
+
+func TestReviewStep_ProgressWithoutTerminalCompletionCannotPublish(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "progress-only-reviewer",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			ticker := time.NewTicker(2 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-ticker.C:
+					opts.OnChunk(`{"findings":[],"risk_level":"low"}`)
+				}
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 40 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected progress-only review to hit its absolute limit")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("progress-only review gained approval authority: %#v", run.ReviewApprovedHeadSHA)
+	}
+	if run.Error == nil {
+		t.Fatal("durable timeout error is nil")
+	}
+	if strings.Contains(*run.Error, "produced no output at all") || strings.Contains(*run.Error, "silent") {
+		t.Fatalf("actively streaming review was mislabelled silent: %q", *run.Error)
+	}
+	if !strings.Contains(*run.Error, "absolute wall-clock limit") || !strings.Contains(*run.Error, "last produced output") {
+		t.Fatalf("timeout diagnosis did not separate the absolute limit from measured activity: %q", *run.Error)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("step results = %d, want 1", len(steps))
+	}
+	if steps[0].FindingsJSON != nil {
+		t.Fatalf("progress JSON was published as findings: %q", *steps[0].FindingsJSON)
+	}
+	rounds, err := sctx.DB.GetRoundsByStep(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 0 {
+		t.Fatalf("progress-only review published %d completed round(s)", len(rounds))
 	}
 }
 
@@ -188,7 +428,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
-			findings := Findings{Items: nil, Summary: "all clear"}
+			findings := Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
@@ -299,7 +539,7 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 					Action:      types.ActionAutoFix,
 					File:        "app_test.go",
 					Description: "new test only greps implementation source for a required token",
-				}}})
+				}}, RiskLevel: "low", RiskRationale: "source finding", RiskScope: types.FindingsRiskScopeSourceOrExternal})
 				return &agent.Result{Output: output}, nil
 			case 2:
 				assertTestQualityRulePrompt(t, opts.Prompt)
@@ -310,7 +550,7 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 			case 3:
 				assertTestQualityRulePrompt(t, opts.Prompt)
 				assertTestQualityReviewerAction(t, opts.Prompt)
-				output, _ := json.Marshal(Findings{Summary: "clean"})
+				output, _ := json.Marshal(cleanReviewFindings())
 				return &agent.Result{Output: output}, nil
 			default:
 				return nil, fmt.Errorf("unexpected agent call %d", calls)
@@ -352,7 +592,7 @@ func TestReviewStep_ConcurrentHeadResetCannotGainApproval(t *testing.T) {
 		name: "test",
 		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
 			gitCmd(t, dir, "reset", "--hard", divergentHead)
-			findings, _ := json.Marshal(Findings{Summary: "all clear"})
+			findings, _ := json.Marshal(Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal})
 			return &agent.Result{Output: findings}, nil
 		},
 	}
@@ -392,7 +632,7 @@ func TestReviewStep_FixMode_FocusedVerificationContract(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 			}
-			j, _ := json.Marshal(Findings{Summary: "clean"})
+			j, _ := json.Marshal(cleanReviewFindings())
 			return &agent.Result{Output: j}, nil
 		},
 	}
@@ -431,7 +671,7 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -473,6 +713,108 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// The qualitative corpus is an executable unified-diff contract, so each
+// fixture must remain consumable by the documented git-based evaluation flow.
+func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		file     string
+		baseline string
+	}{
+		{name: "rare duplicate window", file: "jobs/finish.go", baseline: "package jobs\n"},
+		{name: "hypothetical unused lock", file: "run/status.go", baseline: "package run\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.baseline), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "init", "-q")
+			// Keep both inputs LF-only regardless of the runner's checkout
+			// conversion policy. Git parses context lines from the patch as-is.
+			gitCmd(t, dir, "config", "core.autocrlf", "false")
+			fixture, err := os.ReadFile(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixturePath := filepath.Join(dir, "fixture.diff")
+			fixture = []byte(strings.ReplaceAll(string(fixture), "\r\n", "\n"))
+			if err := os.WriteFile(fixturePath, fixture, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "apply", "--check", fixturePath)
+		})
+	}
+}
+
+// Intended-usage evidence is a finding threshold, not a general "be less
+// noisy" rewrite: a rare but real sequence under intended usage still
+// qualifies, while a hypothetical unused path does not. The completeness
+// obligations stay; this pins the emitted contract, not model interpretation.
+func TestReviewStep_IntendedUsageEvidenceContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage",
+		"including rare but real sequences those callers actually perform",
+		"hypothetical unused execution that intended callers, the public API, or documented usage never take",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing intended-usage evidence threshold %q:\n%s", want, prompt)
+		}
+	}
+
+	// Completeness stays: this is not a license to stop early or emit fewer findings.
+	for _, want := range []string{
+		"Do a full review pass before returning",
+		"Do not stop after the first valid finding",
+		"Continue inspecting the rest of the changed code",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt dropped completeness obligation %q:\n%s", want, prompt)
+		}
+	}
+
+	for _, overreach := range []string{
+		"be less noisy",
+		"prefer fewer findings",
+		"reduce the number of findings",
+		"lock on every status write",
+		"parent-channel",
+		"parent channel",
+	} {
+		if strings.Contains(strings.ToLower(prompt), overreach) {
+			t.Errorf("review prompt broadened past the intended-usage criterion with %q:\n%s", overreach, prompt)
+		}
+	}
+}
+
 // Counterexample construction is a general review principle for any new or
 // changed logic, not a bug-fix-only reconstruction. Silently wrong values,
 // labels, and sets are named as risks. The principle stays short and general:
@@ -481,7 +823,7 @@ func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -524,6 +866,54 @@ func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
 	}
 }
 
+// Authorization and privacy are one conditional obligation in the existing
+// review pass. The emitted prompt must require concrete cross-boundary evidence,
+// preserve repository ownership of access policy, accept equivalent controls
+// and intentionally public data, and route material policy ambiguity through the
+// existing ask-user action rather than inventing a rule.
+func TestReviewStep_AuthorizationPrivacyTracingContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected the existing single review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"potentially protected resources or user data",
+		"where identity is established and whether unauthenticated execution remains reachable",
+		"earliest shared boundary used by every caller",
+		"ownership, role, tenant, organization, and administrative scope",
+		"public responses and serialization",
+		"search projections, caches, logs, telemetry, error details, exports, and generated artifacts",
+		"fail-open defaults, missing-context behavior, preview or bypass paths, and stale authorization assumptions",
+		"source-backed evidence of a concrete reachable operation or disclosure path",
+		"protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure",
+		"do not invent access policy",
+		`you MUST emit an "ask-user" finding that names the missing policy decision`,
+		"Do not report immaterial or pre-existing ambiguity",
+		"equivalent controls and intentionally public data",
+		"middleware, an authorization call, or an auth-related test is absent by name",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing authorization/privacy contract %q:\n%s", want, prompt)
+		}
+	}
+}
+
 // The rereview that certifies a fix round examines code the pipeline itself
 // authored, moments earlier, to the previous review turn's prescription. The
 // prompt must reframe that code as unreviewed new work under the same
@@ -559,7 +949,7 @@ func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) 
 					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 				}
-				j, _ := json.Marshal(Findings{Summary: "clean"})
+				j, _ := json.Marshal(cleanReviewFindings())
 				return &agent.Result{Output: j}, nil
 			},
 		}
@@ -589,7 +979,7 @@ func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) 
 		t.Parallel()
 		dir, baseSHA, headSHA := setupGitRepo(t)
 
-		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		findingsJSON, _ := json.Marshal(cleanReviewFindings())
 		ag := &mockAgent{
 			name: "test",
 			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -614,7 +1004,7 @@ func TestFixRoundProvenanceClause_EmitsForUncertifiedRangeWhenNotFixing(t *testi
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -678,7 +1068,7 @@ func TestUncertifiedRange_PersistsThenFeedsNextInitialReview(t *testing.T) {
 		t.Fatalf("fixer commit did not persist range: %#v", persisted)
 	}
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	reviewAgent := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -748,7 +1138,7 @@ func TestReviewStep_RoundHistorySanitizesAgentInput(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -819,7 +1209,7 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 			t.Parallel()
 			dir, baseSHA, headSHA := setupGitRepo(t)
 
-			findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+			findingsJSON, _ := json.Marshal(cleanReviewFindings())
 			ag := &mockAgent{
 				name: "test",
 				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -895,7 +1285,9 @@ func TestReviewStep_RereviewFlagsIntentContradictionAsAskUser(t *testing.T) {
 					Action:      types.ActionAskUser,
 					Description: "the fix deletes the intent-required guarded stale-lock removal, leaving rejected retry-only",
 				}},
-				RiskLevel: "high",
+				RiskLevel:     "high",
+				RiskRationale: "intent contradicted",
+				RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
@@ -934,7 +1326,7 @@ func reviewPromptFor(t *testing.T, rules []config.PathInstruction) string {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			j, _ := json.Marshal(Findings{Summary: "clean"})
+			j, _ := json.Marshal(cleanReviewFindings())
 			return &agent.Result{Output: j}, nil
 		},
 	}
@@ -1023,7 +1415,7 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			j, _ := json.Marshal(Findings{Summary: "clean"})
+			j, _ := json.Marshal(cleanReviewFindings())
 			return &agent.Result{Output: j}, nil
 		},
 	}
@@ -1081,7 +1473,7 @@ func TestReviewStep_PromptClassifiesFindingsByRemedyScope(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -1129,7 +1521,7 @@ func TestReviewStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 			if callCount == 1 {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 			}
-			j, _ := json.Marshal(Findings{Summary: "clean"})
+			j, _ := json.Marshal(cleanReviewFindings())
 			return &agent.Result{Output: j}, nil
 		},
 	}
@@ -1184,7 +1576,7 @@ func TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery(t *testing.T
 					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
 					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
 				}
-				j, _ := json.Marshal(Findings{Summary: "clean"})
+				j, _ := json.Marshal(cleanReviewFindings())
 				return &agent.Result{Output: j}, nil
 			},
 		}
@@ -1218,7 +1610,7 @@ func TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery(t *testing.T
 		t.Parallel()
 		dir, baseSHA, headSHA := setupGitRepo(t)
 
-		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		findingsJSON, _ := json.Marshal(cleanReviewFindings())
 		ag := &mockAgent{
 			name: "test",
 			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -1242,7 +1634,7 @@ func TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery(t *testing.T
 		t.Parallel()
 		dir, baseSHA, headSHA := setupGitRepo(t)
 
-		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		findingsJSON, _ := json.Marshal(cleanReviewFindings())
 		ag := &mockAgent{
 			name: "test",
 			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -1258,4 +1650,202 @@ func TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery(t *testing.T
 			t.Errorf("a review with no prior-round code must not carry the revert exit ramp:\n%s", ag.calls[0].Prompt)
 		}
 	})
+}
+
+// The Simplification section is a dedicated pass that asks whether the intent
+// requires each component the change introduced, distinct from the defect pass
+// and from the refactor-only "simplification opportunities" meaning that stays
+// in place. An unrequired component is a warning whose remedy is removal and
+// whose action stays ask-user: whether extra surface is wanted is the author's
+// call. This pins the emitted contract, not model interpretation.
+func TestReviewStep_SimplificationSectionContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	sectionIdx := strings.Index(prompt, "\nSimplification (a dedicated pass over what the change introduced")
+	if sectionIdx < 0 {
+		t.Fatalf("review prompt missing the dedicated Simplification section:\n%s", prompt)
+	}
+	// It is its own section between the finding rules and the risk assessment,
+	// not a bullet folded into either.
+	if rulesIdx := strings.Index(prompt, "\nRules:"); rulesIdx < 0 || rulesIdx > sectionIdx {
+		t.Errorf("Simplification section must follow the Rules section:\n%s", prompt)
+	}
+	if riskIdx := strings.Index(prompt, "\nRisk assessment"); riskIdx < 0 || riskIdx < sectionIdx {
+		t.Errorf("Simplification section must precede the Risk assessment section:\n%s", prompt)
+	}
+	section := prompt[sectionIdx:]
+	if riskIdx := strings.Index(section, "\nRisk assessment"); riskIdx >= 0 {
+		section = section[:riskIdx]
+	}
+
+	for _, want := range []string{
+		"Enumerate every component the change introduced",
+		"a second definition of a concept the code already defines once",
+		"Judge each one against the User intent when one is stated, otherwise against the change's own stated purpose",
+		`not strictly required to satisfy that intent, report a finding with severity "warning" and action "ask-user"`,
+		"recommend removing it as the remedy",
+		"Do not recommend hardening, validating, or documenting a component the intent does not require",
+		"name removal of the component as the smallest honest remedy",
+		"name the narrower form",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("Simplification section missing %q:\n%s", want, section)
+		}
+	}
+
+	// The refactor-only meaning of a simplification opportunity is kept and
+	// now points at the section instead of contradicting it: an unrequired
+	// component is never an auto-fix refactor.
+	for _, want := range []string{
+		"Analyze for bugs, risks, and code simplification opportunities.",
+		"non-functional refactoring (e.g. deduplication, clearer control flow)",
+		"do NOT mean removing features, changing product behavior, or stripping intentional user-facing output",
+		`reported through the dedicated Simplification section below, never as an "auto-fix" refactor`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt lost the refactor-only simplification meaning %q:\n%s", want, prompt)
+		}
+	}
+
+	// The section adds no schema field, second reviewer, or general rewrite of
+	// the defect pass. Existing evidence and completeness obligations stay.
+	for _, want := range []string{
+		"Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage",
+		"Do a full review pass before returning",
+		"Classify by the remedy, not only by the topic.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt dropped an existing obligation %q:\n%s", want, prompt)
+		}
+	}
+	for _, overreach := range []string{
+		"simplification_findings",
+		"second reviewer",
+		"rewrite the change",
+		"delete the feature",
+	} {
+		if strings.Contains(strings.ToLower(prompt), overreach) {
+			t.Errorf("review prompt broadened past the Simplification section with %q:\n%s", overreach, prompt)
+		}
+	}
+}
+
+// The qualitative corpus is an executable unified-diff contract, so each
+// fixture must remain consumable by the documented git-based evaluation flow.
+func TestReviewStep_SimplificationFixturesApply(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		file     string
+		baseline string
+	}{
+		{name: "permissive target resolver", file: "target/resolve.go", baseline: "package target\n"},
+		{name: "exact match resolver", file: "target/resolve.go", baseline: "package target\n"},
+		{name: "second budget semantics", file: "proposal/budget.go", baseline: "package proposal\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.baseline), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "init", "-q")
+			gitCmd(t, dir, "config", "core.autocrlf", "false")
+			fixture, err := os.ReadFile(filepath.Join("testdata", "simplification_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixturePath := filepath.Join(dir, "fixture.diff")
+			fixture = []byte(strings.ReplaceAll(string(fixture), "\r\n", "\n"))
+			if err := os.WriteFile(fixturePath, fixture, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "apply", "--check", fixturePath)
+		})
+	}
+}
+
+// TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths pins the fixer's
+// removal rule: a finding resolvable by removing a code path the intent does
+// not strictly require is fixed by removing that path, not by hardening it.
+// The anti-revert guard stays, but it now protects only code the intent
+// requires, so "the author wrote it on purpose" no longer turns every
+// unrequired branch into a fix-forward candidate. Genuine doubt still leaves
+// the code alone and reports the finding unresolved.
+func TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
+			}
+			j, _ := json.Marshal(cleanReviewFindings())
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"any existing file is accepted as a target","action":"auto-fix"}],"summary":"1 issue"}`
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	fixPrompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
+		"fix it by removing that path, not by validating, hardening, or documenting it",
+		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
+		// The anti-revert guard is kept, scoped to intent-required code.
+		"Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit when the intent requires that code",
+		"If the original change introduced something the intent requires, fix it forward",
+		"do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue",
+		"When in doubt about whether the intent requires the code, leave it and report the finding as unresolved",
+		// The narrow-fix and diagnosis rules are complementary and stay.
+		"Fix the reported instance narrowly.",
+		"smallest correct root-cause fix",
+	} {
+		if !strings.Contains(fixPrompt, want) {
+			t.Errorf("review fix prompt missing removal-rule contract %q:\n%s", want, fixPrompt)
+		}
+	}
+	// The superseded guard protected any code written "on purpose", which is
+	// true of every unrequired branch and is what turned removal into hardening.
+	for _, stale := range []string{
+		"If the original change introduced something on purpose, fix it forward",
+		"When in doubt about whether code is intentional",
+	} {
+		if strings.Contains(fixPrompt, stale) {
+			t.Errorf("review fix prompt still protects unrequired code as intentional via %q:\n%s", stale, fixPrompt)
+		}
+	}
 }

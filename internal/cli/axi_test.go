@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -39,7 +40,7 @@ func TestRunViewFromDBAwaitingStep(t *testing.T) {
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusAwaitingApproval, FindingsJSON: strptr(`{"findings":[],"summary":"x"}`)},
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, nil)
 	gate, ok := rv.awaitingStep()
 	if !ok {
 		t.Fatal("expected an awaiting step")
@@ -59,7 +60,7 @@ func TestRunViewFromDBCarriesCIOverrideReason(t *testing.T) {
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: strptr("live checks still failing: required-check")},
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, nil)
 	if rv.CIOverrideReason != "live checks still failing: required-check" {
 		t.Errorf("CIOverrideReason = %q, want the step's override reason", rv.CIOverrideReason)
 	}
@@ -127,6 +128,31 @@ func TestWriteRunObjectShape(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("run object missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunObjectRendersCombinedHousekeepingAttribution(t *testing.T) {
+	rv := runView{
+		ID:      "run-1",
+		Branch:  "feature/x",
+		Status:  string(types.RunRunning),
+		HeadSHA: "abcdef1234567890",
+		Steps: []stepView{{
+			Name:       string(types.StepDocument),
+			Status:     string(types.StepStatusCompleted),
+			DurationMS: 173_000,
+			WorkScope:  ipc.WorkScopeDocumentLintHousekeeping,
+		}},
+	}
+
+	out := axiDoc(runObjectField(rv))
+	for _, want := range []string{
+		"shared_work[1]{attributed_to,scope,duration_ms}:\n",
+		"document,document+lint housekeeping,173000\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("combined housekeeping attribution missing %q in:\n%s", want, out)
 		}
 	}
 }
@@ -250,7 +276,7 @@ func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load steps: %v", err)
 	}
-	rv := runViewFromDB(run, steps)
+	rv := runViewFromDB(run, steps, database)
 	reviewLimit := 9
 	annotateRunView(&axiEnv{
 		d: database,
@@ -320,6 +346,65 @@ func TestWriteGateShape(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("gate missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderDriveResult_ProtectedPathGateHelp(t *testing.T) {
+	refusal := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "package.lock", Rule: "*.lock"})
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		for _, tc := range []struct {
+			name     string
+			findings string
+			want     []string
+			absent   []string
+		}{
+			{
+				name:     "protected",
+				findings: refusal.Findings,
+				want: []string{
+					"explicit operator response", "Approve is rejected",
+					"operator inspect and resolve", "repository's authorized workflow",
+					"no-mistakes axi respond --action fix`", "retry the refused step",
+					"including its commit and publication",
+				},
+				absent: []string{"--action approve", "do not edit files yourself"},
+			},
+			{
+				name:     "ordinary",
+				findings: findingsJSON(t, []types.Finding{{ID: "doc-1", Action: types.ActionAskUser, Description: "clarify documentation"}}, "Documentation decision"),
+				want:     []string{"no-mistakes axi respond --action approve", "--action fix --findings <ids>", "do not edit files yourself"},
+				absent:   []string{"protected-path", "Approve is rejected"},
+			},
+		} {
+			t.Run(string(status)+"/"+tc.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				cmd := &cobra.Command{}
+				cmd.SetOut(&buf)
+				if err := renderDriveResult(cmd, &ipc.RunInfo{
+					ID: "run-1", Status: types.RunRunning,
+					Steps: []ipc.StepResultInfo{{StepName: types.StepDocument, Status: status, FindingsJSON: &tc.findings}},
+				}, false); err != nil {
+					t.Fatal(err)
+				}
+				var doc struct {
+					Help []string `toon:"help"`
+				}
+				if err := toon.Unmarshal(buf.Bytes(), &doc); err != nil {
+					t.Fatalf("decode emitted gate help: %v\n%s", err, buf.String())
+				}
+				help := strings.Join(doc.Help, "\n")
+				for _, want := range append(tc.want, "--action skip", "axi logs --step document --full", preserveGateFixCommitsGuidance) {
+					if !strings.Contains(help, want) {
+						t.Errorf("gate help missing %q:\n%s", want, help)
+					}
+				}
+				for _, absent := range tc.absent {
+					if strings.Contains(help, absent) {
+						t.Errorf("gate help includes inappropriate guidance %q:\n%s", absent, help)
+					}
+				}
+			})
 		}
 	}
 }
@@ -750,7 +835,7 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiHome(cmd); err != nil {
+	if err := runAxiHome(cmd); err != nil {
 		t.Fatalf("axi home: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -773,26 +858,6 @@ func TestAxiHomeStartsCurrentBranchWhenOtherBranchIsActive(t *testing.T) {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("axi home should not tell the agent to act on another branch via %q, got:\n%s", forbidden, got)
 		}
-	}
-}
-
-func TestRenderedRunsFingerprintChangesForEveryDisplayedRun(t *testing.T) {
-	runs := []*db.Run{
-		{ID: "newer", Branch: "feature/newer", HeadSHA: "head-newer", Status: types.RunRunning},
-		{ID: "older", Branch: "feature/older", HeadSHA: "head-older", Status: types.RunCompleted},
-	}
-	before := renderedRunsFingerprint(runs, 10)
-	runs[1].Status = types.RunFailed
-	after := renderedRunsFingerprint(runs, 10)
-	if before == after {
-		t.Fatal("changing a displayed older run must change the fingerprint")
-	}
-
-	limitedBefore := renderedRunsFingerprint(runs, 1)
-	runs[1].Status = types.RunCompleted
-	limitedAfter := renderedRunsFingerprint(runs, 1)
-	if limitedBefore != limitedAfter {
-		t.Fatal("a hidden run must not change the displayed-run fingerprint")
 	}
 }
 
@@ -828,7 +893,7 @@ func TestAxiStatusEscapesControlBytesInAwaitingTestGate(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
+	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
 		t.Fatalf("axi status: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -870,7 +935,7 @@ func TestAxiLogsFullEscapesControlByteOutsideTailWithoutRewritingLog(t *testing.
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiLogs(cmd, "test", dbRun.ID, true); err != nil {
+	if err := runAxiLogs(cmd, "test", dbRun.ID, true); err != nil {
 		t.Fatalf("axi logs --full: %v\n%s", err, out.String())
 	}
 	got := out.String()
@@ -938,7 +1003,7 @@ func TestAxiStatusIgnoresInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
+	if err := runAxiStatus(cmd, dbRun.ID); err != nil {
 		t.Fatalf("axi status should not fail on invalid global config: %v\n%s", err, out.String())
 	}
 	got := out.String()

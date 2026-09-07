@@ -26,6 +26,7 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitLab hostname; scopes the auth check
 	projectPath  string // repo's "group/project" path; enables REST job reads
+	draft        bool   // open created MRs as drafts (glab mr create --draft)
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
@@ -44,6 +45,14 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Ho
 		host:         strings.TrimSpace(host),
 		projectPath:  strings.TrimSpace(projectPath),
 	}
+}
+
+// NewWithDraft builds a Host that opens created MRs as drafts when draft is
+// true (glab mr create --draft). See New for the other parameters.
+func NewWithDraft(cmd CmdFactory, cliAvailable func() bool, host, projectPath string, draft bool) *Host {
+	h := New(cmd, cliAvailable, host, projectPath)
+	h.draft = draft
+	return h
 }
 
 // ProjectPath extracts the "group/project" path (no host, no trailing .git)
@@ -182,6 +191,7 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 
 type mrPayload struct {
 	IID                 int    `json:"iid"`
+	Title               string `json:"title"`
 	WebURL              string `json:"web_url"`
 	URL                 string `json:"url"`
 	State               string `json:"state"`
@@ -253,13 +263,17 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "create",
+	args := []string{"mr", "create",
 		"--source-branch", branch,
 		"--target-branch", base,
 		"--title", content.Title,
 		"--description", content.Body,
 		"--yes",
-	)
+	}
+	if h.draft {
+		args = append(args, "--draft")
+	}
+	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -285,8 +299,25 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	// Unlike `glab mr create`, `glab mr update` (glab v1.5x) has no
 	// -y/--yes confirmation-skip flag at all; passing it fails the whole
 	// command with "unknown flag: --yes", so every UpdatePR call errored.
+	//
+	// GitLab has no separate draft field: an MR is a draft because its title
+	// carries a draft marker. Updating with a plain title would silently mark a
+	// draft MR ready for review, so read the live title first and re-apply the
+	// marker. Preserve only: a non-draft MR never gains one. A failed read fails
+	// the update closed rather than risk toggling draft state.
+	mr, err := h.viewMR(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(mr.Title) == "" {
+		return nil, errors.New("glab mr view: missing merge request title")
+	}
+	title := content.Title
+	if isDraftTitle(mr.Title) && !isDraftTitle(title) {
+		title = "Draft: " + title
+	}
 	cmd := h.cmd(ctx, "glab", "mr", "update", id,
-		"--title", content.Title,
+		"--title", title,
 		"--description", content.Body,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -316,6 +347,13 @@ func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch strin
 		return fmt.Errorf("glab mr update --target-branch: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// isDraftTitle reports whether an MR title carries a marker GitLab treats as
+// draft: "Draft:", "[Draft]", or "(Draft)", all case-insensitive.
+func isDraftTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	return strings.HasPrefix(t, "draft:") || strings.HasPrefix(t, "[draft]") || strings.HasPrefix(t, "(draft)")
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {

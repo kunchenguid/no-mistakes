@@ -1,0 +1,11 @@
+diff --git a/run/status.go b/run/status.go
+index 1111111..2222222 100644
+--- a/run/status.go
++++ b/run/status.go
+@@ -1 +1,6 @@
+ package run
++
++func (r *Run) markStep(name, status string) error {
++	r.steps[name] = status
++	return persist(r)
++}

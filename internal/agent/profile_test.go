@@ -222,7 +222,14 @@ func TestOpenCodeWithoutProfileSendsNoModelOrVariant(t *testing.T) {
 	if _, ok := body["variant"]; ok {
 		t.Fatalf("message body pinned a variant with no profile: %#v", body)
 	}
-	if _, ok := body["format"]; !ok {
-		t.Fatalf("message body lost its structured-output format: %#v", body)
+	if _, ok := body["format"]; ok {
+		t.Fatalf("message body used root structured-output format: %#v", body)
+	}
+	info, ok := body["info"].(map[string]any)
+	if !ok {
+		t.Fatalf("message body omitted structured-output info: %#v", body)
+	}
+	if _, ok := info["format"]; !ok {
+		t.Fatalf("message body omitted structured-output info.format: %#v", body)
 	}
 }

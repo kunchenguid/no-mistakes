@@ -202,12 +202,11 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `daemon.pid`                     | Daemon identity record                                                                                                  |
 | `daemon.lock`                    | Singleton lock; the OS lock a live daemon holds so a second daemon for the same root cannot start                       |
 | `config.yaml`                    | Global configuration                                                                                                    |
-| `telemetry-gate.json`            | Persistent read-only telemetry dedupe state                                                                             |
 | `update-check.json`              | Cached update check result                                                                                              |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |
-| `worktrees/<repoID>/<runID>/`    | Disposable worktrees (cleaned up after each run); [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) can place a repository's elsewhere |
+| `worktrees/<repoID>/<runID>/`    | Run worktrees, subject to [cleanup and retention rules](/no-mistakes/concepts/daemon/#what-it-does); [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) can place a repository's elsewhere |
 | `logs/<runID>/<step>.log`        | Per-step log files                                                                                                      |
 | `logs/daemon.log`                | Bounded daemon lifecycle log                                                                                            |
 | `logs/daemon-bootstrap.log`      | Bounded pre-logger bootstrap and direct crash output                                                                    |

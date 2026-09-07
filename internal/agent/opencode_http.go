@@ -116,10 +116,12 @@ func (a *opencodeAgent) messageBody(prompt string, schema json.RawMessage) map[s
 		body["variant"] = string(a.profile.Effort)
 	}
 	if len(schema) > 0 {
-		body["format"] = map[string]any{
-			"type":       "json_schema",
-			"schema":     json.RawMessage(schema),
-			"retryCount": 2,
+		body["info"] = map[string]any{
+			"format": map[string]any{
+				"type":       "json_schema",
+				"schema":     json.RawMessage(schema),
+				"retryCount": 2,
+			},
 		}
 	}
 	return body

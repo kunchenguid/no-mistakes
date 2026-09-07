@@ -42,7 +42,6 @@ func newRerunCmd() *cobra.Command {
 				if branch == "HEAD" {
 					return fmt.Errorf("not on a branch")
 				}
-
 				if err := daemon.EnsureDaemon(p); err != nil {
 					return fmt.Errorf("start daemon: %w", err)
 				}
@@ -53,8 +52,12 @@ func newRerunCmd() *cobra.Command {
 				}
 				defer client.Close()
 
+				callerHead, err := rerunCallerHead(cmd.Context())
+				if err != nil {
+					return err
+				}
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent, PRBaseBranch: baseBranch, CallerHeadSHA: callerHead}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -66,4 +69,28 @@ func newRerunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch for the PR for this rerun only (overrides inherited per-run base branch)")
 	return cmd
+}
+
+// rerunCallerHead captures clean-head evidence at the request boundary, after
+// any daemon startup or post-push wait. Dirty callers retain the existing
+// behavior by omitting that evidence.
+func rerunCallerHead(ctx context.Context) (string, error) {
+	// Read both facts from one status observation: a subsequent HEAD lookup
+	// could name a different commit whose index or worktree was never clean.
+	out, err := git.Run(ctx, ".", "status", "--porcelain=v2", "--branch", "-z")
+	if err != nil {
+		return "", fmt.Errorf("check working tree: %w", err)
+	}
+	var head string
+	for _, entry := range strings.Split(out, "\x00") {
+		if oid, ok := strings.CutPrefix(entry, "# branch.oid "); ok {
+			head = oid
+		} else if entry != "" && !strings.HasPrefix(entry, "# ") {
+			return "", nil
+		}
+	}
+	if head == "" || head == "(initial)" {
+		return "", fmt.Errorf("get caller head: no HEAD commit")
+	}
+	return head, nil
 }

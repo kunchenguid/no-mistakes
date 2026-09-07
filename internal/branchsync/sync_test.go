@@ -201,13 +201,11 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if err := f.db.UpdateRunStatus(active.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
-	// Once the owning run is terminal, inspection must not advertise recovery
-	// unless the recorded head is actually available from the worktree or gate.
 	state = f.service.InspectCached(f.ctx)
-	if state.State != StatePipelineOwned || state.Safety != "blocked_recover_preserved_head_missing" {
+	if state.State != StatePipelineOwned || state.Safety != "blocked_recover_manual_reconciliation" {
 		t.Fatalf("terminal unpublished pipeline head = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" {
+	if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" || state.NextAction.Command != "no-mistakes axi status" {
 		t.Fatalf("terminal unpublished pipeline head next action = %#v", state.NextAction)
 	}
 }

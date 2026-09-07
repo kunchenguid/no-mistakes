@@ -1,0 +1,33 @@
+diff --git a/account/http.go b/account/http.go
+index 1111111..2222222 100644
+--- a/account/http.go
++++ b/account/http.go
+@@ -1 +1,17 @@
+ package account
++
++func ChangeEmail(w http.ResponseWriter, r *http.Request) {
++	actor := CurrentUser(r.Context())
++	targetID := r.PathValue("userID")
++	if actor.ID != targetID && !actor.Admin {
++		http.Error(w, "forbidden", http.StatusForbidden)
++		return
++	}
++	_ = UpdateEmail(targetID, r.FormValue("email"))
++}
++
++func SyncEmail(w http.ResponseWriter, r *http.Request) {
++	targetID := r.PathValue("userID")
++	_ = UpdateEmail(targetID, r.FormValue("email"))
++	w.WriteHeader(http.StatusNoContent)
++}
+diff --git a/account/store.go b/account/store.go
+index 3333333..4444444 100644
+--- a/account/store.go
++++ b/account/store.go
+@@ -1 +1,6 @@
+ package account
++
++func UpdateEmail(targetID, email string) error {
++	_, err := db.Exec(`UPDATE users SET email = ? WHERE id = ?`, email, targetID)
++	return err
++}

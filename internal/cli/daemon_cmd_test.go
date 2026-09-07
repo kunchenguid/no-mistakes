@@ -110,13 +110,28 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 	}
 }
 
-func TestPRBaseBranchPushOptionRoundTrip(t *testing.T) {
-	opt := formatPRBaseBranchPushOption("epic/feature")
-	got, err := parsePRBaseBranchPushOptions([]string{opt})
+func TestProofAndPRBaseBranchPushOptionsRoundTrip(t *testing.T) {
+	nonce := "request-7f3"
+	generation := "generation-7"
+	nonceOpt := formatLaunchNoncePushOption(nonce)
+	generationOpt := formatValidationGenerationPushOption(generation)
+	baseBranchOpt := formatPRBaseBranchPushOption("epic/feature")
+	gotNonce, err := parseLaunchNoncePushOptions([]string{nonceOpt, baseBranchOpt})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "epic/feature" {
-		t.Fatalf("round-trip = %q, want epic/feature", got)
+	gotGeneration, err := parseValidationGenerationPushOptions([]string{generationOpt, baseBranchOpt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBaseBranch, err := parsePRBaseBranchPushOptions([]string{nonceOpt, generationOpt, baseBranchOpt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotNonce != nonce || gotGeneration != generation || gotBaseBranch != "epic/feature" {
+		t.Fatalf("push options = nonce %q generation %q base branch %q", gotNonce, gotGeneration, gotBaseBranch)
+	}
+	if _, err := parseValidationGenerationPushOptions([]string{generationOpt, formatValidationGenerationPushOption("generation-8")}); err == nil {
+		t.Fatal("conflicting validation generations were accepted")
 	}
 }

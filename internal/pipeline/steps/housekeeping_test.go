@@ -212,6 +212,21 @@ func TestLintStep_ConsumesCombinedResultWithoutAgentPass(t *testing.T) {
 	}
 }
 
+func TestLintStep_MalformedCombinedResultFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newHousekeepingContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Shared.SetHousekeepingLint(pipeline.HousekeepingLintResult{FindingsJSON: `{not json`})
+
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "validate combined housekeeping lint result") {
+		t.Fatalf("Execute() error = %v, want malformed combined housekeeping result", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+}
+
 // TestLintStep_RunsOwnPassWithoutCombinedResult proves the lint duty is
 // never silently dropped: with no stashed result (document step skipped or
 // failed to produce trustworthy output) the lint step runs its own pass.
@@ -239,7 +254,7 @@ func TestLintStep_RunsOwnPassWithoutCombinedResult(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntrusted(t *testing.T) {
+func TestDocumentStep_CombinedRetryDropsPriorLintResultWhenOutputIsUntrusted(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -262,8 +277,12 @@ func TestDocumentStep_CombinedPassInvalidatesPriorLintResultWhenOutputIsUntruste
 	}
 
 	sctx.Fixing = true
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
+	outcome, err := step.Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "document analyzer returned no structured findings") {
+		t.Fatalf("Execute() error = %v, want untrusted analyzer output to fail", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
 	}
 	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
 		t.Fatal("untrusted combined rerun must not leave the prior lint result available")

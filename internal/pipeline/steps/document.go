@@ -154,17 +154,14 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	}
 
 	// Without trustworthy structured output we cannot confirm the agent
-	// resolved every gap, so surface it for human review. Nothing is stashed
-	// for the lint step, which therefore re-assesses with its own pass.
+	// resolved every gap. Fail the step rather than creating an approval gate:
+	// unattended AXI modes can resolve a gate, but must never certify opaque
+	// analyzer output.
 	var findings Findings
 	if result.Output == nil {
-		summary := fallbackDocumentSummary(result.Text)
-		sctx.Log("missing structured output, requiring approval")
-		return documentApprovalOutcome(summary), nil
-	} else if err := unmarshalRequiredFindings(result.Output, &findings); err != nil {
-		summary := fallbackDocumentSummary(extractDocumentSummary(result.Output, result.Text))
-		sctx.Log("could not parse structured output, requiring approval")
-		return documentApprovalOutcome(summary), nil
+		return nil, fmt.Errorf("document analyzer returned no structured findings")
+	} else if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
+		return nil, fmt.Errorf("validate document analyzer findings: %w", err)
 	}
 
 	docFindings := findings
@@ -309,27 +306,6 @@ func splitHousekeepingFindings(findings Findings) (doc Findings, lint Findings) 
 	return doc, lint
 }
 
-// documentApprovalOutcome builds a single ask-user finding for cases where the
-// agent's structured output is missing or unparsable, so a human can confirm
-// the documentation state instead of silently trusting an opaque response.
-func documentApprovalOutcome(summary string) *pipeline.StepOutcome {
-	findings := Findings{
-		Items: []Finding{{
-			Severity:    "warning",
-			Description: summary,
-			Action:      types.ActionAskUser,
-		}},
-		Summary: summary,
-	}
-	findingsJSON, _ := json.Marshal(findings)
-	return &pipeline.StepOutcome{
-		NeedsApproval: true,
-		AutoFixable:   false,
-		Findings:      string(findingsJSON),
-		FixSummary:    summary,
-	}
-}
-
 func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) bool {
 	for _, path := range strings.Split(changedFiles, "\n") {
 		path = strings.TrimSpace(path)
@@ -350,14 +326,6 @@ func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) 
 	return false
 }
 
-func fallbackDocumentSummary(text string) string {
-	cleaned := strings.TrimSpace(text)
-	if cleaned == "" {
-		return "agent returned no structured output"
-	}
-	return cleaned
-}
-
 func extractDocumentSummary(raw []byte, fallback string) string {
 	var payload struct {
 		Summary string `json:"summary"`
@@ -366,38 +334,4 @@ func extractDocumentSummary(raw []byte, fallback string) string {
 		return payload.Summary
 	}
 	return fallback
-}
-
-func unmarshalRequiredFindings(raw []byte, findings *Findings) error {
-	parsed, err := types.ParseFindingsJSON(string(raw))
-	if err != nil {
-		return err
-	}
-	var payload struct {
-		Summary  *string            `json:"summary"`
-		Findings *[]json.RawMessage `json:"findings"`
-		Items    *[]json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
-	}
-	if payload.Findings == nil && payload.Items == nil {
-		return fmt.Errorf("missing findings array")
-	}
-	if payload.Summary == nil || strings.TrimSpace(*payload.Summary) == "" {
-		return fmt.Errorf("missing summary")
-	}
-	for i, item := range parsed.Items {
-		if strings.TrimSpace(item.Severity) == "" {
-			return fmt.Errorf("finding %d missing severity", i)
-		}
-		if strings.TrimSpace(item.Description) == "" {
-			return fmt.Errorf("finding %d missing description", i)
-		}
-		if strings.TrimSpace(item.Action) == "" {
-			return fmt.Errorf("finding %d missing action", i)
-		}
-	}
-	*findings = parsed
-	return nil
 }

@@ -103,6 +103,7 @@ type StepOutcome struct {
 	ExitCode      int    // process exit code (0 = success)
 	PRURL         string // PR/MR URL if this step created or found one
 	Skipped       bool   // mark the step as skipped without failing the run
+	SkipReason    string // automatic PR/CI skip cause; explicit per-run skips leave it empty
 	SkipRemaining bool   // skip all subsequent steps (e.g. empty diff after rebase)
 	// RestartFrom asks the executor to re-run validation from this earlier step.
 	// CI repairs use it when policy requires revalidation or continuity cannot be

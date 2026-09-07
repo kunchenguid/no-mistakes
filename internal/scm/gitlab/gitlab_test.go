@@ -226,6 +226,9 @@ func TestFindPRWithoutIIDKeepsNumberEmptyAndUpdatesByNumberFromURL(t *testing.T)
 		"glab mr list --source-branch " + branch + " --target-branch main --output json": {
 			stdout: fmt.Sprintf(`[{"web_url":%q}]`+"\n", url),
 		},
+		"glab mr view 42 --output json": {
+			stdout: fmt.Sprintf(`{"iid":42,"title":"existing","web_url":%q}`+"\n", url),
+		},
 		"glab mr update 42 --title updated --description body": {
 			stdout: "updated\n",
 		},
@@ -264,6 +267,9 @@ func TestUpdatePRDoesNotPassUnsupportedYesFlag(t *testing.T) {
 	t.Parallel()
 
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 7 --output json": {
+			stdout: `{"iid":7,"title":"updated"}` + "\n",
+		},
 		"glab mr update 7 --title updated --description body": {
 			stdout: "updated\n",
 		},
@@ -558,6 +564,48 @@ func TestFindPRDoesNotPassRemovedStateFlag(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	host := NewWithDraft(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/draft --target-branch main --title fix: draft --description body --yes --draft": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/9\n",
+		},
+	}), nil, "", "", true)
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft",
+		Body:  "body",
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "9" {
+		t.Fatalf("CreatePR() PR = %+v, want !9", pr)
+	}
+}
+
+func TestCreatePROmitsDraftFlagByDefault(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr create --source-branch feature/x --target-branch main --title fix: x --description body --yes": {
+			stdout: "https://gitlab.example.com/group/project/-/merge_requests/3\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.CreatePR(context.Background(), "feature/x", "main", scm.PRContent{
+		Title: "fix: x",
+		Body:  "body",
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "3" {
+		t.Fatalf("CreatePR() PR = %+v, want !3", pr)
+	}
+}
+
 func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 	t.Parallel()
 
@@ -761,4 +809,81 @@ func TestGitlabHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestUpdatePRPreservesDraftTitle(t *testing.T) {
+	t.Parallel()
+
+	// GitLab encodes draft state in the title, so an update carrying the plain
+	// title would silently mark the MR ready for review.
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 9 --output json": {
+			stdout: `{"iid":9,"title":"Draft: fix: x","web_url":"https://gitlab.example.com/group/project/-/merge_requests/9"}` + "\n",
+		},
+		"glab mr update 9 --title Draft: fix: x --description body": {},
+	}), nil, "", "")
+
+	pr := &scm.PR{Number: "9", URL: "https://gitlab.example.com/group/project/-/merge_requests/9"}
+	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: x", Body: "body"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+}
+
+func TestUpdatePRDoesNotAddDraftToReadyMR(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 9 --output json": {
+			stdout: `{"iid":9,"title":"fix: x","web_url":"https://gitlab.example.com/group/project/-/merge_requests/9"}` + "\n",
+		},
+		"glab mr update 9 --title fix: x --description body": {},
+	}), nil, "", "")
+
+	pr := &scm.PR{Number: "9", URL: "https://gitlab.example.com/group/project/-/merge_requests/9"}
+	if _, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: x", Body: "body"}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+}
+
+func TestUpdatePRRejectsMissingLiveTitle(t *testing.T) {
+	t.Parallel()
+
+	for _, response := range []string{
+		`{"iid":9}` + "\n",
+		`{"iid":9,"title":null}` + "\n",
+		`{"iid":9,"title":"  "}` + "\n",
+	} {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab mr view 9 --output json": {
+				stdout: response,
+			},
+			"glab mr update 9 --title fix: x --description body --yes": {},
+		}), nil, "", "")
+
+		pr := &scm.PR{Number: "9"}
+		_, err := host.UpdatePR(context.Background(), pr, scm.PRContent{Title: "fix: x", Body: "body"})
+		if err == nil || !strings.Contains(err.Error(), "missing merge request title") {
+			t.Fatalf("UpdatePR() error = %v, want missing title error", err)
+		}
+	}
+}
+
+func TestIsDraftTitle(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		title string
+		want  bool
+	}{
+		{"Draft: fix", true},
+		{"draft: fix", true},
+		{"[Draft] fix", true},
+		{"(draft) fix", true},
+		{"fix: draft handling", false},
+		{"", false},
+	} {
+		if got := isDraftTitle(tt.title); got != tt.want {
+			t.Errorf("isDraftTitle(%q) = %v, want %v", tt.title, got, tt.want)
+		}
+	}
 }

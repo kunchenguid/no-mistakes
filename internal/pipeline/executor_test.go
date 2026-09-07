@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestExecutorAutomaticSkipReasonRedactsCredentials(t *testing.T) {
+	database, p, r, repo := setupTest(t)
+	executor := NewExecutor(database, p, nil, nil, []Step{&mockStep{
+		name:    types.StepCI,
+		outcome: &StepOutcome{Skipped: true, SkipReason: "unavailable https://operator:secret@forge.example/repo"},
+	}}, nil)
+	if err := executor.Execute(context.Background(), r, repo, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	results, err := database.GetStepsByRun(r.ID)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("steps = %+v, %v", results, err)
+	}
+	reason := results[0].SkipReason
+	if reason == nil || strings.Contains(*reason, "secret") || !strings.Contains(*reason, "forge.example") {
+		t.Fatalf("skip cause should retain the host and redact credentials: %v", reason)
+	}
+}
 
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader

@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS runs (
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
+    launch_nonce         TEXT,
+    launch_validation_generation TEXT,
+    launch_intent_digest TEXT,
+    launch_receipt_claimed_at INTEGER,
+    pr_base_branch       TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -124,6 +129,26 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
 
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
     ON agent_invocations (run_id, started_at, id);
+
+-- A recovery archive is an append-only provenance snapshot binding one exact
+-- existing archive ref to the terminal run whose later head it preserves.
+-- owner_run_id is the lookup association; run_id is deliberately repeated in
+-- the immutable evidence so malformed or cross-bound records fail closed.
+CREATE TABLE IF NOT EXISTS recovery_archives (
+    id                 TEXT PRIMARY KEY,
+    owner_run_id       TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    run_id             TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    required_head_sha  TEXT NOT NULL,
+    preserved_head_sha TEXT NOT NULL,
+    archive_ref        TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    UNIQUE (owner_run_id, archive_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_archives_owner_created_id
+    ON recovery_archives (owner_run_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS run_agent_sessions (
     run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -236,6 +261,15 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// Proof bindings remain nullable for ordinary and historical rows. The
+	// partial unique index is the cross-process duplicate defense.
+	`ALTER TABLE runs ADD COLUMN launch_nonce TEXT`,
+	`ALTER TABLE runs ADD COLUMN launch_validation_generation TEXT`,
+	`ALTER TABLE runs ADD COLUMN launch_intent_digest TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_repo_branch_launch_nonce ON runs (repo_id, branch, launch_nonce) WHERE launch_nonce IS NOT NULL`,
+	// The first successful conditional update marks the sole `created`
+	// observer; all later claims are durable replays.
+	`ALTER TABLE runs ADD COLUMN launch_receipt_claimed_at INTEGER`,
 	// Per-run PR target branch chosen by the operator (e.g. axi run
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
@@ -252,6 +286,7 @@ var migrationStatements = []string{
 	// verified-green completion and a deliberate override survives daemon
 	// restart, resume, and axi status/logs on an already-terminal run.
 	`ALTER TABLE step_results ADD COLUMN override_reason TEXT`,
+	`ALTER TABLE step_results ADD COLUMN skip_reason TEXT`,
 	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
 	// back as unknown, never a fabricated zero).
 	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,

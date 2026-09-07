@@ -1,10 +1,59 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestAutomaticSkipReasonMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, _ := d.InsertRepo("/tmp/repo", "origin", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec("ALTER TABLE step_results DROP COLUMN skip_reason"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := legacy.GetStepResult(step.ID)
+	if err != nil || got.SkipReason != nil {
+		t.Fatalf("legacy read = %+v, %v", got, err)
+	}
+	_ = legacy.Close()
+	d, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := d.CompleteSkippedStep(step.ID, 0, 12, "ci.log", "provider unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetStepResult(step.ID)
+	if err != nil || got.Status != types.StepStatusSkipped || got.SkipReason == nil || *got.SkipReason != "provider unavailable" {
+		t.Fatalf("migrated skip = %+v, %v", got, err)
+	}
+	if err := d.CompleteStep(step.ID, 0, 15, "ci.log"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetStepResult(step.ID)
+	if err != nil || got.SkipReason != nil {
+		t.Fatalf("completed step retained automatic skip cause: %+v, %v", got, err)
+	}
+}
 
 func TestGetStepResult_LegacyBabysitStepName(t *testing.T) {
 	d := openTestDB(t)

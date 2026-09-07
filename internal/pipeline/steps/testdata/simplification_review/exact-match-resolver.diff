@@ -1,0 +1,20 @@
+diff --git a/target/resolve.go b/target/resolve.go
+index 1111111..2222222 100644
+--- a/target/resolve.go
++++ b/target/resolve.go
+@@ -1 +1,15 @@
+ package target
++
++func Resolve(cfg Config, spec string) (Target, error) {
++	for _, skill := range cfg.Skills {
++		if skill.Name == spec {
++			return Target{Kind: KindSkill, Skill: skill}, nil
++		}
++	}
++	for _, file := range cfg.MemoryFiles {
++		if file == spec {
++			return Target{Kind: KindMemory, File: file}, nil
++		}
++	}
++	return Target{}, fmt.Errorf("unknown target %q: expected a loaded skill name or a configured memory file", spec)
++}

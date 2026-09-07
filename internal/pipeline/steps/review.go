@@ -17,32 +17,14 @@ import (
 )
 
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
-type ReviewStep struct{}
+type ReviewStep struct {
+	now func() time.Time
+}
 
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	var cancel context.CancelFunc
-	var timeout time.Duration
-	var restoreContext func()
-	startReviewTimeout := func() {
-		if cancel != nil {
-			return
-		}
-		parentCtx := sctx.Ctx
-		ctx, cancel, timeout = reviewAgentContext(sctx)
-		sctx.Ctx = ctx
-		restoreContext = func() {
-			cancel()
-			sctx.Ctx = parentCtx
-		}
-	}
-	defer func() {
-		if restoreContext != nil {
-			restoreContext()
-		}
-	}()
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
@@ -91,9 +73,19 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// symptoms. Remedies that must EXTEND the change instead of correcting it
 	// belong to the human at the review gate, which is what the reviewer's
 	// remedy-scope classification rule below routes them to.
+	//
+	// The removal rule is the complement the anti-revert guard was missing.
+	// That guard told the fixer to fix intentional code forward, and "the
+	// author wrote it on purpose" is true of every unrequired branch, so a
+	// finding inside one was always answered by hardening it (backpass PR #107:
+	// six rounds patched around an any-existing-file acceptance branch that one
+	// deleted line would have closed, and still missed). The guard now protects
+	// only code the intent requires; a path the intent does not strictly
+	// require is fixed by removing it. The intent is the arbiter for both, and
+	// genuine doubt still leaves the code alone and reports the finding
+	// unresolved.
 	var fixSummary string
 	if sctx.Fixing && !sctx.SkipFixExecution {
-		startReviewTimeout()
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -113,7 +105,7 @@ Rules:
 - Always start with double checking whether the findings are legitimate.
 - Before changing code, identify whether each finding is a local defect or a symptom of a deeper design, abstraction, validation, ownership, or test-coverage flaw. Prefer the smallest correct root-cause fix within the changed area over patching only the reported line.
 - Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
-- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
+- Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit when the intent requires that code. If the original change introduced something the intent requires, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether the intent requires the code, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
 - After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
@@ -133,7 +125,11 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
-		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
+		// Every logical agent turn owns a fresh hard wall-clock limit. The
+		// fixer keeps the step parent for synchronous preparation and commit
+		// work, so the independent rereviewer cannot inherit its spent
+		// deadline.
+		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
 			LogMessage:              "asking agent to fix identified issues...",
@@ -145,7 +141,7 @@ Previous review findings to address:
 			Workload:                workload,
 		})
 		if err != nil {
-			return nil, reviewAgentError(ctx, timeout, "agent fix", err)
+			return nil, err
 		}
 		fixSummary = summary
 	}
@@ -180,9 +176,10 @@ Previous review findings to address:
 		})
 	}
 
-	// Ask agent to review
+	// Ask agent to review. This fresh deadline is invocation-owned: a
+	// successful fixer above cannot consume any of this independent,
+	// session-free turn's review_agent_timeout allowance.
 	sctx.Log("reviewing changes...")
-	startReviewTimeout()
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -215,8 +212,16 @@ Previous review findings to address:
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
-	// The action vocabulary below classifies by remedy as well as by topic: a
-	// finding whose smallest honest remedy would extend the change (durable
+	// The authorization/privacy obligation below specializes the existing
+	// concrete-state trace only when changed behavior crosses a potentially
+	// protected resource or user-data boundary. The repository still owns access
+	// policy through project instructions and trusted path instructions; the
+	// generic prompt owns only the tracing method and source-evidence threshold.
+	// Material policy ambiguity uses the existing ask-user action, while a
+	// source-proven routine defect retains the existing auto-fix semantics.
+	//
+	// The action vocabulary below also classifies by remedy as well as by topic:
+	// a finding whose smallest honest remedy would extend the change (durable
 	// state, a schema change, background/retry/persistence machinery, a new
 	// subsystem) parks at the existing ask-user gate even when the defect reads
 	// as mechanical, because the authorization needed is for the remedy, not the
@@ -224,6 +229,26 @@ Previous review findings to address:
 	// scope verifier would be exactly the machinery being prevented - and it
 	// runs with the grain of ActionOrDefault, which already fails an
 	// unclassified finding closed to ask-user.
+	//
+	// Findings also require an intended-usage sequence. A rare but real path
+	// those callers actually take still qualifies; a hypothetical unused
+	// execution does not. This is an evidence threshold for what counts as a
+	// finding, not a general instruction to emit fewer of them.
+	//
+	// The dedicated Simplification section asks a different question from the
+	// defect pass: not "is this component correct" but "does the intent
+	// require this component at all". A reviewed spiral (backpass PR #107)
+	// showed why the defect pass alone cannot catch over-engineering: a
+	// permissive resolver with seven acceptance branches and a second,
+	// skill-only budget semantics each yielded a concrete, intended-usage
+	// defect per round, so every finding cleared the evidence threshold and
+	// every fix hardened the unrequired path instead of removing it, across
+	// thirteen rounds that never converged. The section reports the unrequired
+	// component itself as an ask-user warning whose remedy is removal, and asks
+	// defect findings inside such a component to name removal too, so the
+	// fixer's removal rule has something to act on. It stays ask-user because
+	// whether extra surface is wanted is the author's call; the section
+	// deliberately adds no schema field or second reviewer.
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -241,12 +266,16 @@ Task:
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
 - For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
 - For any new or changed logic, construct at least one concrete input or state and trace it through the code, looking for a case that produces a wrong result without erroring.
+- When changed behavior reads, writes, returns, indexes, caches, logs, or otherwise processes potentially protected resources or user data, trace a concrete operation or disclosure across the relevant boundaries. Check where identity is established and whether unauthenticated execution remains reachable; whether authorization is enforced at the earliest shared boundary used by every caller; ownership, role, tenant, organization, and administrative scope including alternate call paths; public responses and serialization of private fields, PII, drafts, internal metadata, or reviewer/admin-only data; secondary disclosure through search projections, caches, logs, telemetry, error details, exports, and generated artifacts; and fail-open defaults, missing-context behavior, preview or bypass paths, and stale authorization assumptions.
+- Report an authorization or privacy finding only with source-backed evidence of a concrete reachable operation or disclosure path. Identify the protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure. Do not infer a finding merely because middleware, an authorization call, or an auth-related test is absent by name; accept equivalent controls and intentionally public data when the source proves them.
+- Repository instructions own access policy. If changed behavior introduces a concrete material operation or disclosure involving potentially protected resources or user data, and the instructions and source do not establish whether it is allowed, you MUST emit an "ask-user" finding that names the missing policy decision. Do not report immaterial or pre-existing ambiguity, and do not invent access policy. A source-proven routine defect retains the existing "auto-fix" semantics.
 - When source evidence proves the failure remains reachable, report the concrete path and recommend the earliest supported shared boundary that would make the invariant hold, rather than duplicating another symptom patch.
 - Do not infer a systemic flaw from code shape, duplication, or architectural preference alone. Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.
+- Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage, including rare but real sequences those callers actually perform. Do not report a finding whose only supporting path is a hypothetical unused execution that intended callers, the public API, or documented usage never take.
 - Do not block explicitly authorized honest containment merely because a later durable fix is possible. Do not expand user scope or turn optional broader improvements into blockers.
 - Do NOT run tests during review. The pipeline has a dedicated test step after review.
 - Analyze for bugs, risks, and code simplification opportunities.
-- "Simplification" means reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). It does NOT mean removing features, changing product behavior, or stripping intentional user-facing output.
+- "Simplification" opportunities in this pass mean reducing code complexity through non-functional refactoring (e.g. deduplication, clearer control flow). They do NOT mean removing features, changing product behavior, or stripping intentional user-facing output; a component the intent does not require is reported through the dedicated Simplification section below, never as an "auto-fix" refactor.
 - Treat security issues, performance regressions, breaking changes, insufficient error handling, and a computation that returns a wrong value, label, or set without failing as risks.
 - Do a full review pass before returning. Do not stop after the first valid finding. Continue inspecting the rest of the changed code until you have enumerated all material issues you can substantiate.
 
@@ -266,6 +295,12 @@ Rules:
   - "source": every source-verifiable finding, including any finding that mixes a source defect with a delivery claim.
   - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
   - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
+
+Simplification (a dedicated pass over what the change introduced, in addition to the findings above):
+- Enumerate every component the change introduced: a new branch, acceptance or matching path, fallback, alias, mode, flag, option, a second definition of a concept the code already defines once, or a parallel copy of a rule. Judge each one against the User intent when one is stated, otherwise against the change's own stated purpose. The stated purpose sets the required scope, not the implementation.
+- For each component that is not strictly required to satisfy that intent, report a finding with severity "warning" and action "ask-user". Name the component, state that no intent requirement needs it or which requirement it exceeds, and recommend removing it as the remedy. Do not recommend hardening, validating, or documenting a component the intent does not require.
+- When a defect you reported above lives inside such a component, say so in that finding and name removal of the component as the smallest honest remedy, instead of prescribing a repair that keeps the component and hardens it.
+- Report each unrequired component once. When a component is required but a strictly narrower form satisfies the intent (for example an exact match where the change accepts several spellings), name the narrower form.
 
 Risk assessment (after listing all findings):
 - Assess source code, source-verifiable criteria, and enforceable external lifecycle requirements normally, while excluding findings scoped "pipeline-owned-delivery" from risk.
@@ -295,7 +330,7 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+	result, err := s.runReviewAgent(sctx, "agent review", "", agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		Env:        sctx.Env,
@@ -305,16 +340,49 @@ Risk assessment (after listing all findings):
 		Workload:   workload,
 	})
 	if err != nil {
-		return nil, reviewAgentError(ctx, timeout, "agent review", err)
+		return nil, err
 	}
 
-	// Parse structured findings
+	// Parse structured findings. A review that produced no structured output,
+	// or one whose risk assessment is absent, cannot certify the head: an
+	// unrun or unreadable analyzer must not read as an approving review
+	// (issue #703), so fail closed instead of approving on empty findings.
 	var findings Findings
-	if result.Output != nil {
-		if err := json.Unmarshal(result.Output, &findings); err != nil {
-			sctx.Log("could not parse structured output, using text response")
-			findings = Findings{Summary: result.Text}
+	if result.Output == nil {
+		return nil, errors.New("review analyzer returned no structured findings")
+	}
+	var payload struct {
+		Findings *[]json.RawMessage `json:"findings"`
+	}
+	if err := json.Unmarshal(result.Output, &payload); err != nil {
+		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
+	}
+	if payload.Findings == nil {
+		return nil, errors.New("review analyzer findings missing findings array")
+	}
+	if err := json.Unmarshal(result.Output, &findings); err != nil {
+		return nil, fmt.Errorf("validate review analyzer findings: %w", err)
+	}
+	findings.RiskLevel = strings.TrimSpace(findings.RiskLevel)
+	findings.RiskScope = strings.TrimSpace(findings.RiskScope)
+	if findings.RiskLevel == "" || strings.TrimSpace(findings.RiskRationale) == "" || findings.RiskScope == "" {
+		return nil, errors.New("review analyzer findings missing risk assessment")
+	}
+	switch findings.RiskLevel {
+	case "low", "medium", "high":
+	default:
+		return nil, errors.New("review analyzer findings invalid risk level")
+	}
+	switch findings.RiskScope {
+	case types.FindingsRiskScopeSourceOrExternal, types.FindingsRiskScopePipelineOwnedDelivery:
+	default:
+		return nil, errors.New("review analyzer findings invalid risk scope")
+	}
+	for i := range findings.Items {
+		if !types.IsKnownFindingSeverity(findings.Items[i].Severity) {
+			return nil, fmt.Errorf("review analyzer finding %d missing severity", i)
 		}
+		findings.Items[i].Severity = types.NormalizeFindingSeverity(findings.Items[i].Severity)
 	}
 
 	// Phase ownership boundary: drop findings that only claim later pipeline-
@@ -435,24 +503,47 @@ func sanitizePromptMultilineText(text string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func reviewAgentContext(sctx *pipeline.StepContext) (context.Context, context.CancelFunc, time.Duration) {
-	timeout := config.DefaultReviewAgentTimeout
-	if sctx != nil && sctx.Config != nil && sctx.Config.ReviewAgentTimeout > 0 {
-		timeout = sctx.Config.ReviewAgentTimeout
+func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, stepName types.StepName, opts fixExecutionOptions) (string, error) {
+	role := opts.SessionRole
+	prefix := opts.ErrorPrefix
+	opts.ErrorPrefix = ""
+	opts.RunAgent = func(runOpts agent.RunOpts) (*agent.Result, error) {
+		return s.runReviewAgent(sctx, prefix, role, runOpts)
 	}
-	ctx, cancel := context.WithTimeoutCause(sctx.Ctx, timeout, errReviewAgentTimeout)
+	return executeFixMode(sctx, stepName, opts)
+}
+
+func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
+	ctx, cancel, timeout := s.reviewAgentContext(sctx.Ctx, sctx.Config)
+	defer cancel()
+	result, err := sctx.RunAgentSessionContext(ctx, role, opts)
+	if err != nil {
+		err = reviewAgentError(ctx, timeout, prefix, err)
+	}
+	return result, err
+}
+
+func (s *ReviewStep) reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := config.DefaultReviewAgentTimeout
+	if cfg != nil && cfg.ReviewAgentTimeout > 0 {
+		timeout = cfg.ReviewAgentTimeout
+	}
+	now := time.Now()
+	if s != nil && s.now != nil {
+		now = s.now()
+	}
+	ctx, cancel := context.WithDeadlineCause(parent, now.Add(timeout), errReviewAgentTimeout)
 	return ctx, cancel, timeout
 }
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
-// reviewAgentError renders a review-round budget expiry. The measured activity
-// evidence comes from the shared agent-run seam; the budget is never restated
-// as if it were the silence, because the two are different facts and only one
-// of them was observed.
+// reviewAgentError renders one review invocation's absolute wall-clock expiry.
+// The measured activity evidence comes from the shared agent-run seam; the hard
+// limit is never restated as inactivity because activity does not reset it.
 func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
 	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s timed out after %s: %w", prefix, timeout, err)
+		return fmt.Errorf("%s reached its absolute wall-clock limit after %s: %w", prefix, timeout, err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }

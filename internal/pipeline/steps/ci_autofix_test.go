@@ -1532,3 +1532,37 @@ func TestCIStep_NonTimeoutFixFailureKeepsRetrying(t *testing.T) {
 		t.Fatalf("logs = %v, want the transient failure still warned about", logs)
 	}
 }
+
+// The CI fixer shares the review fixer's removal rule so both apply one
+// discipline: a red check caused by a code path the intent does not strictly
+// require is fixed by removing that path, not by hardening it.
+func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	var capturedPrompt string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			capturedPrompt = opts.Prompt
+			return &agent.Result{}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+	if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, []string{"test"}, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"When a problem can be solved by removing a code path that is not strictly required to satisfy the intent",
+		"fix it by removing that path, not by validating, hardening, or documenting it",
+		"Judge what the intent strictly requires against the User intent section when present, otherwise against the change's own stated purpose",
+		"Fix the reported instance narrowly.",
+		"Do not add new subsystems, guards, instructions, or behaviors beyond what the specific failing check requires",
+	} {
+		if !strings.Contains(capturedPrompt, want) {
+			t.Errorf("CI fix prompt missing removal-rule contract %q:\n%s", want, capturedPrompt)
+		}
+	}
+}

@@ -348,7 +348,7 @@ func TestPRStep_ZeroBaseSHA(t *testing.T) {
 	}
 }
 
-func TestPRStep_CreatesNewPR(t *testing.T) {
+func TestPRStep_CreatesConfiguredDraftPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -359,6 +359,7 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	sctx.Config.Providers.GitHub.DraftPullRequests = true
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -391,6 +392,9 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create --head feature --base main") {
 		t.Fatalf("expected unset PR base to fall back to repository default branch, got:\n%s", ghLog)
 	}
+	if !strings.Contains(ghLog, "pr create --head feature --base main --repo test/repo --draft") {
+		t.Fatalf("expected configured GitHub PR creation to use --draft, got:\n%s", ghLog)
+	}
 	if !strings.Contains(ghLog, "--title chore: update pull request --body") {
 		t.Fatalf("expected fallback PR title to make no scope claim, got:\n%s", ghLog)
 	}
@@ -410,7 +414,13 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/99" {
-		t.Errorf("PR URL = %v, want https://github.com/test/repo/pull/99", run.PRURL)
+		t.Fatalf("PR URL = %v, want https://github.com/test/repo/pull/99", run.PRURL)
+	}
+	for _, line := range strings.Split(ghLog, "\n") {
+		if strings.HasPrefix(line, "pr create ") {
+			t.Logf("provider command: gh %s\npersisted PR URL: %s", line, *run.PRURL)
+			break
+		}
 	}
 }
 

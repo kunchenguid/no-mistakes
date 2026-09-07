@@ -216,8 +216,10 @@ func requireProviderModel(value string) error {
 	return nil
 }
 
-// SplitProviderModel splits opencode's provider/model spelling into the
-// providerID and modelID the session-message body requires.
+// SplitProviderModel splits a provider/model spelling into the providerID and
+// modelID. Opencode's session-message body requires that form, and eval replay
+// uses the same split to compare a qualified candidate against adapters that
+// report model and provider as separate fields.
 func SplitProviderModel(model string) (provider, id string, ok bool) {
 	provider, id, found := strings.Cut(strings.TrimSpace(model), "/")
 	provider = strings.TrimSpace(provider)
@@ -226,6 +228,23 @@ func SplitProviderModel(model string) (provider, id string, ok bool) {
 		return "", "", false
 	}
 	return provider, id, true
+}
+
+// ServedMatchesRequested reports whether an adapter's served model is the same
+// model identity the operator requested. Identity is the final path segment of
+// the model id; provider metadata is never compared.
+func ServedMatchesRequested(requested, served, servedProvider string) bool {
+	modelName := func(model string) string {
+		model = strings.TrimSpace(model)
+		if slash := strings.LastIndexByte(model, '/'); slash >= 0 {
+			model = strings.TrimSpace(model[slash+1:])
+		}
+		return model
+	}
+
+	requestedName := modelName(requested)
+	servedName := modelName(served)
+	return requestedName != "" && requestedName == servedName
 }
 
 // harnesses is the whole mapping. Every native flag here was read off the

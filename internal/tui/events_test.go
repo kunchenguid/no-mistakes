@@ -36,6 +36,30 @@ func TestModel_ApplyEvent_RunCompletedCarriesCIOverride(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_StepCompletedCarriesCombinedWorkScope(t *testing.T) {
+	run := testRun()
+	run.Steps = append(run.Steps, ipc.StepResultInfo{StepName: types.StepDocument, Status: types.StepStatusPending})
+	m := NewModel("/tmp/sock", nil, run)
+	status := string(types.StepStatusCompleted)
+	m.applyEvent(ipc.Event{
+		Type:      ipc.EventStepCompleted,
+		RunID:     run.ID,
+		StepName:  ptr(types.StepDocument),
+		Status:    &status,
+		WorkScope: ipc.WorkScopeDocumentLintHousekeeping,
+	})
+
+	for _, step := range m.steps {
+		if step.StepName == types.StepDocument {
+			if step.WorkScope != ipc.WorkScopeDocumentLintHousekeeping {
+				t.Fatalf("work scope = %q, want combined housekeeping", step.WorkScope)
+			}
+			return
+		}
+	}
+	t.Fatal("document step not found")
+}
+
 func TestModel_ApplyEvent_LogChunk(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

@@ -1,0 +1,11 @@
+diff --git a/billing/invoices.go b/billing/invoices.go
+index 1111111..2222222 100644
+--- a/billing/invoices.go
++++ b/billing/invoices.go
+@@ -3,3 +3,4 @@ package billing
+-func ListOpenInvoices(ctx context.Context) ([]Invoice, error) {
+-	return queryInvoices(ctx, `SELECT * FROM invoices WHERE status = 'open'`)
++func ListOpenInvoices(ctx context.Context, tenantID string) ([]Invoice, error) {
++	return queryInvoices(ctx,
++		`SELECT * FROM invoices WHERE status = 'open' ORDER BY created_at DESC`)
+ }
