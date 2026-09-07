@@ -486,24 +486,40 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
 	}
 	var payload struct {
 		HeadPipeline struct {
 			ID int `json:"id"`
 		} `json:"head_pipeline"`
 	}
-	if trimmed := bytesTrimToJSON(viewOut); len(trimmed) == 0 || json.Unmarshal(trimmed, &payload) != nil || payload.HeadPipeline.ID == 0 {
-		return "", nil
+	trimmed := bytesTrimToJSON(viewOut)
+	if len(trimmed) == 0 {
+		return "", errors.New("resolve GitLab pipeline for selected logs: response contained no JSON")
+	}
+	if err := json.Unmarshal(trimmed, &payload); err != nil {
+		return "", fmt.Errorf("resolve GitLab pipeline for selected logs: %w", err)
+	}
+	if payload.HeadPipeline.ID == 0 {
+		return "", errors.New("resolve GitLab pipeline for selected logs: pipeline ID is empty")
 	}
 	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("list GitLab jobs for selected logs: %w", err)
 	}
 	jobIDs := findFailedJobTargetIDs(jobsOut, targets)
 	var logs []string
 	var logErrors []error
+	matched := make(map[string]bool, len(jobIDs))
+	for _, jobID := range jobIDs {
+		matched[fmt.Sprintf("gitlab-job:%d", jobID)] = true
+	}
+	for _, target := range targets {
+		if id := strings.TrimSpace(target.ProviderID); id != "" && !matched[id] {
+			logErrors = append(logErrors, fmt.Errorf("selected GitLab check %q was not found", id))
+		}
+	}
 	for _, jobID := range jobIDs {
 		traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
 		traceOut, err := traceCmd.Output()

@@ -475,24 +475,42 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		return "", nil
 	}
 	view, err := h.viewPR(ctx, pr.Number)
-	if err != nil || strings.TrimSpace(view.Head) == "" {
-		return "", nil
+	if err != nil {
+		return "", fmt.Errorf("resolve Gitea pull request for selected logs: %w", err)
+	}
+	if strings.TrimSpace(view.Head) == "" {
+		return "", errors.New("resolve Gitea pull request for selected logs: head branch is empty")
 	}
 	runs, err := h.listRuns(ctx, view.Head)
-	if err != nil || len(runs) == 0 {
-		return "", nil
+	if err != nil {
+		return "", fmt.Errorf("list Gitea runs for selected logs: %w", err)
+	}
+	if len(runs) == 0 {
+		return "", errors.New("no Gitea runs found for selected logs")
 	}
 	matchSHA := strings.TrimSpace(headSHA)
 	if matchSHA == "" {
 		matchSHA = view.HeadSHA
 	}
 	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA)
-	if err != nil || run.ID == "" {
-		return "", nil
+	if err != nil {
+		return "", fmt.Errorf("find Gitea run for selected logs: %w", err)
+	}
+	if run.ID == "" {
+		return "", errors.New("no Gitea run matched the selected log target head")
 	}
 	jobIDs := findFailedGiteaJobTargetIDs(jobs, targets)
 	var logs []string
 	var logErrors []error
+	matched := make(map[string]bool, len(jobIDs))
+	for _, jobID := range jobIDs {
+		matched[fmt.Sprintf("gitea-job:%d", jobID)] = true
+	}
+	for _, target := range targets {
+		if id := strings.TrimSpace(target.ProviderID); id != "" && !matched[id] {
+			logErrors = append(logErrors, fmt.Errorf("selected Gitea check %q was not found", id))
+		}
+	}
 	for _, jobID := range jobIDs {
 		logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
 			"--job", strconv.Itoa(jobID),

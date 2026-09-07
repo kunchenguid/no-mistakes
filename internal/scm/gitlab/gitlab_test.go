@@ -518,6 +518,20 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	}
 }
 
+func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr view 123 --output json":                                {stdout: `{"head_pipeline":{"id":77}}` + "\n"},
+		"glab ci get --pipeline-id 77 --output json --with-job-details": {stdout: `{"jobs":[{"id":55,"name":"build","status":"failed"}]}` + "\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "", "", []scm.CheckTarget{{ProviderID: "gitlab-job:999"}})
+	if logs != "" || err == nil || !strings.Contains(err.Error(), "gitlab-job:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want explicit missing-target error", logs, err)
+	}
+}
+
 func TestFetchFailedCheckLogsParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 

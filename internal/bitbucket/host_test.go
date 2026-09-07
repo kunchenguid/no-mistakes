@@ -78,37 +78,37 @@ func TestStatusProviderID(t *testing.T) {
 	if got := statusProviderID(CommitStatus{Key: "build-1", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/pipeline-1"}); got != "bitbucket-status:build-1" {
 		t.Fatalf("statusProviderID() = %q, want status key identity", got)
 	}
-	if got := statusProviderID(CommitStatus{URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/pipeline-1"}); got != "bitbucket-pipeline:pipeline-1" {
+	if got := statusProviderID(CommitStatus{URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/42"}); got != "bitbucket-pipeline-build:42" {
 		t.Fatalf("statusProviderID() = %q, want pipeline identity fallback", got)
 	}
 }
 
-func TestFailedPipelineUUIDTargetsPreservesExactSameNamedSelection(t *testing.T) {
+func TestFailedPipelineBuildNumberTargetsPreservesExactSameNamedSelection(t *testing.T) {
 	t.Parallel()
 
 	statuses := []CommitStatus{
-		{Name: "test", Key: "test-linux", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/pipeline-1"},
-		{Name: "test", Key: "test-macos", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/pipeline-2"},
+		{Name: "test", Key: "test-linux", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/41"},
+		{Name: "test", Key: "test-macos", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/42"},
 	}
-	got, err := failedPipelineUUIDTargets(statuses, []scm.CheckTarget{{Name: "test", ProviderID: "bitbucket-status:test-macos"}})
+	got, err := failedPipelineBuildNumberTargets(statuses, []scm.CheckTarget{{Name: "test", ProviderID: "bitbucket-status:test-macos"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("targets = %v, want one exact pipeline", got)
 	}
-	if _, ok := got["pipeline-2"]; !ok {
-		t.Fatalf("targets = %v, want pipeline-2", got)
+	if _, ok := got["42"]; !ok {
+		t.Fatalf("targets = %v, want build 42", got)
 	}
 }
 
-func TestFailedPipelineUUIDTargetsFailsClosedWhenSelectionCannotResolve(t *testing.T) {
+func TestFailedPipelineBuildNumberTargetsFailsClosedWhenSelectionCannotResolve(t *testing.T) {
 	t.Parallel()
 
-	statuses := []CommitStatus{{Name: "test", Key: "test-linux", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/pipeline-1"}}
-	got, err := failedPipelineUUIDTargets(statuses, []scm.CheckTarget{{Name: "test", ProviderID: "bitbucket-status:missing"}})
+	statuses := []CommitStatus{{Name: "test", Key: "test-linux", State: "FAILED", URL: "https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/41"}}
+	got, err := failedPipelineBuildNumberTargets(statuses, []scm.CheckTarget{{Name: "test", ProviderID: "bitbucket-status:missing"}})
 	if err == nil || got != nil {
-		t.Fatalf("failedPipelineUUIDTargets() = (%v, %v), want no targets and an error", got, err)
+		t.Fatalf("failedPipelineBuildNumberTargets() = (%v, %v), want no targets and an error", got, err)
 	}
 }
 
@@ -152,125 +152,21 @@ func TestStatusBucket(t *testing.T) {
 	}
 }
 
-func TestNormalizePipelineUUID(t *testing.T) {
+func TestPipelineBuildNumberFromStatusURL(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
-		name string
 		raw  string
 		want string
 	}{
-		{"already lowercase", "abc-def-123", "abc-def-123"},
-		{"uppercase lowered", "ABC-DEF-123", "abc-def-123"},
-		{"mixed case lowered", "AbC-dEf", "abc-def"},
-		{"with braces stripped", "{abc-def-123}", "abc-def-123"},
-		{"with braces uppercase", "{ABC-DEF}", "abc-def"},
-		{"with surrounding spaces trimmed", "  abc-def  ", "abc-def"},
-		{"spaces and braces combined", "  {abc-def}  ", "abc-def"},
-
-		// strings.Trim with cutset "{}" strips all leading/trailing { and } chars,
-		// not just one matched pair.
-		{"nested braces collapse", "{{abc-def}}", "abc-def"},
-		{"only leading brace stripped", "{abc-def", "abc-def"},
-		{"only trailing brace stripped", "abc-def}", "abc-def"},
-		{"triple trailing braces", "abc-def}}}", "abc-def"},
-		{"interior braces preserved", "a{b}c", "a{b}c"},
-
-		{"empty returns empty", "", ""},
-		{"whitespace-only returns empty", "   ", ""},
-		{"empty braces return empty", "{}", ""},
-		{"braces with whitespace return empty", "  {}  ", ""},
+		{"https://bitbucket.org/ws/repo/pipelines/results/123", "123"},
+		{"https://bitbucket.org/ws/repo/addon/pipelines/home#!/results/456", "456"},
+		{"https://bitbucket.org/ws/repo/pipelines/results/not-a-number", ""},
+		{"https://bitbucket.org/ws/repo/pipelines", ""},
 	}
-
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizePipelineUUID(tt.raw)
-			if got != tt.want {
-				t.Fatalf("normalizePipelineUUID(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPipelineUUIDFromStatusURL(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{
-			name: "valid results URL with braces",
-			raw:  "https://bitbucket.org/ws/repo/pipelines/results/{abc-def-123}",
-			want: "abc-def-123",
-		},
-		{
-			name: "UUID without braces",
-			raw:  "https://bitbucket.org/ws/repo/pipelines/results/abc-def",
-			want: "abc-def",
-		},
-		{
-			name: "uppercase UUID normalized to lowercase",
-			raw:  "https://bitbucket.org/ws/repo/pipelines/results/{ABC-DEF}",
-			want: "abc-def",
-		},
-		{
-			name: "URL with query string strips query",
-			raw:  "https://bitbucket.org/ws/repo/pipelines/results/{abc-def}?tab=logs",
-			want: "abc-def",
-		},
-		{
-			name: "URL with trailing path segment stops at first slash",
-			raw:  "https://bitbucket.org/ws/repo/pipelines/results/{abc-def}/steps",
-			want: "abc-def",
-		},
-		{
-			name: "fragment consulted before path",
-			raw:  "https://bitbucket.org/ws/pipelines/results/path-uuid#/pipelines/results/frag-uuid",
-			want: "frag-uuid",
-		},
-		{
-			name: "last results segment wins when duplicated",
-			raw:  "https://bitbucket.org/results/early/results/late",
-			want: "late",
-		},
-		{
-			name: "URL without results segment returns empty",
-			raw:  "https://bitbucket.org/ws/repo/pipelines",
-			want: "",
-		},
-		{
-			name: "URL whose path lacks results but fragment has it extracts fragment UUID",
-			raw:  "https://bitbucket.org/ws/repo#/pipelines/results/{frag-only}",
-			want: "frag-only",
-		},
-		{
-			name: "empty string returns empty",
-			raw:  "",
-			want: "",
-		},
-		{
-			name: "whitespace-only returns empty",
-			raw:  "   ",
-			want: "",
-		},
-		{
-			name: "plain string with no URL structure returns empty",
-			raw:  "not-a-url",
-			want: "",
-		},
-		{
-			// An invalid percent-escape makes url.Parse fail outright; the helper
-			// must return empty rather than panic or surface the parse error.
-			name: "malformed URL with invalid percent escape returns empty",
-			raw:  "https://bitbucket.org/x/results/{abc}%xx",
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := pipelineUUIDFromStatusURL(tt.raw)
-			if got != tt.want {
-				t.Fatalf("pipelineUUIDFromStatusURL(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
-		})
+		if got := pipelineBuildNumberFromStatusURL(tt.raw); got != tt.want {
+			t.Fatalf("pipelineBuildNumberFromStatusURL(%q) = %q, want %q", tt.raw, got, tt.want)
+		}
 	}
 }

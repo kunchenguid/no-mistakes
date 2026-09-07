@@ -137,7 +137,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if err != nil {
 		return "", fmt.Errorf("resolve selected Bitbucket checks: %w", err)
 	}
-	targets, err := failedPipelineUUIDTargets(statuses, selected)
+	targets, err := failedPipelineBuildNumberTargets(statuses, selected)
 	if err != nil {
 		return "", err
 	}
@@ -152,11 +152,14 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	var logErrors []error
 	found := map[string]bool{}
 	for _, pipelineRun := range pipelines {
-		uuid := normalizePipelineUUID(pipelineRun.UUID)
-		if _, ok := targets[uuid]; !ok {
+		if pipelineRun.BuildNumber <= 0 {
 			continue
 		}
-		found[uuid] = true
+		buildNumber := strconv.Itoa(pipelineRun.BuildNumber)
+		if _, ok := targets[buildNumber]; !ok {
+			continue
+		}
+		found[buildNumber] = true
 		steps, err := h.client.ListPipelineSteps(ctx, h.repo, pipelineRun.UUID)
 		if err != nil {
 			logErrors = append(logErrors, fmt.Errorf("list Bitbucket pipeline %s steps: %w", pipelineRun.UUID, err))
@@ -176,9 +179,9 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 			}
 		}
 	}
-	for uuid := range targets {
-		if !found[uuid] {
-			logErrors = append(logErrors, fmt.Errorf("selected Bitbucket pipeline %s was not found for commit %s", uuid, commitSHA))
+	for buildNumber := range targets {
+		if !found[buildNumber] {
+			logErrors = append(logErrors, fmt.Errorf("selected Bitbucket pipeline build %s was not found for commit %s", buildNumber, commitSHA))
 		}
 	}
 	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
@@ -252,8 +255,8 @@ func statusProviderID(status CommitStatus) string {
 	if key := strings.TrimSpace(status.Key); key != "" {
 		return "bitbucket-status:" + key
 	}
-	if uuid := pipelineUUIDFromStatusURL(status.URL); uuid != "" {
-		return "bitbucket-pipeline:" + uuid
+	if buildNumber := pipelineBuildNumberFromStatusURL(status.URL); buildNumber != "" {
+		return "bitbucket-pipeline-build:" + buildNumber
 	}
 	return ""
 }
@@ -273,16 +276,7 @@ func statusBucket(state string) scm.CheckBucket {
 	}
 }
 
-func normalizePipelineUUID(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	trimmed = strings.Trim(trimmed, "{}")
-	if trimmed == "" {
-		return ""
-	}
-	return strings.ToLower(trimmed)
-}
-
-func pipelineUUIDFromStatusURL(raw string) string {
+func pipelineBuildNumberFromStatusURL(raw string) string {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return ""
@@ -293,15 +287,19 @@ func pipelineUUIDFromStatusURL(raw string) string {
 		if idx < 0 {
 			continue
 		}
-		uuid := fragment[idx+len("/results/"):]
-		uuid = strings.TrimSpace(strings.SplitN(uuid, "?", 2)[0])
-		uuid = strings.TrimSpace(strings.SplitN(uuid, "/", 2)[0])
-		return normalizePipelineUUID(uuid)
+		buildNumber := fragment[idx+len("/results/"):]
+		buildNumber = strings.TrimSpace(strings.SplitN(buildNumber, "?", 2)[0])
+		buildNumber = strings.TrimSpace(strings.SplitN(buildNumber, "/", 2)[0])
+		buildNumber = strings.Trim(buildNumber, "{}")
+		if number, err := strconv.Atoi(buildNumber); err == nil && number > 0 {
+			return strconv.Itoa(number)
+		}
+		return ""
 	}
 	return ""
 }
 
-func failedPipelineUUIDTargets(statuses []CommitStatus, selected []scm.CheckTarget) (map[string]struct{}, error) {
+func failedPipelineBuildNumberTargets(statuses []CommitStatus, selected []scm.CheckTarget) (map[string]struct{}, error) {
 	latest := LatestStatuses(statuses)
 	targets := make(map[string]struct{}, len(selected))
 	var resolveErrors []error
@@ -319,8 +317,8 @@ func failedPipelineUUIDTargets(statuses []CommitStatus, selected []scm.CheckTarg
 				continue
 			}
 			matched = true
-			if uuid := pipelineUUIDFromStatusURL(status.URL); uuid != "" {
-				targets[uuid] = struct{}{}
+			if buildNumber := pipelineBuildNumberFromStatusURL(status.URL); buildNumber != "" {
+				targets[buildNumber] = struct{}{}
 			} else {
 				resolveErrors = append(resolveErrors, fmt.Errorf("selected Bitbucket check %q has no pipeline identity", statusName(status)))
 			}

@@ -1139,16 +1139,21 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 	listCmd := h.cmd(ctx, "gh", args...)
 	listOut, err := listCmd.Output()
 	if err != nil {
-		return "", nil
+		return "", fmt.Errorf("list GitHub runs for selected logs: %w", err)
 	}
 	var runs []githubRun
 	if err := json.Unmarshal(listOut, &runs); err != nil {
-		return "", nil
+		return "", fmt.Errorf("parse GitHub runs for selected logs: %w", err)
 	}
 	var logs []string
 	var logErrors []error
+	matched := make(map[string]bool, len(ids))
 	for _, run := range runs {
-		_, wholeRun := ids[fmt.Sprintf("github-workflow-run:%d", run.DatabaseID)]
+		workflowID := fmt.Sprintf("github-workflow-run:%d", run.DatabaseID)
+		_, wholeRun := ids[workflowID]
+		if wholeRun {
+			matched[workflowID] = true
+		}
 		wholeRun = wholeRun || runMatchesTargets(ctx, h, run, names)
 		if wholeRun {
 			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
@@ -1169,6 +1174,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 			continue
 		}
 		for _, jobID := range jobIDs {
+			matched[fmt.Sprintf("github-check-run:%d", jobID)] = true
 			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
 			viewArgs = append(viewArgs, "--job", strconv.Itoa(jobID), "--log")
 			out, err := h.cmd(ctx, "gh", viewArgs...).Output()
@@ -1179,6 +1185,11 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 			if log := strings.TrimSpace(string(out)); log != "" {
 				logs = append(logs, log)
 			}
+		}
+	}
+	for id := range ids {
+		if !matched[id] {
+			logErrors = append(logErrors, fmt.Errorf("selected GitHub check %q was not found", id))
 		}
 	}
 	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)

@@ -42,7 +42,8 @@ type CommitStatus struct {
 }
 
 type Pipeline struct {
-	UUID string `json:"uuid"`
+	UUID        string `json:"uuid"`
+	BuildNumber int    `json:"build_number"`
 }
 
 type PipelineStep struct {
