@@ -394,11 +394,16 @@ func packagesOverlap(a, b []string) []string {
 }
 
 func matrixShardCondition(ifCond string) string {
-	match := regexp.MustCompile(`matrix\.shard\s*==\s*'([^']+)'`).FindStringSubmatch(ifCond)
-	if len(match) != 2 {
+	fields := strings.Fields(normalizeWorkflowCondition(ifCond))
+	if len(fields) != 7 || fields[0] != "runner.os" || fields[1] != "==" || fields[2] != "'Windows'" ||
+		fields[3] != "&&" || fields[4] != "matrix.shard" || fields[5] != "==" {
 		return ""
 	}
-	return match[1]
+	quotedShard := fields[6]
+	if len(quotedShard) < 3 || quotedShard[0] != '\'' || quotedShard[len(quotedShard)-1] != '\'' || strings.Contains(quotedShard[1:len(quotedShard)-1], "'") {
+		return ""
+	}
+	return quotedShard[1 : len(quotedShard)-1]
 }
 
 func goTestTimeout(t *testing.T, command workflowCommand) time.Duration {
