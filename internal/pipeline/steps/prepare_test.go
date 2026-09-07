@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,7 +54,17 @@ func TestEnsurePrepared_RunsOnceAndKeepsOnlyIgnoredMaterialization(t *testing.T)
 func TestConfiguredTestAndLintSharePreparation(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ignoreTestDependencies(t, dir)
-	sctx := newPreparationTestContext(t, nil, dir, baseSHA, headSHA, config.Commands{
+	// A configured baseline no longer replaces Test's evidence turn.
+	// Keep that turn in the shared-preparation journey without a real model.
+	evidenceCalls := 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		evidenceCalls++
+		if _, err := os.Stat(filepath.Join(opts.CWD, ".deps", "count")); err != nil {
+			t.Fatalf("prepared dependencies unavailable during evidence turn: %v", err)
+		}
+		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"","tested":["dependency check"],"testing_summary":"dependencies available","artifacts":[],"scenarios":[{"name":"user runs the configured command","result":"pass","live":true,"evidence":"dependency check passed","reason":""}],"verdict":"go"}`)}, nil
+	}}
+	sctx := newPreparationTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{
 		Prepare: preparationCommand(),
 		Test:    dependencyExistsCommand(),
 		Lint:    dependencyExistsCommand(),
@@ -69,6 +80,9 @@ func TestConfiguredTestAndLintSharePreparation(t *testing.T) {
 		t.Fatalf("lint step: %v", err)
 	} else if outcome.ExitCode != 0 {
 		t.Fatalf("lint step exit code = %d", outcome.ExitCode)
+	}
+	if evidenceCalls != 1 {
+		t.Fatalf("evidence agent calls = %d, want 1", evidenceCalls)
 	}
 
 	count, err := os.ReadFile(filepath.Join(dir, ".deps", "count"))
