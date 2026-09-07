@@ -109,7 +109,8 @@ func scenarioResultEmoji(result string) string {
 //
 // The Evidence column deliberately merges a passing scenario's evidence with
 // an untested scenario's reason: a reader wants one column answering "on what
-// basis?", and for an untested scenario the missing capability IS that basis.
+// basis?", and for an untested scenario the unavailable capability or absence
+// of a live product surface is that basis.
 func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) string {
 	if len(scenarios) == 0 {
 		return ""

@@ -93,10 +93,11 @@ const (
 // prompt instructs the agent to use for each derived scenario.
 //
 // ScenarioResultUntested is the honest answer for a scenario this machine
-// could not drive against the real product - a missing tool, credential,
-// permission, or authority. It is reported on the pull request and never
-// blocks by itself; only the run's verdict parks the step (see
-// TestVerdictNoGo).
+// could not drive against the real product - either the change has no live
+// product surface, or a required tool, credential, permission, or authority
+// is unavailable. It is reported on the pull request and never blocks by
+// itself; the run's verdict determines whether that scenario coverage parks
+// the step.
 const (
 	ScenarioResultPass     = "pass"
 	ScenarioResultFail     = "fail"
@@ -167,8 +168,9 @@ type Finding struct {
 // Live is the whole point of the record: it is true ONLY when the scenario was
 // driven against the real product in this run. A unit test, a stub, a recorded
 // fixture, or reading the code is not live, and a scenario that could not be
-// driven here is reported with Result ScenarioResultUntested plus the Reason
-// that stopped it rather than being guessed at.
+// driven here is reported with Result ScenarioResultUntested plus a Reason
+// explaining the unavailable capability or absence of a live product surface,
+// rather than being guessed at.
 type TestScenario struct {
 	Name     string `json:"name"`
 	Result   string `json:"result"`
