@@ -63,18 +63,12 @@ type pipelineAttestationStep struct {
 }
 
 // pipelineAttestationLiveValidation reports the run's verdict and how much of
-// its scenario list was driven against the real product. Source names who
-// produced the verdict; today that is always the Test step itself.
+// its scenario list was driven against the real product.
 type pipelineAttestationLiveValidation struct {
 	Verdict string `json:"verdict"`
 	Live    int    `json:"live"`
 	Total   int    `json:"total"`
-	Source  string `json:"source,omitempty"`
 }
-
-// pipelineLiveValidationSourceTestStep marks a verdict the pipeline's own Test
-// step reached by driving the product inside the gate.
-const pipelineLiveValidationSourceTestStep = "test-step"
 
 type testingArtifactRenderState struct {
 	remainingEmbeddedBytes int
@@ -194,31 +188,34 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 		}
 		return left < right
 	})
-	attestation.LiveValidation = attestedLiveValidation(steps, rounds)
+	attestation.LiveValidation = attestedLiveValidation(steps, rounds, headSHA)
 	return attestation
 }
 
 // attestedLiveValidation derives the live-validation payload from the test
 // step's recorded findings. It returns nil - and the field is then omitted -
-// whenever no verdict was recorded, so the attestation never asserts a
-// validation state it cannot show.
-func attestedLiveValidation(steps []*db.StepResult, rounds map[string][]*db.StepRound) *pipelineAttestationLiveValidation {
+// whenever no verdict was recorded or the verdict belongs to another head.
+func attestedLiveValidation(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string) *pipelineAttestationLiveValidation {
 	for _, sr := range steps {
 		if sr == nil || sr.StepName != types.StepTest {
 			continue
 		}
-		stepRounds := rounds[sr.ID]
-		verdict := collectTestingVerdict(sr, stepRounds)
-		if verdict == "" {
-			return nil
+		for _, raw := range testingEvidenceFindingsJSON(sr, rounds[sr.ID]) {
+			if raw == nil || strings.TrimSpace(*raw) == "" {
+				continue
+			}
+			findings, err := types.ParseFindingsJSON(*raw)
+			if err != nil || !types.IsKnownTestVerdict(findings.Verdict) || findings.TestedHeadSHA != headSHA {
+				return nil
+			}
+			live, total := types.LiveScenarioCounts(findings.Scenarios)
+			return &pipelineAttestationLiveValidation{
+				Verdict: findings.Verdict,
+				Live:    live,
+				Total:   total,
+			}
 		}
-		live, total := types.LiveScenarioCounts(collectTestingScenarios(sr, stepRounds))
-		return &pipelineAttestationLiveValidation{
-			Verdict: verdict,
-			Live:    live,
-			Total:   total,
-			Source:  pipelineLiveValidationSourceTestStep,
-		}
+		return nil
 	}
 	return nil
 }

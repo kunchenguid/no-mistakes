@@ -156,10 +156,11 @@ func TestRebindPipelineAttestationWithSteps_UsesCurrentLiveValidation(t *testing
 		Status:       types.StepStatusCompleted,
 		FindingsJSON: &oldFindings,
 	}}, nil, testPipelineHeadSHA)
+	newHead := strings.Repeat("ef", 20)
 	currentFindings := liveValidatedFindingsJSON(t, []types.TestScenario{
 		{Name: "live scenario", Result: types.ScenarioResultPass, Live: true, Evidence: "live.png"},
 		{Name: "blocked scenario", Result: types.ScenarioResultUntested, Reason: "browser unavailable"},
-	}, types.TestVerdictInconclusive)
+	}, types.TestVerdictInconclusive, newHead)
 	currentSteps := []*db.StepResult{{
 		ID:           "current-test",
 		StepName:     types.StepTest,
@@ -167,7 +168,7 @@ func TestRebindPipelineAttestationWithSteps_UsesCurrentLiveValidation(t *testing
 		FindingsJSON: &currentFindings,
 	}}
 
-	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("ef", 20), currentSteps)
+	rebound, ok := rebindPipelineAttestationWithSteps(original, newHead, currentSteps)
 	if !ok {
 		t.Fatal("expected attestation to rebind")
 	}
@@ -175,7 +176,7 @@ func TestRebindPipelineAttestationWithSteps_UsesCurrentLiveValidation(t *testing
 	if got == nil {
 		t.Fatal("rebound omitted current live validation")
 	}
-	if got.Verdict != types.TestVerdictInconclusive || got.Live != 1 || got.Total != 2 || got.Source != pipelineLiveValidationSourceTestStep {
+	if got.Verdict != types.TestVerdictInconclusive || got.Live != 1 || got.Total != 2 {
 		t.Fatalf("rebound live validation = %+v, want current findings", got)
 	}
 }

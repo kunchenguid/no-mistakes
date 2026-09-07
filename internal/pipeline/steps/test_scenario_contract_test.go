@@ -71,6 +71,75 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 	}
 }
 
+func TestTestStep_PromptIncludesOnlyConfiguredTrustedRunbook(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		instructions string
+		wantRunbook  bool
+	}{
+		{name: "none configured"},
+		{name: "configured", instructions: "Start the app with `make dev` and drive checkout.", wantRunbook: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.Test.Instructions = tc.instructions
+
+			if _, err := (&TestStep{}).Execute(sctx); err != nil {
+				t.Fatal(err)
+			}
+			prompt := ag.calls[0].Prompt
+			if got := strings.Contains(prompt, "Repository live-validation runbook (trusted, from the default branch):"); got != tc.wantRunbook {
+				t.Fatalf("runbook section present = %v, want %v\nprompt:\n%s", got, tc.wantRunbook, prompt)
+			}
+			if tc.wantRunbook && !strings.Contains(prompt, tc.instructions) {
+				t.Fatalf("prompt omitted configured runbook:\n%s", prompt)
+			}
+		})
+	}
+}
+
+func TestTestStep_FailingBaselineStillRunsEvidenceTurn(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		calls++
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	testCmd := "printf 'baseline broke'; exit 7"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("evidence agent calls = %d, want 1", calls)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || !outcome.AutoFixable || outcome.ExitCode != 7 {
+		t.Fatalf("outcome = %+v, want blocking auto-fixable baseline failure", outcome)
+	}
+	if findings.Verdict != types.TestVerdictGo || len(findings.Scenarios) != 1 {
+		t.Fatalf("evidence contract was not retained: %+v", findings)
+	}
+	if len(findings.Tested) < 2 || findings.Tested[0] != testCmd {
+		t.Fatalf("tested = %+v, want baseline followed by evidence checks", findings.Tested)
+	}
+	if len(findings.Items) == 0 || !strings.Contains(findings.Items[0].Description, "tests failed with exit code 7") {
+		t.Fatalf("baseline finding missing from %+v", findings.Items)
+	}
+}
+
 const passingScenarioFindingsJSON = `{
   "findings": [],
   "summary": "",

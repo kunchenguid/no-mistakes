@@ -101,6 +101,9 @@ Previous test findings to address:
 
 	testCmd := sctx.Config.Commands.Test
 	tested := []string{}
+	var baselineFindings []Finding
+	var baselineSummary string
+	var baselineExitCode int
 	if testCmd != "" {
 		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
 		output, exitCode, err := runStepShellCommand(sctx, testCmd)
@@ -110,24 +113,13 @@ Previous test findings to address:
 		tested = append(tested, testCmd)
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
-
 		if exitCode != 0 {
-			findings := Findings{
-				Items: []Finding{{
-					Severity:    "error",
-					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
-				}},
-				Summary: projectedOutput,
-				Tested:  tested,
-			}
-			findingsJSON, _ := json.Marshal(findings)
-			return &pipeline.StepOutcome{
-				NeedsApproval: true,
-				AutoFixable:   true,
-				Findings:      string(findingsJSON),
-				ExitCode:      exitCode,
-				FixSummary:    fixSummary,
-			}, nil
+			baselineFindings = []Finding{{
+				Severity:    "error",
+				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+			}}
+			baselineSummary = projectedOutput
+			baselineExitCode = exitCode
 		}
 	}
 
@@ -140,6 +132,8 @@ Previous test findings to address:
 	}
 	if testCmd == "" {
 		sctx.Log("no test command configured, asking agent to run tests...")
+	} else if baselineExitCode != 0 {
+		sctx.Log("baseline tests failed, asking agent to gather live evidence...")
 	} else {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
 	}
@@ -150,8 +144,13 @@ Previous test findings to address:
 	}
 	configuredTestCommand := ""
 	if testCmd != "" {
-		configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
+		if baselineExitCode == 0 {
+			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
+		} else {
+			configuredTestCommand = fmt.Sprintf("\nConfigured test command ran as baseline and failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
+		}
 	}
+	trustedRunbook := trustedTestInstructionsSection(sctx)
 	evidenceCtx, cancelEvidence, evidenceTimeout := testAgentContext(sctx)
 	result, err := sctx.RunAgentContext(evidenceCtx, agent.RunOpts{
 		Prompt: fmt.Sprintf(
@@ -161,7 +160,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-%s
+%s%s
 
 Derive the scenarios:
 - Understand the user intent before testing it. If extracted user intent is present, use it as the primary hint for what success means; otherwise derive the intent from the change itself.
@@ -214,6 +213,7 @@ Rules:
 			baseSHA,
 			sctx.Run.HeadSHA,
 			configuredTestCommand,
+			trustedRunbook,
 			evidenceGuidance,
 			reassessHistory,
 		),
@@ -236,6 +236,11 @@ Rules:
 	}
 	if len(tested) > 0 {
 		findings.Tested = append(append([]string{}, tested...), findings.Tested...)
+	}
+	findings.TestedHeadSHA = sctx.Run.HeadSHA
+	findings.Items = append(baselineFindings, findings.Items...)
+	if baselineSummary != "" {
+		findings.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, findings.Summary}, "\n"))
 	}
 
 	findings.Items = append(findings.Items, verdictFindings(findings)...)
@@ -261,8 +266,21 @@ Rules:
 		NeedsApproval: needsApproval,
 		AutoFixable:   autoFixable,
 		Findings:      string(findingsJSON),
+		ExitCode:      baselineExitCode,
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+func trustedTestInstructionsSection(sctx *pipeline.StepContext) string {
+	if sctx.Config == nil {
+		return ""
+	}
+	instructions := strings.TrimSpace(sctx.Config.Test.Instructions)
+	if instructions == "" {
+		return ""
+	}
+	return "\nRepository live-validation runbook (trusted, from the default branch):\n" +
+		sanitizePromptMultilineText(instructions) + "\n"
 }
 
 // verdictFindings turns the evidence turn's own verdict into findings, which

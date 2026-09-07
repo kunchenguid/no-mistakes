@@ -16,14 +16,19 @@ import (
 // its list and had to report the rest untested because this machine lacked the
 // capability, and a run whose scenario failed.
 
-func liveValidatedFindingsJSON(t *testing.T, scenarios []types.TestScenario, verdict string) string {
+func liveValidatedFindingsJSON(t *testing.T, scenarios []types.TestScenario, verdict string, testedHead ...string) string {
 	t.Helper()
+	headSHA := testPipelineHeadSHA
+	if len(testedHead) > 0 {
+		headSHA = testedHead[0]
+	}
 	raw, err := json.Marshal(types.Findings{
 		Summary:        "",
 		Tested:         []string{"`npm run e2e -- checkout`"},
 		TestingSummary: "drove the checkout scenarios against a running app",
 		Scenarios:      scenarios,
 		Verdict:        verdict,
+		TestedHeadSHA:  headSHA,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +103,19 @@ func TestBuildTestingSummary_PreContractRunRendersUnchanged(t *testing.T) {
 }
 
 // The Pipeline fold is the per-round story, so it carries the table too.
+func TestBuildPipelineSummary_OmitsLiveValidationAfterHeadChanges(t *testing.T) {
+	t.Parallel()
+	findingsJSON := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "user reaches the success screen", Result: types.ScenarioResultPass, Live: true, Evidence: "checkout.png"},
+	}, types.TestVerdictGo)
+	steps, rounds := testStepWithFindings(t, findingsJSON)
+
+	attestation := newPipelineAttestation(steps, rounds, strings.Repeat("ab", 20))
+	if attestation.LiveValidation != nil {
+		t.Fatalf("later head carried stale live validation: %+v", attestation.LiveValidation)
+	}
+}
+
 func TestBuildPipelineSummary_StepFoldCarriesScenarioTable(t *testing.T) {
 	t.Parallel()
 	findingsJSON := liveValidatedFindingsJSON(t, []types.TestScenario{

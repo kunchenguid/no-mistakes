@@ -27,6 +27,7 @@ func liveValidatedPipelineBody(t *testing.T, scenarios []types.TestScenario, ver
 		TestingSummary: "drove the checkout scenarios against a running app",
 		Scenarios:      scenarios,
 		Verdict:        verdict,
+		TestedHeadSHA:  requiredWorkflowTestHeadSHA,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,8 +89,8 @@ func TestRequireActionAcceptsAttestationCarryingLiveValidation(t *testing.T) {
 	if live["live"] != float64(1) || live["total"] != float64(2) {
 		t.Errorf("live_validation coverage = %v of %v, want 1 of 2", live["live"], live["total"])
 	}
-	if live["source"] != "test-step" {
-		t.Errorf("live_validation.source = %v, want the gate's own test step", live["source"])
+	if _, present := live["source"]; present {
+		t.Errorf("live_validation must not carry a producer source: %v", live)
 	}
 
 	result := runRequireAction(t, actionRun{body: body, headSHA: requiredWorkflowTestHeadSHA, number: "1568"})

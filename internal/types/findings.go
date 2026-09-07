@@ -216,6 +216,7 @@ type Findings struct {
 	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
 	Scenarios      []TestScenario `json:"scenarios,omitempty"`
 	Verdict        string         `json:"verdict,omitempty"`
+	TestedHeadSHA  string         `json:"tested_head_sha,omitempty"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
 	RiskScope      string         `json:"risk_scope,omitempty"`
@@ -230,6 +231,7 @@ type findingsWire struct {
 	Artifacts      []TestArtifact `json:"artifacts"`
 	Scenarios      []TestScenario `json:"scenarios"`
 	Verdict        string         `json:"verdict"`
+	TestedHeadSHA  string         `json:"tested_head_sha"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
 	RiskScope      string         `json:"risk_scope"`
@@ -254,6 +256,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		Artifacts:      wire.Artifacts,
 		Scenarios:      wire.Scenarios,
 		Verdict:        wire.Verdict,
+		TestedHeadSHA:  wire.TestedHeadSHA,
 		RiskLevel:      wire.RiskLevel,
 		RiskRationale:  wire.RiskRationale,
 		RiskScope:      wire.RiskScope,
