@@ -67,13 +67,17 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		return nil, nil
 	}
 	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
+		expectedHeadSHA, err := stepGitHeadSHA(sctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve head before snapshotting selected CI checks: %w", err)
+		}
 		snapshotPR := *pr
-		snapshotPR.HeadSHA = sctx.Run.HeadSHA
+		snapshotPR.HeadSHA = expectedHeadSHA
 		checks, err := host.GetChecks(sctx.Ctx, &snapshotPR)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
 		}
-		if snapshotPR.HeadSHA != sctx.Run.HeadSHA {
+		if snapshotPR.HeadSHA != expectedHeadSHA {
 			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", scm.ErrHeadChanged)
 		}
 		s.observedCompletedAt = terminalFailureCompletionTimes(checks)

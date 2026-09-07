@@ -324,6 +324,24 @@ func fakeGitRemoteErrorHandler(args []string) {
 	fakeGitForward(args, realGit)
 }
 
+func fakePRHeadSHA() string {
+	configured := os.Getenv("FAKE_CLI_PR_HEAD_SHA")
+	if os.Getenv("FAKE_CLI_HEAD_FROM_WORKTREE") != "1" || configured != "deadbeef" {
+		return configured
+	}
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if realGit == "" {
+		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
+		os.Exit(1)
+	}
+	out, err := exec.Command(realGit, "rev-parse", "HEAD").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func fakeGitForward(args []string, realGit string) {
 	if realGit == "" {
 		fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REAL_GIT")
@@ -430,7 +448,7 @@ func fakeCIGHReconcileHandler(args []string) {
 		}
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
-		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
@@ -518,7 +536,7 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
-		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
@@ -612,7 +630,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
-		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {
@@ -822,7 +840,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
-		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		fmt.Println(fakePRHeadSHA())
 		os.Exit(0)
 	}
 	os.Exit(1)

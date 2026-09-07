@@ -186,6 +186,8 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 func fakeCLIEnv(binDir string, vars map[string]string) []string {
 	env := []string{
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"FAKE_CLI_REAL_GIT=" + testGitExecutable,
+		"FAKE_CLI_HEAD_FROM_WORKTREE=1",
 	}
 	for k, v := range vars {
 		env = append(env, k+"="+v)
