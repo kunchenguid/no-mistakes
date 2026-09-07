@@ -475,18 +475,22 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 	for _, name := range failingNames {
 		targets = append(targets, scm.CheckTarget{Name: name})
 	}
-	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	logs, err := h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		return "", err
+	}
+	return scm.CombineFailedCheckLogs(logs)
 }
 
-func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, _ string, targets []scm.CheckTarget) (string, error) {
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, _ string, targets []scm.CheckTarget) ([]scm.FailedCheckLog, error) {
 	if len(targets) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	// Get the MR's pipeline jobs and trace the selected failures.
 	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
+		return nil, fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
 	}
 	var payload struct {
 		HeadPipeline struct {
@@ -495,43 +499,46 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	}
 	trimmed := bytesTrimToJSON(viewOut)
 	if len(trimmed) == 0 {
-		return "", errors.New("resolve GitLab pipeline for selected logs: response contained no JSON")
+		return nil, errors.New("resolve GitLab pipeline for selected logs: response contained no JSON")
 	}
 	if err := json.Unmarshal(trimmed, &payload); err != nil {
-		return "", fmt.Errorf("resolve GitLab pipeline for selected logs: %w", err)
+		return nil, fmt.Errorf("resolve GitLab pipeline for selected logs: %w", err)
 	}
 	if payload.HeadPipeline.ID == 0 {
-		return "", errors.New("resolve GitLab pipeline for selected logs: pipeline ID is empty")
+		return nil, errors.New("resolve GitLab pipeline for selected logs: pipeline ID is empty")
 	}
 	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("list GitLab jobs for selected logs: %w", err)
+		return nil, fmt.Errorf("list GitLab jobs for selected logs: %w", err)
 	}
-	jobIDs := findFailedJobTargetIDs(jobsOut, targets)
-	var logs []string
-	var logErrors []error
-	matched := make(map[string]bool, len(jobIDs))
-	for _, jobID := range jobIDs {
-		matched[fmt.Sprintf("gitlab-job:%d", jobID)] = true
-	}
+	results := make([]scm.FailedCheckLog, 0, len(targets))
 	for _, target := range targets {
-		if id := strings.TrimSpace(target.ProviderID); id != "" && !matched[id] {
-			logErrors = append(logErrors, fmt.Errorf("selected GitLab check %q was not found", id))
-		}
-	}
-	for _, jobID := range jobIDs {
-		traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
-		traceOut, err := traceCmd.Output()
-		if err != nil {
-			logErrors = append(logErrors, fmt.Errorf("fetch GitLab job %d trace: %w", jobID, err))
+		result := scm.FailedCheckLog{Target: target}
+		jobIDs := findFailedJobTargetIDs(jobsOut, []scm.CheckTarget{target})
+		if len(jobIDs) == 0 {
+			result.Err = fmt.Errorf("selected GitLab check %q was not found", target.Identity())
+			results = append(results, result)
 			continue
 		}
-		if log := strings.TrimSpace(string(traceOut)); log != "" {
-			logs = append(logs, log)
+		var outputs []string
+		var errs []error
+		for _, jobID := range jobIDs {
+			traceCmd := h.cmd(ctx, "glab", "ci", "trace", fmt.Sprintf("%d", jobID))
+			traceOut, err := traceCmd.Output()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("fetch GitLab job %d trace: %w", jobID, err))
+				continue
+			}
+			if log := strings.TrimSpace(string(traceOut)); log != "" {
+				outputs = append(outputs, log)
+			}
 		}
+		result.Output = strings.Join(outputs, "\n\n")
+		result.Err = errors.Join(errs...)
+		results = append(results, result)
 	}
-	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
+	return results, nil
 }
 
 func parseMRPayload(out []byte) (mrPayload, bool) {

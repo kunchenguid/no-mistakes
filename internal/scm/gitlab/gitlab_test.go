@@ -497,8 +497,8 @@ func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
 	}
-	if logs != "build failed\n\nlint failed" {
-		t.Fatalf("FetchFailedCheckTargetLogs() = %q, want both selected logs", logs)
+	if len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Output != "lint failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want target-separated logs", logs)
 	}
 }
 
@@ -513,8 +513,8 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "", "", []scm.CheckTarget{{ProviderID: "gitlab-job:55"}, {ProviderID: "gitlab-job:56"}})
-	if logs != "build failed" || err == nil || !strings.Contains(err.Error(), "job 56") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want retained partial logs and job 56 error", logs, err)
+	if err != nil || len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Err == nil || !strings.Contains(logs[1].Err.Error(), "job 56") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want retained partial logs and job 56 error", logs, err)
 	}
 }
 
@@ -527,8 +527,8 @@ func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
 	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "", "", []scm.CheckTarget{{ProviderID: "gitlab-job:999"}})
-	if logs != "" || err == nil || !strings.Contains(err.Error(), "gitlab-job:999") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want explicit missing-target error", logs, err)
+	if err != nil || len(logs) != 1 || logs[0].Err == nil || !strings.Contains(logs[0].Err.Error(), "gitlab-job:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want explicit missing-target error", logs, err)
 	}
 }
 

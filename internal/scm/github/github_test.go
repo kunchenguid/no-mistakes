@@ -1386,8 +1386,8 @@ func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T)
 	if err != nil {
 		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
 	}
-	if logs != "selected build failed" {
-		t.Fatalf("FetchFailedCheckTargetLogs() = %q, want selected check's logs", logs)
+	if len(logs) != 1 || logs[0].Output != "selected build failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want selected check's logs", logs)
 	}
 }
 
@@ -1402,8 +1402,8 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:201"}, {ProviderID: "github-check-run:202"}})
-	if logs != "build failed" || err == nil || !strings.Contains(err.Error(), "job 202") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want retained partial logs and job 202 error", logs, err)
+	if err != nil || len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Err == nil || !strings.Contains(logs[1].Err.Error(), "job 202") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want retained partial logs and job 202 error", logs, err)
 	}
 }
 
@@ -1416,8 +1416,8 @@ func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
 	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:999"}})
-	if logs != "" || err == nil || !strings.Contains(err.Error(), "github-check-run:999") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want explicit missing-target error", logs, err)
+	if err != nil || len(logs) != 1 || logs[0].Err == nil || !strings.Contains(logs[0].Err.Error(), "github-check-run:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want explicit missing-target error", logs, err)
 	}
 }
 

@@ -82,8 +82,8 @@ func TestFetchCILogOutputBudgetsEachSelectedTargetAndSurfacesErrors(t *testing.T
 			t.Fatalf("bounded targeted log output omitted %q:\n%s", want, output)
 		}
 	}
-	if len(host.targets) != 2 || host.targets[0] != "check-a" || host.targets[1] != "check-b" {
-		t.Fatalf("targeted fetches = %v, want one exact call per selected check", host.targets)
+	if host.calls != 1 || len(host.targets) != 2 || host.targets[0] != "check-a" || host.targets[1] != "check-b" {
+		t.Fatalf("targeted fetch calls = %d, targets = %v, want one batched call", host.calls, host.targets)
 	}
 }
 
@@ -92,12 +92,18 @@ type targetedLogTestHost struct {
 	logs    map[string]string
 	errs    map[string]error
 	targets []string
+	calls   int
 }
 
-func (h *targetedLogTestHost) FetchFailedCheckTargetLogs(_ context.Context, _ *scm.PR, _, _ string, targets []scm.CheckTarget) (string, error) {
-	id := targets[0].ProviderID
-	h.targets = append(h.targets, id)
-	return h.logs[id], h.errs[id]
+func (h *targetedLogTestHost) FetchFailedCheckTargetLogs(_ context.Context, _ *scm.PR, _, _ string, targets []scm.CheckTarget) ([]scm.FailedCheckLog, error) {
+	h.calls++
+	results := make([]scm.FailedCheckLog, 0, len(targets))
+	for _, target := range targets {
+		id := target.ProviderID
+		h.targets = append(h.targets, id)
+		results = append(results, scm.FailedCheckLog{Target: target, Output: h.logs[id], Err: h.errs[id]})
+	}
+	return results, nil
 }
 
 type forgejoLogTestHost struct {

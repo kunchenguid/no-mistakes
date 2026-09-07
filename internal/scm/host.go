@@ -284,8 +284,35 @@ type CheckTarget struct {
 	ProviderID string `json:"provider_id,omitempty"`
 }
 
+func (t CheckTarget) Identity() string {
+	if t.ProviderID != "" {
+		return t.ProviderID
+	}
+	return t.Name
+}
+
+type FailedCheckLog struct {
+	Target CheckTarget
+	Output string
+	Err    error
+}
+
 type TargetedFailedCheckLogsHost interface {
-	FetchFailedCheckTargetLogs(ctx context.Context, pr *PR, branch, headSHA string, targets []CheckTarget) (string, error)
+	FetchFailedCheckTargetLogs(ctx context.Context, pr *PR, branch, headSHA string, targets []CheckTarget) ([]FailedCheckLog, error)
+}
+
+func CombineFailedCheckLogs(logs []FailedCheckLog) (string, error) {
+	var outputs []string
+	var errs []error
+	for _, log := range logs {
+		if output := strings.TrimSpace(log.Output); output != "" {
+			outputs = append(outputs, output)
+		}
+		if log.Err != nil {
+			errs = append(errs, log.Err)
+		}
+	}
+	return strings.Join(outputs, "\n\n"), errors.Join(errs...)
 }
 
 type ReviewComment struct {

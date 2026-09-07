@@ -404,13 +404,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	consecutiveCheckErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		sctx.Log("CI timeout reached")
+		var outcome *pipeline.StepOutcome
 		if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
-			return ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present"), nil
+			outcome = ciFailureOutcome(timeoutFailingChecks, timeoutMergeConflict, "CI timed out with known failures still present")
+		} else if mergeabilityBlockedReason != "" {
+			outcome = ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason)
+		} else {
+			outcome = ciMonitoringTimeoutOutcome()
 		}
-		if mergeabilityBlockedReason != "" {
-			return ciMergeabilityOutcome("mergeability check timed out", mergeabilityBlockedReason), nil
-		}
-		return ciMonitoringTimeoutOutcome(), nil
+		return ciTerminalRepairOutcome(outcome, Findings{}, sctx.DeferredFindings), nil
 	}
 	waitForPoll := func() error {
 		interval := s.pollIntervalOverride
@@ -536,7 +538,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			// already for merged/closed, so reaching here means the PR is open.
 			if consecutiveCheckErrs >= consecutiveCheckErrorLimit {
 				sctx.Log(fmt.Sprintf("CI checks could not be read %d consecutive times, parking for a decision", consecutiveCheckErrs))
-				return ciCheckReadFailureOutcome(err), nil
+				return ciTerminalRepairOutcome(ciCheckReadFailureOutcome(err), Findings{}, sctx.DeferredFindings), nil
 			}
 		} else {
 			consecutiveCheckErrs = 0
@@ -575,6 +577,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			if terminalFailureCompletedAfter(checks, s.lastFixedCompletedAt) {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
+				sctx.DeferredFindings = ""
 			}
 
 			// Before any failure reaches the fix agent, re-run the checks the
@@ -655,6 +658,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
+					sctx.DeferredFindings = ""
 				}
 				sctx.Log("issues detected but checks still pending, waiting for all checks to complete...")
 			} else if hasIssues {
@@ -678,6 +682,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					// comments) never starts a round.
 					s.lastFixedChecks = ""
 					s.lastFixedCompletedAt = nil
+					sctx.DeferredFindings = ""
 					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
 					findings := ciObservationFindings(ciIssues{
 						checks:              checks,
@@ -693,6 +698,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			} else {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
+				sctx.DeferredFindings = ""
 				switch {
 				case !prStateKnown || !mergeabilityKnown:
 					clearCIMonitorReady(sctx)

@@ -1105,12 +1105,16 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 	for _, name := range failingNames {
 		targets = append(targets, scm.CheckTarget{Name: name})
 	}
-	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	logs, err := h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		return "", err
+	}
+	return scm.CombineFailedCheckLogs(logs)
 }
 
-func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, checkTargets []scm.CheckTarget) (string, error) {
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, checkTargets []scm.CheckTarget) ([]scm.FailedCheckLog, error) {
 	if len(checkTargets) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	names := make(map[string]struct{}, len(checkTargets))
 	ids := make(map[string]struct{}, len(checkTargets))
@@ -1124,7 +1128,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 		}
 	}
 	if len(names) == 0 && len(ids) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	args := []string{"run", "list", "--branch", branch}
 	if strings.TrimSpace(headSHA) != "" {
@@ -1139,60 +1143,67 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 	listCmd := h.cmd(ctx, "gh", args...)
 	listOut, err := listCmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("list GitHub runs for selected logs: %w", err)
+		return nil, fmt.Errorf("list GitHub runs for selected logs: %w", err)
 	}
 	var runs []githubRun
 	if err := json.Unmarshal(listOut, &runs); err != nil {
-		return "", fmt.Errorf("parse GitHub runs for selected logs: %w", err)
+		return nil, fmt.Errorf("parse GitHub runs for selected logs: %w", err)
 	}
-	var logs []string
-	var logErrors []error
+	results := make([]scm.FailedCheckLog, len(checkTargets))
+	for i, target := range checkTargets {
+		results[i].Target = target
+	}
 	matched := make(map[string]bool, len(ids))
 	for _, run := range runs {
 		workflowID := fmt.Sprintf("github-workflow-run:%d", run.DatabaseID)
-		_, wholeRun := ids[workflowID]
-		if wholeRun {
-			matched[workflowID] = true
-		}
-		wholeRun = wholeRun || runMatchesTargets(ctx, h, run, names)
-		if wholeRun {
+		_, exactWorkflow := ids[workflowID]
+		nameMatch := runMatchesTargets(ctx, h, run, names)
+		if exactWorkflow || nameMatch {
 			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
 			viewArgs = append(viewArgs, "--log-failed")
-			out, err := h.cmd(ctx, "gh", viewArgs...).Output()
-			if err != nil {
-				logErrors = append(logErrors, fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, err))
-				continue
+			out, fetchErr := h.cmd(ctx, "gh", viewArgs...).Output()
+			for i, target := range checkTargets {
+				matches := target.ProviderID == workflowID
+				if target.ProviderID == "" && nameMatch {
+					matches = true
+				}
+				if !matches {
+					continue
+				}
+				matched[target.Identity()] = true
+				results[i].Output = strings.TrimSpace(string(out))
+				if fetchErr != nil {
+					results[i].Err = fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, fetchErr)
+				}
 			}
-			if log := strings.TrimSpace(string(out)); log != "" {
-				logs = append(logs, log)
-			}
-			continue
 		}
 		jobIDs, err := selectedRunJobIDs(ctx, h, run, ids)
 		if err != nil {
-			logErrors = append(logErrors, err)
 			continue
 		}
 		for _, jobID := range jobIDs {
-			matched[fmt.Sprintf("github-check-run:%d", jobID)] = true
+			jobProviderID := fmt.Sprintf("github-check-run:%d", jobID)
 			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
 			viewArgs = append(viewArgs, "--job", strconv.Itoa(jobID), "--log")
-			out, err := h.cmd(ctx, "gh", viewArgs...).Output()
-			if err != nil {
-				logErrors = append(logErrors, fmt.Errorf("fetch GitHub job %d log: %w", jobID, err))
-				continue
-			}
-			if log := strings.TrimSpace(string(out)); log != "" {
-				logs = append(logs, log)
+			out, fetchErr := h.cmd(ctx, "gh", viewArgs...).Output()
+			for i, target := range checkTargets {
+				if target.ProviderID != jobProviderID {
+					continue
+				}
+				matched[target.Identity()] = true
+				results[i].Output = strings.TrimSpace(string(out))
+				if fetchErr != nil {
+					results[i].Err = fmt.Errorf("fetch GitHub job %d log: %w", jobID, fetchErr)
+				}
 			}
 		}
 	}
-	for id := range ids {
-		if !matched[id] {
-			logErrors = append(logErrors, fmt.Errorf("selected GitHub check %q was not found", id))
+	for i, target := range checkTargets {
+		if !matched[target.Identity()] {
+			results[i].Err = fmt.Errorf("selected GitHub check %q was not found", target.Identity())
 		}
 	}
-	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
+	return results, nil
 }
 
 type githubRun struct {

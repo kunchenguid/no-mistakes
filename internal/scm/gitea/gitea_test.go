@@ -672,8 +672,8 @@ func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
 	}
-	if logs != "build failed\n\nlint failed" {
-		t.Fatalf("FetchFailedCheckTargetLogs() = %q, want both selected logs", logs)
+	if len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Output != "lint failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want target-separated logs", logs)
 	}
 }
 
@@ -689,8 +689,8 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	}), nil, "gitea.example.com", "work", "owner/repo")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []scm.CheckTarget{{ProviderID: "gitea-job:10"}, {ProviderID: "gitea-job:11"}})
-	if logs != "build failed" || err == nil || !strings.Contains(err.Error(), "job 11") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want retained partial logs and job 11 error", logs, err)
+	if err != nil || len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Err == nil || !strings.Contains(logs[1].Err.Error(), "job 11") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want retained partial logs and job 11 error", logs, err)
 	}
 }
 
@@ -704,8 +704,8 @@ func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
 	}), nil, "gitea.example.com", "work", "owner/repo")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "7"}, "", "abc123", []scm.CheckTarget{{ProviderID: "gitea-job:999"}})
-	if logs != "" || err == nil || !strings.Contains(err.Error(), "gitea-job:999") {
-		t.Fatalf("FetchFailedCheckTargetLogs() = (%q, %v), want explicit missing-target error", logs, err)
+	if err != nil || len(logs) != 1 || logs[0].Err == nil || !strings.Contains(logs[0].Err.Error(), "gitea-job:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want explicit missing-target error", logs, err)
 	}
 }
 

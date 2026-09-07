@@ -451,6 +451,38 @@ func TestCIStep_MixedGreptileAndTestFailureRoutesOnlyTheTestToAutoFix(t *testing
 // A published repair keeps every cost guardrail: one agent round, one push,
 // the step reports it is monitoring again, and the next poll that still
 // shows the repaired check waits for the provider instead of re-escalating.
+func TestCIResumedRepairSnapshotsSelectedCheckCompletion(t *testing.T) {
+	t.Parallel()
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	completed := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"summary":"no code change","code_change_needed":false}`)}, nil
+	}}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.PreviousFindings = `{"findings":[{"id":"ci-1","severity":"error","description":"failed","action":"auto-fix","category":"ci-check","check":"test","check_id":"github-check-run:42"}]}`
+	host := &completionSnapshotHost{checks: []scm.Check{{Name: "test", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail, CompletedAt: completed}}}
+	step := &CIStep{}
+
+	outcome, err := step.repairFromFindings(sctx, host, &scm.PR{Number: "42"})
+	if err != nil || outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("repair outcome = %#v, err = %v", outcome, err)
+	}
+	if got := step.observedCompletedAt["id:github-check-run:42"]; !got.Equal(completed) {
+		t.Fatalf("snapshotted completion = %v, want %v", got, completed)
+	}
+}
+
+type completionSnapshotHost struct {
+	scm.Host
+	checks []scm.Check
+}
+
+func (h *completionSnapshotHost) Capabilities() scm.Capabilities { return scm.Capabilities{} }
+func (h *completionSnapshotHost) GetChecks(context.Context, *scm.PR) ([]scm.Check, error) {
+	return h.checks, nil
+}
+
 func TestCIStep_PublishedRepairPropagatesMarkRunningFailure(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
 	markErr := errors.New("persist running status")

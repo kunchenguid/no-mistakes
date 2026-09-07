@@ -66,6 +66,13 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
+	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
+		checks, err := host.GetChecks(sctx.Ctx, pr)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot selected CI checks before repair: %w", err)
+		}
+		s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+	}
 	issueDesc := targets.description()
 	sctx.Log(fmt.Sprintf("repairing: %s...", issueDesc))
 	previousHeadSHA := sctx.Run.HeadSHA
@@ -271,27 +278,34 @@ func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, he
 		return boundedCILogEvidence("Selected CI checks", raw, err, maxBytes)
 	}
 
-	separatorBytes := 2 * (len(targets) - 1)
+	logs, err := targeted.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		slog.Warn("failed to fetch CI logs", "err", err)
+		logs = make([]scm.FailedCheckLog, len(targets))
+		for i, target := range targets {
+			logs[i] = scm.FailedCheckLog{Target: target, Err: err}
+		}
+	}
+	separatorBytes := 2 * (len(logs) - 1)
 	available := maxBytes - separatorBytes
 	if available < 0 {
 		available = 0
 	}
-	parts := make([]string, 0, len(targets))
-	for i, target := range targets {
-		raw, err := targeted.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, []scm.CheckTarget{target})
-		if err != nil {
-			slog.Warn("failed to fetch CI logs", "check", target.Name, "check_id", target.ProviderID, "err", err)
+	parts := make([]string, 0, len(logs))
+	for i, log := range logs {
+		if log.Err != nil {
+			slog.Warn("failed to fetch CI logs", "check", log.Target.Name, "check_id", log.Target.ProviderID, "err", log.Err)
 		}
-		remainingTargets := len(targets) - i
+		remainingTargets := len(logs) - i
 		budget := 0
 		if remainingTargets > 0 {
 			budget = available / remainingTargets
 		}
-		label := fmt.Sprintf("Check %q", target.Name)
-		if target.ProviderID != "" {
-			label += fmt.Sprintf(" (%s)", target.ProviderID)
+		label := fmt.Sprintf("Check %q", log.Target.Name)
+		if log.Target.ProviderID != "" {
+			label += fmt.Sprintf(" (%s)", log.Target.ProviderID)
 		}
-		part := boundedCILogEvidence(label, raw, err, budget)
+		part := boundedCILogEvidence(label, log.Output, log.Err, budget)
 		parts = append(parts, part)
 		available -= len(part)
 	}

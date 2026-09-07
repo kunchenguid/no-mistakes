@@ -521,6 +521,7 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	// than a race-instrumented test binary, so the streak is cheap. Keep a
 	// generous idle timeout so the park is about the error counter, not the clock.
 	sctx.Config.CITimeout = 60 * time.Second
+	sctx.DeferredFindings = `{"findings":[{"id":"ci-bot","severity":"warning","description":"review bot needs a decision","action":"ask-user","category":"ci-review-bot","check":"Greptile Review"}]}`
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -542,11 +543,11 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatalf("unmarshal findings: %v", err)
 	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("findings = %+v, want exactly one ask-user finding", findings.Items)
+	if len(findings.Items) != 2 {
+		t.Fatalf("findings = %+v, want provider-read and deferred ask-user findings", findings.Items)
 	}
-	if findings.Items[0].Action != types.ActionAskUser {
-		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	if findings.Items[0].Action != types.ActionAskUser || findings.Items[1].ID != "ci-bot" {
+		t.Fatalf("findings = %+v, want the deferred finding preserved", findings.Items)
 	}
 	if !strings.Contains(findings.Items[0].Description, "pr checks --json") || !strings.Contains(findings.Items[0].Description, "2.50") {
 		t.Fatalf("finding %q must explain the gh version/flag cause", findings.Items[0].Description)

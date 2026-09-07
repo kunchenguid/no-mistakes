@@ -467,26 +467,30 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 	for _, name := range failingNames {
 		targets = append(targets, scm.CheckTarget{Name: name})
 	}
-	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	logs, err := h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		return "", err
+	}
+	return scm.CombineFailedCheckLogs(logs)
 }
 
-func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, targets []scm.CheckTarget) (string, error) {
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, targets []scm.CheckTarget) ([]scm.FailedCheckLog, error) {
 	if len(targets) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	view, err := h.viewPR(ctx, pr.Number)
 	if err != nil {
-		return "", fmt.Errorf("resolve Gitea pull request for selected logs: %w", err)
+		return nil, fmt.Errorf("resolve Gitea pull request for selected logs: %w", err)
 	}
 	if strings.TrimSpace(view.Head) == "" {
-		return "", errors.New("resolve Gitea pull request for selected logs: head branch is empty")
+		return nil, errors.New("resolve Gitea pull request for selected logs: head branch is empty")
 	}
 	runs, err := h.listRuns(ctx, view.Head)
 	if err != nil {
-		return "", fmt.Errorf("list Gitea runs for selected logs: %w", err)
+		return nil, fmt.Errorf("list Gitea runs for selected logs: %w", err)
 	}
 	if len(runs) == 0 {
-		return "", errors.New("no Gitea runs found for selected logs")
+		return nil, errors.New("no Gitea runs found for selected logs")
 	}
 	matchSHA := strings.TrimSpace(headSHA)
 	if matchSHA == "" {
@@ -494,39 +498,42 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	}
 	run, jobs, err := h.runJobsMatchingHeadSHA(ctx, runs, matchSHA)
 	if err != nil {
-		return "", fmt.Errorf("find Gitea run for selected logs: %w", err)
+		return nil, fmt.Errorf("find Gitea run for selected logs: %w", err)
 	}
 	if run.ID == "" {
-		return "", errors.New("no Gitea run matched the selected log target head")
+		return nil, errors.New("no Gitea run matched the selected log target head")
 	}
-	jobIDs := findFailedGiteaJobTargetIDs(jobs, targets)
-	var logs []string
-	var logErrors []error
-	matched := make(map[string]bool, len(jobIDs))
-	for _, jobID := range jobIDs {
-		matched[fmt.Sprintf("gitea-job:%d", jobID)] = true
-	}
+	results := make([]scm.FailedCheckLog, 0, len(targets))
 	for _, target := range targets {
-		if id := strings.TrimSpace(target.ProviderID); id != "" && !matched[id] {
-			logErrors = append(logErrors, fmt.Errorf("selected Gitea check %q was not found", id))
-		}
-	}
-	for _, jobID := range jobIDs {
-		logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
-			"--job", strconv.Itoa(jobID),
-			"--repo", h.repoSlug,
-			"--login", h.login,
-		)
-		out, err := logsCmd.Output()
-		if err != nil {
-			logErrors = append(logErrors, fmt.Errorf("fetch Gitea job %d log: %w", jobID, err))
+		result := scm.FailedCheckLog{Target: target}
+		jobIDs := findFailedGiteaJobTargetIDs(jobs, []scm.CheckTarget{target})
+		if len(jobIDs) == 0 {
+			result.Err = fmt.Errorf("selected Gitea check %q was not found", target.Identity())
+			results = append(results, result)
 			continue
 		}
-		if log := stripGiteaLogsHeader(string(out)); log != "" {
-			logs = append(logs, log)
+		var outputs []string
+		var errs []error
+		for _, jobID := range jobIDs {
+			logsCmd := h.cmd(ctx, "tea", "actions", "runs", "logs", run.ID,
+				"--job", strconv.Itoa(jobID),
+				"--repo", h.repoSlug,
+				"--login", h.login,
+			)
+			out, err := logsCmd.Output()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("fetch Gitea job %d log: %w", jobID, err))
+				continue
+			}
+			if log := stripGiteaLogsHeader(string(out)); log != "" {
+				outputs = append(outputs, log)
+			}
 		}
+		result.Output = strings.Join(outputs, "\n\n")
+		result.Err = errors.Join(errs...)
+		results = append(results, result)
 	}
-	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
+	return results, nil
 }
 
 func findFailedGiteaJobTargetIDs(jobs []giteaJob, checkTargets []scm.CheckTarget) []int {

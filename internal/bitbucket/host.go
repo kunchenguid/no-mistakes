@@ -115,19 +115,23 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, hea
 	for _, name := range failingNames {
 		targets = append(targets, scm.CheckTarget{Name: name})
 	}
-	return h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	logs, err := h.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, targets)
+	if err != nil {
+		return "", err
+	}
+	return scm.CombineFailedCheckLogs(logs)
 }
 
-func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, selected []scm.CheckTarget) (string, error) {
+func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ string, headSHA string, selected []scm.CheckTarget) ([]scm.FailedCheckLog, error) {
 	if h.client == nil {
-		return "", errors.New("Bitbucket client is not configured")
+		return nil, errors.New("Bitbucket client is not configured")
 	}
 	if len(selected) == 0 {
-		return "", nil
+		return nil, nil
 	}
 	id, err := strconv.Atoi(pr.Number)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	commitSHA := strings.TrimSpace(headSHA)
 	if got, prErr := h.client.GetPR(ctx, h.repo, id); prErr == nil && got != nil && strings.TrimSpace(got.SourceCommitHash) != "" {
@@ -135,53 +139,82 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	}
 	statuses, err := h.client.ListPRStatuses(ctx, h.repo, id)
 	if err != nil {
-		return "", fmt.Errorf("resolve selected Bitbucket checks: %w", err)
+		return nil, fmt.Errorf("resolve selected Bitbucket checks: %w", err)
 	}
-	targets, err := failedPipelineBuildNumberTargets(statuses, selected)
-	if err != nil {
-		return "", err
+	targetBuildNumbers := make([]map[string]struct{}, len(selected))
+	for i, target := range selected {
+		resolved, err := failedPipelineBuildNumberTargets(statuses, []scm.CheckTarget{target})
+		if err == nil {
+			targetBuildNumbers[i] = resolved
+		}
 	}
 	if strings.TrimSpace(commitSHA) == "" {
-		return "", errors.New("resolve selected Bitbucket checks: pull request head commit is empty")
+		return nil, errors.New("resolve selected Bitbucket checks: pull request head commit is empty")
 	}
 	pipelines, err := h.client.ListPipelinesByCommit(ctx, h.repo, commitSHA)
 	if err != nil {
-		return "", fmt.Errorf("list selected Bitbucket pipelines: %w", err)
+		return nil, fmt.Errorf("list selected Bitbucket pipelines: %w", err)
+	}
+	pipelineByBuild := make(map[string]Pipeline, len(pipelines))
+	for _, pipelineRun := range pipelines {
+		if pipelineRun.BuildNumber > 0 {
+			pipelineByBuild[strconv.Itoa(pipelineRun.BuildNumber)] = pipelineRun
+		}
+	}
+	cache := map[string]scm.FailedCheckLog{}
+	results := make([]scm.FailedCheckLog, 0, len(selected))
+	for i, target := range selected {
+		result := scm.FailedCheckLog{Target: target}
+		if len(targetBuildNumbers[i]) == 0 {
+			result.Err = fmt.Errorf("selected Bitbucket check %q was not found", target.Identity())
+			results = append(results, result)
+			continue
+		}
+		var outputs []string
+		var logErrors []error
+		for buildNumber := range targetBuildNumbers[i] {
+			cached, ok := cache[buildNumber]
+			if !ok {
+				pipelineRun, found := pipelineByBuild[buildNumber]
+				if !found {
+					cached.Err = fmt.Errorf("selected Bitbucket pipeline build %s was not found for commit %s", buildNumber, commitSHA)
+				} else {
+					cached.Output, cached.Err = h.fetchPipelineLogs(ctx, pipelineRun)
+				}
+				cache[buildNumber] = cached
+			}
+			if cached.Output != "" {
+				outputs = append(outputs, cached.Output)
+			}
+			if cached.Err != nil {
+				logErrors = append(logErrors, cached.Err)
+			}
+		}
+		result.Output = strings.Join(outputs, "\n\n")
+		result.Err = errors.Join(logErrors...)
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (h *Host) fetchPipelineLogs(ctx context.Context, pipelineRun Pipeline) (string, error) {
+	steps, err := h.client.ListPipelineSteps(ctx, h.repo, pipelineRun.UUID)
+	if err != nil {
+		return "", fmt.Errorf("list Bitbucket pipeline %s steps: %w", pipelineRun.UUID, err)
 	}
 	var logs []string
 	var logErrors []error
-	found := map[string]bool{}
-	for _, pipelineRun := range pipelines {
-		if pipelineRun.BuildNumber <= 0 {
+	for _, step := range steps {
+		if !strings.EqualFold(step.State.Result.Name, "FAILED") {
 			continue
 		}
-		buildNumber := strconv.Itoa(pipelineRun.BuildNumber)
-		if _, ok := targets[buildNumber]; !ok {
-			continue
-		}
-		found[buildNumber] = true
-		steps, err := h.client.ListPipelineSteps(ctx, h.repo, pipelineRun.UUID)
+		logOutput, err := h.client.GetStepLog(ctx, h.repo, pipelineRun.UUID, step.UUID)
 		if err != nil {
-			logErrors = append(logErrors, fmt.Errorf("list Bitbucket pipeline %s steps: %w", pipelineRun.UUID, err))
+			logErrors = append(logErrors, fmt.Errorf("fetch Bitbucket pipeline %s step %s log: %w", pipelineRun.UUID, step.UUID, err))
 			continue
 		}
-		for _, step := range steps {
-			if !strings.EqualFold(step.State.Result.Name, "FAILED") {
-				continue
-			}
-			logOutput, err := h.client.GetStepLog(ctx, h.repo, pipelineRun.UUID, step.UUID)
-			if err != nil {
-				logErrors = append(logErrors, fmt.Errorf("fetch Bitbucket pipeline %s step %s log: %w", pipelineRun.UUID, step.UUID, err))
-				continue
-			}
-			if log := strings.TrimSpace(logOutput); log != "" {
-				logs = append(logs, log)
-			}
-		}
-	}
-	for buildNumber := range targets {
-		if !found[buildNumber] {
-			logErrors = append(logErrors, fmt.Errorf("selected Bitbucket pipeline build %s was not found for commit %s", buildNumber, commitSHA))
+		if log := strings.TrimSpace(logOutput); log != "" {
+			logs = append(logs, log)
 		}
 	}
 	return strings.Join(logs, "\n\n"), errors.Join(logErrors...)
