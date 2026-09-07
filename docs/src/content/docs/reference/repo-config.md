@@ -519,8 +519,8 @@ The tradeoff `true` buys is cost against an unreviewed repair:
 | Run identity | unchanged; a restart is a same-run rewind | same |
 
 Turn it on where even an ordinary unreviewed CI repair is unacceptable.
-The concrete case this exists for: when a review bot posts product-behavior findings as a failing check, the fix agent treats them as CI failures and can reverse what the change was supposed to do.
-On [firstmate#3250](https://github.com/kunchenguid/firstmate/pull/3250) a CI repair made a `--changed` test run serial by default, contradicting the change's stated intent; the restarted Review caught it and reversed it. Without revalidation that repair would have shipped.
+Registered review-bot checks now park as `ask-user` findings instead of entering an automatic repair, but that classification does not make every red check's proposed fix trustworthy: an unregistered external check or a repair the user explicitly requests can still ask the fix agent to change product behavior.
+Before review-bot checks were classified structurally, [firstmate#3250](https://github.com/kunchenguid/firstmate/pull/3250) demonstrated the risk: a CI repair responding to bot feedback made a `--changed` test run serial by default, contradicting the change's stated intent; the restarted Review caught it and reversed it. Without revalidation that repair would have shipped.
 That is the safety this option buys, and the reason it is offered rather than removed.
 
 This value is read only from the trusted default-branch copy of this file, like `ci.rerun_transient` and `disable_project_settings`.

@@ -33,7 +33,7 @@ What you do not get is PR automation and CI monitoring.
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported |
 | **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet | supported |
-| **Unresolved review-bot comments for CI auto-fix** | GitHub via `gh` CLI | not supported | not supported | not supported | not supported | not supported |
+| **Review-bot findings and comments at the CI gate** | GitHub via `gh` CLI | not supported | not supported | not supported | not supported | not supported |
 | **[Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** (cancellations and pre-run infra failures) | `gh` CLI | not supported | not supported | not supported | not supported | not supported |
 
 ## What changes when provider wiring is present
