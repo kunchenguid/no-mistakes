@@ -261,15 +261,16 @@ func checkTargetTrackingKey(target scm.CheckTarget) string {
 // ciFailureOutcome parks the step over issues that are still present when
 // the idle timeout ends monitoring. Nothing here is a fresh observation the
 // executor could act on, so every item is ask-user.
-func ciFailureOutcome(failing []string, mergeConflict bool, summary string) *pipeline.StepOutcome {
+func ciFailureOutcome(failing []scm.CheckTarget, mergeConflict bool, summary string) *pipeline.StepOutcome {
 	findings := Findings{Summary: summary}
-	for _, name := range failing {
+	for _, target := range failing {
 		findings.Items = append(findings.Items, Finding{
 			Severity:    "warning",
-			Description: fmt.Sprintf("CI check failing: %s", name),
+			Description: fmt.Sprintf("CI check failing: %s", target.Name),
 			Action:      types.ActionAskUser,
 			Category:    types.FindingCategoryCICheck,
-			Check:       name,
+			Check:       target.Name,
+			CheckID:     target.ProviderID,
 		})
 	}
 	if mergeConflict {
@@ -297,6 +298,20 @@ const consecutiveCheckErrorLimit = 6
 // ConsecutiveCheckErrorLimit is the parked-after-N-failures bound. Tests in
 // other packages share this so they cannot drift from the monitor's gate.
 func ConsecutiveCheckErrorLimit() int { return consecutiveCheckErrorLimit }
+
+func terminalCheckTargetsForNames(checks []scm.Check, names []string) []scm.CheckTarget {
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	var targets []scm.CheckTarget
+	for _, check := range checks {
+		if wanted[check.Name] && checkFailedTerminally(check) {
+			targets = append(targets, scm.CheckTarget{Name: check.Name, ProviderID: check.ProviderID})
+		}
+	}
+	return targets
+}
 
 func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 	findings := Findings{

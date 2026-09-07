@@ -146,19 +146,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	const maxLogBytes = 32 * 1024
 	var logOutput string
 	if host.Capabilities().FailedCheckLogs {
-		var raw string
-		var err error
-		if targeted, ok := host.(scm.TargetedFailedCheckLogsHost); ok {
-			raw, err = targeted.FetchFailedCheckTargetLogs(ctx, pr, sctx.Run.Branch, sctx.Run.HeadSHA, targets.Checks)
-		} else {
-			raw, err = host.FetchFailedCheckLogs(ctx, pr, sctx.Run.Branch, sctx.Run.HeadSHA, failingNames)
-		}
-		if err != nil && err != scm.ErrUnsupported {
-			slog.Warn("failed to fetch CI logs", "err", err)
-		}
-		if raw != "" {
-			logOutput = trimLogOutput(strings.TrimSpace(raw), maxLogBytes)
-		}
+		logOutput = fetchCILogOutput(ctx, host, pr, sctx.Run.Branch, sctx.Run.HeadSHA, targets.Checks, maxLogBytes)
 	}
 
 	// Build prompt based on what issues are present
@@ -264,6 +252,111 @@ CI logs:
 		repair.Summary = conclusion.Summary
 	}
 	return repair, nil
+}
+
+func fetchCILogOutput(ctx context.Context, host scm.Host, pr *scm.PR, branch, headSHA string, targets []scm.CheckTarget, maxBytes int) string {
+	if maxBytes <= 0 || len(targets) == 0 {
+		return ""
+	}
+	targeted, ok := host.(scm.TargetedFailedCheckLogsHost)
+	if !ok {
+		names := make([]string, 0, len(targets))
+		for _, target := range targets {
+			names = append(names, target.Name)
+		}
+		raw, err := host.FetchFailedCheckLogs(ctx, pr, branch, headSHA, names)
+		if err != nil {
+			slog.Warn("failed to fetch CI logs", "err", err)
+		}
+		return boundedCILogEvidence("Selected CI checks", raw, err, maxBytes)
+	}
+
+	separatorBytes := 2 * (len(targets) - 1)
+	available := maxBytes - separatorBytes
+	if available < 0 {
+		available = 0
+	}
+	parts := make([]string, 0, len(targets))
+	for i, target := range targets {
+		raw, err := targeted.FetchFailedCheckTargetLogs(ctx, pr, branch, headSHA, []scm.CheckTarget{target})
+		if err != nil {
+			slog.Warn("failed to fetch CI logs", "check", target.Name, "check_id", target.ProviderID, "err", err)
+		}
+		remainingTargets := len(targets) - i
+		budget := 0
+		if remainingTargets > 0 {
+			budget = available / remainingTargets
+		}
+		label := fmt.Sprintf("Check %q", target.Name)
+		if target.ProviderID != "" {
+			label += fmt.Sprintf(" (%s)", target.ProviderID)
+		}
+		part := boundedCILogEvidence(label, raw, err, budget)
+		parts = append(parts, part)
+		available -= len(part)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func boundedCILogEvidence(label, raw string, retrievalErr error, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	header := label + ":\n"
+	if len(header) >= maxBytes {
+		return trimLogOutput(header, maxBytes)
+	}
+	content := strings.TrimSpace(raw)
+	budget := maxBytes - len(header)
+	if retrievalErr != nil {
+		markerBudget := budget
+		if content != "" && markerBudget > budget/2 {
+			markerBudget = budget / 2
+		}
+		marker := boundedCILogError(retrievalErr, markerBudget)
+		contentBudget := budget - len(marker)
+		if content != "" && marker != "" && contentBudget > 0 {
+			contentBudget--
+		}
+		content = truncateCILogContent(content, contentBudget)
+		if content != "" && marker != "" {
+			content += "\n"
+		}
+		content += marker
+	} else if content == "" {
+		content = truncateCILogContent("[no log output returned]", budget)
+	} else {
+		content = truncateCILogContent(content, budget)
+	}
+	return header + content
+}
+
+func truncateCILogContent(content string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(content) <= maxBytes {
+		return content
+	}
+	const marker = "[earlier log output omitted]\n"
+	if maxBytes <= len(marker) {
+		return trimLogOutput(marker, maxBytes)
+	}
+	return marker + trimLogOutput(content, maxBytes-len(marker))
+}
+
+func boundedCILogError(err error, maxBytes int) string {
+	if err == nil || maxBytes <= 0 {
+		return ""
+	}
+	const prefix = "[log retrieval incomplete: "
+	const suffix = "]"
+	if maxBytes <= len(prefix)+len(suffix) {
+		return trimLogOutput(prefix+suffix, maxBytes)
+	}
+	message := err.Error()
+	message = trimLogOutput(message, maxBytes-len(prefix)-len(suffix))
+	return prefix + message + suffix
 }
 
 type ciFixConclusion struct {

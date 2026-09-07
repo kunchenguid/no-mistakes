@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -33,6 +34,25 @@ func TestAllChecksPassedFailsClosed(t *testing.T) {
 	}
 	if allChecksPassed(nil) {
 		t.Fatal("empty checks must not pass")
+	}
+}
+
+func TestCITimeoutFindingsPreserveSameNamedCheckIdentity(t *testing.T) {
+	t.Parallel()
+
+	checks := []scm.Check{
+		{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketFail},
+		{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail},
+		{Name: "deploy", ProviderID: "github-check-run:43", Bucket: scm.CheckBucketPending},
+	}
+	targets := terminalCheckTargetsForNames(checks, []string{"build"})
+	outcome := ciFailureOutcome(targets, false, "timed out")
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.Items) != 2 || findings.Items[0].CheckID != "github-check-run:41" || findings.Items[1].CheckID != "github-check-run:42" {
+		t.Fatalf("timeout findings = %+v, want exact identities for both same-named failures", findings.Items)
 	}
 }
 
