@@ -510,7 +510,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 				}
 			}
 		}
-		if dbErr := e.db.UpdateStepStatus(gate.stepResult.ID, types.StepStatusFixing); dbErr != nil {
+		if dbErr := e.db.StartStepFixRound(gate.stepResult.ID); dbErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", nil)
@@ -978,8 +978,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				executionMS += time.Since(phaseStart).Milliseconds()
 				fixCount := findingsCount(fixableFindings)
 				writeLog(fmt.Sprintf("auto-fix round %d/%d starting after round %d (%d %s)", autoFixAttempts, autoFixLimit, roundNum, fixCount, pluralize(fixCount, "finding", "findings")))
-				if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
-					slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+				if dbErr := e.db.StartStepFixRound(sr.ID); dbErr != nil {
+					slog.Warn("failed to start step fix round in db", "step", stepName, "error", dbErr)
 				}
 				if currentRoundID != "" {
 					if idsJSON := findingIDsJSON(fixableFindings); idsJSON != "" {
@@ -1111,8 +1111,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			phaseStart = time.Now()
 			selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs)
 			writeLog(fmt.Sprintf("user-fix round starting after round %d (%d %s selected)", roundNum, selectedCount, pluralize(selectedCount, "finding", "findings")))
-			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
-				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
+			if dbErr := e.db.StartStepFixRound(sr.ID); dbErr != nil {
+				slog.Warn("failed to start step fix round in db", "step", stepName, "error", dbErr)
 			}
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)

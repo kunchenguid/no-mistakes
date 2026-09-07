@@ -272,7 +272,7 @@ no-mistakes axi status
 no-mistakes axi logs --step <step> --full
 ```
 
-The `active_steps` table shows how long the step has been active, the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+The `active_steps` table distinguishes the whole step's `active_for` from the displayed round's `round_active_for`, then shows the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 The step log records native subprocess start, exit, and retry lines plus markers for automatic and user-triggered fix rounds.
 If the step is parked at a gate, use `no-mistakes axi respond` instead of waiting.
 If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort`.

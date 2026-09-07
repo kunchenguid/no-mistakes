@@ -1447,6 +1447,7 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 		FindingsJSON:   s.FindingsJSON,
 		Error:          s.Error,
 		StartedAt:      s.StartedAt,
+		RoundStartedAt: s.RoundStartedAt,
 		CompletedAt:    s.CompletedAt,
 		LastActivityAt: s.LastActivityAt,
 		LastActivity:   s.LastActivity,

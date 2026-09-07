@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS step_results (
     findings_json    TEXT,
     error            TEXT,
     started_at       INTEGER,
+    round_started_at INTEGER,
     completed_at     INTEGER,
     last_activity_at INTEGER,
     last_activity    TEXT,
@@ -274,6 +275,9 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	// The start of the currently displayed execution/fix round is separate
+	// from started_at, which remains the whole-step clock.
+	`ALTER TABLE step_results ADD COLUMN round_started_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

@@ -20,6 +20,7 @@ type StepResult struct {
 	FindingsJSON   *string
 	Error          *string
 	StartedAt      *int64
+	RoundStartedAt *int64
 	CompletedAt    *int64
 	LastActivityAt *int64
 	LastActivity   *string
@@ -40,6 +41,11 @@ const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code,
 
 func (d *DB) readableStepResultColumns() string {
 	columns := stepResultColumns
+	if d.hasColumn("step_results", "round_started_at") {
+		columns += ", round_started_at"
+	} else {
+		columns += ", NULL AS round_started_at"
+	}
 	if d.hasColumn("step_results", "ci_fix_attempts") {
 		columns += ", ci_fix_attempts"
 	} else {
@@ -82,7 +88,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -104,7 +110,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.CIFixAttempts, &s.OverrideReason, &s.SkipReason); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -117,7 +123,7 @@ func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
 		UPDATE step_results
 		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
 			findings_json = NULL, error = NULL, started_at = NULL,
-			completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
+			round_started_at = NULL, completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
 			agent_pid = NULL, auto_fix_limit = NULL
 		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
 	if err != nil {
@@ -195,9 +201,20 @@ func (d *DB) StartStep(id string) error {
 // auto-fix limit that status surfaces use while the step is active.
 func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step: %w", err)
+	}
+	return nil
+}
+
+// StartStepFixRound marks the beginning of a distinct fix execution while
+// preserving started_at as the clock for the enclosing step.
+func (d *DB) StartStepFixRound(id string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, round_started_at = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`, types.StepStatusFixing, ts, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), id)
+	if err != nil {
+		return fmt.Errorf("start step fix round: %w", err)
 	}
 	return nil
 }

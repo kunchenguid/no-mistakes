@@ -372,6 +372,7 @@ type StepResultInfo struct {
 	PendingFixSource string   `json:"pending_fix_source,omitempty"`
 	Error            *string  `json:"error,omitempty"`
 	StartedAt        *int64   `json:"started_at,omitempty"`
+	RoundStartedAt   *int64   `json:"round_started_at,omitempty"`
 	CompletedAt      *int64   `json:"completed_at,omitempty"`
 	LastActivityAt   *int64   `json:"last_activity_at,omitempty"`
 	LastActivity     *string  `json:"last_activity,omitempty"`

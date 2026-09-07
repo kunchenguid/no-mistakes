@@ -112,11 +112,33 @@ func TestExecutor_FixEmitsFixingStatusImmediately(t *testing.T) {
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	beforeFix, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(beforeFix) != 1 || beforeFix[0].RoundStartedAt == nil {
+		t.Fatalf("read initial round start: steps=%+v err=%v", beforeFix, err)
+	}
+	initialRoundStartedAt := *beforeFix[0].RoundStartedAt
+	// DB clocks use whole seconds. Cross the next tick so this regression can
+	// prove the fix transition resets the round clock rather than retaining the
+	// enclosing step's start.
+	for time.Now().Unix() <= initialRoundStartedAt {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixing)
+	fixing, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(fixing) != 1 || fixing[0].RoundStartedAt == nil {
+		close(releaseFix)
+		<-done
+		t.Fatalf("read fix round start: steps=%+v err=%v", fixing, err)
+	}
+	if *fixing[0].RoundStartedAt <= initialRoundStartedAt {
+		close(releaseFix)
+		<-done
+		t.Fatalf("fix round start = %d, want after initial round start %d", *fixing[0].RoundStartedAt, initialRoundStartedAt)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

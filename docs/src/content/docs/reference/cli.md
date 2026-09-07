@@ -104,7 +104,7 @@ With no subcommand, shows the executable path, description, repo, current branch
 When the current branch has an active run, that run appears as `active_run` with any approval gate and help for `axi respond` when it is parked or `axi status` when it is still running.
 If an active run object is parked at a decision gate, it includes `awaiting_agent: parked <duration>` immediately after `status`.
 That field is observability only; the `gate:` object still tells the agent which response to send.
-If a step is actively `running` or `fixing`, the run object can also include an `active_steps` table with `active_for`, `last_activity`, native `agent_pid` when one is currently running, and the current execution or fix round.
+If a step is actively `running` or `fixing`, the run object can also include an `active_steps` table with step-scoped `active_for`, current-round `round_active_for`, `last_activity`, native `agent_pid` when one is currently running, and the current execution or fix round.
 When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
 AXI help and outputs always repeat the preserve-prior-gate-progress contract: after a gate round has already produced fix commits, additional fixes belong on the same branch.
 When a relevant `branch_sync` object is present, they also include version-matched synchronization guidance to follow before a post-pipeline local commit or fresh run.
@@ -243,7 +243,8 @@ The field disappears after that run's gate is answered, on cancel, and on termin
 Status offers branch-scoped `axi respond` commands only for the current branch's implicitly resolved run. An explicitly selected gate stays inspection-only even when its branch matches, because a newer active run on that branch could receive the bare response command instead; the gate remains visible and its log commands retain `--run <id>`.
 When a repository has no configured lint command and Document performs the combined Document/Lint housekeeping invocation, the run object includes `shared_work` evidence naming its `document+lint housekeeping` scope and the duration attributed to Document; Lint's own duration remains the cached-result handoff time.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
-Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+Each row reports the whole step's elapsed time as `active_for`, the displayed execution or fix round's elapsed time as `round_active_for`, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
+`round_active_for` resets when a fix round starts; older active runs created before this timing was recorded show it as empty.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
 Gate summaries and finding descriptions are bounded in this default status view; truncated values disclose their original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for an implicitly resolved run or `no-mistakes axi logs --run <id> --step <step> --full` for an explicitly selected run.

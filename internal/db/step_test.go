@@ -161,11 +161,42 @@ func TestStartStep(t *testing.T) {
 	if got.StartedAt == nil {
 		t.Error("expected non-nil started_at")
 	}
+	if got.RoundStartedAt == nil {
+		t.Error("expected non-nil round_started_at")
+	}
 	if got.LastActivityAt == nil {
 		t.Error("expected non-nil last_activity_at")
 	}
 	if got.LastActivity == nil || *got.LastActivity != "step started" {
 		t.Errorf("last_activity = %v, want step started", got.LastActivity)
+	}
+}
+
+func TestStartStepFixRoundResetsOnlyRoundClock(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+
+	const stepStarted = int64(123)
+	if _, err := d.sql.Exec(`UPDATE step_results SET started_at = ?, round_started_at = ? WHERE id = ?`, stepStarted, stepStarted, step.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStepFixRound(step.ID); err != nil {
+		t.Fatalf("start fix round: %v", err)
+	}
+	got, err := d.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.StepStatusFixing {
+		t.Errorf("status = %q, want %q", got.Status, types.StepStatusFixing)
+	}
+	if got.StartedAt == nil || *got.StartedAt != stepStarted {
+		t.Errorf("started_at = %v, want preserved %d", got.StartedAt, stepStarted)
+	}
+	if got.RoundStartedAt == nil || *got.RoundStartedAt == stepStarted {
+		t.Errorf("round_started_at = %v, want reset", got.RoundStartedAt)
 	}
 }
 

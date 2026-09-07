@@ -203,6 +203,7 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 	defer func() { nowUnix = restore }()
 
 	started := int64(1_000_000 - 20*60)
+	roundStarted := int64(1_000_000 - 30)
 	last := int64(1_000_000 - 11*60)
 	pid := 4242
 	rv := runView{
@@ -215,6 +216,7 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 				Name:             "review",
 				Status:           string(types.StepStatusFixing),
 				StartedAt:        &started,
+				RoundStartedAt:   &roundStarted,
 				LastActivityAt:   &last,
 				LastActivity:     "codex started pid=4242",
 				AgentPID:         &pid,
@@ -228,8 +230,8 @@ func TestRunObjectRendersActiveStepDiagnostics(t *testing.T) {
 	out := axiDoc(runObjectField(rv))
 
 	for _, want := range []string{
-		"active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:\n",
-		"review,fixing,20m0s",
+		"active_steps[1]{step,status,active_for,round_active_for,last_activity,agent_pid,round}:\n",
+		"review,fixing,20m0s,30s",
 		"quiet 11m0s ago: codex started pid=4242",
 		`,"4242",auto-fix 1/3`,
 	} {

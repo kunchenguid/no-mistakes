@@ -48,12 +48,13 @@ type sharedWorkRow struct {
 }
 
 type activeStepRow struct {
-	Step         string `toon:"step"`
-	Status       string `toon:"status"`
-	ActiveFor    string `toon:"active_for"`
-	LastActivity string `toon:"last_activity"`
-	AgentPID     string `toon:"agent_pid"`
-	Round        string `toon:"round"`
+	Step           string `toon:"step"`
+	Status         string `toon:"status"`
+	ActiveFor      string `toon:"active_for"`
+	RoundActiveFor string `toon:"round_active_for"`
+	LastActivity   string `toon:"last_activity"`
+	AgentPID       string `toon:"agent_pid"`
+	Round          string `toon:"round"`
 }
 
 type findingRow struct {
@@ -96,6 +97,7 @@ type stepView struct {
 	FindingsJSON     string
 	FixSummaries     []string
 	StartedAt        *int64
+	RoundStartedAt   *int64
 	LastActivityAt   *int64
 	LastActivity     string
 	AgentPID         *int
@@ -149,6 +151,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			Status:           string(s.Status),
 			FixSummaries:     s.FixSummaries,
 			StartedAt:        s.StartedAt,
+			RoundStartedAt:   s.RoundStartedAt,
 			LastActivityAt:   s.LastActivityAt,
 			AgentPID:         s.AgentPID,
 			RoundCount:       s.RoundCount,
@@ -189,6 +192,7 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 			Name:           string(s.StepName),
 			Status:         string(s.Status),
 			StartedAt:      s.StartedAt,
+			RoundStartedAt: s.RoundStartedAt,
 			LastActivityAt: s.LastActivityAt,
 			AgentPID:       s.AgentPID,
 		}
@@ -340,12 +344,13 @@ func (rv runView) activeRows() []activeStepRow {
 			continue
 		}
 		rows = append(rows, activeStepRow{
-			Step:         s.Name,
-			Status:       s.Status,
-			ActiveFor:    s.activeFor(),
-			LastActivity: s.lastActivitySummary(),
-			AgentPID:     s.agentPIDString(),
-			Round:        s.roundSummary(),
+			Step:           s.Name,
+			Status:         s.Status,
+			ActiveFor:      s.activeFor(),
+			RoundActiveFor: s.roundActiveFor(),
+			LastActivity:   s.lastActivitySummary(),
+			AgentPID:       s.agentPIDString(),
+			Round:          s.roundSummary(),
 		})
 	}
 	return rows
@@ -356,6 +361,13 @@ func (s stepView) activeFor() string {
 		return ""
 	}
 	return formatDurationSince(*s.StartedAt)
+}
+
+func (s stepView) roundActiveFor() string {
+	if s.RoundStartedAt == nil {
+		return ""
+	}
+	return formatDurationSince(*s.RoundStartedAt)
 }
 
 func (s stepView) lastActivitySummary() string {
