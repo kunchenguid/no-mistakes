@@ -11,8 +11,8 @@ import (
 )
 
 type lastFixedIssues struct {
-	Checks        []string `json:"checks,omitempty"`
-	MergeConflict bool     `json:"mergeConflict,omitempty"`
+	Checks        []scm.CheckTarget `json:"checks,omitempty"`
+	MergeConflict bool              `json:"mergeConflict,omitempty"`
 }
 
 // pollInterval returns the polling interval based on elapsed time since CI monitoring started.
@@ -115,15 +115,30 @@ func terminalFailureCompletionTimes(checks []scm.Check) map[string]time.Time {
 		if c.CompletedAt.IsZero() {
 			continue
 		}
-		previous := completedAt[c.Name]
+		key := checkTrackingKey(c)
+		previous := completedAt[key]
 		if previous.IsZero() || c.CompletedAt.After(previous) {
-			completedAt[c.Name] = c.CompletedAt
+			completedAt[key] = c.CompletedAt
 		}
 	}
 	if len(completedAt) == 0 {
 		return nil
 	}
 	return completedAt
+}
+
+func completionTimesForTargets(completedAt map[string]time.Time, targets []scm.CheckTarget) map[string]time.Time {
+	selected := make(map[string]time.Time, len(targets))
+	for _, target := range targets {
+		key := checkTargetTrackingKey(target)
+		if completed := completedAt[key]; !completed.IsZero() {
+			selected[key] = completed
+		}
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	return selected
 }
 
 func terminalFailureCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
@@ -134,7 +149,7 @@ func terminalFailureCompletedAfter(checks []scm.Check, after map[string]time.Tim
 		if !checkFailedTerminally(c) || c.CompletedAt.IsZero() {
 			continue
 		}
-		previous, ok := after[c.Name]
+		previous, ok := after[checkTrackingKey(c)]
 		if ok && c.CompletedAt.After(previous) {
 			return true
 		}
@@ -148,14 +163,7 @@ func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bo
 		return false
 	}
 
-	failedNames := map[string]struct{}{}
-	for _, name := range issues.Checks {
-		if name == "" {
-			continue
-		}
-		failedNames[name] = struct{}{}
-	}
-	if len(failedNames) == 0 {
+	if len(issues.Checks) == 0 {
 		return issues.MergeConflict && hasPendingChecks(checks)
 	}
 
@@ -163,19 +171,21 @@ func pendingCheckMatchesLastFixed(checks []scm.Check, lastFixedChecks string) bo
 		if !c.Pending() {
 			continue
 		}
-		if _, ok := failedNames[c.Name]; ok {
-			return true
+		for _, target := range issues.Checks {
+			if checkMatchesTarget(c, target) {
+				return true
+			}
 		}
 	}
 
 	return false
 }
 
-func encodeLastFixedChecks(failing []string, mergeConflict bool) string {
-	if len(failing) == 0 && !mergeConflict {
+func encodeLastFixedChecks(checks []scm.CheckTarget, mergeConflict bool) string {
+	if len(checks) == 0 && !mergeConflict {
 		return ""
 	}
-	encoded, err := json.Marshal(lastFixedIssues{Checks: failing, MergeConflict: mergeConflict})
+	encoded, err := json.Marshal(lastFixedIssues{Checks: checks, MergeConflict: mergeConflict})
 	if err != nil {
 		return ""
 	}
@@ -213,21 +223,39 @@ func (s *CIStep) lastRepairStillUnverified(checks []scm.Check, mergeConflict boo
 	if issues.MergeConflict && !mergeConflict {
 		return false
 	}
-	for _, name := range issues.Checks {
-		if !checkNameFailedTerminally(checks, name) {
+	for _, target := range issues.Checks {
+		if !checkTargetFailedTerminally(checks, target) {
 			return false
 		}
 	}
 	return true
 }
 
-func checkNameFailedTerminally(checks []scm.Check, name string) bool {
+func checkTargetFailedTerminally(checks []scm.Check, target scm.CheckTarget) bool {
 	for _, check := range checks {
-		if check.Name == name && checkFailedTerminally(check) {
+		if checkMatchesTarget(check, target) && checkFailedTerminally(check) {
 			return true
 		}
 	}
 	return false
+}
+
+func checkMatchesTarget(check scm.Check, target scm.CheckTarget) bool {
+	if target.ProviderID != "" {
+		return check.ProviderID == target.ProviderID
+	}
+	return check.Name == target.Name
+}
+
+func checkTrackingKey(check scm.Check) string {
+	return checkTargetTrackingKey(scm.CheckTarget{Name: check.Name, ProviderID: check.ProviderID})
+}
+
+func checkTargetTrackingKey(target scm.CheckTarget) string {
+	if target.ProviderID != "" {
+		return "id:" + target.ProviderID
+	}
+	return target.Name
 }
 
 // ciFailureOutcome parks the step over issues that are still present when

@@ -1145,23 +1145,27 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 	if err := json.Unmarshal(listOut, &runs); err != nil {
 		return "", nil
 	}
+	var logs []string
 	for _, run := range runs {
-		if !runMatchesTargets(ctx, h, run, names) && !runMatchesProviderIDs(ctx, h, run, ids) {
+		_, wholeRun := ids[fmt.Sprintf("github-workflow-run:%d", run.DatabaseID)]
+		wholeRun = wholeRun || runMatchesTargets(ctx, h, run, names)
+		if wholeRun {
+			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
+			viewArgs = append(viewArgs, "--log-failed")
+			if out, err := h.cmd(ctx, "gh", viewArgs...).Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+				logs = append(logs, strings.TrimSpace(string(out)))
+			}
 			continue
 		}
-		viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
-		viewArgs = append(viewArgs, "--log-failed")
-		viewCmd := h.cmd(ctx, "gh", viewArgs...)
-		out, err := viewCmd.Output()
-		if err != nil {
-			continue
-		}
-		logs := strings.TrimSpace(string(out))
-		if logs != "" {
-			return logs, nil
+		for _, jobID := range selectedRunJobIDs(ctx, h, run, ids) {
+			viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
+			viewArgs = append(viewArgs, "--job", strconv.Itoa(jobID), "--log")
+			if out, err := h.cmd(ctx, "gh", viewArgs...).Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+				logs = append(logs, strings.TrimSpace(string(out)))
+			}
 		}
 	}
-	return "", nil
+	return strings.Join(logs, "\n\n"), nil
 }
 
 type githubRun struct {
@@ -1191,32 +1195,27 @@ type githubJobStep struct {
 	Conclusion string `json:"conclusion"`
 }
 
-func runMatchesProviderIDs(ctx context.Context, h *Host, run githubRun, targets map[string]struct{}) bool {
-	if len(targets) == 0 {
-		return false
-	}
-	if _, ok := targets[fmt.Sprintf("github-workflow-run:%d", run.DatabaseID)]; ok {
-		return true
-	}
-	if run.DatabaseID == 0 {
-		return false
+func selectedRunJobIDs(ctx context.Context, h *Host, run githubRun, targets map[string]struct{}) []int {
+	if len(targets) == 0 || run.DatabaseID == 0 {
+		return nil
 	}
 	viewArgs := append([]string{"run", "view", fmt.Sprintf("%d", run.DatabaseID)}, h.repoArgs()...)
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return false
+		return nil
 	}
 	var view githubRunView
 	if json.Unmarshal(out, &view) != nil {
-		return false
+		return nil
 	}
+	var ids []int
 	for _, job := range view.Jobs {
 		if _, ok := targets[fmt.Sprintf("github-check-run:%d", job.DatabaseID)]; ok {
-			return true
+			ids = append(ids, job.DatabaseID)
 		}
 	}
-	return false
+	return ids
 }
 
 func runMatchesTargets(ctx context.Context, h *Host, run githubRun, targets map[string]struct{}) bool {

@@ -360,12 +360,15 @@ func (t ciFixTargets) description() string {
 // letting the auto_fix.ci loop pick the same findings up again would spend a
 // round on a question only a human can answer. summary carries the agent's
 // conclusion or the settlement error.
-func ciRepairParkOutcome(findings Findings, summary string) *pipeline.StepOutcome {
+func ciRepairParkOutcome(findings Findings, deferredRaw, summary string) *pipeline.StepOutcome {
 	parked := types.FindingsMetadata(findings)
 	parked.Summary = summary
 	for _, item := range findings.Items {
 		item.Action = types.ActionAskUser
 		parked.Items = append(parked.Items, item)
+	}
+	if deferred, err := types.ParseFindingsJSON(deferredRaw); err == nil {
+		parked.Items = append(parked.Items, deferred.Items...)
 	}
 	encoded, _ := json.Marshal(parked)
 	return &pipeline.StepOutcome{

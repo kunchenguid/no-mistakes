@@ -199,10 +199,40 @@ func TestReviewBotFindings_BoundsAndEmptyCase(t *testing.T) {
 	}
 }
 
+func TestCIRepairParkOutcome_PreservesDeferredAskUserFindings(t *testing.T) {
+	t.Parallel()
+	selected := ciTargetsFor([]string{"test"}, false)
+	deferred, err := types.MarshalFindingsJSON(Findings{Items: []Finding{{
+		ID:          "ci-2",
+		Severity:    types.FindingSeverityWarning,
+		Action:      types.ActionAskUser,
+		Category:    types.FindingCategoryCIReviewBot,
+		Check:       "Greptile Review",
+		Description: "Greptile review needs a decision",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome := ciRepairParkOutcome(selected.Findings, deferred, "nothing to change")
+	parsed, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Items) != 2 || parsed.Items[0].Check != "test" || parsed.Items[1].Check != "Greptile Review" {
+		t.Fatalf("parked findings = %+v, want selected and deferred findings", parsed.Items)
+	}
+	for _, item := range parsed.Items {
+		if item.Action != types.ActionAskUser {
+			t.Fatalf("parked finding = %+v, want ask-user", item)
+		}
+	}
+}
+
 func TestCIRepairParkOutcome_RelabelsEveryFindingAskUser(t *testing.T) {
 	t.Parallel()
 	targets := ciTargetsFor([]string{"test"}, true)
-	outcome := ciRepairParkOutcome(targets.Findings, "attestation failure is external to the PR code")
+	outcome := ciRepairParkOutcome(targets.Findings, "", "attestation failure is external to the PR code")
 	if !outcome.NeedsApproval || outcome.AutoFixable {
 		t.Fatalf("outcome = %+v, want a park the auto-fix loop cannot re-enter", outcome)
 	}

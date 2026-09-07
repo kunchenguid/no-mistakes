@@ -302,6 +302,7 @@ func (e *Executor) initializeRunScopes(runID string) {
 type stepExecutionState struct {
 	fixing           bool
 	previousFindings string
+	deferredFindings string
 	roundNum         int
 	autoFixAttempts  int
 	executionMS      int64
@@ -517,6 +518,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		skipRemaining, restartFrom, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
 			fixing:           true,
 			previousFindings: merged,
+			deferredFindings: removeMatchingFindingsJSON(gate.findings, selected),
 			roundNum:         gate.round,
 			autoFixAttempts:  gate.autoFixes,
 			executionMS:      duration,
@@ -871,6 +873,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		EvidenceDir:      e.runEvidenceDir(run.ID),
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
+		DeferredFindings: state.deferredFindings,
 		Log:              writeLog,
 		LogChunk:         writeLogChunk,
 		LogFile: func(text string) {
@@ -1007,6 +1010,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				phaseStart = time.Now()
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
+				sctx.DeferredFindings = removeMatchingFindingsJSON(outcome.Findings, fixableFindings)
 				nextTrigger = "auto_fix"
 				continue
 			}
@@ -1133,6 +1137,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
+			sctx.DeferredFindings = removeMatchingFindingsJSON(outcome.Findings, selectedFindings)
 			nextTrigger = "auto_fix"
 			if currentRoundID != "" {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)

@@ -59,6 +59,39 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	}
 }
 
+func TestExecutor_AutoFixCarriesUnselectedFindingsSeparately(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	calls := 0
+	step := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		calls++
+		if calls == 1 {
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings: `{"findings":[` +
+					`{"id":"ci-1","severity":"error","description":"test failed","action":"auto-fix"},` +
+					`{"id":"ci-2","severity":"warning","description":"bot finding","action":"ask-user"}` +
+					`],"summary":"mixed findings"}`,
+			}, nil
+		}
+		selected, err := types.ParseFindingsJSON(sctx.PreviousFindings)
+		if err != nil || len(selected.Items) != 1 || selected.Items[0].ID != "ci-1" {
+			t.Fatalf("selected findings = %+v, %v", selected.Items, err)
+		}
+		deferred, err := types.ParseFindingsJSON(sctx.DeferredFindings)
+		if err != nil || len(deferred.Items) != 1 || deferred.Items[0].ID != "ci-2" {
+			t.Fatalf("deferred findings = %+v, %v", deferred.Items, err)
+		}
+		return &StepOutcome{}, nil
+	}}
+
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{CI: 1}}, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+}
+
 func TestExecutor_PersistsEffectiveAutoFixLimit(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

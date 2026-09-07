@@ -280,7 +280,7 @@ var (
 
 // ReviewComment represents a code review comment or bot finding on a pull request.
 type CheckTarget struct {
-	Name       string
+	Name       string `json:"name"`
 	ProviderID string `json:"provider_id,omitempty"`
 }
 

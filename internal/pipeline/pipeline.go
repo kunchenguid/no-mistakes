@@ -30,7 +30,8 @@ type StepContext struct {
 	Fixing                bool         // true when re-executing after a "fix" action
 	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
 	ReviewStartingHeadSHA string
-	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)
+	PreviousFindings      string // JSON findings selected for the current fix round
+	DeferredFindings      string // JSON findings left unselected when the current fix round began
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string

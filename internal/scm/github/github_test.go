@@ -1376,11 +1376,10 @@ func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T)
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {
-			stdout: `[{"databaseId":101,"name":"CI"},{"databaseId":102,"name":"CI"}]` + "\n",
+			stdout: `[{"databaseId":102,"name":"CI"}]` + "\n",
 		},
-		"gh run view 101 --json jobs":  {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"}]}` + "\n"},
-		"gh run view 102 --json jobs":  {stdout: `{"jobs":[{"databaseId":202,"name":"build","conclusion":"failure"}]}` + "\n"},
-		"gh run view 102 --log-failed": {stdout: "selected build failed\n"},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"build","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 202 --log": {stdout: "selected build failed\n"},
 	}), nil, "", "")
 
 	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{Name: "build", ProviderID: "github-check-run:202"}})

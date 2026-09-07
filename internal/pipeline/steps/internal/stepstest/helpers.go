@@ -52,7 +52,8 @@ func ExecuteWithAutoFix(t *testing.T, step pipeline.Step, sctx *pipeline.StepCon
 		if parseErr != nil {
 			return outcome, nil
 		}
-		fixable := types.AutoFixableFindings(types.NormalizeFindings(parsed, string(step.Name())))
+		normalized := types.NormalizeFindings(parsed, string(step.Name()))
+		fixable := types.AutoFixableFindings(normalized)
 		if len(fixable.Items) == 0 {
 			return outcome, nil
 		}
@@ -60,9 +61,19 @@ func ExecuteWithAutoFix(t *testing.T, step pipeline.Step, sctx *pipeline.StepCon
 		if encodeErr != nil {
 			t.Fatalf("marshal auto-fix findings: %v", encodeErr)
 		}
+		selectedIDs := make([]string, 0, len(fixable.Items))
+		for _, item := range fixable.Items {
+			selectedIDs = append(selectedIDs, item.ID)
+		}
+		deferred := types.ExcludeFindings(normalized, selectedIDs)
+		deferredRaw, encodeErr := types.MarshalFindingsJSON(deferred)
+		if encodeErr != nil {
+			t.Fatalf("marshal deferred findings: %v", encodeErr)
+		}
 		attempts++
 		sctx.Fixing = true
 		sctx.PreviousFindings = encoded
+		sctx.DeferredFindings = deferredRaw
 	}
 }
 

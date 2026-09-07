@@ -39,7 +39,7 @@ func TestAllChecksPassedFailsClosed(t *testing.T) {
 func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	t.Parallel()
 
-	lastFixedChecks := encodeLastFixedChecks([]string{"lint,unit", "deploy+conflict"}, true)
+	lastFixedChecks := encodeLastFixedChecks([]scm.CheckTarget{{Name: "lint,unit"}, {Name: "deploy+conflict"}}, true)
 	checks := []scm.Check{
 		{Name: "lint,unit", Bucket: "pending"},
 	}
@@ -53,6 +53,35 @@ func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	}
 	if pendingCheckMatchesLastFixed(checks, lastFixedChecks) {
 		t.Fatalf("expected unrelated pending check not to match encoded last fixed checks %q", lastFixedChecks)
+	}
+}
+
+func TestLastFixedTrackingUsesProviderIdentityForSameNamedChecks(t *testing.T) {
+	t.Parallel()
+	completed := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	code := scm.Check{Name: "build", ProviderID: "github-check-run:41", Bucket: scm.CheckBucketFail, CompletedAt: completed}
+	bot := scm.Check{Name: "build", ProviderID: "github-check-run:42", Bucket: scm.CheckBucketFail, CompletedAt: completed}
+	step := &CIStep{
+		lastFixedChecks:      encodeLastFixedChecks([]scm.CheckTarget{{Name: code.Name, ProviderID: code.ProviderID}}, false),
+		lastFixedCompletedAt: terminalFailureCompletionTimes([]scm.Check{code, bot}),
+	}
+
+	if step.lastRepairStillUnverified([]scm.Check{bot}, false) {
+		t.Fatal("same-named bot failure must not stand in for the repaired check")
+	}
+	bot.Bucket = scm.CheckBucketPending
+	if pendingCheckMatchesLastFixed([]scm.Check{bot}, step.lastFixedChecks) {
+		t.Fatal("same-named bot pending state must not clear the repaired check tracker")
+	}
+	code.Bucket = scm.CheckBucketPending
+	if !pendingCheckMatchesLastFixed([]scm.Check{code}, step.lastFixedChecks) {
+		t.Fatal("the repaired check's pending state must clear its tracker")
+	}
+	bot.Bucket = scm.CheckBucketFail
+	bot.CompletedAt = completed.Add(time.Minute)
+	selectedCompletions := completionTimesForTargets(terminalFailureCompletionTimes([]scm.Check{code, bot}), []scm.CheckTarget{{Name: code.Name, ProviderID: code.ProviderID}})
+	if terminalFailureCompletedAfter([]scm.Check{bot}, selectedCompletions) {
+		t.Fatal("same-named bot completion must not look like the repaired check reran")
 	}
 }
 
