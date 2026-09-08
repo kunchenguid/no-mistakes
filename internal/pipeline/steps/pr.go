@@ -476,7 +476,7 @@ Final diff paths and statuses:
 
 func prTitlePromptRules(sctx *pipeline.StepContext) string {
 	if sctx != nil && sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
-		return fmt.Sprintf("- Title must follow the repository's configured format %q. The format supports {{.Branch}} for the configured branch identifier and {{.Title}} for your concise title text. Return concise title text that renders cleanly through this format. Do not use the raw branch name unless the configured format requires it.", sctx.Config.PR.TitleFormat)
+		return "- Title must be only the bare concise title text used by the repository's configured title formatter. Do not include a branch identifier or any formatter prefix or suffix; those are applied deterministically after drafting."
 	}
 	return "- Title must use conventional commit format: \"type(scope): description\" or \"type: description\". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.\n" + conventional.ReleaseTypeRule
 }

@@ -770,8 +770,11 @@ func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			if !strings.Contains(opts.Prompt, "configured format") {
-				t.Error("expected prompt to mention configured title format")
+			if strings.Contains(opts.Prompt, "{{.Branch}}: {{.Title}}") {
+				t.Error("prompt exposed configured title format as agent instructions")
+			}
+			if !strings.Contains(opts.Prompt, "only the bare concise title text") {
+				t.Error("prompt did not request the bare title component")
 			}
 			payload := json.RawMessage(`{"title":"add widget","body":"## What Changed\n\n- add widget support"}`)
 			return &agent.Result{Output: payload}, nil
