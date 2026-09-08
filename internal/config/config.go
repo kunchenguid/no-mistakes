@@ -326,6 +326,9 @@ type PRRaw struct {
 	// repository explicitly opts into pushed-branch settings with
 	// allow_repo_commands.
 	BaseBranch string `yaml:"base_branch"`
+	// PublishIntent is repository-only publication policy and remains trusted-only
+	// even when allow_repo_commands is enabled.
+	PublishIntent *bool `yaml:"publish_intent"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -680,6 +683,8 @@ type AzureDevOpsProvider struct {
 // PR is the resolved pull-request configuration.
 type PR struct {
 	BaseBranch string
+	// Nil preserves the historical default: publish the extracted intent.
+	PublishIntent *bool
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -2322,7 +2327,8 @@ func validatePathInstructionGlob(pattern string) error {
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
 // provider-side workflow run billed to the repository. These gate-control
-// fields ignore allowRepoCommands. PR is the explicit exception: the
+// fields ignore allowRepoCommands, as does pr.publish_intent.
+// PR.BaseBranch is the explicit exception: the
 // allowRepoCommands opt-in also permits a pushed PR target because it controls
 // where a maintainer-authorized PR lands, not code execution.
 // When allowRepoCommands is
@@ -2395,8 +2401,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// trusted-only unless the repository explicitly opts into pushed
 		// settings alongside commands and agent selection.
 		if !allowRepoCommands {
-			effective.PR = trusted.PR
+			effective.PR.BaseBranch = trusted.PR.BaseBranch
 		}
+		effective.PR.PublishIntent = trusted.PR.PublishIntent
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.ProtectedPaths = nil
@@ -2407,8 +2414,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
 		if !allowRepoCommands {
-			effective.PR = PRRaw{}
+			effective.PR.BaseBranch = ""
 		}
+		effective.PR.PublishIntent = nil
 	}
 	if allowRepoCommands {
 		return &effective
@@ -2814,9 +2822,12 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
-		ForgeProfiles:  global.ForgeProfiles,
-		Providers:      providers,
+		PR: PR{
+			BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
+			PublishIntent: repo.PR.PublishIntent,
+		},
+		ForgeProfiles: global.ForgeProfiles,
+		Providers:     providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
