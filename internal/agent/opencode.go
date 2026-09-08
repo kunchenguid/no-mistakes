@@ -13,6 +13,15 @@ import (
 
 var errOpencodeThinkingToolChoiceConflict = errors.New("opencode provider rejects required tool choice while thinking is enabled")
 
+// errOpencodeForcedToolChoiceUnsupported is the blanket variant: the
+// gateway rejects EVERY non-auto tool_choice unconditionally (for
+// example the OpenCode Console free tier), so no thinking toggle can
+// help and prompt-only is the only route. It stays a separate sentinel
+// from errOpencodeThinkingToolChoiceConflict so the surfaced error never
+// claims a thinking conflict where there is none, even though both route
+// into the same prompt-only structured-output fallback.
+var errOpencodeForcedToolChoiceUnsupported = errors.New("opencode provider supports only auto tool choice")
+
 // errOpencodeToolsAlreadyRan annotates a failure whose turn had already
 // invoked a tool. The prompt-only fallback re-runs the whole prompt in a
 // fresh session, so it must not be taken past this marker.
@@ -40,10 +49,51 @@ func thinkingConflict(evidence opencodeToolEvidence, cause error) error {
 	return err
 }
 
+// forcedToolChoiceConflict builds the fallback trigger for the blanket
+// only-auto rejection, carrying the turn's tool evidence like
+// thinkingConflict does. It reports the gateway's own wording - there is
+// no thinking conflict to name and disabling thinking would not help -
+// and routes into the same prompt-only fallback.
+func forcedToolChoiceConflict(evidence opencodeToolEvidence, cause error) error {
+	err := errOpencodeForcedToolChoiceUnsupported
+	if !evidence.replaySafe() {
+		err = fmt.Errorf("%w (%w)", err, evidence.marker())
+	}
+	if cause != nil {
+		return fmt.Errorf("%w: %v", err, cause)
+	}
+	return err
+}
+
+// opencodeFallbackTrigger reports whether err is either structured-output
+// fallback trigger: the thinking/tool_choice conflict or the blanket
+// only-auto rejection. Both route to the same prompt-only retry; they stay
+// distinct sentinels so the surfaced error names the actual rejection.
+func opencodeFallbackTrigger(err error) bool {
+	return errors.Is(err, errOpencodeThinkingToolChoiceConflict) ||
+		errors.Is(err, errOpencodeForcedToolChoiceUnsupported)
+}
+
 var thinkingToolChoiceConflictPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:(?:required|forced)\s+tool[_ ]choice|tool[_ ]choice\s*(?:is\s*)?["']?(?:required|forced)["']?)\s+(?:is\s+)?(?:incompatible with|cannot be combined with|can't be combined with|cannot be used with|can't be used with|not supported (?:with|when))\s+(?:thinking|reasoning)(?:\s+(?:enabled|mode))?`),
 	regexp.MustCompile(`(?i)(?:thinking|reasoning)(?:\s+(?:enabled|mode))?\s+(?:is\s+)?(?:incompatible with|cannot be combined with|can't be combined with|cannot be used with|can't be used with|not supported (?:with|when))\s+(?:(?:a|an|the)\s+)?(?:(?:required|forced)\s+tool[_ ]choice|tool[_ ]choice\s*(?:is\s*)?["']?(?:required|forced)["']?)`),
 	regexp.MustCompile(`(?i)(?:thinking|reasoning)\s+may not be enabled when\s+tool[_ ]choice\s+forces\s+tool use`),
+}
+
+// forcedToolChoiceUnsupportedPatterns matches a gateway that rejects every
+// non-auto tool_choice unconditionally, without naming thinking or
+// reasoning. Each pattern requires tool_choice beside an only-auto or
+// unsupported verdict, so unrelated provider errors - including a thinking
+// model that merely "does not support this tool_choice" - do not match.
+// The [^.] guards keep the tool_choice and auto halves in one sentence, so
+// a multi-clause limitation naming tool_choice in one clause and auto
+// scaling in another is not read as this rejection.
+var forcedToolChoiceUnsupportedPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)only\s+["']?\bauto\b["']?\s+(?:is\s+)?supported\s+for\s+["']?tool[_ ]choice["']?`),
+	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?[^.]{0,80}?\bonly\s+["']?\bauto\b["']?`),
+	regexp.MustCompile(`(?i)tool[_ ]choice\s+must\s+be\s+["']?\bauto\b["']?`),
+	regexp.MustCompile(`(?i)unsupported\s+(?:value\s+for\s+)?["']?tool[_ ]choice["']?`),
+	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*(?:value|parameter)?\s*(?:is\s+)?(?:currently\s+)?unsupported\b`),
 }
 
 // opencodeAgent starts a persistent HTTP server via `opencode serve`
@@ -86,7 +136,7 @@ func (a *opencodeAgent) recoverTransientRetry(label string) {
 
 func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	result, err := a.runOnceWithFormat(ctx, opts, true)
-	if err == nil || len(opts.JSONSchema) == 0 || !errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
+	if err == nil || len(opts.JSONSchema) == 0 || !opencodeFallbackTrigger(err) {
 		return result, err
 	}
 
@@ -100,7 +150,8 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	}
 
 	// OpenCode implements json_schema output as a required StructuredOutput
-	// tool call. Some thinking-enabled models reject that combination. Retry
+	// tool call. Some thinking-enabled models reject that combination, and
+	// some gateways reject every non-auto tool_choice outright. Retry
 	// once without the native format, while keeping the schema in the prompt
 	// and validating the returned JSON against it in finalizeTextResult.
 	emitAgentControl(opts, LifecycleEvent{
@@ -207,6 +258,9 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 			if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
 				return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
 			}
+			if nativeFormat && isForcedToolChoiceUnsupportedText(mr.err.Error()) {
+				return nil, forcedToolChoiceConflict(evidence, mr.err)
+			}
 			return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 		}
 		if !aborted {
@@ -214,6 +268,9 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		}
 		if nativeFormat && errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
 			return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
+		}
+		if nativeFormat && errors.Is(err, errOpencodeForcedToolChoiceUnsupported) {
+			return nil, forcedToolChoiceConflict(evidence, nil)
 		}
 		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode events: %w", err))
 	}
@@ -226,6 +283,9 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	if mr.err != nil {
 		if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
 			return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
+		}
+		if nativeFormat && isForcedToolChoiceUnsupportedText(mr.err.Error()) {
+			return nil, forcedToolChoiceConflict(evidence, mr.err)
 		}
 		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 	}
@@ -294,11 +354,15 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		}, nil
 	}
 
-	// A thinking model rejecting the forced tool_choice is handled by the
-	// prompt-only fallback in runOnce, so it must be recognised before the
-	// general failure below claims it.
+	// A thinking model rejecting the forced tool_choice, or a gateway
+	// rejecting every non-auto tool_choice, is handled by the
+	// prompt-only fallback in runOnce, so both must be recognised before the
+	// general failure below claims them.
 	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isThinkingToolChoiceConflict(mr.resp.Info.Error) {
 		return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
+	}
+	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isForcedToolChoiceUnsupported(mr.resp.Info.Error) {
+		return nil, forcedToolChoiceConflict(evidence, nil)
 	}
 
 	// A turn that failed reports its cause on info.error rather than on the
@@ -342,6 +406,24 @@ func isThinkingToolChoiceConflict(e *opencodeMessageError) bool {
 
 func isThinkingToolChoiceConflictText(text string) bool {
 	for _, pattern := range thinkingToolChoiceConflictPatterns {
+		if pattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func isForcedToolChoiceUnsupported(e *opencodeMessageError) bool {
+	for _, text := range e.providerText() {
+		if isForcedToolChoiceUnsupportedText(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func isForcedToolChoiceUnsupportedText(text string) bool {
+	for _, pattern := range forcedToolChoiceUnsupportedPatterns {
 		if pattern.MatchString(text) {
 			return true
 		}
