@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -24,20 +25,25 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 type Host struct {
 	cmd          CmdFactory
 	cliAvailable func() bool
-	host         string // repo's GitLab hostname; scopes the auth check
+	host         string // repo's resolved SSH/transport hostname; scopes the auth check
 	projectPath  string // repo's "group/project" path; enables REST job reads
 	draft        bool   // open created MRs as drafts (glab mr create --draft)
+
+	identityMu       sync.Mutex
+	canonicalWebHost string
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
 // resolvable on the caller's PATH (possibly overridden by env). host is the
-// repo's GitLab hostname; when set the availability check is scoped to it via
-// --hostname so a stale credential for an unrelated configured glab host cannot
-// make this repo look unauthenticated. projectPath is the repo's "group/project"
-// path (subgroups allowed); when set, pipeline-job reads go through `glab api`
-// (REST), which is branch-independent and works in the daemon's detached-HEAD
-// worktree, where `glab ci get` refuses to run without a current branch. Both
-// are optional; empty reproduces the legacy unscoped behavior.
+// repo's resolved SSH/transport hostname; when set the availability check is
+// scoped to it via --hostname so a stale credential for an unrelated configured
+// glab host cannot make this repo look unauthenticated. It need not equal the
+// instance's canonical web hostname; MR URL validation resolves that identity
+// through glab when necessary. projectPath is the repo's "group/project" path
+// (subgroups allowed); when set, pipeline-job reads go through `glab api` (REST),
+// which is branch-independent and works in the daemon's detached-HEAD worktree,
+// where `glab ci get` refuses to run without a current branch. Both are optional;
+// empty reproduces the legacy unscoped behavior.
 func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Host {
 	return &Host{
 		cmd:          cmd,
@@ -148,7 +154,7 @@ func (h *Host) Available(ctx context.Context) error {
 	return nil
 }
 
-func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error) {
+func parseMergeRequestURL(raw, expectedProject string) (int, error) {
 	trimmed := strings.TrimSpace(raw)
 	parsed, err := url.Parse(trimmed)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -156,9 +162,6 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 	}
 	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
 		return 0, errors.New("expected HTTP GitLab merge request URL")
-	}
-	if expectedHost != "" && !strings.EqualFold(parsed.Hostname(), expectedHost) {
-		return 0, fmt.Errorf("URL host %q does not match GitLab host %q", parsed.Hostname(), expectedHost)
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
@@ -187,6 +190,85 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 		return 0, errors.New("expected GitLab merge request URL without query or fragment")
 	}
 	return number, nil
+}
+
+// validateMergeRequestURL applies one repository-identity rule to every MR URL
+// returned by glab. The common case remains a literal match with the resolved
+// SSH/transport host. When GitLab publishes a different canonical web host,
+// resolve that host from a separate `glab repo view` of the current repository
+// and require both provider responses to agree. The expected project path is
+// checked before accepting either host, so a transport alias never widens URL
+// validation to another GitLab instance or repository.
+func (h *Host) validateMergeRequestURL(ctx context.Context, raw string) (int, error) {
+	number, err := parseMergeRequestURL(raw, h.projectPath)
+	if err != nil {
+		return 0, err
+	}
+	parsed, _ := url.Parse(strings.TrimSpace(raw))
+	actualHost := parsed.Hostname()
+	if h.host == "" || strings.EqualFold(actualHost, h.host) {
+		return number, nil
+	}
+	canonicalHost, err := h.resolveCanonicalWebHost(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("resolve canonical GitLab web host for transport host %q: %w", h.host, err)
+	}
+	if !strings.EqualFold(actualHost, canonicalHost) {
+		return 0, fmt.Errorf("URL host %q does not match canonical GitLab web host %q for transport host %q", actualHost, canonicalHost, h.host)
+	}
+	return number, nil
+}
+
+func (h *Host) resolveCanonicalWebHost(ctx context.Context) (string, error) {
+	h.identityMu.Lock()
+	defer h.identityMu.Unlock()
+	if h.canonicalWebHost != "" {
+		return h.canonicalWebHost, nil
+	}
+	if h.projectPath == "" {
+		return "", errors.New("repository project path is unknown")
+	}
+
+	cmd := h.cmd(ctx, "glab", "repo", "view", "--output", "json")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("glab repo view: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	trimmed := bytesTrimToJSON(out)
+	if len(trimmed) == 0 {
+		return "", errors.New("parse glab repo view JSON: no JSON found")
+	}
+	var project struct {
+		WebURL            string `json:"web_url"`
+		PathWithNamespace string `json:"path_with_namespace"`
+	}
+	if err := json.Unmarshal(trimmed, &project); err != nil {
+		return "", fmt.Errorf("parse glab repo view JSON: %w", err)
+	}
+	project.WebURL = strings.TrimSpace(project.WebURL)
+	parsed, err := url.Parse(project.WebURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("parse glab repo view JSON: expected absolute GitLab project web_url")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", errors.New("parse glab repo view JSON: expected HTTP GitLab project web_url")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("parse glab repo view JSON: expected canonical GitLab project web_url")
+	}
+	urlProject := strings.Trim(strings.TrimSpace(parsed.Path), "/")
+	payloadProject := strings.Trim(strings.TrimSpace(project.PathWithNamespace), "/")
+	if payloadProject == "" || !strings.EqualFold(urlProject, payloadProject) {
+		return "", fmt.Errorf("parse glab repo view JSON: web_url project %q does not match path_with_namespace %q", urlProject, payloadProject)
+	}
+	if !strings.EqualFold(payloadProject, strings.Trim(h.projectPath, "/")) {
+		return "", fmt.Errorf("glab repository project %q does not match GitLab project %q", payloadProject, h.projectPath)
+	}
+	if parsed.Hostname() == "" {
+		return "", errors.New("parse glab repo view JSON: project web_url host is empty")
+	}
+	h.canonicalWebHost = parsed.Hostname()
+	return h.canonicalWebHost, nil
 }
 
 type mrPayload struct {
@@ -250,7 +332,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if url == "" {
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d missing merge request URL", i)
 		}
-		number, err := parseMergeRequestURL(url, h.host, h.projectPath)
+		number, err := h.validateMergeRequestURL(ctx, url)
 		if err != nil {
 			return nil, fmt.Errorf("parse glab mr list JSON: entry %d invalid merge request URL: %w", i, err)
 		}
@@ -279,11 +361,14 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	url := extractMRURL(out)
-	pr := &scm.PR{URL: url}
-	if num, nerr := scm.ExtractPRNumber(url); nerr == nil {
-		pr.Number = num
+	if url == "" {
+		return nil, errors.New("parse glab mr create output: missing merge request URL")
 	}
-	return pr, nil
+	number, err := h.validateMergeRequestURL(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("parse glab mr create output: invalid merge request URL: %w", err)
+	}
+	return &scm.PR{URL: url, Number: strconv.Itoa(number)}, nil
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
@@ -398,6 +483,24 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 	mr, ok := parseMRPayload(out)
 	if !ok {
 		return mrPayload{}, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
+	}
+	mrURL := strings.TrimSpace(mr.WebURL)
+	if mrURL == "" {
+		mrURL = strings.TrimSpace(mr.URL)
+	}
+	if mrURL != "" {
+		number, err := h.validateMergeRequestURL(ctx, mrURL)
+		if err != nil {
+			return mrPayload{}, fmt.Errorf("glab mr view: invalid merge request URL: %w", err)
+		}
+		if mr.IID != 0 && mr.IID != number {
+			return mrPayload{}, fmt.Errorf("glab mr view: IID %d does not match URL number %d", mr.IID, number)
+		}
+		if requested, err := strconv.Atoi(strings.TrimSpace(id)); err == nil && requested != number {
+			return mrPayload{}, fmt.Errorf("glab mr view: requested MR %d does not match URL number %d", requested, number)
+		}
+	} else if h.host != "" || h.projectPath != "" {
+		return mrPayload{}, errors.New("glab mr view: missing merge request URL")
 	}
 	return mr, nil
 }

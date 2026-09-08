@@ -123,6 +123,8 @@ glab auth login
 
 When no-mistakes updates an existing merge request, it reads the live title and preserves any GitLab draft marker. If `glab mr view` fails or returns an empty title, the update stops instead of risking a change from draft to ready.
 
+GitLab SSH remotes may use either an SSH config alias or a transport/DNS hostname that differs from the instance's canonical web hostname. no-mistakes leaves that remote unchanged. When `glab` returns an MR URL on another hostname, no-mistakes confirms the canonical web host with `glab repo view` for the current authenticated repository and still requires the exact namespace/project; URLs for another instance or project are rejected.
+
 ## Forgejo
 
 Install [`forgejo-axi`](https://github.com/escidmore/forgejo-axi) and make it available on `PATH`. It currently installs from source with Node.js 20 or newer; set [`forgejo_axi_path`](/no-mistakes/reference/global-config/#forgejo_axi_path) when the executable lives elsewhere.
