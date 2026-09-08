@@ -166,6 +166,8 @@ Symptom: a run stops with a failed step.
 Check the per-step log at `~/.no-mistakes/logs/<runID>/<step>.log`.
 Fatal step errors are appended to that log, so failures such as rejected pushes include the returned error output there instead of only appearing in `daemon.log`.
 
+If GitLab PR discovery rejects an MR URL because the SSH transport/DNS host differs from the canonical web host, see the [GitLab provider integration guidance](/no-mistakes/guides/provider-integration/#gitlab).
+
 ### Push fails with `refusing to force-push`
 
 This means the live remote branch changed after the pipeline's last observed head and contains commit(s) the validated worktree did not incorporate.
@@ -232,7 +234,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Bitbucket env vars not set in the daemon's environment
 - Upstream is not one of the hosts listed in Provider Integration
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
-- Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated. An SSH transport/DNS host may differ from GitLab's canonical web host; no remote rewrite is needed when `glab repo view --output json` identifies the expected namespace/project and canonical URL.
+- Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - Self-hosted Gitea isn't detected because `tea` has no login configured for the host; run `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` so detection finds it. See [Self-hosted Gitea](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 - A non-GitHub repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
 - You pushed the PR base branch (PR step always skips there; this is the repository's default branch, or the configured [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when set)
