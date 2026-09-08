@@ -407,6 +407,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}
 		addRunPerformanceSummary(m.db, plan.run.ID, fields)
 		telemetry.Track("run", fields)
+		m.autoIngestCIFalseNegatives(runCtx, plan.cfg, plan.run.ID)
 	}()
 }
 
