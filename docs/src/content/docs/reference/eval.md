@@ -71,7 +71,7 @@ Capture writes gold from the **recorded gate decision** for a review round - wha
 - Skip, approve-with-findings, and abort **without a merge** stay **unlabeled / pending** until later adjudication, and so does any legacy or unresolved round whose gate decision was never recorded, merged or not. Absence of a decision is never read as a judgement.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current recorded decisions no longer support. Adjudicated, user-fix, and ingested false-negative labels are never overwritten. Relabel and recapture converge in place: repeating either with unchanged source evidence produces the same labels, including for gold findings that lack IDs.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -127,7 +127,7 @@ The replay restores each case into a fresh temporary bare gate and worktree, the
 
 Replay scores each candidate finding against that gold:
 
-- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding (user Fix, auto-fix-merged, human-added miss, or a confirmed post-PR miss)
+- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding (user Fix, auto-fix-merged, human-added miss, a confirmed post-PR miss, or an automatically ingested CI miss)
 - **false-negative**: the candidate misses a true-issue gold finding
 - **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
@@ -166,4 +166,4 @@ The report is deliberately cautious. It never treats an unadjudicated candidate 
 
 ## Current boundary
 
-Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence, plus confirmed post-PR misses ingested through `eval miss ingest`. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
+Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence, confirmed post-PR misses ingested through `eval miss ingest`, and confirmed CI misses ingested automatically after a repaired run finishes green. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
