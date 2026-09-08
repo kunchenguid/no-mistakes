@@ -741,19 +741,16 @@ Local review-evaluation corpus settings for [`no-mistakes eval`](/no-mistakes/re
 | ---- | -------- |
 | Type | `object` |
 
-| Field                      | Type   | Default | Description                                                            |
-| -------------------------- | ------ | ------- | ---------------------------------------------------------------------- |
-| `eval.capture_provenance`   | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
-| `eval.auto_capture`         | `bool` | `true`  | Collect eligible review cases automatically                            |
-| `eval.auto_ingest_ci_misses` | `bool` | `false` | Label fixed CI code findings as Review false negatives automatically   |
-| `eval.max_cases`            | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
-| `eval.diversified_size`     | `int`  | `32`    | Cap on the official gold-only `diversified` set; `0` is one gold case per stratum |
+| Field                     | Type   | Default | Description                                                            |
+| ------------------------- | ------ | ------- | ---------------------------------------------------------------------- |
+| `eval.capture_provenance` | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
+| `eval.auto_capture`       | `bool` | `true`  | Collect eligible review cases and fixed CI false negatives automatically |
+| `eval.max_cases`          | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
+| `eval.diversified_size`   | `int`  | `32`    | Cap on the official gold-only `diversified` set; `0` is one gold case per stratum |
 
 `capture_provenance` is what makes a review pass replayable at all. It is recorded when the round is written and cannot be added afterwards, because the pinned configuration is a point-in-time snapshot, so a run reviewed with it off can never be captured later.
 
-`auto_capture` collects without any command: when an eligible run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off.
-
-`auto_ingest_ci_misses` is the separate, explicit consent to automatically judge fixed `ci-check` and `ci-review-bot` findings as Review false negatives. It requires both provenance and automatic capture. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else. The [Evaluation toolkit](/no-mistakes/reference/eval/#how-cases-are-collected) owns eligibility and labeling details.
+`auto_capture` collects without any command: when an eligible run finishes, its decided review rounds become cases and fixed `ci-check` and `ci-review-bot` findings become Review false negatives. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else. The [Evaluation toolkit](/no-mistakes/reference/eval/#how-cases-are-collected) owns eligibility and labeling details.
 
 `max_cases` sets the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case with a replay in progress or recorded candidate replays is protected, so the corpus can remain above the target rather than invalidate a comparison you have spent tokens on. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
 

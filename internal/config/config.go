@@ -769,11 +769,10 @@ type Evidence struct {
 // EvalRaw is the YAML representation of local evaluation-corpus settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvalRaw struct {
-	CaptureProvenance  *bool `yaml:"capture_provenance"`
-	AutoCapture        *bool `yaml:"auto_capture"`
-	AutoIngestCIMisses *bool `yaml:"auto_ingest_ci_misses"`
-	MaxCases           *int  `yaml:"max_cases"`
-	DiversifiedSize    *int  `yaml:"diversified_size"`
+	CaptureProvenance *bool `yaml:"capture_provenance"`
+	AutoCapture       *bool `yaml:"auto_capture"`
+	MaxCases          *int  `yaml:"max_cases"`
+	DiversifiedSize   *int  `yaml:"diversified_size"`
 }
 
 // Eval is the resolved local evaluation-corpus config. It is deliberately a
@@ -788,16 +787,12 @@ type EvalRaw struct {
 // configuration is a point-in-time snapshot that no longer exists anywhere.
 //
 // AutoCapture is the downstream half: it freezes each finished run's review
-// passes into the local corpus without anyone running a command. It has no
-// effect while CaptureProvenance is off, since there is nothing to freeze.
-//
-// AutoIngestCIMisses separately opts in to treating repaired CI findings as
-// false-negative gold. It defaults off because that expands automated judgment,
-// rather than merely collecting review evidence.
+// passes into the local corpus without anyone running a command and labels
+// repaired CI findings as false-negative gold. It has no effect while
+// CaptureProvenance is off, since there is nothing to freeze.
 type Eval struct {
-	CaptureProvenance  bool
-	AutoCapture        bool
-	AutoIngestCIMisses bool
+	CaptureProvenance bool
+	AutoCapture       bool
 	// MaxCases caps the auto-captured corpus. 0 keeps every case. Pruning is
 	// oldest-first and never removes a case that already has recorded
 	// candidate replays, so a corpus you have spent tokens on is never
@@ -1109,11 +1104,10 @@ intent:
 # configuration a replay needs; it cannot be added afterwards, so a round
 # recorded without it is never replayable. auto_capture freezes each finished
 # run's review passes into the corpus so it fills without anyone remembering to
-# collect it. auto_ingest_ci_misses explicitly opts in to labeling repaired
-# ci-check and ci-review-bot findings as Review false negatives. Cases of the
-# same repository share one local object pool, so a case costs its own records
-# plus the objects its commits introduced - not a copy of the repository.
-# max_cases bounds the corpus: the oldest cases are
+# collect it, including labeling repaired ci-check and ci-review-bot findings as
+# Review false negatives. Cases of the same repository share one local object
+# pool, so a case costs its own records plus the objects its commits introduced
+# - not a copy of the repository. max_cases bounds the corpus: the oldest cases are
 # dropped first, and a case that already has recorded replays is never dropped.
 # Set max_cases to 0 to keep every case. diversified_size caps the official
 # gold-only eval set (default 32); 0 means one gold case per stratum. Unlabeled
@@ -1122,7 +1116,6 @@ intent:
 eval:
   capture_provenance: true
   auto_capture: true
-  auto_ingest_ci_misses: false
   max_cases: 200
   diversified_size: 32
 
@@ -2562,7 +2555,7 @@ func parseEvidenceRetention(value string) (time.Duration, error) {
 // kind that exists when a comparison is finally needed. The default cap keeps
 // the corpus a rolling window rather than an unbounded archive.
 func evalDefaults() Eval {
-	return Eval{CaptureProvenance: true, AutoCapture: true, AutoIngestCIMisses: false, MaxCases: DefaultEvalMaxCases, DiversifiedSize: DefaultEvalDiversifiedSize}
+	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases, DiversifiedSize: DefaultEvalDiversifiedSize}
 }
 
 // applyEvalOverrides applies non-nil raw values onto resolved defaults. The
@@ -2573,9 +2566,6 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 	}
 	if src.AutoCapture != nil {
 		dst.AutoCapture = *src.AutoCapture
-	}
-	if src.AutoIngestCIMisses != nil {
-		dst.AutoIngestCIMisses = *src.AutoIngestCIMisses
 	}
 	if src.MaxCases != nil && *src.MaxCases >= 0 {
 		dst.MaxCases = *src.MaxCases
