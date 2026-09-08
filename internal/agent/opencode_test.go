@@ -880,6 +880,13 @@ func TestForcedToolChoiceUnsupportedClassification(t *testing.T) {
 		// A blanket rejection in one sentence still matches when an adjacent
 		// sentence happens to mention thinking.
 		{name: "blanket rejection beside an unrelated thinking sentence", text: `only "auto" is supported for "tool_choice". Thinking is configured per request.`, want: true},
+		// Gate finding review-1: the dead [^.] guard let the token and the
+		// verdict sit in different clauses of one sentence. Both of these
+		// matched before that guard was replaced.
+		{name: "only auto scaling in a later clause", text: `tool_choice is restricted, and only auto scaling is enabled`, want: false},
+		{name: "only auto placement in a later clause", text: `tool_choice rejected, only auto placement is supported here`, want: false},
+		// A colon straight after the token is still one clause.
+		{name: "colon then only auto", text: `tool_choice: only auto`, want: true},
 		{name: "unsupported model beside tool_choice", text: `tool_choice set, but the requested model is unsupported`, want: false},
 		{name: "tool_choice value unsupported", text: `tool_choice value is unsupported`, want: true},
 		{name: "invalid parameter without a verdict", text: `invalid tool_choice parameter`, want: false},

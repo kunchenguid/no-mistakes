@@ -85,12 +85,16 @@ var thinkingToolChoiceConflictPatterns = []*regexp.Regexp{
 // reasoning. Each pattern requires tool_choice beside an only-auto or
 // unsupported verdict, so unrelated provider errors - including a thinking
 // model that merely "does not support this tool_choice" - do not match.
-// The [^.] guards keep the tool_choice and auto halves in one sentence, so
-// a multi-clause limitation naming tool_choice in one clause and auto
-// scaling in another is not read as this rejection.
+// Both detectors match per sentence, so a period can never appear in the
+// input and cannot separate anything. What keeps the tool_choice token and
+// the only-auto verdict together is excluding the comma and semicolon that
+// would put them in different clauses of one sentence: "tool_choice is
+// restricted, and only auto scaling is enabled" describes a quota, not this
+// rejection. A colon directly after the token is allowed, since
+// "tool_choice: only auto" is one clause.
 var forcedToolChoiceUnsupportedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)only\s+["']?\bauto\b["']?\s+(?:is\s+)?supported\s+for\s+["']?tool[_ ]choice["']?`),
-	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?[^.]{0,80}?\bonly\s+["']?\bauto\b["']?`),
+	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*:?\s*[^.,;]{0,80}?\bonly\s+["']?\bauto\b["']?`),
 	regexp.MustCompile(`(?i)tool[_ ]choice\s+must\s+be\s+["']?\bauto\b["']?`),
 	regexp.MustCompile(`(?i)unsupported\s+(?:value\s+for\s+)?["']?tool[_ ]choice["']?`),
 	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*(?:value|parameter)?\s*(?:is\s+)?(?:currently\s+)?unsupported\b`),
