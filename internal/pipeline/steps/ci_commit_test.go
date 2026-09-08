@@ -179,6 +179,32 @@ func TestCIStep_InvalidCommitTemplateDoesNotStageChanges(t *testing.T) {
 	}
 }
 
+func TestCIStep_CommitRepairUsesBranchIdentifier(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/topic-PROJ-123-add-widget"
+	sctx.Config.CI.RevalidateRepairs = true
+	sctx.Config.Commit = config.Commit{
+		FixMessage:    "{{.Branch}}: {{.Summary}}",
+		BranchPattern: `([A-Z]+-[0-9]+)`,
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repair, err := (&CIStep{}).commitRepair(sctx, "repair failing checks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repair.HeadAdvanced {
+		t.Fatal("CI repair did not advance HEAD")
+	}
+	if got, want := lastCommitMessage(t, dir), "PROJ-123: repair failing checks"; got != want {
+		t.Fatalf("CI repair commit subject = %q, want %q", got, want)
+	}
+}
+
 func TestCIStep_CommitAndPush_StatusError(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

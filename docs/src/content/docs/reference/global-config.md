@@ -680,15 +680,10 @@ The template supports literal text and three Go-style placeholders:
 | --- | --- |
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, `lint`, `ci`, or `gate.test.mutation-budget` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
-| `{{.Branch}}` | Normalized branch name, or the identifier captured by `commit.branch_pattern` |
+| `{{.Branch}}` | Normalized branch name, or the identifier captured by [`commit.branch_pattern`](#commitbranch_pattern) |
 
-`commit.branch_pattern` is an optional regular expression with exactly one capture group.
-The first capture group becomes `{{.Branch}}`, which lets a branch such as `feature/PROJ-123-add-widget` produce `PROJ-123`.
-When the configured pattern does not find an identifier, the automatic commit fails safely instead of producing an empty prefix.
-Without a pattern, `{{.Branch}}` is the normalized full branch name.
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
 The template source is limited to 1,024 bytes and 16 placeholders.
-`commit.branch_pattern` is also limited to 1,024 bytes and must compile with exactly one capture group.
 The fix-agent summary and final rendered subject are each limited to 4,096 bytes.
 Before rendering, no-mistakes predicts the subject size from the validated literal text and placeholders, then rejects oversized output without allocating the expanded message.
 Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, unsafe Unicode format characters, and Unicode line or paragraph separators cause configuration loading to fail.
@@ -697,6 +692,20 @@ Legitimate `U+200C` zero-width non-joiner and `U+200D` zero-width joiner text sh
 The final rendered subject is validated again, so unsafe characters in an agent-provided summary are also rejected.
 The setting does not change commit subjects created by the Rebase or Push steps.
 A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
+
+### commit.branch_pattern
+
+Optional regular expression for extracting the value exposed as `{{.Branch}}` to commit and PR title templates.
+
+| | |
+| --- | --- |
+| Type | `string` regular expression |
+| Default | Unset, so `{{.Branch}}` is the normalized full branch name |
+
+The expression is limited to 1,024 bytes, must be valid UTF-8, must exclude the same control and unsafe Unicode format characters as `commit.fix_message`, and must compile with exactly one capture group.
+The first capture group becomes `{{.Branch}}`, so `([A-Z]+-[0-9]+)` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
+When a template uses `{{.Branch}}` and the pattern does not find a non-empty identifier, rendering fails safely instead of producing an empty prefix.
+A per-repo [`commit.branch_pattern`](/no-mistakes/reference/repo-config/#commitbranch_pattern) value overrides this global setting.
 
 ### intent
 

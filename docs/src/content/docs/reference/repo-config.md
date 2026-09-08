@@ -295,12 +295,14 @@ Configure the title shape no-mistakes applies to newly created and updated pull 
 | Trust | Pushed branch, like other non-executing repository conventions |
 
 The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
-`{{.Branch}}` is the normalized branch identifier resolved by `commit.branch_pattern` when one is configured.
+`{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) when one is configured.
 `{{.Title}}` is the concise title text returned by the PR agent.
 For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
+The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
 
 The format is validated when configuration loads.
-It must be valid UTF-8, contain only the two documented placeholders and literal text, contain no control or unsafe Unicode format characters, and render a non-empty title within the configured size limit.
+It must be valid UTF-8, contain only the two documented placeholders and literal text, and contain no control or unsafe Unicode format characters.
+The template source is limited to 1,024 bytes and 16 placeholders, and the rendered title must be non-empty and no more than 4,096 bytes.
 If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR creation fails safely instead of publishing a malformed title.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
@@ -690,13 +692,23 @@ The value follows the [global `commit.fix_message` template syntax and validatio
 That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. It does not apply to commits created by the Rebase or Push steps.
 
-`commit.branch_pattern` is optional and must be a regular expression with exactly one capture group.
-The capture group becomes `{{.Branch}}` in both the commit template and `pr.title_format`.
-For example, `branch_pattern: '([A-Z]+-[0-9]+)'` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
-Without a pattern, `{{.Branch}}` is the normalized full branch name.
-A configured pattern that does not match fails an automatic commit or PR title render closed instead of producing an empty prefix.
+This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
 
-This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
+### commit.branch_pattern
+
+Override the branch-identifier extraction pattern for this repository.
+
+| | |
+| --- | --- |
+| Type | `string` regular expression |
+| Default | Inherits from global config; when unset there, `{{.Branch}}` is the normalized full branch name |
+
+The value follows the [global `commit.branch_pattern` syntax and validation rules](/no-mistakes/reference/global-config/#commitbranch_pattern).
+Its only capture group becomes `{{.Branch}}` in both `commit.fix_message` and `pr.title_format`.
+For example, `branch_pattern: '([A-Z]+-[0-9]+)'` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
+When either template uses `{{.Branch}}` and the pattern does not find a non-empty identifier, rendering fails safely instead of producing an empty prefix.
+
+This non-executing field is read from the pushed branch without enabling `allow_repo_commands`.
 
 ### intent
 
