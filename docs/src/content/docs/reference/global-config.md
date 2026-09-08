@@ -83,6 +83,9 @@ ci:
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+  # branch_pattern: '([A-Z]+-[0-9]+)'
+  # To use the captured identifier in the subject:
+  # fix_message: "{{.Branch}}: {{.Summary}}"
 
 intent:
   enabled: true
@@ -671,15 +674,21 @@ Template for the subject of commits created by the Review, Test, Document, Lint,
 | Type | `string` |
 | Default | `no-mistakes({{.Step}}): {{.Summary}}` |
 
-The template supports literal text and two Go-style placeholders:
+The template supports literal text and three Go-style placeholders:
 
 | Variable | Value |
 | --- | --- |
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, `lint`, `ci`, or `gate.test.mutation-budget` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
+| `{{.Branch}}` | Normalized branch name, or the identifier captured by `commit.branch_pattern` |
 
+`commit.branch_pattern` is an optional regular expression with exactly one capture group.
+The first capture group becomes `{{.Branch}}`, which lets a branch such as `feature/PROJ-123-add-widget` produce `PROJ-123`.
+When the configured pattern does not find an identifier, the automatic commit fails safely instead of producing an empty prefix.
+Without a pattern, `{{.Branch}}` is the normalized full branch name.
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
 The template source is limited to 1,024 bytes and 16 placeholders.
+`commit.branch_pattern` is also limited to 1,024 bytes and must compile with exactly one capture group.
 The fix-agent summary and final rendered subject are each limited to 4,096 bytes.
 Before rendering, no-mistakes predicts the subject size from the validated literal text and placeholders, then rejects oversized output without allocating the expanded message.
 Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, unsafe Unicode format characters, and Unicode line or paragraph separators cause configuration loading to fail.

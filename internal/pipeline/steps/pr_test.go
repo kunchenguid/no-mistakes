@@ -762,6 +762,39 @@ func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 	}
 }
 
+func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if !strings.Contains(opts.Prompt, "configured format") {
+				t.Error("expected prompt to mention configured title format")
+			}
+			payload := json.RawMessage(`{"title":"add widget","body":"## What Changed\n\n- add widget support"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
+	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "--title PROJ-123: add widget") {
+		t.Fatalf("expected configured PR title, got:\n%s", logData)
+	}
+}
+
 func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1683,7 +1716,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
 	}
 
-	content := fallbackPRContent(
+	content, err := fallbackPRContent(
 		sctx,
 		"A\tinternal/pipeline/steps/pr.go",
 		"✅ Low: generated PR body length guard only",
@@ -1691,6 +1724,9 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		pipelineMarkdownForTest(rounds...),
 		0,
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	assertGitHubBodyLimitForTest(t, content.Body)
 	for _, want := range []string{
@@ -2502,7 +2538,10 @@ func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 		pipelineAttestationCommentClosingToken
 
 	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0)
+	content, err := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
 	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {

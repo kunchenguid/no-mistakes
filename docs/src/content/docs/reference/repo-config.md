@@ -13,7 +13,7 @@ The daemon also reads `document.instructions`, `review.path_instructions`, `gate
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, and `providers`) are still read from the pushed branch, except `test.instructions` and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.instructions` and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -58,10 +58,12 @@ disable_project_settings: true
 # Read only from the trusted default branch. Defaults to false (CI expected).
 # no_ci: true
 
-# Optional PR target branch, read from the trusted default branch.
-# When unset, PRs target the repository's forge default branch.
+# Optional PR settings.
+# base_branch is read from the trusted default branch.
+# title_format is a repository convention and is read from this branch.
 pr:
   base_branch: develop
+  # title_format: "{{.Branch}}: {{.Title}}"
 
 auto_fix:
   rebase: 3
@@ -79,6 +81,9 @@ ci:
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+  # branch_pattern: '([A-Z]+-[0-9]+)'
+  # To use the captured identifier in the subject:
+  # fix_message: "{{.Branch}}: {{.Summary}}"
 
 intent:
   enabled: true
@@ -278,6 +283,27 @@ Control publication of the **generated `Intent` section**, independently of inte
 `false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
+
+### pr.title_format
+
+Configure the title shape no-mistakes applies to newly created and updated pull requests.
+
+| | |
+| --- | --- |
+| Type | `string` template |
+| Default | Empty, which preserves conventional commit titles |
+| Trust | Pushed branch, like other non-executing repository conventions |
+
+The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
+`{{.Branch}}` is the normalized branch identifier resolved by `commit.branch_pattern` when one is configured.
+`{{.Title}}` is the concise title text returned by the PR agent.
+For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
+
+The format is validated when configuration loads.
+It must be valid UTF-8, contain only the two documented placeholders and literal text, contain no control or unsafe Unicode format characters, and render a non-empty title within the configured size limit.
+If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR creation fails safely instead of publishing a malformed title.
+
+When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
 
 ### commands.prepare
 
@@ -663,6 +689,12 @@ Override the auto-fix commit subject template for this repository.
 The value follows the [global `commit.fix_message` template syntax and validation rules](/no-mistakes/reference/global-config/#commitfix_message).
 That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. It does not apply to commits created by the Rebase or Push steps.
+
+`commit.branch_pattern` is optional and must be a regular expression with exactly one capture group.
+The capture group becomes `{{.Branch}}` in both the commit template and `pr.title_format`.
+For example, `branch_pattern: '([A-Z]+-[0-9]+)'` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
+Without a pattern, `{{.Branch}}` is the normalized full branch name.
+A configured pattern that does not match fails an automatic commit or PR title render closed instead of producing an empty prefix.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
 

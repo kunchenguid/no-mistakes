@@ -251,9 +251,12 @@ type RepoConfig struct {
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool `yaml:"allow_repo_commands"`
-	// PR carries pull-request routing settings. BaseBranch controls where a PR
-	// lands, so EffectiveRepoConfig treats it as trusted-only unless the
-	// repository explicitly opts into pushed settings.
+	// PR carries pull-request settings. BaseBranch controls where a PR lands,
+	// Template and PublishIntent control trusted publication policy, and
+	// TitleFormat controls repository title convention. EffectiveRepoConfig keeps
+	// BaseBranch trusted-only unless the repository opts into pushed settings,
+	// leaves TitleFormat on the pushed branch, and keeps Template and
+	// PublishIntent trusted-only.
 	AutoFix AutoFixRaw `yaml:"auto_fix"`
 	CI      CIRaw      `yaml:"ci"`
 	Commit  CommitRaw  `yaml:"commit"`
@@ -340,8 +343,11 @@ type PRRaw struct {
 	BaseBranch string `yaml:"base_branch"`
 	// Template and PublishIntent are repository-only publication policy. Both
 	// remain trusted-only even when allow_repo_commands is enabled.
-	Template      string `yaml:"template"`
-	PublishIntent *bool  `yaml:"publish_intent"`
+	Template      string  `yaml:"template"`
+	PublishIntent *bool   `yaml:"publish_intent"`
+	// TitleFormat controls PR title rendering when set. It is a non-executing
+	// repository convention and is therefore read from the pushed branch.
+	TitleFormat *string `yaml:"title_format"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -705,6 +711,7 @@ type PR struct {
 	Template   string
 	// Nil preserves the historical default: publish the extracted intent.
 	PublishIntent *bool
+	TitleFormat   string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1083,10 +1090,15 @@ ci:
   # overrides this value.
   revalidate_repairs: false
 
-# Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
-# Repo config may override this value.
+# Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
+# {{.Branch}} is the normalized branch name, or the only capture group from
+# branch_pattern when configured. A branch pattern with no match fails safely.
+# Repo config may override these values.
 # commit:
+#   branch_pattern: '([A-Z]+-[0-9]+)'
 #   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"
+# To use the captured identifier in the subject, replace fix_message with:
+#   fix_message: "{{.Branch}}: {{.Summary}}"
 
 # User-intent extraction. When you push a branch, no-mistakes can read recent
 # transcripts from your local agent (Claude Code, Codex, OpenCode, Rovo Dev, Pi,
@@ -2270,7 +2282,16 @@ func validatePRRaw(pr PRRaw) error {
 			return fmt.Errorf("pr.base_branch: %w", err)
 		}
 	}
-	return ValidatePRTemplatePath(pr.Template)
+	if err := ValidatePRTemplatePath(pr.Template); err != nil {
+		return err
+	}
+	if pr.TitleFormat != nil {
+		if err := validatePRTitleFormat(*pr.TitleFormat); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 }
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
@@ -2365,8 +2386,8 @@ func validatePathInstructionGlob(pattern string) error {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test, and
-// providers) are always taken from the pushed copy, matching prior behavior,
+// Non-executing fields (ignore patterns, auto-fix, commit, intent, test,
+// PR title format, and providers) are always taken from the pushed copy, matching prior behavior,
 // since they cannot run arbitrary shell, select a process, or spend the
 // maintainer's CI minutes.
 // The exceptions inside test are evidence.branch, which names a git ref the
@@ -2430,7 +2451,10 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Test.Instructions = trusted.Test.Instructions
 		// pr.base_branch controls where the contributor's PR lands, so it is
 		// trusted-only unless the repository explicitly opts into pushed
-		// settings alongside commands and agent selection.
+		// settings alongside commands and agent selection. TitleFormat is a
+		// non-executing convention and remains sourced from the pushed copy.
+		// pr.template and pr.publish_intent control public narrative policy, so
+		// they remain trusted-only regardless of the commands opt-in.
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = trusted.PR.BaseBranch
 		}
@@ -2816,13 +2840,28 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	if global.Commit.FixMessage != nil {
 		commit.FixMessage = *global.Commit.FixMessage
 	}
+	if global.Commit.BranchPattern != nil {
+		commit.BranchPattern = *global.Commit.BranchPattern
+	}
 	if repo.Commit.FixMessage != nil {
 		commit.FixMessage = *repo.Commit.FixMessage
+	}
+	if repo.Commit.BranchPattern != nil {
+		commit.BranchPattern = *repo.Commit.BranchPattern
 	}
 
 	providers := Providers{}
 	applyProvidersOverrides(&providers, &global.Providers)
 	applyProvidersOverrides(&providers, &repo.Providers)
+
+	pr := PR{
+		BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
+		Template:      repo.PR.Template,
+		PublishIntent: repo.PR.PublishIntent,
+	}
+	if repo.PR.TitleFormat != nil {
+		pr.TitleFormat = *repo.PR.TitleFormat
+	}
 
 	cfg := &Config{
 		Agent:                 global.Agent,
@@ -2856,12 +2895,8 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR: PR{
-			BaseBranch:    strings.TrimSpace(repo.PR.BaseBranch),
-			Template:      repo.PR.Template,
-			PublishIntent: repo.PR.PublishIntent,
-		},
+		Review:        Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:            pr,
 		ForgeProfiles: global.ForgeProfiles,
 		Providers:     providers,
 		// repo is the EffectiveRepoConfig result, so this value is already

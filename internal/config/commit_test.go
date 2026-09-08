@@ -36,6 +36,47 @@ func TestCommitRenderFixMessage_CustomTemplate(t *testing.T) {
 	}
 }
 
+func TestCommitRenderFixMessageForBranch_ExtractsIdentifier(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{
+		FixMessage:    "{{.Branch}}: {{.Summary}}",
+		BranchPattern: `([A-Z]+-[0-9]+)`,
+	}
+	got, err := commit.RenderFixMessageForBranch(types.StepLint, "fix failing lint", "refs/heads/feature/PROJ-123-add-widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "PROJ-123: fix failing lint"; got != want {
+		t.Fatalf("RenderFixMessageForBranch() = %q, want %q", got, want)
+	}
+}
+
+func TestCommitRenderFixMessageForBranch_NoIdentifierFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{
+		FixMessage:    "{{.Branch}}: {{.Summary}}",
+		BranchPattern: `([A-Z]+-[0-9]+)`,
+	}
+	if got, err := commit.RenderFixMessageForBranch(types.StepLint, "fix failing lint", "feature/no-issue"); err == nil {
+		t.Fatalf("RenderFixMessageForBranch() = %q, want no-identifier error", got)
+	}
+}
+
+func TestCommitRenderFixMessage_DefaultRemainsUnchangedWithBranchPattern(t *testing.T) {
+	t.Parallel()
+
+	commit := Commit{BranchPattern: `([A-Z]+-[0-9]+)`}
+	got, err := commit.RenderFixMessageForBranch(types.StepLint, "fix failing lint", "feature/no-issue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "no-mistakes(lint): fix failing lint"; got != want {
+		t.Fatalf("RenderFixMessageForBranch() = %q, want %q", got, want)
+	}
+}
+
 func TestCommitRenderFixMessage_RejectsOversizedTemplateSource(t *testing.T) {
 	t.Parallel()
 
@@ -252,11 +293,14 @@ func TestLoadRepo_CommitFixMessage(t *testing.T) {
 
 func TestLoadRepo_RejectsInvalidCommitFixMessage(t *testing.T) {
 	tests := map[string]string{
-		"unknown variable": "commit:\n  fix_message: '{{.Unknown}}'\n",
-		"escape control":   "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
-		"line separator":   "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
-		"bidi isolate":     "commit:\n  fix_message: \"chore:\\u2066{{.Summary}}\"\n",
-		"zero-width space": "commit:\n  fix_message: \"chore:\\u200b{{.Summary}}\"\n",
+		"unknown variable":         "commit:\n  fix_message: '{{.Unknown}}'\n",
+		"escape control":           "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
+		"line separator":           "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
+		"bidi isolate":             "commit:\n  fix_message: \"chore:\\u2066{{.Summary}}\"\n",
+		"zero-width space":         "commit:\n  fix_message: \"chore:\\u200b{{.Summary}}\"\n",
+		"invalid branch regex":     "commit:\n  branch_pattern: '[['\n",
+		"missing branch capture":   "commit:\n  branch_pattern: 'PROJ-[0-9]+'\n",
+		"multiple branch captures": "commit:\n  branch_pattern: '([A-Z]+)-([0-9]+)'\n",
 	}
 	for name, data := range tests {
 		name, data := name, data
