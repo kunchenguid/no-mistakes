@@ -15,7 +15,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// Logging and stateful PR readback consume the same command stdin, not two
+// independent streams. Each helper subprocess represents exactly one command.
+var readFakeBody = sync.OnceValues(func() ([]byte, error) { return io.ReadAll(os.Stdin) })
 
 func main() {
 	mode := os.Getenv("FAKE_CLI_MODE")
@@ -91,7 +96,7 @@ func logFakeCLIStdinBody(args []string, logFile string) {
 	if logFile == "" || !argsUseStdinBodyFile(args) {
 		return
 	}
-	body, err := io.ReadAll(os.Stdin)
+	body, err := readFakeBody()
 	if err != nil {
 		return
 	}
@@ -126,6 +131,7 @@ func fakeRecordSuccessHandler() {
 }
 
 func fakeGHHandler(args []string) {
+	fakeGHHandlePRContentCommands(args, strings.Join(args, " "))
 	prURL := os.Getenv("FAKE_CLI_PR_URL")
 	prBase := os.Getenv("FAKE_CLI_PR_BASE")
 	prListJSON, hasPRListJSON := os.LookupEnv("FAKE_CLI_PR_LIST_JSON")
@@ -171,6 +177,7 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
+		fakeGHStorePRBody(args)
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
 	}
@@ -495,18 +502,24 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			fmt.Fprintln(os.Stderr, editErr)
 			os.Exit(1)
 		}
-		if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
-			body, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			if err := os.WriteFile(path, body, 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
+		fakeGHStorePRBody(args)
 		os.Exit(0)
+	}
+}
+
+func fakeGHStorePRBody(args []string) {
+	path := os.Getenv("FAKE_CLI_PR_BODY_FILE")
+	bodyFile, _ := fakeCLIFlagValue(args, "--body-file")
+	if path == "" || bodyFile != "-" {
+		return // A base-only edit must not erase the fake's body either.
+	}
+	body, err := readFakeBody()
+	if err == nil {
+		err = os.WriteFile(path, body, 0o644)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 

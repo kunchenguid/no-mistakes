@@ -801,7 +801,10 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound := rebindPipelineAttestationWithSteps(content.Body, newHeadSHA, steps)
+			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps)
+			if rebindErr != nil {
+				return fmt.Errorf("rebind PR appendix: %w", rebindErr)
+			}
 			if !rebound || updated == content.Body {
 				return nil
 			}
