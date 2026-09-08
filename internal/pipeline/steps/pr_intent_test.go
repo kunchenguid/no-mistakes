@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,13 +35,26 @@ func TestPRPublishIntentSuppressionCoversDefaultAgentAndFallback(t *testing.T) {
 					return &agent.Result{Output: json.RawMessage(`{"title":"feat: helper","body":"## What Changed\n\n- A helper."}`)}, nil
 				}}
 				sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
-				sctx.Config.PR.PublishIntent = tc.publish
+				policy := "pr: {}"
+				if tc.publish != nil {
+					policy = fmt.Sprintf("pr: {publish_intent: %t}", *tc.publish)
+				}
+				trusted, err := config.LoadRepoFromBytes([]byte(policy))
+				if err != nil {
+					t.Fatal(err)
+				}
+				pushed, err := config.LoadRepoFromBytes([]byte(fmt.Sprintf("pr: {publish_intent: %t}", !tc.want)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sctx.Config.PR = config.Merge(config.DefaultGlobalConfig(), config.EffectiveRepoConfig(pushed, trusted, true)).PR
 				sctx.UserIntent = "Entire original intent remains reviewer input."
 				for _, limit := range []int{0, 4000} {
 					got, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, limit)
 					if err != nil || strings.Contains(got.Body, "## Intent") != tc.want || !strings.Contains(got.Body, "## What Changed") {
 						t.Fatalf("fallback=%v limit=%d: %+v, %v", fallback, limit, got, err)
 					}
+					t.Logf("Generated PR markdown: policy=%s fallback=%v limit=%d\n%s", tc.name, fallback, limit, got.Body)
 					if tc.want && !strings.Contains(got.Body, "## Intent\n\n"+sctx.UserIntent) {
 						t.Fatalf("default/enabled publication lost intent: %s", got.Body)
 					}
