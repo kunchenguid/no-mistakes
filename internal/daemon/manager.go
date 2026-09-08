@@ -1570,7 +1570,7 @@ func (m *RunManager) autoCaptureEvalCase(ctx context.Context, cfg *config.Config
 // and reports failure only to the log. It reads the CI findings the pipeline
 // already persisted per round, so it never fabricates a case.
 func (m *RunManager) autoIngestCIFalseNegatives(ctx context.Context, cfg *config.Config, runID string) {
-	if cfg == nil || !cfg.Eval.AutoCapture || !cfg.Eval.CaptureProvenance {
+	if cfg == nil || !cfg.Eval.AutoIngestCIMisses || !cfg.Eval.AutoCapture || !cfg.Eval.CaptureProvenance {
 		return
 	}
 	if ctx.Err() != nil {
