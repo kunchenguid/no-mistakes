@@ -1,0 +1,15 @@
+diff --git a/internal/agent/opencode_stream.go b/internal/agent/opencode_stream.go
+index e3c5c58..917b05b 100644
+--- a/internal/agent/opencode_stream.go
++++ b/internal/agent/opencode_stream.go
+@@ -59,6 +59,10 @@ func parseOpencodeSSE(r io.Reader, state *opencodeStreamState) error {
+ 				streamErr = errOpencodeThinkingToolChoiceConflict
+ 				return false
+ 			}
++			if props != nil && isForcedToolChoiceUnsupported(props.Error) {
++				streamErr = errOpencodeForcedToolChoiceUnsupported
++				return false
++			}
+ 
+ 		case "message.part.delta":
+ 			if props != nil && props.Field == "text" && props.PartID != "" && props.Delta != "" {
