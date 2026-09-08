@@ -260,6 +260,30 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
+	primary, err := newConfiguredAgent(ctx, cfg, evidenceRoot, lookPath, environment)
+	if err != nil {
+		return nil, err
+	}
+	roles := make(map[string]agent.Agent, len(cfg.ReviewAgents))
+	for _, role := range []string{"reviewer", "fixer"} {
+		entry, ok := cfg.ReviewAgents[role]
+		if !ok {
+			continue
+		}
+		next, err := newConfiguredAgent(ctx, cfg.ForReviewAgent(entry), evidenceRoot, lookPath, environment)
+		if err != nil {
+			_ = primary.Close()
+			for _, existing := range roles {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("create review_agents.%s: %w", role, err)
+		}
+		roles[role] = next
+	}
+	return agent.WithReviewAgents(primary, roles["reviewer"], roles["fixer"]), nil
+}
+
+func newConfiguredAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}

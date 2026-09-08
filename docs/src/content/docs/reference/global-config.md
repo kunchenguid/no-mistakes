@@ -268,6 +268,37 @@ agent_args_override:
     - o3
 ```
 
+### review_agents
+
+Optional, **global-only** harness and model/effort overrides for the review loop.
+Repository `.no-mistakes.yaml` cannot set these profiles. Omitted roles keep the
+normal `agent` selection and fallback chain; other pipeline steps are unchanged.
+
+```yaml
+review_agents:
+  reviewer:
+    agent: pi
+    model: anthropic-vertex/claude-opus-4-8
+    effort: max
+  fixer:
+    agent: pi
+    model: google-vertex/gemini-3.8-flash
+    effort: max
+```
+
+The only role keys are `reviewer` and `fixer`. Each configured role requires one
+explicit `agent` (the same harness names as `agent_config`; no `auto` or lists).
+Model and effort are optional and inherit `agent_config` for that harness when
+empty. Nonempty role values override that profile, but native
+`agent_args_override` flags still win. Model availability, credentials, and
+supported effort levels remain the harness/provider's responsibility.
+
+Both roles can use the same harness with different models. Reviews and rereviews
+always run fresh; only review fixes reuse the fixer's session when
+`session_reuse` is enabled and the fixer supports it. These settings do not
+select the agents repairing tests, documentation, or CI. Eval capture strips
+these profiles so replay candidates remain authoritative.
+
 ### agent_args_override
 
 Extra CLI flags to pass to each native agent.

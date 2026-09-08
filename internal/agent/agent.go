@@ -43,8 +43,8 @@ type RunOpts struct {
 	// a failed resume. Instrumentation only; adapters ignore it.
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, test-evidence, ...). Instrumentation only; adapters
-	// ignore it.
+	// review-fix, test-evidence, ...). The review-role router uses review and
+	// review-fix to select a harness; concrete adapters ignore it.
 	Purpose string
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
