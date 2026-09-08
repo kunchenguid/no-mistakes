@@ -41,8 +41,8 @@ func isCIFalseNegativeCategory(category string) bool {
 // run surfaced, confirmed, and fixed.
 //
 // The CI step already persists its structured findings on each round
-// (FindingsJSON), the IDs selected for repair (SelectedFindingIDs), and the
-// following fix round's result (FixSummary); this reads them back. A finding
+// (FindingsJSON), the IDs selected for repair (SelectedFindingIDs), and whether
+// the following fix round published a repair; this reads them back. A finding
 // counts as confirmed and fixed only when it was selected by auto-fix or an
 // explicit user fix, the immediately following fix round records a published
 // repair, and the run has positive post-repair check readiness. Findings that
@@ -129,7 +129,7 @@ func repairLandedAfter(rounds []*db.StepRound, selectedIndex int) bool {
 		return false
 	}
 	repair := rounds[selectedIndex+1]
-	return repair.IsFixRound() && repair.FixSummary != nil && strings.TrimSpace(*repair.FixSummary) != ""
+	return repair.IsFixRound() && repair.RepairPublished
 }
 
 // AutoIngestCIFalseNegatives writes false-negative gold for a finished run's

@@ -109,6 +109,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		s.lastFixedChecks = fixKey
 		s.lastFixedCompletedAt = fixCompletedAt
 		s.pendingFixSummary = repair.Summary
+		s.pendingRepairPublish = true
 		if repair.Revalidate {
 			// Revalidation is not a fresh CI observation, so it cannot
 			// supersede findings that were left unselected for this repair.

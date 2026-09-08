@@ -119,7 +119,8 @@ type StepOutcome struct {
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
 	// FixSummary, when non-empty, records the result of a fix attempt.
-	FixSummary string
+	FixSummary      string
+	RepairPublished bool
 	// ReviewApprovedHeadSHA is set only by a successfully executed full review
 	// round. The executor durably records it only when the review step actually
 	// completes, never while that outcome is parked or after a failed round.

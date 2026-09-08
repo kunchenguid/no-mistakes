@@ -53,8 +53,9 @@ type CIStep struct {
 	lastFixedCompletedAt map[string]checkFreshness // terminally failed check freshness at the observation the last repair targeted
 	observedCompletedAt  map[string]checkFreshness // terminally failed check freshness at the observation whose findings a fix round may repair
 	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
-	transientReruns      checkRerunBudget          // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration             // if set, overrides computed poll interval (for testing)
+	pendingRepairPublish bool
+	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
+	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
@@ -259,10 +260,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// interrupted: that repair is finished first and nothing new is requested.
 	repairRequested := sctx.Fixing && !retryRefusal
 	defer func() {
-		if outcome != nil && s.pendingFixSummary != "" {
-			outcome.FixSummary = s.pendingFixSummary
+		if outcome != nil {
+			if s.pendingFixSummary != "" {
+				outcome.FixSummary = s.pendingFixSummary
+			}
+			outcome.RepairPublished = s.pendingRepairPublish
 		}
 		s.pendingFixSummary = ""
+		s.pendingRepairPublish = false
 	}()
 	defer func() {
 		if !retryRefusal {

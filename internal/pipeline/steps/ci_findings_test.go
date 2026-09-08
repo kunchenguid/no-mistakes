@@ -456,6 +456,9 @@ func TestCIStep_MixedGreptileAndTestFailureRoutesOnlyTheTestToAutoFix(t *testing
 	if outcome.FixSummary != "repair the failing test" {
 		t.Fatalf("FixSummary = %q, want the agent's summary carried on the round", outcome.FixSummary)
 	}
+	if !outcome.RepairPublished {
+		t.Fatal("published repair outcome did not carry durable repair evidence")
+	}
 }
 
 // A published repair keeps every cost guardrail: one agent round, one push,
