@@ -885,6 +885,8 @@ func TestForcedToolChoiceUnsupportedClassification(t *testing.T) {
 		// matched before that guard was replaced.
 		{name: "only auto scaling in a later clause", text: `tool_choice is restricted, and only auto scaling is enabled`, want: false},
 		{name: "only auto placement in a later clause", text: `tool_choice rejected, only auto placement is supported here`, want: false},
+		{name: "colon as clause separator with only auto scaling", text: `tool_choice logged: only auto scaling remains in this region`, want: false},
+		{name: "colon as clause separator with only auto placement", text: `tool_choice quota note: only auto placement left on the cluster`, want: false},
 		// A colon straight after the token is still one clause.
 		{name: "colon then only auto", text: `tool_choice: only auto`, want: true},
 		{name: "unsupported model beside tool_choice", text: `tool_choice set, but the requested model is unsupported`, want: false},

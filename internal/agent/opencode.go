@@ -94,7 +94,7 @@ var thinkingToolChoiceConflictPatterns = []*regexp.Regexp{
 // "tool_choice: only auto" is one clause.
 var forcedToolChoiceUnsupportedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)only\s+["']?\bauto\b["']?\s+(?:is\s+)?supported\s+for\s+["']?tool[_ ]choice["']?`),
-	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*:?\s*[^.,;]{0,80}?\bonly\s+["']?\bauto\b["']?`),
+	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*:?\s*[^.,;:]{0,80}?\bonly\s+["']?\bauto\b["']?`),
 	regexp.MustCompile(`(?i)tool[_ ]choice\s+must\s+be\s+["']?\bauto\b["']?`),
 	regexp.MustCompile(`(?i)unsupported\s+(?:value\s+for\s+)?["']?tool[_ ]choice["']?`),
 	regexp.MustCompile(`(?i)["']?tool[_ ]choice["']?\s*(?:value|parameter)?\s*(?:is\s+)?(?:currently\s+)?unsupported\b`),
