@@ -404,14 +404,45 @@ func isThinkingToolChoiceConflict(e *opencodeMessageError) bool {
 	return false
 }
 
+// isThinkingToolChoiceConflictText reports the conditional rejection: this
+// provider refuses a forced tool_choice while a thinking or reasoning mode is
+// on, so turning that mode off is a genuine remedy.
+//
+// Beyond the relational wordings above, a sentence that carries one of the
+// blanket only-auto verdicts AND names thinking belongs here rather than to
+// isForcedToolChoiceUnsupportedText. "tool_choice must be auto when thinking
+// is enabled" states the same conditional restriction without a relational
+// verb, and reading the two signals together in one sentence keeps the pair
+// of detectors both exhaustive and disjoint: a verdict naming thinking is a
+// thinking conflict, and the same verdict without it is a blanket rejection.
 func isThinkingToolChoiceConflictText(text string) bool {
 	for _, pattern := range thinkingToolChoiceConflictPatterns {
 		if pattern.MatchString(text) {
 			return true
 		}
 	}
+	for _, sentence := range sentenceSplitPattern.Split(text, -1) {
+		if !thinkingMentionPattern.MatchString(sentence) {
+			continue
+		}
+		for _, pattern := range forcedToolChoiceUnsupportedPatterns {
+			if pattern.MatchString(sentence) {
+				return true
+			}
+		}
+	}
 	return false
 }
+
+// thinkingMentionPattern names a thinking or reasoning mode. A blanket
+// only-auto rejection describes the parameter alone, so a sentence that also
+// names thinking is a thinking conflict this detector must decline - see
+// isForcedToolChoiceUnsupportedText.
+var thinkingMentionPattern = regexp.MustCompile(`(?i)\b(?:thinking|reasoning)\b`)
+
+// sentenceSplitPattern splits provider prose into sentences so a verdict is
+// only read together with the words in its own sentence.
+var sentenceSplitPattern = regexp.MustCompile(`[.!?\n]+`)
 
 func isForcedToolChoiceUnsupported(e *opencodeMessageError) bool {
 	for _, text := range e.providerText() {
@@ -422,10 +453,28 @@ func isForcedToolChoiceUnsupported(e *opencodeMessageError) bool {
 	return false
 }
 
+// isForcedToolChoiceUnsupportedText reports the blanket rejection: this
+// provider allows no tool_choice but auto, whatever else is enabled.
+//
+// A sentence naming thinking or reasoning is declined even when a pattern
+// matches it. Wording like "tool_choice must be auto when thinking is
+// enabled" is a thinking conflict, and isThinkingToolChoiceConflictText does
+// not catch it because it requires a relational verb such as "incompatible
+// with". Without this guard that string would reach here and be reported as
+// a blanket gateway restriction, naming the wrong cause and implying that no
+// thinking toggle can help when one is exactly the remedy. Both classes still
+// reach the same prompt-only fallback, so declining here costs no recovery -
+// it only keeps the surfaced error honest, which is the whole reason the two
+// sentinels are separate.
 func isForcedToolChoiceUnsupportedText(text string) bool {
-	for _, pattern := range forcedToolChoiceUnsupportedPatterns {
-		if pattern.MatchString(text) {
-			return true
+	for _, sentence := range sentenceSplitPattern.Split(text, -1) {
+		if thinkingMentionPattern.MatchString(sentence) {
+			continue
+		}
+		for _, pattern := range forcedToolChoiceUnsupportedPatterns {
+			if pattern.MatchString(sentence) {
+				return true
+			}
 		}
 	}
 	return false

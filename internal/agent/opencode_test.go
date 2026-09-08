@@ -819,6 +819,15 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		{name: "canonical provider wording", text: `Thinking may not be enabled when tool_choice forces tool use.`, want: true},
 		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
 		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
+		// Review findings F1 and F2 on the #965 change: an only-auto verdict
+		// that names thinking is this conditional conflict, not a blanket
+		// gateway restriction, even with no relational verb to match on.
+		{name: "must be auto when thinking is enabled", text: `tool_choice must be auto when thinking is enabled`, want: true},
+		{name: "only auto supported when thinking is active", text: `only auto is supported for tool_choice when thinking is active`, want: true},
+		{name: "unsupported when extended thinking is enabled", text: `tool_choice parameter is unsupported when extended thinking is enabled`, want: true},
+		{name: "reasoning variant of the same overlap", text: `tool_choice must be auto when reasoning is enabled`, want: true},
+		// The blanket rejection must not be claimed as a thinking conflict.
+		{name: "free gateway payload is not a thinking conflict", text: `only "auto" is supported for "tool_choice". "none", "required", and named function choices are not currently supported`, want: false},
 		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
 		{name: "unrelated multi-clause limitation", text: `tool_choice is required. Thinking is not supported when streaming.`, want: false},
 		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
@@ -860,6 +869,17 @@ func TestForcedToolChoiceUnsupportedClassification(t *testing.T) {
 		{name: "429 rate limit is not a rejection", text: `429 Too Many Requests: rate-limit exceeded, retry later`, want: false},
 		{name: "generic 500 is not a rejection", text: `internal server error (status 500)`, want: false},
 		{name: "mere mention without a verdict", text: `tool_choice is required for structured output`, want: false},
+		// Review findings F1 and F2 on the #965 change: these name a thinking
+		// mode, so they are thinking conflicts even though the thinking
+		// patterns miss them for want of a relational verb. The blanket
+		// detector must decline them rather than misreport the cause.
+		{name: "must be auto when thinking is enabled", text: `tool_choice must be auto when thinking is enabled`, want: false},
+		{name: "only auto supported when thinking is active", text: `only auto is supported for tool_choice when thinking is active`, want: false},
+		{name: "unsupported when extended thinking is enabled", text: `tool_choice parameter is unsupported when extended thinking is enabled`, want: false},
+		{name: "reasoning variant of the same overlap", text: `tool_choice must be auto when reasoning is enabled`, want: false},
+		// A blanket rejection in one sentence still matches when an adjacent
+		// sentence happens to mention thinking.
+		{name: "blanket rejection beside an unrelated thinking sentence", text: `only "auto" is supported for "tool_choice". Thinking is configured per request.`, want: true},
 		{name: "unsupported model beside tool_choice", text: `tool_choice set, but the requested model is unsupported`, want: false},
 		{name: "tool_choice value unsupported", text: `tool_choice value is unsupported`, want: true},
 		{name: "invalid parameter without a verdict", text: `invalid tool_choice parameter`, want: false},
@@ -1019,4 +1039,37 @@ func TestOpencodeAgent_ForcedToolChoiceFromSSEFallsBackOnce(t *testing.T) {
 		t.Fatalf("sessions = %d, want exactly one fallback retry", got)
 	}
 	t.Logf("SSE gateway only-auto rejection triggered one fallback; validated output=%s", result.Output)
+}
+
+// TestToolChoiceDetectorsPartitionRejections pins the invariant the two
+// sentinels exist for: every tool_choice rejection reaches the prompt-only
+// fallback, exactly one detector claims it, and an unrelated provider error
+// triggers no fallback at all.
+func TestToolChoiceDetectorsPartitionRejections(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		thinking bool
+		forced   bool
+	}{
+		{name: "free gateway blanket rejection", text: `only "auto" is supported for "tool_choice". "none", "required", and named function choices are not currently supported`, forced: true},
+		{name: "must be auto", text: `tool_choice must be auto`, forced: true},
+		{name: "relational thinking conflict", text: `tool_choice 'required' is incompatible with thinking enabled`, thinking: true},
+		{name: "verdict naming thinking", text: `tool_choice must be auto when thinking is enabled`, thinking: true},
+		{name: "verdict naming reasoning", text: `tool_choice parameter is unsupported when extended reasoning is enabled`, thinking: true},
+		{name: "rate limit", text: `rate limit exceeded for model, retry after 60s`},
+		{name: "unsupported model", text: `tool_choice set, but the requested model is unsupported`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			thinking := isThinkingToolChoiceConflictText(tc.text)
+			forced := isForcedToolChoiceUnsupportedText(tc.text)
+			if thinking != tc.thinking || forced != tc.forced {
+				t.Fatalf("thinking=%v forced=%v, want thinking=%v forced=%v", thinking, forced, tc.thinking, tc.forced)
+			}
+			if thinking && forced {
+				t.Fatal("both detectors claimed the same rejection; the sentinels must stay disjoint")
+			}
+		})
+	}
 }
