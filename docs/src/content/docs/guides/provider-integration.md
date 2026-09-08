@@ -123,7 +123,7 @@ glab auth login
 
 When no-mistakes updates an existing merge request, it reads the live title and preserves any GitLab draft marker. If `glab mr view` fails or returns an empty title, the update stops instead of risking a change from draft to ready.
 
-GitLab SSH remotes may use either an SSH config alias or a transport/DNS hostname that differs from the instance's canonical web hostname. no-mistakes leaves that remote unchanged. When `glab` returns an MR URL on another hostname, no-mistakes confirms the canonical web host with `glab repo view` for the current authenticated repository and still requires the exact namespace/project; URLs for another instance or project are rejected.
+GitLab SSH remotes may use either an SSH config alias or a transport/DNS hostname that differs from the instance's canonical web hostname. no-mistakes leaves that remote unchanged. For MR URL validation, no-mistakes confirms the canonical web origin with `glab repo view` for the current authenticated repository and still requires the exact namespace/project; URLs for another instance, port, protocol, or project are rejected.
 
 ## Forgejo
 

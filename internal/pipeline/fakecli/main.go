@@ -728,6 +728,10 @@ func fakeCIGlabHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "repo view") {
+		fmt.Println(`{"web_url":"https://gitlab.com/test/repo","path_with_namespace":"test/repo"}`)
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "mr view") {
 		fmt.Printf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":{"id":7}}`,
 			state, conflicts, mergeStatus)
@@ -774,6 +778,10 @@ func fakeCIGlabSequenceHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "repo view") {
+		fmt.Println(`{"web_url":"https://gitlab.com/test/repo","path_with_namespace":"test/repo"}`)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "mr view") {

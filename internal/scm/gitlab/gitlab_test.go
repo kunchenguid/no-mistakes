@@ -95,7 +95,7 @@ func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 		},
 	}), nil, "", "")
 
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	checks, err := host.getChecksFallback(context.Background(), "123")
 	if err != nil {
 		t.Fatalf("getChecksFallback() error = %v", err)
 	}
@@ -306,6 +306,9 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 		"glab mr list --source-branch feature/refactor --target-branch release/1.0 --output json": {
 			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n",
 		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
+		},
 	}), nil, "gitlab.example.com", "group/project")
 
 	pr, err := host.FindPR(context.Background(), "feature/refactor", "release/1.0")
@@ -349,12 +352,14 @@ func TestFindPRAcceptsCanonicalHostResolvedFromSSHConfigAlias(t *testing.T) {
 	t.Parallel()
 
 	// buildHost passes scm.ResolveHost's ssh -G result into New. A true SSH
-	// alias therefore arrives here as the canonical hostname and keeps the
-	// established literal-match path (no repo-view fallback is configured).
+	// alias therefore arrives here as the canonical transport hostname.
 	const mrURL = "https://gitlab.example.com/group/project/-/merge_requests/42"
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab mr list --source-branch feature/ssh-alias --target-branch main --output json": {
 			stdout: `[{"iid":42,"web_url":"` + mrURL + `"}]` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
 		},
 	}), nil, "gitlab.example.com", "group/project")
 
@@ -380,11 +385,54 @@ func TestFindPRRejectsCanonicalHostFromAnotherGitLabInstance(t *testing.T) {
 	}), nil, "git-transport.example", "group/project")
 
 	pr, err := host.FindPR(context.Background(), "feature/x", "main")
-	if err == nil || !strings.Contains(err.Error(), `does not match canonical GitLab web host "gitlab.example.com"`) {
+	if err == nil || !strings.Contains(err.Error(), `does not match canonical GitLab web origin "https://gitlab.example.com:443"`) {
 		t.Fatalf("FindPR() error = %v, want cross-instance rejection", err)
 	}
 	if pr != nil {
 		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestFindPRRejectsCanonicalOriginOnDifferentPort(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature/x --target-branch main --output json": {
+			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com:9443/group/project/-/merge_requests/42"}]` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com:8443/group/project","path_with_namespace":"group/project"}` + "\n",
+		},
+	}), nil, "git-transport.example", "group/project")
+
+	pr, err := host.FindPR(context.Background(), "feature/x", "main")
+	if err == nil || !strings.Contains(err.Error(), `URL origin "https://gitlab.example.com:9443" does not match canonical GitLab web origin "https://gitlab.example.com:8443"`) {
+		t.Fatalf("FindPR() error = %v, want port-sensitive origin rejection", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestFindPRAcceptsEquivalentDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	const mrURL = "https://gitlab.example.com:443/group/project/-/merge_requests/42"
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature/x --target-branch main --output json": {
+			stdout: `[{"iid":42,"web_url":"` + mrURL + `"}]` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
+		},
+	}), nil, "git-transport.example", "group/project")
+
+	pr, err := host.FindPR(context.Background(), "feature/x", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.URL != mrURL {
+		t.Fatalf("FindPR() = %+v, want explicit default-port MR", pr)
 	}
 }
 
@@ -531,7 +579,7 @@ func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
 		},
 	}), nil, "", "")
 
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	checks, err := host.getChecksFallback(context.Background(), "123")
 	if err != nil {
 		t.Fatalf("getChecksFallback() error = %v", err)
 	}
@@ -799,7 +847,7 @@ func TestCreateAndViewRejectOtherGitLabInstance(t *testing.T) {
 		}), nil, "git-transport.example", "group/project")
 
 		pr, err := host.CreatePR(context.Background(), "feature/x", "main", scm.PRContent{Title: "fix: x", Body: "body"})
-		if err == nil || !strings.Contains(err.Error(), "does not match canonical GitLab web host") {
+		if err == nil || !strings.Contains(err.Error(), "does not match canonical GitLab web origin") {
 			t.Fatalf("CreatePR() error = %v, want cross-instance rejection", err)
 		}
 		if pr != nil {
@@ -815,11 +863,76 @@ func TestCreateAndViewRejectOtherGitLabInstance(t *testing.T) {
 		}), nil, "git-transport.example", "group/project")
 
 		state, err := host.GetPRState(context.Background(), &scm.PR{Number: "42"})
-		if err == nil || !strings.Contains(err.Error(), "does not match canonical GitLab web host") {
+		if err == nil || !strings.Contains(err.Error(), "does not match canonical GitLab web origin") {
 			t.Fatalf("GetPRState() error = %v, want cross-instance rejection", err)
 		}
 		if state != "" {
 			t.Fatalf("GetPRState() = %q, want empty state", state)
+		}
+	})
+}
+
+func TestInboundPRURLIdentityIsValidatedBeforeChecksAndRetarget(t *testing.T) {
+	t.Parallel()
+
+	const projectJSON = `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n"
+	wrongPR := &scm.PR{Number: "42", URL: "https://evil-gitlab.example/group/project/-/merge_requests/42"}
+
+	t.Run("checks", func(t *testing.T) {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab repo view --output json": {stdout: projectJSON},
+		}), nil, "git-transport.example", "group/project")
+		if _, err := host.GetChecks(context.Background(), wrongPR); err == nil || !strings.Contains(err.Error(), "canonical GitLab web origin") {
+			t.Fatalf("GetChecks() error = %v, want persisted cross-instance URL rejection", err)
+		}
+	})
+
+	t.Run("failed logs", func(t *testing.T) {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab repo view --output json": {stdout: projectJSON},
+		}), nil, "git-transport.example", "group/project")
+		if _, err := host.FetchFailedCheckTargetLogs(context.Background(), wrongPR, "", "", []scm.CheckTarget{{Name: "test"}}); err == nil || !strings.Contains(err.Error(), "canonical GitLab web origin") {
+			t.Fatalf("FetchFailedCheckTargetLogs() error = %v, want persisted cross-instance URL rejection", err)
+		}
+	})
+
+	t.Run("retarget", func(t *testing.T) {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab repo view --output json": {stdout: projectJSON},
+		}), nil, "git-transport.example", "group/project")
+		if err := host.SetPRBaseBranch(context.Background(), wrongPR, "main"); err == nil || !strings.Contains(err.Error(), "canonical GitLab web origin") {
+			t.Fatalf("SetPRBaseBranch() error = %v, want persisted cross-instance URL rejection", err)
+		}
+	})
+}
+
+func TestPipelineMRViewIdentityIsValidated(t *testing.T) {
+	t.Parallel()
+
+	const canonicalURL = "https://gitlab.example.com/group/project/-/merge_requests/42"
+	const projectJSON = `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n"
+	const hostileView = `{"iid":42,"web_url":"https://evil-gitlab.example/group/project/-/merge_requests/42","head_pipeline":{"id":77}}` + "\n"
+	pr := &scm.PR{Number: "42", URL: canonicalURL}
+
+	t.Run("checks fallback", func(t *testing.T) {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab repo view --output json":                                   {stdout: projectJSON},
+			"glab ci status --mr 42 --output json":                           {stderr: "unknown flag: --mr\n", code: 1},
+			"glab mr view 42 --output json":                                  {stdout: hostileView},
+			"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {stdout: `[]` + "\n"},
+		}), nil, "git-transport.example", "group/project")
+		if _, err := host.GetChecks(context.Background(), pr); err == nil || !strings.Contains(err.Error(), "canonical GitLab web origin") {
+			t.Fatalf("GetChecks() error = %v, want hostile MR view rejection", err)
+		}
+	})
+
+	t.Run("failed logs", func(t *testing.T) {
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab repo view --output json":  {stdout: projectJSON},
+			"glab mr view 42 --output json": {stdout: hostileView},
+		}), nil, "git-transport.example", "group/project")
+		if _, err := host.FetchFailedCheckTargetLogs(context.Background(), pr, "", "", []scm.CheckTarget{{Name: "test"}}); err == nil || !strings.Contains(err.Error(), "canonical GitLab web origin") {
+			t.Fatalf("FetchFailedCheckTargetLogs() error = %v, want hostile MR view rejection", err)
 		}
 	})
 }
@@ -836,7 +949,10 @@ func TestGetChecksReadsJobsViaAPIWhenProjectPathKnown(t *testing.T) {
 			code:   1,
 		},
 		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: `{"iid":123,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/123","head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"id":9,"name":"test","status":"success","finished_at":"2026-04-24T04:15:00.000Z"}]` + "\n",
@@ -868,7 +984,10 @@ func TestGetChecksLeavesCompletedAtZeroWhenFinishedAtMissingOrInvalid(t *testing
 			code:   1,
 		},
 		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: `{"iid":123,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/123","head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"name":"running","status":"running"},{"name":"bad","status":"success","finished_at":"not-a-time"}]` + "\n",
@@ -905,7 +1024,10 @@ func TestGetChecksPaginatesJobsAcrossConcatenatedPages(t *testing.T) {
 			code:   1,
 		},
 		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: `{"iid":123,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/123","head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: page1 + "\n" + page2 + "\n",
@@ -975,7 +1097,10 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 			code:   1,
 		},
 		"glab mr view 123 --output json": {
-			stdout: `{"head_pipeline":{"id":77}}` + "\n",
+			stdout: `{"iid":123,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/123","head_pipeline":{"id":77}}` + "\n",
+		},
+		"glab repo view --output json": {
+			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
 		},
 		"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
 			stdout: `[{"id":1,"name":"build","status":"success"}]` + "\n" + `[{"id":2`,

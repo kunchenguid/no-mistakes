@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os/exec"
 	"strconv"
@@ -29,8 +30,8 @@ type Host struct {
 	projectPath  string // repo's "group/project" path; enables REST job reads
 	draft        bool   // open created MRs as drafts (glab mr create --draft)
 
-	identityMu       sync.Mutex
-	canonicalWebHost string
+	identityMu         sync.Mutex
+	canonicalWebOrigin string
 }
 
 // New builds a Host. cliAvailable reports whether the glab binary is
@@ -39,11 +40,11 @@ type Host struct {
 // scoped to it via --hostname so a stale credential for an unrelated configured
 // glab host cannot make this repo look unauthenticated. It need not equal the
 // instance's canonical web hostname; MR URL validation resolves that identity
-// through glab when necessary. projectPath is the repo's "group/project" path
-// (subgroups allowed); when set, pipeline-job reads go through `glab api` (REST),
-// which is branch-independent and works in the daemon's detached-HEAD worktree,
-// where `glab ci get` refuses to run without a current branch. Both are optional;
-// empty reproduces the legacy unscoped behavior.
+// through glab. projectPath is the repo's "group/project" path (subgroups
+// allowed); when set, pipeline-job reads go through `glab api` (REST), which is
+// branch-independent and works in the daemon's detached-HEAD worktree, where
+// `glab ci get` refuses to run without a current branch. An entirely empty
+// identity reproduces the legacy unscoped behavior.
 func New(cmd CmdFactory, cliAvailable func() bool, host, projectPath string) *Host {
 	return &Host{
 		cmd:          cmd,
@@ -163,6 +164,9 @@ func parseMergeRequestURL(raw, expectedProject string) (int, error) {
 	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
 		return 0, errors.New("expected HTTP GitLab merge request URL")
 	}
+	if parsed.User != nil {
+		return 0, errors.New("expected GitLab merge request URL without user info")
+	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(segments) < 5 || segments[len(segments)-3] != "-" || segments[len(segments)-2] != "merge_requests" {
 		return 0, errors.New("expected GitLab /group/project/-/merge_requests/number URL")
@@ -192,38 +196,64 @@ func parseMergeRequestURL(raw, expectedProject string) (int, error) {
 	return number, nil
 }
 
+func normalizedWebOrigin(parsed *url.URL) (string, error) {
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", errors.New("expected HTTP GitLab URL")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", errors.New("GitLab URL host is empty")
+	}
+	port := parsed.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	} else {
+		number, err := strconv.Atoi(port)
+		if err != nil || number <= 0 || number > 65535 {
+			return "", errors.New("GitLab URL port is invalid")
+		}
+		port = strconv.Itoa(number)
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), nil
+}
+
 // validateMergeRequestURL applies one repository-identity rule to every MR URL
-// returned by glab. The common case remains a literal match with the resolved
-// SSH/transport host. When GitLab publishes a different canonical web host,
-// resolve that host from a separate `glab repo view` of the current repository
-// and require both provider responses to agree. The expected project path is
-// checked before accepting either host, so a transport alias never widens URL
-// validation to another GitLab instance or repository.
+// consumed from glab or persisted run state. The canonical web origin and
+// project path come from `glab repo view` of the authenticated current
+// repository; the transport host is used only to scope authentication.
 func (h *Host) validateMergeRequestURL(ctx context.Context, raw string) (int, error) {
 	number, err := parseMergeRequestURL(raw, h.projectPath)
 	if err != nil {
 		return 0, err
 	}
-	parsed, _ := url.Parse(strings.TrimSpace(raw))
-	actualHost := parsed.Hostname()
-	if h.host == "" || strings.EqualFold(actualHost, h.host) {
+	if h.host == "" && h.projectPath == "" {
 		return number, nil
 	}
-	canonicalHost, err := h.resolveCanonicalWebHost(ctx)
+	parsed, _ := url.Parse(strings.TrimSpace(raw))
+	actualOrigin, err := normalizedWebOrigin(parsed)
 	if err != nil {
-		return 0, fmt.Errorf("resolve canonical GitLab web host for transport host %q: %w", h.host, err)
+		return 0, err
 	}
-	if !strings.EqualFold(actualHost, canonicalHost) {
-		return 0, fmt.Errorf("URL host %q does not match canonical GitLab web host %q for transport host %q", actualHost, canonicalHost, h.host)
+	canonicalOrigin, err := h.resolveCanonicalWebOrigin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("resolve canonical GitLab web origin for transport host %q: %w", h.host, err)
+	}
+	if actualOrigin != canonicalOrigin {
+		return 0, fmt.Errorf("URL origin %q does not match canonical GitLab web origin %q for transport host %q", actualOrigin, canonicalOrigin, h.host)
 	}
 	return number, nil
 }
 
-func (h *Host) resolveCanonicalWebHost(ctx context.Context) (string, error) {
+func (h *Host) resolveCanonicalWebOrigin(ctx context.Context) (string, error) {
 	h.identityMu.Lock()
 	defer h.identityMu.Unlock()
-	if h.canonicalWebHost != "" {
-		return h.canonicalWebHost, nil
+	if h.canonicalWebOrigin != "" {
+		return h.canonicalWebOrigin, nil
 	}
 	if h.projectPath == "" {
 		return "", errors.New("repository project path is unknown")
@@ -250,11 +280,12 @@ func (h *Host) resolveCanonicalWebHost(ctx context.Context) (string, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", errors.New("parse glab repo view JSON: expected absolute GitLab project web_url")
 	}
-	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
-		return "", errors.New("parse glab repo view JSON: expected HTTP GitLab project web_url")
-	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("parse glab repo view JSON: expected canonical GitLab project web_url")
+	}
+	origin, err := normalizedWebOrigin(parsed)
+	if err != nil {
+		return "", fmt.Errorf("parse glab repo view JSON: %w", err)
 	}
 	urlProject := strings.Trim(strings.TrimSpace(parsed.Path), "/")
 	payloadProject := strings.Trim(strings.TrimSpace(project.PathWithNamespace), "/")
@@ -264,11 +295,31 @@ func (h *Host) resolveCanonicalWebHost(ctx context.Context) (string, error) {
 	if !strings.EqualFold(payloadProject, strings.Trim(h.projectPath, "/")) {
 		return "", fmt.Errorf("glab repository project %q does not match GitLab project %q", payloadProject, h.projectPath)
 	}
-	if parsed.Hostname() == "" {
-		return "", errors.New("parse glab repo view JSON: project web_url host is empty")
+	h.canonicalWebOrigin = origin
+	return h.canonicalWebOrigin, nil
+}
+
+func (h *Host) mergeRequestID(ctx context.Context, pr *scm.PR) (string, error) {
+	if pr == nil {
+		return "", errors.New("merge request identity is required")
 	}
-	h.canonicalWebHost = parsed.Hostname()
-	return h.canonicalWebHost, nil
+	id := strings.TrimSpace(pr.Number)
+	if rawURL := strings.TrimSpace(pr.URL); rawURL != "" {
+		number, err := h.validateMergeRequestURL(ctx, rawURL)
+		if err != nil {
+			return "", fmt.Errorf("invalid merge request URL: %w", err)
+		}
+		urlID := strconv.Itoa(number)
+		if id != "" && id != urlID {
+			return "", fmt.Errorf("merge request number %q does not match URL number %q", id, urlID)
+		}
+		return urlID, nil
+	}
+	number, err := strconv.Atoi(id)
+	if err != nil || number <= 0 {
+		return "", errors.New("merge request identity is required")
+	}
+	return strconv.Itoa(number), nil
 }
 
 type mrPayload struct {
@@ -281,6 +332,9 @@ type mrPayload struct {
 	DetailedMergeStatus string `json:"detailed_merge_status"`
 	MergeStatus         string `json:"merge_status"`
 	TargetBranch        string `json:"target_branch"`
+	HeadPipeline        struct {
+		ID int `json:"id"`
+	} `json:"head_pipeline"`
 }
 
 func (p mrPayload) toPR() *scm.PR {
@@ -372,14 +426,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	id := pr.Number
-	if id == "" && pr != nil {
-		if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
-			id = num
-		}
-	}
-	if id == "" && pr != nil {
-		id = pr.URL
+	id, err := h.mergeRequestID(ctx, pr)
+	if err != nil {
+		return nil, err
 	}
 	// Unlike `glab mr create`, `glab mr update` (glab v1.5x) has no
 	// -y/--yes confirmation-skip flag at all; passing it fails the whole
@@ -412,20 +461,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
-	id := ""
-	if pr != nil {
-		id = pr.Number
-		if id == "" {
-			if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
-				id = num
-			}
-		}
-		if id == "" {
-			id = pr.URL
-		}
-	}
-	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("merge request identity is required to retarget")
+	id, err := h.mergeRequestID(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("resolve merge request to retarget: %w", err)
 	}
 	cmd := h.cmd(ctx, "glab", "mr", "update", id, "--target-branch", baseBranch)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -442,7 +480,11 @@ func isDraftTitle(title string) bool {
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := h.mergeRequestID(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -450,7 +492,11 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := h.mergeRequestID(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -506,15 +552,19 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	id, err := h.mergeRequestID(ctx, pr)
+	if err != nil {
+		return nil, err
+	}
 	// glab ci status --mr <id> --output json lists jobs for the MR's latest pipeline.
 	// Not all glab versions support --mr; fall back to listing pipelines by branch via view.
-	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
+	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if !isUnsupportedMRFlagError(out) {
 			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(out)), err)
 		}
-		return h.getChecksFallback(ctx, pr)
+		return h.getChecksFallback(ctx, id)
 	}
 	return parseGitlabJobs(out)
 }
@@ -543,29 +593,16 @@ func isUnsupportedMRFlagError(out []byte) bool {
 	return false
 }
 
-func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+func (h *Host) getChecksFallback(ctx context.Context, id string) ([]scm.Check, error) {
 	// Try fetching the MR's pipeline and listing its jobs.
-	cmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
-	out, err := cmd.CombinedOutput()
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, err
 	}
-	var payload struct {
-		HeadPipeline struct {
-			ID int `json:"id"`
-		} `json:"head_pipeline"`
-	}
-	trimmed := bytesTrimToJSON(out)
-	if len(trimmed) == 0 {
-		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
-	}
-	if err := json.Unmarshal(trimmed, &payload); err != nil {
-		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
-	}
-	if payload.HeadPipeline.ID == 0 {
+	if mr.HeadPipeline.ID == 0 {
 		return nil, nil
 	}
-	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
+	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(mr.HeadPipeline.ID)...)
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(jobsOut)), err)
@@ -589,28 +626,18 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 	if len(targets) == 0 {
 		return nil, nil
 	}
-	// Get the MR's pipeline jobs and trace the selected failures.
-	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
-	viewOut, err := viewCmd.CombinedOutput()
+	id, err := h.mergeRequestID(ctx, pr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
 	}
-	var payload struct {
-		HeadPipeline struct {
-			ID int `json:"id"`
-		} `json:"head_pipeline"`
+	mr, err := h.viewMR(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("resolve GitLab merge request for selected logs: %w", err)
 	}
-	trimmed := bytesTrimToJSON(viewOut)
-	if len(trimmed) == 0 {
-		return nil, errors.New("resolve GitLab pipeline for selected logs: response contained no JSON")
-	}
-	if err := json.Unmarshal(trimmed, &payload); err != nil {
-		return nil, fmt.Errorf("resolve GitLab pipeline for selected logs: %w", err)
-	}
-	if payload.HeadPipeline.ID == 0 {
+	if mr.HeadPipeline.ID == 0 {
 		return nil, errors.New("resolve GitLab pipeline for selected logs: pipeline ID is empty")
 	}
-	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
+	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(mr.HeadPipeline.ID)...)
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list GitLab jobs for selected logs: %w", err)
