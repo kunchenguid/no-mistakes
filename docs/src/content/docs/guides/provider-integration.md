@@ -102,17 +102,8 @@ GitLab, Forgejo, Bitbucket, and Azure DevOps fork MR/PR routing are not implemen
 
 #### Workflow-file changes require the `workflow` scope
 
-If your branch touches `.github/workflows/*.yml`, the push to your fork requires a GitHub credential with the `workflow` scope.
-GitHub rejects the push with `refusing to allow an OAuth App to create or update workflow ... without workflow scope` if the stored token lacks it.
-Add the scope before pushing through `no-mistakes`:
-
-```sh
-gh auth refresh -s workflow    # OAuth flow
-gh auth setup-git
-```
-
-If you authenticated `gh` with a PAT, its scopes are immutable — create a new PAT that includes `workflow` at `https://github.com/settings/tokens`, then re-authenticate with `gh auth login --with-token`.
-See [Troubleshooting](/no-mistakes/guides/troubleshooting/#push-fails-with-refusing-to-allow-an-oauth-app-to-create-or-update-workflow--without-workflow-scope) for the full recovery steps.
+If your branch touches `.github/workflows/*.yml`, the push to your fork requires a GitHub credential with the `workflow` scope; GitHub rejects it with `refusing to allow an OAuth App to create or update workflow ... without workflow scope` when the stored token lacks it.
+See [Troubleshooting](/no-mistakes/guides/troubleshooting/#push-fails-with-refusing-to-allow-an-oauth-app-to-create-or-update-workflow--without-workflow-scope) for the recovery steps.
 
 ## GitLab
 

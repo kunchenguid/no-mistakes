@@ -176,8 +176,8 @@ If the overwrite is intentional, push manually to the actual remote after review
 
 ### Push fails with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`
 
-This means the branch touches `.github/workflows/*.yml` and the push credential (a GitHub OAuth token or PAT stored for the fork host) lacks the `workflow` scope.
-GitHub rejects the push to the fork before the pipeline can open or update the PR.
+This means the branch touches `.github/workflows/*.yml` and the push credential (a GitHub OAuth token or PAT stored for the push target's host) lacks the `workflow` scope.
+GitHub rejects the push before the pipeline can open or update the PR.
 
 Resolve it by adding the `workflow` scope to your GitHub credential before pushing through `no-mistakes` again:
 
