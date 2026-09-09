@@ -88,9 +88,18 @@ func customGatesScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
+      scenarios:
+        - name: "fakeagent: simulated end-to-end scenario"
+          result: pass
+          live: true
+          evidence: "fakeagent: simulated test run"
+          reason: ""
+      verdict: go
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -101,8 +110,8 @@ func customGatesScenario(t *testing.T) string {
 }
 
 // TestCustomGatesJourney is the end-to-end proof of repository-declared gates:
-// a maintainer commits two extra checks to the default branch, a contributor
-// pushes a branch that violates both, and the real pipeline runs each gate
+// a maintainer commits an extra check to the default branch, a contributor
+// pushes a branch that violates it, and the real pipeline runs the gate
 // immediately after its anchor core step, parks for a human decision, honors an
 // authorized fix, and re-checks the repaired worktree before continuing.
 //
@@ -160,7 +169,7 @@ func TestCustomGatesJourney(t *testing.T) {
 		}
 		t.Logf("EVIDENCE axi logs --step %s --full:\n%s", gateRegistryStep, gateLog)
 
-		// 3. The operator authorizes a repair by selecting the gate's own finding.
+		// The operator authorizes a repair by selecting the gate's own finding.
 		// The gate runs a fix turn and then re-runs its own command, so the
 		// verdict describes the repaired worktree rather than the failed one.
 		registryFindingID := firstFindingID(t, atRegistry, gateRegistryStep)
