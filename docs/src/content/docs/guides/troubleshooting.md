@@ -176,7 +176,7 @@ If the overwrite is intentional, push manually to the actual remote after review
 
 ### Push fails with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`
 
-This means the branch touches `.github/workflows/*.yml` and the push credential (a GitHub OAuth token or PAT stored for the push target's host) lacks the `workflow` scope.
+This means the branch touches a `.github/workflows/*.yml` or `*.yaml` file and the push credential (a GitHub OAuth token or PAT stored for the push target's host) lacks the `workflow` scope.
 GitHub rejects the push before the pipeline can open or update the PR.
 
 Resolve it by adding the `workflow` scope to your GitHub credential before pushing through `no-mistakes` again:
@@ -185,17 +185,25 @@ Resolve it by adding the `workflow` scope to your GitHub credential before pushi
 # If you authenticated gh via OAuth (web browser):
 gh auth refresh -s workflow
 
-# If you authenticated gh with a PAT, its scopes are immutable —
-# create a new PAT that includes the workflow scope at
+# If you authenticated gh with a classic PAT, its scopes are immutable —
+# create a new classic PAT that includes the workflow scope at
 # https://github.com/settings/tokens, then re-authenticate:
 gh auth login --with-token < new-pat.txt
 
-# Either way, configure git to use the refreshed credential:
+# If you authenticated gh with a fine-grained PAT, its repository
+# permissions are editable — set Workflows to Read and write at
+# https://github.com/settings/personal-access-tokens (the token value
+# stays the same, so no re-authentication is needed).
+
+# Then configure git to use the refreshed credential:
 gh auth setup-git
 ```
 
+If your push target's HTTPS remote embeds the PAT in its URL (for example `https://<token>@github.com/...`), `gh auth setup-git` updates only the credential helper.
+no-mistakes pushes using the token in the remote URL, so update that URL with the refreshed credential too.
+
 This only affects branches that modify workflow files.
-A branch that touches no `.github/workflows/*.yml` pushes normally with a standard `repo`-scoped token.
+A branch that touches no `.github/workflows/*.yml` or `*.yaml` pushes normally with a standard `repo`-scoped token.
 
 ### Rebase pauses because the branch carries unpushed default-branch commits
 
