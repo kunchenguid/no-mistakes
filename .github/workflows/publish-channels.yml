@@ -1,8 +1,16 @@
 name: publish-channels
 
 # Refreshes channels.json when a GitHub release is published or edited
-# (including a manual promote-to-latest) and on workflow_dispatch.
+# (including a manual promote-to-latest), on workflow_dispatch, and when the
+# release pipeline calls this workflow after finalize.
+#
+# workflow_call is the release-please path: GitHub does not cascade
+# GITHUB_TOKEN-triggered release events into other workflows, so on: release
+# never fires for those (pre)releases. workflow_dispatch and on: release stay
+# as backstops for a human- or PAT-published/edited release. Double-firing is
+# safe (idempotent rebuild; concurrency group serializes overlapping runs).
 on:
+  workflow_call:
   workflow_dispatch:
   release:
     types:
@@ -20,11 +28,11 @@ concurrency:
 jobs:
   publish-channels:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'channels'
+    if: github.event_name != 'release' || github.event.release.tag_name != 'channels'
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event.repository.default_branch || github.ref }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

@@ -345,3 +345,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "$TAG" --draft=false --prerelease=true
+
+  # GitHub does not cascade GITHUB_TOKEN-triggered release events (anti-recursion),
+  # so publish-channels' on: release never fires for release-please. Call it here
+  # after finalize so channels.json refreshes once the prerelease and every
+  # binary asset are live. EncodeChannelsManifest skips drafts, so this must not
+  # run earlier. A failure fails this release run instead of leaving the channel
+  # stale. publish-channels.yml keeps workflow_dispatch and on: release as
+  # backstops for human/PAT publishes.
+  publish-channels:
+    needs:
+      - finalize
+    if: |
+      !cancelled() &&
+      needs.finalize.result == 'success'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-channels.yml

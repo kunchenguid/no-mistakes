@@ -49,13 +49,17 @@ type wfDoc struct {
 
 type wfJob struct {
 	name           string
-	RunsOn         any        `yaml:"runs-on"`
-	Environment    any        `yaml:"environment"`
-	Needs          any        `yaml:"needs"`
-	If             string     `yaml:"if"`
-	TimeoutMinutes int        `yaml:"timeout-minutes"`
-	Strategy       wfStrategy `yaml:"strategy"`
-	Steps          []wfStep   `yaml:"steps"`
+	RunsOn         any    `yaml:"runs-on"`
+	Environment    any    `yaml:"environment"`
+	Needs          any    `yaml:"needs"`
+	If             string `yaml:"if"`
+	TimeoutMinutes int    `yaml:"timeout-minutes"`
+	Permissions    struct {
+		Contents string `yaml:"contents"`
+	} `yaml:"permissions"`
+	Uses     string     `yaml:"uses"`
+	Strategy wfStrategy `yaml:"strategy"`
+	Steps    []wfStep   `yaml:"steps"`
 }
 
 type wfStrategy struct {

@@ -29,6 +29,9 @@ func TestPublishChannelsWorkflowRefreshesManifestWithoutRESTForEndUsers(t *testi
 	if err := yaml.Unmarshal(raw, &wf); err != nil {
 		t.Fatalf("parse workflow: %v", err)
 	}
+	if _, ok := wf.On["workflow_call"]; !ok {
+		t.Fatal("publish-channels must be a reusable workflow so release.yml can invoke it after finalize (GITHUB_TOKEN release events do not cascade)")
+	}
 	if _, ok := wf.On["workflow_dispatch"]; !ok {
 		t.Fatal("publish-channels workflow must allow workflow_dispatch so a manifest can be published without a new versioned release")
 	}
@@ -59,8 +62,8 @@ func TestPublishChannelsWorkflowRefreshesManifestWithoutRESTForEndUsers(t *testi
 	if !ok {
 		t.Fatal("missing publish-channels job")
 	}
-	if job.If != "github.event_name == 'workflow_dispatch' || github.event.release.tag_name != 'channels'" {
-		t.Fatalf("job if = %q, want a skip for the channels tag so uploading the manifest cannot recurse", job.If)
+	if job.If != "github.event_name != 'release' || github.event.release.tag_name != 'channels'" {
+		t.Fatalf("job if = %q, want a skip for the channels tag on release events so uploading the manifest cannot recurse, while workflow_call and workflow_dispatch still run", job.If)
 	}
 	var sawPublish bool
 	for _, step := range job.Steps {
