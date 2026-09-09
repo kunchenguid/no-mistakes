@@ -7,10 +7,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestValidateGates_AcceptsCommandAndAgentGates(t *testing.T) {
+func TestValidateGates_AcceptsCommandGates(t *testing.T) {
 	err := validateGates([]Gate{
 		{Name: "mutation-budget", After: types.StepTest, Command: "make mutation"},
-		{Name: "arch-fitness", After: types.StepLint, Instructions: "No package under internal/ may import internal/cli."},
+		{Name: "arch-fitness", After: types.StepLint, Command: "make arch-fitness"},
 	})
 	if err != nil {
 		t.Fatalf("validateGates() = %v, want nil", err)
@@ -29,9 +29,7 @@ func TestValidateGates_RejectsMalformedEntries(t *testing.T) {
 		{"core step name", Gate{Name: "review", After: types.StepTest, Command: "x"}, "core step"},
 		{"missing anchor", Gate{Name: "g", Command: "x"}, "must name the core step"},
 		{"unknown anchor", Gate{Name: "g", After: types.StepName("nope"), Command: "x"}, "not an anchorable core step"},
-		{"both modes", Gate{Name: "g", After: types.StepTest, Command: "x", Instructions: "y"}, "not both"},
-		{"neither mode", Gate{Name: "g", After: types.StepTest}, "needs either"},
-		{"conflict markers only", Gate{Name: "g", After: types.StepTest, Instructions: "<<<<<<<"}, "merge-conflict markers"},
+		{"missing command", Gate{Name: "g", After: types.StepTest}, ".command must not be empty"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,17 +74,6 @@ func TestValidateGates_RejectsOversizedList(t *testing.T) {
 	}
 }
 
-func TestValidateGates_RejectsOversizedInstructions(t *testing.T) {
-	err := validateGates([]Gate{{
-		Name:         "big",
-		After:        types.StepReview,
-		Instructions: strings.Repeat("x", MaxGateInstructionsBytes+1),
-	}})
-	if err == nil || !strings.Contains(err.Error(), "at most") {
-		t.Fatalf("validateGates() = %v, want a budget error", err)
-	}
-}
-
 // A gate defines what validating the pushed branch MEANS, so a contributor's
 // pushed branch must never author one - not even under allow_repo_commands,
 // which only covers a branch re-running its own suite.
@@ -116,6 +103,18 @@ func TestParseRepoConfig_RejectsInvalidGates(t *testing.T) {
 	_, err := parseRepoConfig([]byte("gates:\n  - name: bad name\n    after: test\n    command: x\n"))
 	if err == nil {
 		t.Fatal("parseRepoConfig() = nil error, want refusal of an invalid gate")
+	}
+}
+
+func TestParseRepoConfig_RejectsAgentGateInstructions(t *testing.T) {
+	_, err := parseRepoConfig([]byte("gates:\n  - name: arch-fitness\n    after: review\n    instructions: no cycles\n"))
+	if err == nil {
+		t.Fatal("parseRepoConfig() = nil error, want agent gates refused")
+	}
+	for _, want := range []string{"instructions", "agent gates are not supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("parseRepoConfig() = %v, want error containing %q", err, want)
+		}
 	}
 }
 
@@ -167,12 +166,12 @@ func TestParseRepoConfig_ParsesGates(t *testing.T) {
 }
 
 // A run carries its gates for its whole lifetime, so what MarshalGates writes
-// has to come back as the same executable gate list - anchor, kind, and body -
+// has to come back as the same executable gate list - anchor and command -
 // after a daemon restart.
 func TestMarshalGates_RoundTripsAGateList(t *testing.T) {
 	gates := []Gate{
 		{Name: "mutation-budget", After: types.StepTest, Command: "make mutation"},
-		{Name: "arch-fitness", After: types.StepReview, Instructions: "No package under internal/ may import internal/cli."},
+		{Name: "arch-fitness", After: types.StepReview, Command: "make arch-fitness"},
 	}
 	payload, err := MarshalGates(gates)
 	if err != nil {
@@ -188,9 +187,6 @@ func TestMarshalGates_RoundTripsAGateList(t *testing.T) {
 	for i, gate := range gates {
 		if decoded[i] != gate {
 			t.Errorf("gate %d = %+v, want %+v", i, decoded[i], gate)
-		}
-		if decoded[i].IsAgent() != gate.IsAgent() {
-			t.Errorf("gate %d agent-ness = %v, want %v", i, decoded[i].IsAgent(), gate.IsAgent())
 		}
 		if decoded[i].StepName() != gate.StepName() {
 			t.Errorf("gate %d step name = %q, want %q", i, decoded[i].StepName(), gate.StepName())
@@ -224,7 +220,8 @@ func TestParseGates_RejectsAPinThisBuildCannotHonor(t *testing.T) {
 	for _, tc := range []struct{ name, payload string }{
 		{"not json", `{`},
 		{"anchor outside the delivery boundary", `[{"name":"arch-fitness","after":"push","command":"true"}]`},
-		{"neither command nor instructions", `[{"name":"arch-fitness","after":"review"}]`},
+		{"missing command", `[{"name":"arch-fitness","after":"review"}]`},
+		{"agent instructions", `[{"name":"arch-fitness","after":"review","instructions":"no cycles"}]`},
 		{"name that would not be a safe step name", `[{"name":"arch fitness","after":"review","command":"true"}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

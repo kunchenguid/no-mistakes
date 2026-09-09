@@ -281,9 +281,9 @@ type RepoConfig struct {
 	// Gates are repository-declared extra checks that run immediately after
 	// their anchor core step. They are additive only: a gate cannot skip,
 	// reorder, or replace a core step, and a failing gate fails the run.
-	// A gate either executes shell on the daemon host or injects instructions
-	// into a gate agent, so it is honored ONLY from the trusted default-branch
-	// copy of .no-mistakes.yaml (see EffectiveRepoConfig), regardless of
+	// A gate executes shell on the daemon host, so it is honored ONLY from the
+	// trusted default-branch copy of .no-mistakes.yaml (see
+	// EffectiveRepoConfig), regardless of
 	// allow_repo_commands: unlike commands.{test,lint,format}, which a
 	// maintainer can opt into reading from a pushed branch because they only
 	// re-run that branch's own suite, a gate defines what validating the branch
@@ -2342,8 +2342,8 @@ func validatePathInstructionGlob(pattern string) error {
 // documentation rules that gate itself. Review (the path-scoped guidance
 // injected into the review gate prompt) is trusted-only for the same reason: a
 // pushed branch must not steer the reviewer that gates it. Gates (extra
-// repository-declared checks, which run shell or steer a gate agent) are
-// trusted-only for the same reason. DisableProjectSettings
+// repository-declared shell checks) are trusted-only for the same reason.
+// DisableProjectSettings
 // is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun

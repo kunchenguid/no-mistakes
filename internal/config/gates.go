@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -16,10 +17,6 @@ const (
 	// types owns the bound because it also owns the step-name encoding the
 	// bound exists to keep short.
 	MaxGateNameLen = types.MaxCustomGateLabelLen
-	// MaxGateInstructionsBytes bounds an agent gate's injected prompt for the
-	// same reason MaxReviewPathInstructionsBytes bounds path_instructions: an
-	// oversized prompt fails the agent invocation outright instead of degrading.
-	MaxGateInstructionsBytes = 16384
 )
 
 // GateAnchors are the core steps an extra gate may be anchored to. The
@@ -36,14 +33,43 @@ func GateAnchors() []types.StepName {
 // anchor core step. A gate can only ADD a verdict to a run: it cannot skip,
 // reorder, or replace a core step, and a failing gate fails the run closed.
 type Gate struct {
-	Name         string         `yaml:"name" json:"name"`
-	After        types.StepName `yaml:"after" json:"after"`
-	Command      string         `yaml:"command" json:"command,omitempty"`
-	Instructions string         `yaml:"instructions" json:"instructions,omitempty"`
+	Name    string         `yaml:"name" json:"name"`
+	After   types.StepName `yaml:"after" json:"after"`
+	Command string         `yaml:"command" json:"command,omitempty"`
 }
 
-// IsAgent reports whether the gate is agent-driven rather than a command.
-func (g Gate) IsAgent() bool { return strings.TrimSpace(g.Command) == "" }
+func (g *Gate) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			if value.Content[i].Value == "instructions" {
+				return fmt.Errorf("instructions: agent gates are not supported; use command")
+			}
+		}
+	}
+	type gatePlain Gate
+	var decoded gatePlain
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*g = Gate(decoded)
+	return nil
+}
+
+func (g *Gate) UnmarshalJSON(data []byte) error {
+	type gatePlain Gate
+	var decoded struct {
+		gatePlain
+		Instructions json.RawMessage `json:"instructions"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.Instructions) != 0 && string(decoded.Instructions) != "null" {
+		return fmt.Errorf("instructions: agent gates are not supported; use command")
+	}
+	*g = Gate(decoded.gatePlain)
+	return nil
+}
 
 // StepName is the gate's identity in the run's step sequence. The anchor is
 // encoded into the name so types.StepName.Order can resolve a gate's execution
@@ -115,21 +141,8 @@ func validateGates(gates []Gate) error {
 			return fmt.Errorf("gates[%d] (%q).after %q is not an anchorable core step; valid: %s", i, name, gate.After, gateAnchorText())
 		}
 
-		hasCommand := strings.TrimSpace(gate.Command) != ""
-		hasInstructions := strings.TrimSpace(gate.Instructions) != ""
-		switch {
-		case hasCommand && hasInstructions:
-			return fmt.Errorf("gates[%d] (%q) sets both command and instructions; a gate is either a command or an agent review, not both", i, name)
-		case !hasCommand && !hasInstructions:
-			return fmt.Errorf("gates[%d] (%q) needs either a command to run or instructions for an agent review", i, name)
-		}
-		if hasInstructions {
-			if RenderedInstructions(gate.Instructions) == "" {
-				return fmt.Errorf("gates[%d] (%q).instructions is left empty once merge-conflict markers are removed; write the rule without <<<<<<<, =======, or >>>>>>>", i, name)
-			}
-			if size := len(gate.Instructions); size > MaxGateInstructionsBytes {
-				return fmt.Errorf("gates[%d] (%q).instructions is %d bytes, at most %d are allowed so the prompt stays within budget", i, name, size, MaxGateInstructionsBytes)
-			}
+		if strings.TrimSpace(gate.Command) == "" {
+			return fmt.Errorf("gates[%d] (%q).command must not be empty", i, name)
 		}
 	}
 	return nil

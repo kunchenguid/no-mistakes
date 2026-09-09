@@ -29,7 +29,7 @@ func stepNames(steps []pipeline.Step) []string {
 func TestWithCustomGates_InsertsAfterAnchorAndPreservesCore(t *testing.T) {
 	got := stepNames(WithCustomGates(AllSteps(), []config.Gate{
 		{Name: "mutation-budget", After: types.StepTest, Command: "make mutation"},
-		{Name: "arch-fitness", After: types.StepReview, Instructions: "no cycles"},
+		{Name: "arch-fitness", After: types.StepReview, Command: "make arch-fitness"},
 	}))
 	want := []string{
 		"intent", "rebase", "review", "gate.review.arch-fitness",
@@ -101,55 +101,6 @@ func TestCustomGateStep_CommandFailureParksForHuman(t *testing.T) {
 	}
 }
 
-func TestCustomGateStep_AgentGateReportsFindingsAsAskUser(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{name: "mock", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","description":"imports internal/cli","action":"auto-fix"}],"summary":"layering violation"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &CustomGateStep{Gate: config.Gate{Name: "arch-fitness", After: types.StepLint, Instructions: "No package under internal/ may import internal/cli."}}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() = %v", err)
-	}
-	if !outcome.NeedsApproval || outcome.AutoFixable {
-		t.Fatalf("outcome = %+v, want a parked, non-auto-fixable gate", outcome)
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatalf("findings did not parse: %v", err)
-	}
-	// The gate states a repository rule; only a human can accept breaking it,
-	// so the agent's own action classification is overridden.
-	if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
-		t.Fatalf("findings = %+v, want the agent's action forced to ask-user", findings.Items)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("agent calls = %d, want 1", len(ag.calls))
-	}
-	if !strings.Contains(ag.calls[0].Prompt, "No package under internal/ may import internal/cli.") {
-		t.Error("gate instructions were not delivered to the agent")
-	}
-}
-
-func TestCustomGateStep_AgentGateCleanRunPasses(t *testing.T) {
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	ag := &mockAgent{name: "mock", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
-	}}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	step := &CustomGateStep{Gate: config.Gate{Name: "arch-fitness", After: types.StepLint, Instructions: "no cycles"}}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() = %v", err)
-	}
-	if outcome.NeedsApproval || outcome.Findings != "" {
-		t.Fatalf("outcome = %+v, want a clean pass", outcome)
-	}
-}
-
 // fileGateCommand builds a gate command that fails until name exists in the
 // worktree, so a test can prove the gate re-ran against the repaired tree.
 func fileGateCommand(name string) string {
@@ -190,8 +141,8 @@ func TestCustomGateStep_CommandGateFixRoundRepairsThenReChecks(t *testing.T) {
 	if outcome.NeedsApproval {
 		t.Fatalf("outcome = %+v, want the re-check to pass against the repaired worktree", outcome)
 	}
-	if outcome.FixSummary != "satisfy mutation budget" {
-		t.Errorf("FixSummary = %q, want the agent's summary", outcome.FixSummary)
+	if outcome.FixSummary != changesAppliedSummary {
+		t.Errorf("FixSummary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
 	}
 	if len(ag.calls) != 1 {
 		t.Fatalf("agent calls = %d, want exactly the fix turn", len(ag.calls))
@@ -247,61 +198,8 @@ func TestCustomGateStep_CommandGateFixRoundThatDoesNotSatisfyTheGateReParks(t *t
 	if strings.Contains(outcome.Findings, "stale output") {
 		t.Error("findings replayed the previous round instead of the re-run's own output")
 	}
-	if outcome.FixSummary != "attempt gate repair" {
-		t.Errorf("FixSummary = %q, want the agent's summary recorded on the round", outcome.FixSummary)
-	}
-}
-
-// An agent gate's fix turn is prescribed by the repository rule, and the gate
-// must then re-judge the repaired change rather than trusting the fixer.
-func TestCustomGateStep_AgentGateFixRoundRepairsThenReJudges(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
-
-	ag := &mockAgent{name: "mock", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-		if len(opts.JSONSchema) > 0 && strings.Contains(string(opts.JSONSchema), "risk_level") {
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
-		}
-		if strings.Contains(opts.Prompt, "Fix the violations") {
-			if err := os.WriteFile(filepath.Join(dir, "arch-fix.txt"), []byte("ok"), 0o644); err != nil {
-				return nil, err
-			}
-			return &agent.Result{Output: json.RawMessage(`{"summary":"drop internal/cli import"}`)}, nil
-		}
-		return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean"}`)}, nil
-	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Fixing = true
-	sctx.PreviousFindings = `{"items":[{"id":"a-1","severity":"error","file":"internal/daemon/x.go","description":"imports internal/cli"}],"summary":"layering violation"}`
-
-	step := &CustomGateStep{Gate: config.Gate{
-		Name:         "arch-fitness",
-		After:        types.StepLint,
-		Instructions: "No package under internal/ may import internal/cli.",
-	}}
-	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatalf("Execute() = %v", err)
-	}
-	if outcome.NeedsApproval {
-		t.Fatalf("outcome = %+v, want the re-judged gate to pass", outcome)
-	}
-	if len(ag.calls) != 2 {
-		t.Fatalf("agent calls = %d, want a fix turn followed by a re-judge", len(ag.calls))
-	}
-	fixPrompt := ag.calls[0].Prompt
-	if !strings.Contains(fixPrompt, "No package under internal/ may import internal/cli.") {
-		t.Error("fix prompt did not carry the repository rule the gate enforces")
-	}
-	if !strings.Contains(fixPrompt, "imports internal/cli") {
-		t.Error("fix prompt did not carry the previous gate findings")
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("worktree = %q, want the fix committed", status)
-	}
-	if got := lastCommitMessage(t, dir); got != "no-mistakes(gate.lint.arch-fitness): drop internal/cli import" {
-		t.Fatalf("last commit message = %q", got)
+	if outcome.FixSummary != changesAppliedSummary {
+		t.Errorf("FixSummary = %q, want %q", outcome.FixSummary, changesAppliedSummary)
 	}
 }
 
@@ -351,7 +249,7 @@ func TestBuildPipelineAttestation_ListsAGateAfterItsAnchor(t *testing.T) {
 		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
 
-	raw := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	raw := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
 	payload := strings.TrimSuffix(strings.TrimPrefix(raw, pipelineAttestationCommentPrefix), pipelineAttestationCommentClosingToken)
 	var decoded pipelineAttestation
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {

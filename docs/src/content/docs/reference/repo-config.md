@@ -367,7 +367,7 @@ Extra repository-declared checks that run inside the pipeline, in addition to th
 
 | | |
 |---|---|
-| Type | `object[]` with `name` (`string`), `after` (`string`), and exactly one of `command` (`string`) or `instructions` (`string`, multiline) |
+| Type | `object[]` with `name` (`string`), `after` (`string`), and `command` (`string`) |
 | Default | Empty (core pipeline only) |
 
 Use this for a validation pass that does not fit an existing step - a mutation-testing budget, a complexity ceiling, an architectural fitness function - so it runs before the branch is pushed rather than only in remote CI:
@@ -377,14 +377,9 @@ gates:
   - name: mutation-budget
     after: test
     command: "make mutation"
-  - name: arch-fitness
-    after: lint
-    instructions: |
-      No package under internal/ may import internal/cli.
 ```
 
-A gate with `command` runs that command in the run worktree and passes on exit code 0.
-A gate with `instructions` runs an agent that judges the change against those instructions alone and reports structured findings. On that judging turn the agent is instructed to report only and to leave the worktree alone, which is a prompt contract like the rest of the pipeline's agent steering rather than an enforced sandbox. Only an explicitly authorized `fix` answer lets a gate of either kind change the worktree, and what it repairs is committed to the branch - see [Failure](#failure) below.
+A gate runs its command in the run worktree and passes on exit code 0. Agent gates are not supported. An entry with `instructions` fails config parsing so it cannot be mistaken for a command gate.
 
 #### Placement
 
@@ -398,9 +393,9 @@ A run resolves this list once, when it starts, and keeps it for its whole lifeti
 
 #### Failure
 
-A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's. The same applies to every finding an agent gate raises, whatever action the agent itself assigned.
+A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's.
 
-Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and its own requirement - the command that must exit `0`, or the rule an agent gate states - and re-runs its check, so the next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
+Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and the command that must exit `0`, then re-runs its check. The next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
 
 Each gate keeps its own step log under the step name `gate.<anchor>.<name>`, so a gate declared as `name: mutation-budget` with `after: test` is read with `no-mistakes axi logs --step gate.test.mutation-budget`.
 
@@ -412,19 +407,17 @@ A gate also cannot be pre-skipped: neither `--skip` nor the `no-mistakes.skip=` 
 
 `name` must be lowercase letters, digits, and inner hyphens, at most 40 characters, unique within the file, and not a core step name.
 
-At most 16 gates are allowed, and an `instructions` value may not exceed 16,384 bytes, because it shares the agent prompt's budget and an oversized prompt fails the invocation outright. Merge-conflict markers are removed from `instructions` exactly as for [`review.path_instructions`](#reviewpath_instructions), and a value left empty once they are removed is rejected.
+At most 16 gates are allowed. Each entry must provide a non-empty `command`. The parser rejects `instructions` with an error that states agent gates are not supported.
 
 A malformed entry fails when the config is parsed, so the run aborts before any gate starts. These checks run on whichever copy of the file is parsed, including the pushed branch's, so a broken gate surfaces before it merges and becomes the trusted copy.
 
 #### Trust
 
-A gate either executes shell on the daemon host or steers a gate agent, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands).
+A gate executes shell on the daemon host, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands).
 
 That opt-in deliberately does not extend here. It covers a pushed branch re-running its own suite through `commands.*`; a gate instead defines what validating the branch *means*, so a contributor must not be able to declare, retarget, or delete the check that clears them.
 
-What that boundary protects is the gate's *declaration*, not the repository files a `command` gate goes on to invoke. The command runs in the run worktree, which is checked out at the pushed head, so a contributor who can edit the script or make target it calls can still change what it actually checks - the same property `commands.test` and `commands.lint` have. An `instructions` gate is harder to weaken, because its rule comes from the trusted copy and the agent judges the change against it - but that agent runs in the same worktree, so with [`disable_project_settings`](#disable_project_settings) left at its default the branch's own `AGENTS.md`, `CLAUDE.md`, or harness project settings reach it alongside the trusted rule and can still steer the verdict.
-
-So when a contributor must not be able to weaken a gate, state it as `instructions` *and* set `disable_project_settings: true` on the trusted copy, or point `command` at logic that does not live in the repository.
+What that boundary protects is the gate's *declaration*, not the repository files its command invokes. The command runs in the run worktree, which is checked out at the pushed head, so a contributor who can edit the script or make target it calls can still change what it checks. `commands.test` and `commands.lint` have the same property. When a contributor must not be able to weaken a gate, point `command` at logic that does not live in the repository.
 
 ### Command process lifetime
 
