@@ -134,7 +134,7 @@ type StepOutcome struct {
 
 // Step is the interface that each pipeline step implements.
 type Step interface {
-	// Name returns the step's identity in the fixed pipeline sequence.
+	// Name returns the step's identity in the run's pipeline sequence.
 	Name() types.StepName
 
 	// Execute runs the step logic and returns an outcome.

@@ -351,7 +351,7 @@ func WithCustomGates(core []pipeline.Step, gates []config.Gate) []pipeline.Step 
 	return sequence
 }
 
-// AllSteps returns the fixed pipeline step sequence.
+// AllSteps returns the fixed core pipeline step sequence.
 // When NM_DEMO=1, it returns mock steps for demo recordings.
 func AllSteps() []pipeline.Step {
 	if IsDemoMode() {

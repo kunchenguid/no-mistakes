@@ -280,7 +280,8 @@ type RepoConfig struct {
 	Review ReviewRaw `yaml:"review"`
 	// Gates are repository-declared extra checks that run immediately after
 	// their anchor core step. They are additive only: a gate cannot skip,
-	// reorder, or replace a core step, and a failing gate fails the run.
+	// reorder, or replace a core step, and a failing gate parks for an operator
+	// decision.
 	// A gate executes shell on the daemon host, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
 	// EffectiveRepoConfig), regardless of
@@ -2386,7 +2387,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// branch happens to carry no review block.
 		effective.Review = trusted.Review
 		// gates define what validating the pushed branch means - they execute
-		// shell on the daemon host or steer a gate agent - so they are
+		// shell on the daemon host - so they are
 		// trusted-only for exactly the reason review.path_instructions is, and
 		// likewise regardless of allow_repo_commands: that opt-in covers a
 		// branch re-running its own suite, never a branch authoring the extra

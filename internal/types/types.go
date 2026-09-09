@@ -127,7 +127,7 @@ func (s StepName) Order() int {
 	}
 }
 
-// AllSteps returns all pipeline steps in execution order.
+// AllSteps returns all core pipeline steps in execution order.
 func AllSteps() []StepName {
 	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
 }

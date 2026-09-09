@@ -20,8 +20,9 @@ const (
 )
 
 // Gate is one repository-declared extra check that runs immediately after its
-// anchor core step. A gate can only ADD a verdict to a run: it cannot skip,
-// reorder, or replace a core step, and a failing gate fails the run closed.
+// anchor core step. A gate can only add a verdict to a run: it cannot skip,
+// reorder, or replace a core step, and a failing gate parks for an operator
+// decision instead of weakening the core result.
 type Gate struct {
 	Name    string         `yaml:"name" json:"name"`
 	After   types.StepName `yaml:"after" json:"after"`

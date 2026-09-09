@@ -81,15 +81,16 @@ func hasBlockingFindings(items []Finding) bool {
 
 // assertPipelineHeadContinuity fails closed when the worktree HEAD is no longer
 // equal to or a descendant of the head the pipeline itself last recorded
-// (sctx.Run.HeadSHA). Every post-review step calls this guard at entry, and
-// commitAgentFixes calls it around commits that advance the recorded head.
+// (sctx.Run.HeadSHA). Every repository gate and every post-review core step
+// calls this guard at entry, and commitAgentFixes calls it around commits that
+// advance the recorded head.
 //
 // The pipeline advances HEAD only through its own commits, each of which updates
 // sctx.Run.HeadSHA in lockstep. If HEAD has diverged from that recorded head -
 // e.g. a concurrent process reset the shared worktree to a different commit -
-// then the reviewed change the pipeline approved is no longer in HEAD's history,
-// and continuing would ship an unreviewed tree. The whole job of this tool is
-// to not lose people's code, so we refuse rather than proceed.
+// then the pipeline's recorded history is no longer in HEAD, and continuing
+// could validate or ship a substituted tree. The whole job of this tool is to
+// not lose people's code, so we refuse rather than proceed.
 //
 // Anchor integrity: sctx.Run.HeadSHA is the correct, un-clobberable anchor. It
 // is the *recorded* head the pipeline itself produced at its last commit - held
@@ -100,11 +101,12 @@ func hasBlockingFindings(items []Finding) bool {
 // point the anchor still holds the reviewed head even after a clobber. The guard
 // deliberately compares the *recorded* head against the *live* worktree HEAD
 // (git.HeadSHA); it never derives the anchor from the mutable worktree, which
-// would be circular and defeatable. Because the guard runs at every post-review
-// step entry and at the very top of commitAgentFixes - before any commit that
-// would advance sctx.Run.HeadSHA - the next pipeline boundary after a clobber is
-// caught while the anchor is still the pre-clobber reviewed head; the anchor can
-// never be advanced into a clobbered lineage without first passing this check.
+// would be circular and defeatable. Because the guard runs at every repository
+// gate and post-review core-step entry, and at the very top of commitAgentFixes
+// before any commit that would advance sctx.Run.HeadSHA, the next pipeline
+// boundary after a clobber is caught while the anchor is still the pre-clobber
+// pipeline head. The anchor can never advance into a clobbered lineage without
+// first passing this check.
 //
 // This is what happened in run 01KXC3SD5NZYMERGDS68Z1C8ER: the review step
 // committed a correct fix, a sibling worktree sharing the bare repo reset HEAD
@@ -162,12 +164,12 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 // repository, the user's configuration, or the daemon's environment.
 //
 // Reach is deliberately narrow. Only commitAgentFixes (Review, Test, Document,
-// Lint) and the Push step's leftover-worktree commit route here, because those
-// are the two commits the pipeline authors from its own agents' and formatter's
-// output.
+// Lint, and an operator-authorized repository gate repair) and the Push step's
+// leftover-worktree commit route here. These are the two routes that commit the
+// pipeline's own agent and formatter output.
 // CI repair commits, the generic git runner, and every user-authored commit keep
-// hook verification; the Review, Test, Document, Lint, Push, PR, and CI gates
-// remain the authoritative quality checks for what these commits contain.
+// hook verification; the core pipeline and repository gates remain the
+// authoritative quality checks for what these commits contain.
 func commitPipelineCorrection(ctx context.Context, workDir, message string, logf func(string)) error {
 	return commitPipelineCorrectionWithCleanup(ctx, workDir, message, logf, os.RemoveAll)
 }

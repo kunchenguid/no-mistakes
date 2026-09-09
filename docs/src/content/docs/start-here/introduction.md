@@ -65,13 +65,13 @@ into the gate by pushing to the `no-mistakes` remote.
 When a branch passes the gate, it means:
 
 - it was checked against fresh upstream and the pushed-branch target
-- the fixed pipeline ran in order
+- the fixed core pipeline and any repository gates ran in order
 - review, tests, user-facing test evidence when available, docs, and lint happened before the branch reached the configured push target
 - you had a chance to approve, fix, skip, or abort any blocking step
 
 ## What you get
 
-- A fixed, opinionated pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
+- A fixed, opinionated core pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Repositories can add [command gates](/no-mistakes/reference/repo-config/#gates) after selected core steps, but cannot remove or reorder those steps.
 - Choice of agent: `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, or `cursor` / `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks; every gate requires a runnable configured pipeline agent.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.

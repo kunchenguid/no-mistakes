@@ -12,9 +12,8 @@ import (
 
 // CustomGateStep runs one repository-declared extra check immediately after
 // its anchor core step. It can only add a verdict to a run: the executor places
-// it after the anchor and no core step consults it, so a gate that fails, or
-// that the operator declines, stops the run without ever having been able to
-// weaken what the core steps already decided.
+// it after the anchor and no core step consults it. A failed check parks for an
+// operator decision, so the gate cannot weaken what the core steps decided.
 type CustomGateStep struct {
 	Gate config.Gate
 }
