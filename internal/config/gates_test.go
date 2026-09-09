@@ -118,6 +118,19 @@ func TestParseRepoConfig_RejectsAgentGateInstructions(t *testing.T) {
 	}
 }
 
+func TestParseRepoConfig_RejectsMergedAgentGateInstructions(t *testing.T) {
+	data := []byte("gate_defaults: &agent_gate\n  instructions: no cycles\ngates:\n  - <<: *agent_gate\n    name: arch-fitness\n    after: review\n    command: make arch\n")
+	_, err := parseRepoConfig(data)
+	if err == nil {
+		t.Fatal("parseRepoConfig() = nil error, want merged agent gates refused")
+	}
+	for _, want := range []string{"instructions", "agent gates are not supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("parseRepoConfig() = %v, want error containing %q", err, want)
+		}
+	}
+}
+
 // A quoted name used to validate trimmed but reach Gate.StepName raw, so the
 // padded spelling landed in step_results, the attestation, and every command
 // an operator has to type. Normalization now happens with validation.

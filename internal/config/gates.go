@@ -29,19 +29,19 @@ type Gate struct {
 }
 
 func (g *Gate) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(value.Content); i += 2 {
-			if value.Content[i].Value == "instructions" {
-				return fmt.Errorf("instructions: agent gates are not supported; use command")
-			}
-		}
+	var decoded struct {
+		Name         string         `yaml:"name"`
+		After        types.StepName `yaml:"after"`
+		Command      string         `yaml:"command"`
+		Instructions yaml.Node      `yaml:"instructions"`
 	}
-	type gatePlain Gate
-	var decoded gatePlain
 	if err := value.Decode(&decoded); err != nil {
 		return err
 	}
-	*g = Gate(decoded)
+	if !decoded.Instructions.IsZero() {
+		return fmt.Errorf("instructions: agent gates are not supported; use command")
+	}
+	*g = Gate{Name: decoded.Name, After: decoded.After, Command: decoded.Command}
 	return nil
 }
 

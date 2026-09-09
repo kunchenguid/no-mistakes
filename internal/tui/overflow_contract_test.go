@@ -232,6 +232,47 @@ func TestTUIOverflow_NewerDeltaAfterSnapshotStillApplies(t *testing.T) {
 	}
 }
 
+func TestTUIUnknownCustomGateEventReconcilesAuthoritativePlan(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature/foo", Status: types.RunRunning}
+	m := NewModel("/tmp/sock", nil, run)
+	m.width, m.height = 120, 40
+	gate := types.StepName("gate.test.mutation-budget")
+	steps := make([]ipc.StepResultInfo, 0, len(types.AllSteps())+1)
+	for _, name := range types.AllSteps() {
+		steps = append(steps, ipc.StepResultInfo{RunID: run.ID, StepName: name, StepOrder: name.Order(), Status: types.StepStatusPending})
+		if name == types.StepTest {
+			steps = append(steps, ipc.StepResultInfo{RunID: run.ID, StepName: gate, StepOrder: gate.Order(), Status: types.StepStatusAwaitingApproval})
+		}
+	}
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{ID: run.ID, Branch: run.Branch, Status: types.RunRunning, StateRev: 7, Steps: steps}, nil
+	}
+
+	status := string(types.StepStatusAwaitingApproval)
+	updated, cmd := m.Update(eventMsg{
+		event: ipc.Event{
+			Type: ipc.EventStepCompleted, RunID: run.ID, StepName: &gate,
+			Status: &status, StateRev: 7,
+		},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if cmd == nil || !m.reconcilePending {
+		t.Fatal("unknown custom gate event did not request the authoritative plan")
+	}
+
+	updated, _ = m.Update(reconciledFrom(t, cmd))
+	m = updated.(Model)
+	step := awaitingStep(m.steps)
+	if step == nil || step.StepName != gate {
+		t.Fatalf("awaiting step = %+v, want %q", step, gate)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, string(gate)) || !strings.Contains(view, "a approve") {
+		t.Fatalf("custom gate or approval control missing after reconciliation:\n%s", view)
+	}
+}
+
 // A snapshot older than what the model already holds is ignored, so two
 // reconciliations racing cannot move state backwards.
 func TestTUIOverflow_OlderSnapshotIsIgnored(t *testing.T) {
