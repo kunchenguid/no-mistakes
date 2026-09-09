@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -16,6 +17,11 @@ type Finding = types.Finding
 type Findings = types.Findings
 
 func unmarshalRequiredFindings(raw []byte, findings *Findings, requireNonEmptySummary bool) error {
+	// Native structured-output adapters can pass data straight to the step.
+	// Apply the same ambiguity guard as text adapters before typed decoding.
+	if _, err := agent.ParseStructuredObject(string(raw)); err != nil {
+		return err
+	}
 	parsed, err := types.ParseFindingsJSON(string(raw))
 	if err != nil {
 		return err
@@ -178,9 +184,6 @@ func scenarioContractIssues(i int, scenario testScenarioContractFields) []string
 	if scenario.Evidence == nil {
 		issues = append(issues, fmt.Sprintf("scenario %d: missing evidence", n))
 	}
-	if scenario.Reason == nil {
-		issues = append(issues, fmt.Sprintf("scenario %d: missing reason", n))
-	}
 	if !knownResult {
 		return issues
 	}
@@ -194,7 +197,7 @@ func scenarioContractIssues(i int, scenario testScenarioContractFields) []string
 	if scenario.Live != nil && result != types.ScenarioResultUntested && !*scenario.Live {
 		issues = append(issues, fmt.Sprintf("scenario %d: result %q but live=false - if you did not drive this against the live product, mark it result %q with a reason instead of %q", n, result, types.ScenarioResultUntested, result))
 	}
-	if result == types.ScenarioResultUntested && scenario.Reason != nil && strings.TrimSpace(*scenario.Reason) == "" {
+	if result == types.ScenarioResultUntested && (scenario.Reason == nil || strings.TrimSpace(*scenario.Reason) == "") {
 		issues = append(issues, fmt.Sprintf("scenario %d: result %q without a reason - name the specific tool, credential, permission, or authority that stopped you, and how to provide it", n, result))
 	}
 	return issues
@@ -283,7 +286,7 @@ var testFindingsSchema = json.RawMessage(`{
 					"evidence": {"type": "string", "description": "the command, artifact label, or evidence file that shows this result"},
 					"reason": {"type": "string", "description": "required for untested: the specific tool, credential, permission, or authority that was missing, and how to provide it"}
 				},
-				"required": ["name", "result", "live", "evidence", "reason"]
+				"required": ["name", "result", "live", "evidence"]
 			}
 		},
 		"verdict": {

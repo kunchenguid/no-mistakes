@@ -526,7 +526,7 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousBareJSON(t *testing.T) {
 	}
 }
 
-func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
+func TestFinalizeTextResult_ACPAgentRejectsMultipleFindingsReports(t *testing.T) {
 	text := `Draft: {"findings":["a"],"summary":"draft"}. Final: {"findings":["a"],"summary":"final"}`
 	schema := json.RawMessage(`{
 		"type":"object",
@@ -537,15 +537,8 @@ func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
 		"required":["findings","summary"]
 	}`)
 	result, err := finalizeTextResult("acp:omp", text, schema, TokenUsage{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var output map[string]any
-	if err := json.Unmarshal(result.Output, &output); err != nil {
-		t.Fatalf("failed to parse output: %v", err)
-	}
-	if output["summary"] != "final" {
-		t.Errorf("expected summary=final, got %v", output["summary"])
+	if err == nil || result != nil || !strings.Contains(err.Error(), "multiple bare JSON objects") {
+		t.Fatalf("result=%+v err=%v, want ambiguous findings rejection", result, err)
 	}
 }
 

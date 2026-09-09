@@ -100,10 +100,8 @@ func defaultScenario() *Scenario {
 					"result":   "pass",
 					"live":     true,
 					"evidence": "fakeagent: simulated test run",
-					// Present-but-empty rather than omitted: the codex adapter
-					// rewrites every schema property as required-and-nullable,
-					// so a canned response that omits an optional field fails
-					// validation on that backend alone.
+					// Match the nullable placeholders requested by Codex's wire
+					// schema, though the caller's contract also permits omission.
 					"reason": "",
 				}},
 				"verdict": "go",

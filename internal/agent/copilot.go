@@ -110,6 +110,8 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 // message, then closes with a prose summary (e.g. "Now I've applied all four
 // fixes…") that no extraction strategy can recover. If none parse it falls back
 // to the final message so the returned error reflects the actual final output.
+// A newer rejected findings object is authoritative too: never replace its
+// findings with an earlier clean report merely because that one validates.
 func finalizeCopilotResult(messages []string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	lastMessage := ""
 	if len(messages) > 0 {
@@ -119,8 +121,13 @@ func finalizeCopilotResult(messages []string, schema json.RawMessage, usage Toke
 		return finalizeTextResult("copilot", lastMessage, schema, usage)
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if result, err := finalizeTextResult("copilot", messages[i], schema, usage); err == nil {
+		result, err := finalizeTextResult("copilot", messages[i], schema, usage)
+		if err == nil {
 			return result, nil
+		}
+		var rejected map[string]json.RawMessage
+		if json.Unmarshal(RejectedStructuredOutput(err), &rejected) == nil && rejected["findings"] != nil {
+			return nil, err
 		}
 	}
 	return finalizeTextResult("copilot", lastMessage, schema, usage)

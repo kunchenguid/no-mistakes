@@ -181,6 +181,12 @@ func classifyTransient(err error) (string, bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
 	}
+	// A rejected report is not a provider failure, even if its quoted finding
+	// mentions HTTP 429 or a connection error. Replaying the original task can
+	// lose findings or repeat side effects; the step owns correction-only turns.
+	if IsStructuredOutputRejected(err) {
+		return "", false
+	}
 	msg := strings.ToLower(err.Error())
 	if isTerminalRetryError(msg) {
 		return "", false

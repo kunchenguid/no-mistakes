@@ -72,17 +72,42 @@ func IsStructuredOutputRejected(err error) bool {
 	return errors.As(err, &rejection) && rejection.StructuredOutputRejected()
 }
 
-type structuredOutputRejection struct{ err error }
+type structuredOutputRejection struct {
+	err  error
+	text string // untrusted response, never an accepted Result or part of Error()
+}
+
+// RejectedStructuredOutput returns the complete rejected object for a
+// correction-only turn. Missing, malformed, duplicate-key, or multiple objects
+// return nil: a correction must not guess which findings the agent meant.
+func RejectedStructuredOutput(err error) json.RawMessage {
+	var rejection *structuredOutputRejection
+	if !errors.As(err, &rejection) {
+		return nil
+	}
+	output, _ := ParseStructuredObject(rejection.text)
+	return output
+}
+
+// ParseStructuredObject extracts one unambiguous JSON object, without certifying
+// its fields. Callers must still validate their own output contract.
+func ParseStructuredObject(text string) (json.RawMessage, error) {
+	return parseStructuredTextOutput(text, json.RawMessage(`{"type":"object"}`), false)
+}
 
 func (e *structuredOutputRejection) Error() string                { return e.err.Error() }
 func (e *structuredOutputRejection) Unwrap() error                { return e.err }
 func (*structuredOutputRejection) StructuredOutputRejected() bool { return true }
 
-func rejectStructuredOutput(err error) error {
+func rejectStructuredOutput(err error, text ...string) error {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return err
 	}
-	return &structuredOutputRejection{err: err}
+	rejection := &structuredOutputRejection{err: err}
+	if len(text) > 0 {
+		rejection.text = text[0]
+	}
+	return rejection
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -314,7 +339,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)), text)
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
@@ -338,15 +363,34 @@ func parseStructuredTextOutput(text string, schema json.RawMessage, preferTermin
 	if err != nil {
 		return nil, err
 	}
+	var envelope struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &envelope); err != nil {
+		return nil, err
+	}
+	if _, findings := envelope.Properties["findings"]; findings {
+		// Select the report BEFORE validating its findings. Otherwise an invalid
+		// finding in one report loses to a second, clean report and disappears.
+		// Unlike generic ACP prose, findings never use last-candidate-wins.
+		output, err := parseStructuredTextOutput(text, json.RawMessage(`{"type":"object","required":["findings"]}`), false)
+		if err != nil {
+			return nil, err
+		}
+		return parseStructuredCandidate(output, validationSchema)
+	}
 
 	output, rawErr := parseStructuredCandidate([]byte(text), validationSchema)
 	if rawErr == nil {
 		return output, nil
 	}
+	if errors.Is(rawErr, errDuplicateJSONKey) {
+		return nil, rawErr
+	}
 
 	closed, openCands := fencedJSONCandidates(text)
 
-	var candidateErr error
+	var candidateErr, ambiguityErr error
 	parseCandidates := func(cands []string) []json.RawMessage {
 		var parsed []json.RawMessage
 		for _, candidate := range cands {
@@ -354,6 +398,9 @@ func parseStructuredTextOutput(text string, schema json.RawMessage, preferTermin
 			if err == nil {
 				parsed = append(parsed, fenced)
 				continue
+			}
+			if errors.Is(err, errDuplicateJSONKey) {
+				ambiguityErr = err
 			}
 			if candidateErr == nil {
 				candidateErr = err
@@ -383,6 +430,12 @@ func parseStructuredTextOutput(text string, schema json.RawMessage, preferTermin
 	}
 
 	bareParsed, bareErr := bareJSONObjects(text, validationSchema)
+	if ambiguityErr != nil {
+		return nil, ambiguityErr
+	}
+	if errors.Is(bareErr, errDuplicateJSONKey) {
+		return nil, bareErr
+	}
 	if len(bareParsed) > 1 {
 		if !preferTerminal {
 			return nil, fmt.Errorf("multiple bare JSON objects found in output")
@@ -607,6 +660,9 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		}
 		candidate := text[i:end]
 		obj, err := parseStructuredCandidate([]byte(candidate), schema)
+		if errors.Is(err, errDuplicateJSONKey) {
+			return nil, err
+		}
 		if err == nil {
 			valid = append(valid, struct {
 				obj      json.RawMessage
@@ -867,14 +923,66 @@ func allowOptionalSchemaNulls(value any) {
 func decodeJSONValue(raw []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	var value any
-	if err := dec.Decode(&value); err != nil {
+	value, err := decodeUniqueJSONValue(dec)
+	if err != nil {
 		return nil, err
 	}
-	if err := dec.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("expected exactly one JSON value")
 	}
 	return value, nil
+}
+
+var errDuplicateJSONKey = errors.New("duplicate JSON key")
+
+// encoding/json otherwise keeps the last duplicate key, which could erase an
+// entire findings array before validation ever sees it. Fold casing too: Go's
+// subsequent struct decoding treats "findings" and "Findings" as the same key.
+func decodeUniqueJSONValue(dec *json.Decoder) (any, error) {
+	token, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch token {
+	case json.Delim('{'):
+		object := make(map[string]any)
+		keys := make(map[string]bool)
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return nil, errors.New("expected JSON object key")
+			}
+			folded := strings.ToLower(name)
+			if keys[folded] {
+				return nil, fmt.Errorf("%w %q (case-insensitive)", errDuplicateJSONKey, name)
+			}
+			keys[folded] = true
+			value, err := decodeUniqueJSONValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			object[name] = value
+		}
+		_, err = dec.Token()
+		return object, err
+	case json.Delim('['):
+		array := []any{}
+		for dec.More() {
+			value, err := decodeUniqueJSONValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			array = append(array, value)
+		}
+		_, err = dec.Token()
+		return array, err
+	default:
+		return token, nil
+	}
 }
 
 func validateJSONValue(value, schema any, path string) error {

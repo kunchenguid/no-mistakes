@@ -358,7 +358,7 @@ func finalizeGrokResult(result *Result, schema json.RawMessage) (*Result, error)
 	}
 	if len(schema) > 0 {
 		if err := validateStructuredOutput(result.Output, schema); err != nil {
-			return nil, rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
+			return nil, rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err), string(result.Output))
 		}
 	}
 	return result, nil

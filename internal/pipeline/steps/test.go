@@ -173,7 +173,7 @@ Drive each scenario:
 - Stand the product up the way an end user runs it, in an isolated environment, and drive each scenario end-to-end against that running product.
 - Mark a scenario "live": true ONLY when you drove it against the real product in this run. A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live.
 - When a scenario cannot be driven live here, return it with result "untested" and a reason naming the specific tool, credential, permission, or authority that stopped you, and how to provide it. Never guess a pass, and never mark a scenario live because you believe it would work.
-- Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, evidence, and reason.
+- Report every scenario in the "scenarios" array with name, result ("pass", "fail", or "untested"), live, and evidence. A non-empty reason is required for "untested"; it is optional for a live pass or fail, whose evidence explains the result.
 - Return a "verdict": "go" when every scenario you could drive passed and nothing untested puts the intent in doubt, "no-go" when a scenario failed or the change is not safe to ship, "inconclusive" when the change has a live-exercisable product surface but too little could be driven live to judge, "no-surface" when this change has no runtime product surface no-mistakes can drive live (a CI-workflow-only change, a docs-only change, a pure non-runtime refactor, or anything else with no live-exercisable scenario).
 - A "no-go" verdict parks this step for a decision. A "no-surface" verdict parks for a human to decide whether to proceed without live validation; mark every scenario untested with a reason naming why there is no live-validatable surface, never mark those as pass, and never use no-surface to skip live validation of a change that does have a product surface you could have driven. Untested scenarios are listed on the pull request and do not park by themselves, so an honest "untested" costs nothing and a guessed "pass" costs everything.
 - A single scenario you could not drive live is reported as an untested scenario with its reason, NOT as a finding. Report a finding only when the step as a whole cannot demonstrate the user intent.
@@ -311,7 +311,7 @@ func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error
 		if attempt == testAnalyzerMaxAttempts {
 			break
 		}
-		var rejected []byte
+		rejected := agent.RejectedStructuredOutput(runErr)
 		if result != nil {
 			rejected = result.Output
 		}

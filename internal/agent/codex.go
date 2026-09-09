@@ -73,7 +73,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 			_ = os.Remove(schemaPath)
 			return nil, fmt.Errorf("codex schema normalize: %w", err)
 		}
-		validationSchema = schema
+		// The provider's strict schema requires nullable placeholders for every
+		// optional field. Validate the response against the caller's contract,
+		// not that transport-only requirement (e.g. a passing scenario's reason).
 		if _, err := f.Write(schema); err != nil {
 			_ = f.Close()
 			_ = os.Remove(schemaPath)
