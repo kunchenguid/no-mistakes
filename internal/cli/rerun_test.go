@@ -252,7 +252,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				runID, err := triggerRun(ctx, env, "main", wantHead, nil, "keep the caller's changes", "")
+				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "")
 				if err != nil || runID != "rerun-1" {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
@@ -273,7 +273,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						if _, err := triggerRun(ctx, env, "main", wantHead, nil, "keep the caller's changes", ""); err != nil {
+						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", ""); err != nil {
 							t.Fatal(err)
 						}
 						params := <-requests

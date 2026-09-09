@@ -247,12 +247,22 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	if err := stagePipelineChanges(sctx); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
+	headBeforeCommit, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head before %s commit: %w", stepName, err)
+	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
 		return false, fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
 		return false, fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+	}
+	// An empty staged index is a successful no-op, not a commit. Reporting it
+	// as one would claim a head advance that never happened.
+	if headSHA == headBeforeCommit {
+		sctx.Log("no staged agent changes to commit")
+		return nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return false, err

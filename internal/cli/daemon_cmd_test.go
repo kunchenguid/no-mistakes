@@ -135,3 +135,27 @@ func TestProofAndPRBaseBranchPushOptionsRoundTrip(t *testing.T) {
 		t.Fatal("conflicting validation generations were accepted")
 	}
 }
+
+func TestReconciledPreviousHeadPushOptionRoundTrip(t *testing.T) {
+	head := "1234567890abcdef1234567890abcdef12345678"
+	opt := formatReconciledPreviousHeadPushOption(head)
+	if opt == "" {
+		t.Fatal("reconciled previous head produced no push option")
+	}
+	got, err := parseReconciledPreviousHeadPushOptions([]string{"no-mistakes.skip=review", opt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != head {
+		t.Fatalf("parsed previous head = %q, want %q", got, head)
+	}
+	if formatReconciledPreviousHeadPushOption("   ") != "" {
+		t.Fatal("an empty previous head produced a push option")
+	}
+	if got, err := parseReconciledPreviousHeadPushOptions(nil); err != nil || got != "" {
+		t.Fatalf("absent option = %q, %v", got, err)
+	}
+	if _, err := parseReconciledPreviousHeadPushOptions([]string{"no-mistakes.reconciled-previous-head=refs/heads/main"}); err == nil {
+		t.Fatal("a non-SHA previous head claim was accepted")
+	}
+}

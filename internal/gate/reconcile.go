@@ -17,120 +17,230 @@ type StaleBranchReconciliation struct {
 	ArchivedTag  string
 }
 
-// ReconcileStaleBranch removes a stale private gate branch only after Git
-// proves that the live head contains all of its content. Direct ancestry is
-// sufficient; rewritten histories use Git's stable patch-id comparison.
-func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead string) (StaleBranchReconciliation, error) {
-	var result StaleBranchReconciliation
+// StaleBranchPlan is the verdict of a non-mutating stale-branch inspection.
+// Planning proves containment and refuses unique private content without
+// touching any ref, so a caller can decide before it publishes anything;
+// applying the plan is the only step that archives and removes the branch.
+type StaleBranchPlan struct {
+	Reconcile    bool
+	Branch       string
+	BranchRef    string
+	PreviousHead string
+	ArchiveTag   string
+}
+
+// ReconcileStaleBranch plans and immediately applies stale private gate branch
+// reconciliation. It removes the branch only after Git proves the live head
+// contains all of its content, or after runOwnedHead proves the branch still
+// carries this run's own submission.
+func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
+	if err != nil || !plan.Reconcile {
+		return StaleBranchReconciliation{}, err
+	}
+	return ApplyStaleBranchReconciliation(ctx, gateDir, plan)
+}
+
+// PlanStaleBranchReconciliation inspects a private gate branch and reports
+// whether it must be archived and removed before the live head can enter
+// through an ordinary push. It mutates no ref: an unproven private head is
+// refused here, before the caller publishes anything.
+//
+// Containment is proven by direct ancestry, by Git's stable per-file patch-id
+// comparison for rewritten histories, or by runOwnedHead. The last is the
+// exact commit this run was launched from: the run already owns and is
+// republishing that content, so requiring its rebased lineage to also be
+// patch-identical would refuse the pipeline's own ordinary rebase whenever
+// context drift or an agent-resolved conflict changed the patch. The head is
+// still archived before removal, so the commit remains recoverable.
+func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
+	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
+	runOwnedHead = strings.TrimSpace(runOwnedHead)
 	if branch == "" || liveHead == "" {
-		return result, fmt.Errorf("reconcile stale gate branch: branch and live head are required")
+		return plan, fmt.Errorf("reconcile stale gate branch: branch and live head are required")
 	}
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
-		return result, fmt.Errorf("reconcile stale gate branch: %w", err)
+		return plan, fmt.Errorf("reconcile stale gate branch: %w", err)
 	}
 	if _, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch); err != nil {
-		return result, fmt.Errorf("reconcile stale gate branch %q: invalid branch name: %w", branch, err)
+		return plan, fmt.Errorf("reconcile stale gate branch %q: invalid branch name: %w", branch, err)
 	}
 	resolvedLive, err := git.Run(ctx, workDir, "rev-parse", "--verify", liveHead+"^{commit}")
 	if err != nil || resolvedLive != liveHead {
-		return result, fmt.Errorf("reconcile stale gate branch %s: live head %s is not an exact commit", branch, liveHead)
+		return plan, fmt.Errorf("reconcile stale gate branch %s: live head %s is not an exact commit", branch, liveHead)
 	}
 	workDir, err = filepath.Abs(workDir)
 	if err != nil {
-		return result, fmt.Errorf("reconcile stale gate branch %s: resolve worktree path: %w", branch, err)
+		return plan, fmt.Errorf("reconcile stale gate branch %s: resolve worktree path: %w", branch, err)
 	}
 	branchRef := "refs/heads/" + branch
 	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, branchRef)
 	if err != nil {
-		return result, fmt.Errorf("inspect private mirror ref %s: %w", branchRef, err)
+		return plan, fmt.Errorf("inspect private mirror ref %s: %w", branchRef, err)
 	}
 	if !exists || gateHead == liveHead {
-		return result, nil
+		return plan, nil
 	}
 	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
-		return result, fmt.Errorf("private mirror ref %s does not point at a commit", branchRef)
+		return plan, fmt.Errorf("private mirror ref %s does not point at a commit", branchRef)
 	}
 	if err := git.FetchRemoteRef(ctx, gateDir, workDir, liveHead, liveHead); err != nil {
-		return result, fmt.Errorf("stage live head for private mirror reconciliation: %w", err)
+		return plan, fmt.Errorf("stage live head for private mirror reconciliation: %w", err)
 	}
 
 	// An ancestor needs no reconciliation: the caller's ordinary push is
 	// already a fast-forward and preserves the private head by ancestry.
 	if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", gateHead, liveHead); err == nil {
-		return result, nil
+		return plan, nil
 	}
-	atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
-	if err != nil {
-		return result, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
-	}
-	if len(atRiskCommits) > 0 {
-		atRisk := make([]string, 0, len(atRiskCommits))
-		for _, commit := range atRiskCommits {
-			description, describeErr := git.Run(ctx, gateDir, "show", "-s", "--format=%H %s", commit)
-			if describeErr != nil {
-				return result, fmt.Errorf("describe at-risk private mirror commit %s: %w", commit, describeErr)
-			}
-			atRisk = append(atRisk, description)
+	if gateHead != runOwnedHead {
+		atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
+		if err != nil {
+			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
 		}
-		return result, fmt.Errorf(
-			"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
-			branchRef, len(atRisk), liveHead, strings.Join(atRisk, "; "),
-		)
+		if len(atRiskCommits) > 0 {
+			atRisk := make([]string, 0, len(atRiskCommits))
+			for _, commit := range atRiskCommits {
+				description, describeErr := git.Run(ctx, gateDir, "show", "-s", "--format=%H %s", commit)
+				if describeErr != nil {
+					return plan, fmt.Errorf("describe at-risk private mirror commit %s: %w", commit, describeErr)
+				}
+				atRisk = append(atRisk, description)
+			}
+			return plan, fmt.Errorf(
+				"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
+				branchRef, len(atRisk), liveHead, strings.Join(atRisk, "; "),
+			)
+		}
 	}
 
-	archiveTag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + gateHead
-	archivedHead, archived, err := git.ExactRefTarget(ctx, gateDir, archiveTag)
-	if err != nil {
-		return result, fmt.Errorf("inspect private mirror archive tag %s: %w", archiveTag, err)
-	}
-	if archived && archivedHead != gateHead {
-		return result, fmt.Errorf("private mirror archive tag %s already points at %s, not %s", archiveTag, archivedHead, gateHead)
-	}
-	if !archived {
-		if _, err := git.Run(ctx, gateDir, "update-ref", archiveTag, gateHead, "0000000000000000000000000000000000000000"); err != nil {
-			return result, fmt.Errorf("archive stale private mirror head %s at %s: %w", gateHead, archiveTag, err)
-		}
-	}
-	if _, err := git.Run(ctx, gateDir, "update-ref", "-d", branchRef, gateHead); err != nil {
-		return result, fmt.Errorf("delete archived stale private mirror ref %s at %s: %w", branchRef, gateHead, err)
-	}
-	return StaleBranchReconciliation{Reconciled: true, PreviousHead: gateHead, ArchivedTag: archiveTag}, nil
+	return StaleBranchPlan{
+		Reconcile:    true,
+		Branch:       branch,
+		BranchRef:    branchRef,
+		PreviousHead: gateHead,
+		ArchiveTag:   "refs/tags/no-mistakes-abandoned/" + branch + "/" + gateHead,
+	}, nil
 }
 
-func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privateHead string) ([]string, error) {
-	liveOnly, err := commitList(ctx, repoDir, "--left-only", liveHead+"..."+privateHead)
-	if err != nil {
-		return nil, err
+// ApplyStaleBranchReconciliation archives the planned head and then removes the
+// branch ref. It revalidates that the branch still points at the exact head the
+// plan proved, so a private head that appeared after planning is never deleted.
+func ApplyStaleBranchReconciliation(ctx context.Context, gateDir string, plan StaleBranchPlan) (StaleBranchReconciliation, error) {
+	var result StaleBranchReconciliation
+	if !plan.Reconcile {
+		return result, nil
 	}
+	if plan.BranchRef == "" || plan.PreviousHead == "" || plan.ArchiveTag == "" {
+		return result, fmt.Errorf("apply private mirror reconciliation: incomplete plan for %q", plan.Branch)
+	}
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return result, fmt.Errorf("apply private mirror reconciliation: %w", err)
+	}
+	currentHead, exists, err := git.ExactRefTarget(ctx, gateDir, plan.BranchRef)
+	if err != nil {
+		return result, fmt.Errorf("inspect private mirror ref %s: %w", plan.BranchRef, err)
+	}
+	if !exists {
+		return result, nil
+	}
+	if currentHead != plan.PreviousHead {
+		return result, fmt.Errorf(
+			"private mirror ref %s moved to %s after it was proven stale at %s",
+			plan.BranchRef, currentHead, plan.PreviousHead,
+		)
+	}
+	archivedHead, archived, err := git.ExactRefTarget(ctx, gateDir, plan.ArchiveTag)
+	if err != nil {
+		return result, fmt.Errorf("inspect private mirror archive tag %s: %w", plan.ArchiveTag, err)
+	}
+	if archived && archivedHead != plan.PreviousHead {
+		return result, fmt.Errorf("private mirror archive tag %s already points at %s, not %s", plan.ArchiveTag, archivedHead, plan.PreviousHead)
+	}
+	if !archived {
+		if _, err := git.Run(ctx, gateDir, "update-ref", plan.ArchiveTag, plan.PreviousHead, "0000000000000000000000000000000000000000"); err != nil {
+			return result, fmt.Errorf("archive stale private mirror head %s at %s: %w", plan.PreviousHead, plan.ArchiveTag, err)
+		}
+	}
+	if _, err := git.Run(ctx, gateDir, "update-ref", "-d", plan.BranchRef, plan.PreviousHead); err != nil {
+		return result, fmt.Errorf("delete archived stale private mirror ref %s at %s: %w", plan.BranchRef, plan.PreviousHead, err)
+	}
+	return StaleBranchReconciliation{Reconciled: true, PreviousHead: plan.PreviousHead, ArchivedTag: plan.ArchiveTag}, nil
+}
+
+// ArchivedHeadRecorded reports whether head is the exact commit archived for
+// branch by a prior reconciliation. It is the gate's own evidence that a
+// caller-reported pre-reconciliation head is genuine.
+func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) bool {
+	branch = strings.TrimSpace(branch)
+	head = strings.TrimSpace(head)
+	if branch == "" || head == "" {
+		return false
+	}
+	if _, err := git.Run(ctx, gateDir, "check-ref-format", "--branch", branch); err != nil {
+		return false
+	}
+	tag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + head
+	archivedHead, archived, err := git.ExactRefTarget(ctx, gateDir, tag)
+	if err != nil || !archived || archivedHead != head {
+		return false
+	}
+	objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", head)
+	return err == nil && objectType == "commit"
+}
+
+// privateCommitsAbsentFromLive names every private-only commit whose per-file
+// content is not also present in the live-only history.
+//
+// The private side is computed first so the live scan can be bounded to the
+// paths the private commits actually touch, and it short-circuits on the first
+// unmatched patch. A rebased live head otherwise carries every default-branch
+// commit since the merge base, and hashing each of those files would cost
+// thousands of git invocations to answer a question about a handful of paths.
+func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privateHead string) ([]string, error) {
 	privateOnly, err := commitList(ctx, repoDir, "--right-only", liveHead+"..."+privateHead)
 	if err != nil {
 		return nil, err
 	}
-
-	livePatches := make(map[string]int)
-	for _, commit := range liveOnly {
-		patches, comparable, err := perFilePatchIDs(ctx, repoDir, commit)
-		if err != nil {
-			return nil, err
-		}
-		if !comparable {
-			continue
-		}
-		for _, patch := range patches {
-			livePatches[patch]++
-		}
+	if len(privateOnly) == 0 {
+		return nil, nil
 	}
 
-	var atRisk []string
+	type privateCommit struct {
+		sha        string
+		patches    []string
+		comparable bool
+	}
+	privateCommits := make([]privateCommit, 0, len(privateOnly))
+	paths := make(map[string]bool)
 	for _, commit := range privateOnly {
 		patches, comparable, err := perFilePatchIDs(ctx, repoDir, commit)
 		if err != nil {
 			return nil, err
 		}
+		privateCommits = append(privateCommits, privateCommit{sha: commit, patches: patches, comparable: comparable})
 		if !comparable {
-			atRisk = append(atRisk, commit)
+			continue
+		}
+		for _, patch := range patches {
+			path, _, ok := strings.Cut(patch, "\x00")
+			if ok {
+				paths[path] = true
+			}
+		}
+	}
+
+	livePatches, err := liveSidePatchIDs(ctx, repoDir, liveHead, privateHead, paths)
+	if err != nil {
+		return nil, err
+	}
+
+	var atRisk []string
+	for _, commit := range privateCommits {
+		if !commit.comparable {
+			atRisk = append(atRisk, commit.sha)
 			continue
 		}
 		remaining := make(map[string]int, len(livePatches))
@@ -138,7 +248,7 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 			remaining[patch] = count
 		}
 		represented := true
-		for _, patch := range patches {
+		for _, patch := range commit.patches {
 			if remaining[patch] == 0 {
 				represented = false
 				break
@@ -146,7 +256,7 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 			remaining[patch]--
 		}
 		if !represented {
-			atRisk = append(atRisk, commit)
+			atRisk = append(atRisk, commit.sha)
 			continue
 		}
 		for patch, count := range remaining {
@@ -156,8 +266,42 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 	return atRisk, nil
 }
 
-func commitList(ctx context.Context, repoDir, side, revision string) ([]string, error) {
-	out, err := git.Run(ctx, repoDir, "rev-list", side, revision)
+// liveSidePatchIDs collects per-file patch identities from the live-only
+// history, restricted to the paths the private side needs proven.
+func liveSidePatchIDs(ctx context.Context, repoDir, liveHead, privateHead string, paths map[string]bool) (map[string]int, error) {
+	livePatches := make(map[string]int)
+	if len(paths) == 0 {
+		return livePatches, nil
+	}
+	args := []string{"--left-only", liveHead + "..." + privateHead, "--"}
+	for path := range paths {
+		args = append(args, ":(literal)"+path)
+	}
+	liveOnly, err := commitList(ctx, repoDir, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, commit := range liveOnly {
+		patches, comparable, err := perFilePatchIDs(ctx, repoDir, commit)
+		if err != nil {
+			return nil, err
+		}
+		if !comparable {
+			continue
+		}
+		for _, patch := range patches {
+			path, _, ok := strings.Cut(patch, "\x00")
+			if !ok || !paths[path] {
+				continue
+			}
+			livePatches[patch]++
+		}
+	}
+	return livePatches, nil
+}
+
+func commitList(ctx context.Context, repoDir string, args ...string) ([]string, error) {
+	out, err := git.Run(ctx, repoDir, append([]string{"rev-list"}, args...)...)
 	if err != nil {
 		return nil, err
 	}

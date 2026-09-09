@@ -742,6 +742,51 @@ func TestCommitPipelineCorrection_RealCommitFailureStillFails(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_EmptyIndexIsReportedAsNoOpNotAsACommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// A dirty worktree whose dirt `git add -A` cannot place in the superproject
+	// index: a submodule with untracked content of its own. Status is non-empty,
+	// the staged index stays empty, and no commit can be created.
+	submodule := t.TempDir()
+	gitCmd(t, submodule, "init", ".")
+	gitCmd(t, submodule, "config", "user.email", "t@example.com")
+	gitCmd(t, submodule, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(submodule, "sub.txt"), []byte("sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, submodule, "add", "-A")
+	gitCmd(t, submodule, "commit", "-m", "sub base")
+	gitCmd(t, dir, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "sub")
+	gitCmd(t, dir, "commit", "-m", "add submodule")
+	if err := os.WriteFile(filepath.Join(dir, "sub", "untracked.txt"), []byte("agent scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+
+	if err := commitAgentFixes(sctx, types.StepReview, "apply review fixes", ""); err != nil {
+		t.Fatalf("empty-index handoff must be a successful no-op: %v", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("no-op handoff moved HEAD to %s, want %s", got, headSHA)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Fatalf("no-op handoff recorded head %s, want %s", sctx.Run.HeadSHA, headSHA)
+	}
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "committed agent fixes") {
+		t.Fatalf("no-op handoff reported a commit it never made: %q", joined)
+	}
+	if !strings.Contains(joined, "no staged agent changes to commit") {
+		t.Fatalf("no-op handoff was not reported: %q", joined)
+	}
+}
+
 func TestCommitAgentFixes_BypassesLegacyHuskyPrepareCommitMsgHook(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, _ := setupGitRepo(t)

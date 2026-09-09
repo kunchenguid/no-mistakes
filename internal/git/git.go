@@ -125,8 +125,12 @@ func runInDirWithEnvAndInputRaw(ctx context.Context, dir string, extraEnv []stri
 // StablePatchID returns Git's stable patch identity for one file between two
 // commits. The file path is part of the diff, so the same-shaped edit to a
 // different file cannot prove content preservation.
+//
+// The pathspec is explicitly literal: a wildcard or leading colon in a real
+// file name would otherwise be read as a glob or as pathspec magic and fold a
+// sibling file's diff into this file's identity.
 func StablePatchID(ctx context.Context, dir, from, to, path string) (string, error) {
-	diff, err := RunRaw(ctx, dir, "diff", "--no-ext-diff", "--binary", from, to, "--", path)
+	diff, err := RunRaw(ctx, dir, "diff", "--no-ext-diff", "--binary", from, to, "--", ":(literal)"+path)
 	if err != nil {
 		return "", err
 	}

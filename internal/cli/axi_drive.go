@@ -281,7 +281,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch)
+			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch)
 		}
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
@@ -505,7 +505,7 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
@@ -539,8 +539,16 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 			priorRunIDs = nil
 		}
 	}
-	if _, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead); err != nil {
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	if err != nil {
 		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	// A reconciled branch is re-created by this push, so the hook reports no
+	// previous head. Carry the archived pre-reconciliation head so the run's
+	// base stays the head the caller actually rewrote, rather than a zero SHA
+	// that would make a deliberate rewrite look like an ordinary push.
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
 	}
 	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, submissionHead, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {

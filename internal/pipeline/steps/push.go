@@ -134,7 +134,14 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
 		return err
 	}
-	if err := reconcileGateMirrorBeforePush(ctx, sctx, ref, branch, headBeingPushed); err != nil {
+	// Prove the private mirror is safe to reconcile BEFORE anything is
+	// published: unique private content must refuse while the branch is still
+	// intact. Applying the plan (archive then delete) is deliberately deferred
+	// until the upstream push is verified, because a refused or failed push is
+	// a designed outcome and a gate left with no branch ref would strand
+	// `rerun` and branch-sync recovery on a branch that never published.
+	mirrorPlan, err := planGateMirrorReconciliation(ctx, sctx, ref, branch, headBeingPushed)
+	if err != nil {
 		return err
 	}
 
@@ -195,7 +202,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	// returning the error makes the CI monitor treat an already published
 	// repair as a failed one, and recording first and swallowing the error
 	// strands the gate behind the remote for good.
-	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed); err != nil {
+	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
 		return err
 	}
 
@@ -217,24 +224,39 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	return nil
 }
 
-func reconcileGateMirrorBeforePush(ctx context.Context, sctx *pipeline.StepContext, ref, branch, headBeingPushed string) error {
+// planGateMirrorReconciliation inspects the gate mirror without mutating it.
+// The run's own submitted head is passed as run-owned: the gate ref still
+// carrying the exact commit this run was launched from proves nothing external
+// landed, so republishing that run's rebased lineage does not additionally have
+// to be patch-identical to it. The head is still archived when the plan is
+// applied.
+func planGateMirrorReconciliation(ctx context.Context, sctx *pipeline.StepContext, ref, branch, headBeingPushed string) (gatepkg.StaleBranchPlan, error) {
+	var plan gatepkg.StaleBranchPlan
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
-		return nil
+		return plan, nil
 	}
 	gateDir := strings.TrimSpace(sctx.GateDir)
 	if _, err := os.Stat(gateDir); err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return plan, nil
 		}
-		return fmt.Errorf("update gate mirror ref %s before push: stat repository: %w", ref, err)
+		return plan, fmt.Errorf("update gate mirror ref %s before push: stat repository: %w", ref, err)
 	}
-	if _, err := gatepkg.ReconcileStaleBranch(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed); err != nil {
-		return fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
+	plan, err := gatepkg.PlanStaleBranchReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, runOwnedSubmittedHead(sctx))
+	if err != nil {
+		return gatepkg.StaleBranchPlan{}, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}
-	return nil
+	return plan, nil
 }
 
-func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string) error {
+func runOwnedSubmittedHead(sctx *pipeline.StepContext) string {
+	if sctx.Run.SubmittedHeadSHA == nil {
+		return ""
+	}
+	return strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
+}
+
+func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string, mirrorPlan gatepkg.StaleBranchPlan) error {
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
 		return nil
 	}
@@ -248,8 +270,11 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
 	}
-	branch := strings.TrimPrefix(ref, "refs/heads/")
-	if _, err := gatepkg.ReconcileStaleBranch(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed); err != nil {
+	// The upstream push is verified by now, so the proven-stale private head
+	// can be archived and removed. Applying revalidates the exact head the
+	// pre-push proof covered, so a private commit that arrived in between is
+	// never deleted; it falls through to the divergence check below.
+	if _, err := gatepkg.ApplyStaleBranchReconciliation(ctx, gateDir, mirrorPlan); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: %w", ref, err)
 	}
 

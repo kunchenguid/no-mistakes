@@ -33,7 +33,7 @@ func TestReconcileStaleBranchArchivesPatchEquivalentHeadBeforeNonForcePush(t *te
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead)
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestReconcileStaleBranchLeavesContainedAncestorForNonForcePush(t *testing.T
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead)
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestReconcileStaleBranchRefusesAndNamesUniquePrivateCommits(t *testing.T) {
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
-	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead)
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
 	if err == nil {
 		t.Fatal("unique private commit was reconciled instead of refused")
 	}
@@ -136,6 +136,136 @@ func TestReconcileStaleBranchRefusesAndNamesUniquePrivateCommits(t *testing.T) {
 	}
 	if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
 		t.Fatalf("refusal created an archive tag despite retaining the branch: %q", tags)
+	}
+}
+
+func TestReconcileStaleBranchArchivesRunOwnedHeadWithoutPatchEquivalence(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	// The head this run was launched from.
+	writeReconcileFile(t, work, "feature.txt", "submitted resolution\n")
+	reconcileGit(t, work, "add", "feature.txt")
+	reconcileGit(t, work, "commit", "-m", "submitted work")
+	submittedHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	// The rebased lineage resolves a conflict, so its per-file patch differs
+	// from the submitted commit even though the run owns both.
+	reconcileGit(t, work, "reset", "--hard", base)
+	writeReconcileFile(t, work, "feature.txt", "upstream neighbour\n")
+	reconcileGit(t, work, "add", "feature.txt")
+	reconcileGit(t, work, "commit", "-m", "advance base")
+	writeReconcileFile(t, work, "feature.txt", "upstream neighbour\nsubmitted resolution\n")
+	reconcileGit(t, work, "add", "feature.txt")
+	reconcileGit(t, work, "commit", "-m", "rebased with resolved conflict")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, submittedHead+":refs/heads/feature/reconcile")
+
+	// Without run ownership the changed patch is genuinely unproven.
+	if _, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, ""); err == nil {
+		t.Fatal("changed patch was reconciled without proof of ownership")
+	}
+
+	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, submittedHead)
+	if err != nil {
+		t.Fatalf("run-owned submitted head was refused: %v", err)
+	}
+	if !result.Reconciled || result.PreviousHead != submittedHead {
+		t.Fatalf("reconciliation result = %+v", result)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag+"^{commit}"); got != submittedHead {
+		t.Fatalf("run-owned head was removed without an archive: %s", got)
+	}
+	if !ArchivedHeadRecorded(ctx, gateDir, "feature/reconcile", submittedHead) {
+		t.Fatal("archived run-owned head is not recorded as archived")
+	}
+
+	reconcileGit(t, work, "push", gateDir, liveHead+":refs/heads/feature/reconcile")
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != liveHead {
+		t.Fatalf("non-force push reached %s, want %s", got, liveHead)
+	}
+}
+
+func TestPlanStaleBranchReconciliationMutatesNothingAndApplyRefusesMovedHead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	writeReconcileFile(t, work, "feature.txt", "same change\n")
+	reconcileGit(t, work, "add", "feature.txt")
+	reconcileGit(t, work, "commit", "-m", "private rewrite")
+	privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	reconcileGit(t, work, "reset", "--hard", base)
+	writeReconcileFile(t, work, "base.txt", "base advanced\n")
+	reconcileGit(t, work, "add", "base.txt")
+	reconcileGit(t, work, "commit", "-m", "advance base")
+	writeReconcileFile(t, work, "feature.txt", "same change\n")
+	reconcileGit(t, work, "add", "feature.txt")
+	reconcileGit(t, work, "commit", "-m", "rebased private rewrite")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	writeReconcileFile(t, work, "intervening.txt", "arrived after planning\n")
+	reconcileGit(t, work, "add", "intervening.txt")
+	reconcileGit(t, work, "commit", "-m", "intervening private commit")
+	interveningHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
+
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/reconcile", liveHead, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Reconcile || plan.PreviousHead != privateHead {
+		t.Fatalf("plan = %+v", plan)
+	}
+	// Planning alone must leave the private mirror exactly as it found it.
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != privateHead {
+		t.Fatalf("planning moved the private branch to %s", got)
+	}
+	if tags := reconcileGit(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("planning archived a live branch: %q", tags)
+	}
+
+	reconcileGit(t, gateDir, "fetch", work, "+"+interveningHead+":refs/heads/feature/reconcile")
+	if _, err := ApplyStaleBranchReconciliation(ctx, gateDir, plan); err == nil {
+		t.Fatal("apply deleted a private head that arrived after the proof")
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != interveningHead {
+		t.Fatalf("refused apply still moved the branch to %s", got)
+	}
+}
+
+func TestArchivedHeadRecordedRejectsUnarchivedClaims(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	head := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, head+":refs/heads/feature/claim")
+
+	if ArchivedHeadRecorded(ctx, gateDir, "feature/claim", head) {
+		t.Fatal("a head with no archive tag was reported as archived")
+	}
+	reconcileGit(t, gateDir, "update-ref", "refs/tags/no-mistakes-abandoned/feature/claim/"+head, head)
+	if !ArchivedHeadRecorded(ctx, gateDir, "feature/claim", head) {
+		t.Fatal("an archived head was not recognized")
+	}
+	if ArchivedHeadRecorded(ctx, gateDir, "other/branch", head) {
+		t.Fatal("an archive tag for one branch answered for another")
+	}
+	if ArchivedHeadRecorded(ctx, gateDir, "feature/claim", "") {
+		t.Fatal("an empty claim was accepted")
 	}
 }
 
