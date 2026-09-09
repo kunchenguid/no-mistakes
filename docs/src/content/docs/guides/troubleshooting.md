@@ -174,6 +174,29 @@ This means the live remote branch changed after the pipeline's last observed hea
 Fetch and inspect the configured push target, then rebase or merge the remote work into your branch before pushing through `no-mistakes` again.
 If the overwrite is intentional, push manually to the actual remote after reviewing the commits that would be discarded.
 
+### Push fails with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`
+
+This means the branch touches `.github/workflows/*.yml` and the push credential (a GitHub OAuth token or PAT stored for the fork host) lacks the `workflow` scope.
+GitHub rejects the push to the fork before the pipeline can open or update the PR.
+
+Resolve it by adding the `workflow` scope to your GitHub credential before pushing through `no-mistakes` again:
+
+```sh
+# If you authenticated gh via OAuth (web browser):
+gh auth refresh -s workflow
+
+# If you authenticated gh with a PAT, its scopes are immutable —
+# create a new PAT that includes the workflow scope at
+# https://github.com/settings/tokens, then re-authenticate:
+gh auth login --with-token < new-pat.txt
+
+# Either way, configure git to use the refreshed credential:
+gh auth setup-git
+```
+
+This only affects branches that modify workflow files.
+A branch that touches no `.github/workflows/*.yml` pushes normally with a standard `repo`-scoped token.
+
 ### Rebase pauses because the branch carries unpushed default-branch commits
 
 This means a local default branch ahead of `origin/<default_branch>` is a strict ancestor of your branch, so the branch may contain unrelated local-default work.
