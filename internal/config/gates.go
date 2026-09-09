@@ -19,16 +19,6 @@ const (
 	MaxGateNameLen = types.MaxCustomGateLabelLen
 )
 
-// GateAnchors are the core steps an extra gate may be anchored to. The
-// delivery tail (push, pr, ci) is deliberately excluded: a gate that ran after
-// push would validate a branch the world can already see, which is the
-// opposite of what a gate is for. intent is excluded because it establishes
-// the acceptance criteria the later gates check against, so nothing can
-// usefully run before it.
-func GateAnchors() []types.StepName {
-	return []types.StepName{types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
-}
-
 // Gate is one repository-declared extra check that runs immediately after its
 // anchor core step. A gate can only ADD a verdict to a run: it cannot skip,
 // reorder, or replace a core step, and a failing gate fails the run closed.
@@ -76,15 +66,6 @@ func (g *Gate) UnmarshalJSON(data []byte) error {
 // order without reaching for the config that declared it.
 func (g Gate) StepName() types.StepName {
 	return types.CustomGateStepName(g.After, g.Name)
-}
-
-func validGateAnchor(name types.StepName) bool {
-	for _, anchor := range GateAnchors() {
-		if anchor == name {
-			return true
-		}
-	}
-	return false
 }
 
 func validGateName(name string) error {
@@ -137,7 +118,7 @@ func validateGates(gates []Gate) error {
 		if gate.After == "" {
 			return fmt.Errorf("gates[%d] (%q).after must name the core step it runs after", i, name)
 		}
-		if !validGateAnchor(gate.After) {
+		if !gate.After.IsCustomGateAnchor() {
 			return fmt.Errorf("gates[%d] (%q).after %q is not an anchorable core step; valid: %s", i, name, gate.After, gateAnchorText())
 		}
 
@@ -149,8 +130,9 @@ func validateGates(gates []Gate) error {
 }
 
 func gateAnchorText() string {
-	names := make([]string, 0, len(GateAnchors()))
-	for _, anchor := range GateAnchors() {
+	anchors := types.CustomGateAnchors()
+	names := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
 		names = append(names, string(anchor))
 	}
 	return strings.Join(names, ", ")

@@ -342,9 +342,10 @@ func TestExecutor_ResumePromotesDurableReviewedCandidateOnApproval(t *testing.T)
 	}
 }
 
-func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
+func TestExecutor_CustomGateTelemetryRedactsLabel(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
+	stepName := types.CustomGateStepName(types.StepReview, "private-policy")
 
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)
@@ -352,7 +353,7 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name: stepName,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -369,9 +370,9 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 		done <- exec.Execute(context.Background(), run, repo, workDir)
 	}()
 
-	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	waitForStepStatus(t, database, run.ID, stepName, types.StepStatusAwaitingApproval)
 
-	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+	if err := exec.Respond(stepName, types.ActionFix, nil); err != nil {
 		t.Fatalf("respond error: %v", err)
 	}
 
@@ -388,8 +389,8 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	if approvalEvent == nil {
 		t.Fatal("expected approval telemetry event")
 	}
-	if got := approvalEvent.fields["step"]; got != string(types.StepReview) {
-		t.Fatalf("approval step = %v, want %q", got, types.StepReview)
+	if got := approvalEvent.fields["step"]; got != "gate" {
+		t.Fatalf("approval step = %v, want gate", got)
 	}
 	if got := approvalEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "2" {
 		t.Fatalf("approval selected_findings_count = %v, want 2", got)
@@ -399,6 +400,9 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	if fixEvent == nil {
 		t.Fatal("expected user fix telemetry event")
 	}
+	if got := fixEvent.fields["step"]; got != "gate" {
+		t.Fatalf("fix step = %v, want gate", got)
+	}
 	if got := fixEvent.fields["selected_findings_count"]; fmt.Sprint(got) != "2" {
 		t.Fatalf("fix selected_findings_count = %v, want 2", got)
 	}
@@ -406,6 +410,9 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 	stepEvent := recorder.find("step", "status", string(types.StepStatusAwaitingApproval))
 	if stepEvent == nil {
 		t.Fatal("expected awaiting approval step telemetry event")
+	}
+	if got := stepEvent.fields["step"]; got != "gate" {
+		t.Fatalf("step telemetry step = %v, want gate", got)
 	}
 	if got := stepEvent.fields["findings_count"]; fmt.Sprint(got) != "2" {
 		t.Fatalf("step findings_count = %v, want 2", got)

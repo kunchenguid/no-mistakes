@@ -41,7 +41,18 @@ func TestCustomGateStepName_OrdersWithItsAnchor(t *testing.T) {
 // produced from a validated gate, and everything that reads one - ordering,
 // the log path, the CLI - goes through this decoder.
 func TestCustomGateAnchor_RejectsMalformedNames(t *testing.T) {
-	for _, name := range []StepName{"gate.", "gate.test", "gate.test.", "gate.nope.g", "gate..g", StepTest} {
+	for _, name := range []StepName{
+		"gate.",
+		"gate.test",
+		"gate.test.",
+		"gate.nope.g",
+		"gate..g",
+		"gate.intent.g",
+		"gate.push.g",
+		"gate.pr.g",
+		"gate.ci.g",
+		StepTest,
+	} {
 		if _, ok := name.CustomGateAnchor(); ok {
 			t.Errorf("CustomGateAnchor(%q) reported a valid gate", name)
 		}

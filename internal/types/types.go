@@ -132,6 +132,25 @@ func AllSteps() []StepName {
 	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
 }
 
+func (s StepName) IsCustomGateAnchor() bool {
+	switch s {
+	case StepRebase, StepReview, StepTest, StepDocument, StepLint:
+		return true
+	default:
+		return false
+	}
+}
+
+func CustomGateAnchors() []StepName {
+	anchors := make([]StepName, 0, 5)
+	for _, step := range AllSteps() {
+		if step.IsCustomGateAnchor() {
+			anchors = append(anchors, step)
+		}
+	}
+	return anchors
+}
+
 // CustomGateStepPrefix marks a step name as a repository-declared extra gate
 // rather than one of the fixed core steps, and CustomGateStepSeparator joins
 // the encoded anchor to the gate's label.
@@ -187,9 +206,9 @@ func CustomGateStepName(anchor StepName, name string) StepName {
 // decoding: IsCustomGate, CustomGateAnchor, and CustomGateLabel all answer from
 // here, so the separator handling lives in one place and the three can never
 // disagree about whether a name is a gate. It reports false for a core step,
-// and for any name whose encoded anchor is not itself a core step or whose
-// label is not well-formed, so a malformed name can never be ordered, or turned
-// into a log path, as if it were valid.
+// and for any name whose encoded anchor is not allowed or whose label is not
+// well-formed, so a malformed name can never be ordered, or turned into a log
+// path, as if it were valid.
 func decodeCustomGate(s StepName) (StepName, string, bool) {
 	rest, ok := strings.CutPrefix(string(s), CustomGateStepPrefix)
 	if !ok {
@@ -199,7 +218,7 @@ func decodeCustomGate(s StepName) (StepName, string, bool) {
 	if !ok || !ValidCustomGateLabel(label) {
 		return "", "", false
 	}
-	if !IsCoreStepName(StepName(anchor)) {
+	if !StepName(anchor).IsCustomGateAnchor() {
 		return "", "", false
 	}
 	return StepName(anchor), label, true

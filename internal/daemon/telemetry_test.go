@@ -3,11 +3,14 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 type recordedTelemetryEvent struct {
@@ -65,4 +68,30 @@ func waitForTelemetryEvent(t *testing.T, recorder *telemetryRecorder, name, fiel
 		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
+}
+
+func TestTelemetryFailedStepNameRedactsCustomGateLabel(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.CustomGateStepName(types.StepTest, "private-policy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailStep(step.ID, "failed", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := telemetryFailedStepName(database, run.ID); got != "gate" {
+		t.Fatalf("telemetryFailedStepName() = %q, want gate", got)
+	}
 }

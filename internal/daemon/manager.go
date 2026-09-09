@@ -1700,7 +1700,7 @@ func telemetryFailedStepName(database *db.DB, runID string) string {
 	}
 	for _, step := range steps {
 		if step.Status == types.StepStatusFailed {
-			return string(step.StepName)
+			return telemetry.StepName(step.StepName)
 		}
 	}
 	return ""

@@ -84,6 +84,39 @@ func TestAxiLogsRefusesAGateStepNameThatWouldEscapeTheLogDirectory(t *testing.T)
 	}
 }
 
+func TestAxiLogsRefusesGatesOnForbiddenAnchors(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+
+	dbRun, err := database.InsertRun(repo.ID, "feature/gates", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.UpdateRunStatus(dbRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	logDir := p.RunLogDir(dbRun.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+
+	for _, step := range []string{"gate.intent.fake", "gate.push.fake", "gate.pr.fake", "gate.ci.fake"} {
+		if err := os.WriteFile(filepath.Join(logDir, step+".log"), []byte("must not be readable\n"), 0o644); err != nil {
+			t.Fatalf("write forbidden gate log: %v", err)
+		}
+		var out bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetContext(context.Background())
+		cmd.SetOut(&out)
+		if err := runAxiLogs(cmd, step, dbRun.ID, true); err == nil {
+			t.Errorf("axi logs --step %q was accepted, want refusal", step)
+		}
+		if strings.Contains(out.String(), "must not be readable") {
+			t.Errorf("axi logs --step %q rendered a forbidden gate log", step)
+		}
+	}
+}
+
 // A gate is trusted-config-only, so a pushed branch must not be able to switch
 // one off through a push option. Read-only surfaces widened; skip did not.
 func TestSkipPushOptionRefusesARepositoryGateStepName(t *testing.T) {
