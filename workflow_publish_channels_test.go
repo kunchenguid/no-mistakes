@@ -69,7 +69,7 @@ func TestPublishChannelsWorkflowRefreshesManifestWithoutRESTForEndUsers(t *testi
 	}{
 		{name: "channels release", context: workflowConditionContext{EventName: "release", ReleaseTagName: "channels"}, wantRun: false},
 		{name: "version release", context: workflowConditionContext{EventName: "release", ReleaseTagName: "v1.72.0"}, wantRun: true},
-		{name: "workflow call", context: workflowConditionContext{EventName: "workflow_call"}, wantRun: true},
+		{name: "release workflow call", context: workflowConditionContext{EventName: "push"}, wantRun: true},
 		{name: "workflow dispatch", context: workflowConditionContext{EventName: "workflow_dispatch"}, wantRun: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
