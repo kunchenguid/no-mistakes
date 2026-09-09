@@ -195,23 +195,21 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertNonEmptyDiffAfterRebaseRun(t, h)
 	assertRebaseConflictRun(t, h)
 
-	// Make a feature branch with one trivial change. The fake agent
-	// returns "no issues found" for every prompt, so the pipeline
-	// should sail through without needing approval.
+	// Hold the feature run at its review gate while observing active status.
+	// A fixed fake-agent delay races the sequence of CLI reads on slower hosts.
 	featureHead := h.CommitChange("feature/e2e", "hello.txt", "hello world\n", "add hello.txt")
 	featureWorktree := h.AddWorktree("feature/e2e")
 
 	// Push triggers the post-receive hook, which notifies the daemon.
 	h.PushToGate("feature/e2e")
 
-	// Wait up to 60s for the run to terminate. Pipelines that include
-	// agent calls + git operations take ~5-15s on a warm machine.
-	activeRun := h.WaitForRunRunning("feature/e2e", 30*time.Second)
+	activeRun := waitForStepStatus(t, h, "feature/e2e", types.StepReview, types.StepStatusAwaitingApproval, 30*time.Second)
 	assertStatusActiveRun(t, h, activeRun)
 	assertStatusActiveRunInDir(t, h, featureWorktree, activeRun)
 	assertRunsActive(t, h, activeRun)
 	assertRunsActiveInDir(t, h, featureWorktree, activeRun)
 	assertRootNoActiveRunOnOtherBranch(t, h, activeRun)
+	h.Respond(activeRun.ID, types.StepReview, types.ActionApprove)
 
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 
@@ -530,17 +528,16 @@ func cleanReviewScenario(t *testing.T) string {
       artifacts: []
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: feature/e2e"
     text: "looks good"
-    delay_ms: 1500
     structured:
       findings:
         - id: "review-info"
           severity: info
           file: "hello.txt"
           line: 1
-          description: "looks good"
-          action: no-op
+          description: "Confirm the informational review"
+          action: ask-user
           review_scope: source
-      summary: "no blocking issues"
+      summary: "informational review awaiting confirmation"
       risk_level: low
       risk_rationale: "informational finding only"
       risk_scope: source-or-external
@@ -2328,6 +2325,8 @@ func assertRerunCompletedInDir(t *testing.T, h *Harness, dir string, previous *i
 			t.Errorf("rerun output should contain %q, got:\n%s", want, out)
 		}
 	}
+	gated := waitForStepStatus(t, h, "feature/e2e", types.StepReview, types.StepStatusAwaitingApproval, 30*time.Second)
+	h.Respond(gated.ID, types.StepReview, types.ActionApprove)
 	run := h.WaitForRun("feature/e2e", 60*time.Second)
 	if run.ID == previous.ID {
 		t.Fatalf("rerun returned original run ID %s", run.ID)
@@ -2790,7 +2789,7 @@ func assertReviewStepInfoOnly(t *testing.T, steps []ipc.StepResultInfo) {
 		t.Fatalf("expected one informational review finding, got %+v", findings.Items)
 	}
 	if findings.Items[0].Severity != "info" {
-		t.Fatalf("expected informational review finding to be non-blocking, got severity %q", findings.Items[0].Severity)
+		t.Fatalf("expected informational review finding, got severity %q", findings.Items[0].Severity)
 	}
 	if findings.RiskLevel != "low" {
 		t.Fatalf("expected low review risk, got %q", findings.RiskLevel)
