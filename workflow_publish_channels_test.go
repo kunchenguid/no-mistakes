@@ -62,8 +62,25 @@ func TestPublishChannelsWorkflowRefreshesManifestWithoutRESTForEndUsers(t *testi
 	if !ok {
 		t.Fatal("missing publish-channels job")
 	}
-	if job.If != "github.event_name != 'release' || github.event.release.tag_name != 'channels'" {
-		t.Fatalf("job if = %q, want a skip for the channels tag on release events so uploading the manifest cannot recurse, while workflow_call and workflow_dispatch still run", job.If)
+	for _, tc := range []struct {
+		name    string
+		context workflowConditionContext
+		wantRun bool
+	}{
+		{name: "channels release", context: workflowConditionContext{EventName: "release", ReleaseTagName: "channels"}, wantRun: false},
+		{name: "version release", context: workflowConditionContext{EventName: "release", ReleaseTagName: "v1.72.0"}, wantRun: true},
+		{name: "workflow call", context: workflowConditionContext{EventName: "workflow_call"}, wantRun: true},
+		{name: "workflow dispatch", context: workflowConditionContext{EventName: "workflow_dispatch"}, wantRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := evaluateWorkflowCondition(job.If, tc.context)
+			if err != nil {
+				t.Fatalf("evaluate publish-channels condition: %v", err)
+			}
+			if got != tc.wantRun {
+				t.Fatalf("publish-channels runs = %t, want %t", got, tc.wantRun)
+			}
+		})
 	}
 	var sawPublish bool
 	for _, step := range job.Steps {

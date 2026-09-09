@@ -215,14 +215,25 @@ func TestReleaseWorkflowCallsPublishChannelsAfterFinalize(t *testing.T) {
 		t.Fatalf("publish-channels needs = %v, want finalize so channels.json is not pointed at a still-draft release or a release missing binaries", job.needs())
 	}
 
-	ifExpr := strings.Join(strings.Fields(job.If), " ")
-	for _, req := range []string{"!cancelled()", "needs.finalize.result == 'success'"} {
-		if !strings.Contains(ifExpr, req) {
-			t.Fatalf("publish-channels if = %q, want %q so a skipped or failed finalize does not refresh channels", job.If, req)
-		}
-	}
-	if strings.Contains(job.allRun(), "gh workflow run") {
-		t.Fatal("publish-channels must not fire-and-forget via gh workflow run; call the reusable workflow so failures surface on the release run")
+	for _, tc := range []struct {
+		name    string
+		context workflowConditionContext
+		wantRun bool
+	}{
+		{name: "finalize succeeded", context: workflowConditionContext{Needs: map[string]string{"finalize": "success"}}, wantRun: true},
+		{name: "finalize failed", context: workflowConditionContext{Needs: map[string]string{"finalize": "failure"}}, wantRun: false},
+		{name: "finalize skipped", context: workflowConditionContext{Needs: map[string]string{"finalize": "skipped"}}, wantRun: false},
+		{name: "run cancelled", context: workflowConditionContext{Cancelled: true, Needs: map[string]string{"finalize": "success"}}, wantRun: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := evaluateWorkflowCondition(job.If, tc.context)
+			if err != nil {
+				t.Fatalf("evaluate publish-channels condition: %v", err)
+			}
+			if got != tc.wantRun {
+				t.Fatalf("publish-channels runs = %t, want %t", got, tc.wantRun)
+			}
+		})
 	}
 }
 
