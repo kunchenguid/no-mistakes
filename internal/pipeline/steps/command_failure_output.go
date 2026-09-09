@@ -10,11 +10,11 @@ import (
 )
 
 // configuredCommandFailureSummaryMaxBytes is the fixed upper bound for the
-// Test/Lint command-output projection that may enter findings, persisted round
-// data, IPC, and repair prompts. 64 KiB leaves ample room below IPC's 1 MiB
-// message ceiling for findings metadata and the rest of an AXI response. It is
-// deliberately independent of host argv limits. The complete output remains in
-// the authoritative step log.
+// Test, Lint, and repository gate command-output projection that may enter
+// findings, persisted round data, IPC, and repair prompts. 64 KiB leaves ample
+// room below IPC's 1 MiB message ceiling for findings metadata and the rest of
+// an AXI response. It is deliberately independent of host argv limits. The
+// complete output remains in the authoritative step log.
 const configuredCommandFailureSummaryMaxBytes = 64 * 1024
 
 const configuredCommandFailureMarkerReserve = 512

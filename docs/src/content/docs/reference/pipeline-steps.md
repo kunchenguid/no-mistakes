@@ -11,14 +11,15 @@ intent → rebase → review → test → document → lint → push → pr → 
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept. The Test evidence analyzer first returns the validation errors to the agent for a bounded correction; exhausting that bound, and every other step's invalid analyzer output, still stops the affected step.
+Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
 See [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the run's managed evidence directory, plus incidental temp or cache writes from normal development tools.
 Configured shell commands and one-shot agent subprocesses are scoped to their step: when the invocation exits, fails, or is cancelled, no-mistakes terminates remaining child processes it spawned so background workers do not outlive the run.
-When configured Test or Lint command output exceeds 64 KiB, the complete output remains in the authoritative step log while findings, IPC responses, and repair prompts receive a valid-UTF-8 head-and-tail projection capped at 64 KiB. The truncation marker reports the exact original and omitted byte counts and points to `no-mistakes axi logs --step <step> --full` for the complete output.
-Commits created by the shared Review, Test, Document, and Lint fix path, plus CI repair commits, use the configurable [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message) template.
-Review, Test, and Lint repair agents, including Lint's safe-fix pass when no command is configured, share a removal-first rule with the CI repair agent: when a problem can be resolved by removing a code path the intent does not strictly require, they remove it instead of validating, hardening, or documenting it. They judge necessity against user intent when present and otherwise against the change's stated purpose.
+When configured Test, Lint, or repository gate command output exceeds 64 KiB, the complete output remains in the authoritative step log while findings, IPC responses, and repair prompts receive a valid-UTF-8 head-and-tail projection capped at 64 KiB. The truncation marker reports the exact original and omitted byte counts and points to `no-mistakes axi logs --step <step> --full` for the complete output.
+Commits created by the shared Review, Test, Document, Lint, and operator-authorized repository gate fix path, plus CI repair commits, use the configurable [`commit.fix_message`](/no-mistakes/reference/global-config/#commitfix_message) template.
+Review, Test, Lint, and operator-authorized repository gate repair agents, including Lint's safe-fix pass when no command is configured, share a removal-first rule with the CI repair agent: when a problem can be resolved by removing a code path the intent does not strictly require, they remove it instead of validating, hardening, or documenting it. They judge necessity against user intent when present and otherwise against the change's stated purpose.
 The shared correction commits, and the Push step's commit of leftover changes from a pipeline agent or formatter, are machine-authored records of pipeline output. Each is created with the complete local commit-hook family suppressed by combining `--no-verify` with an empty temporary `core.hooksPath` for that invocation, so `pre-commit`, `prepare-commit-msg`, `commit-msg`, and `post-commit` do not run. This lets a disposable run worktree commit a correction even when a tracked hook depends on generated untracked runtime files that do not exist there - the canonical case is `core.hooksPath=.husky` with a tracked hook that sources the absent `.husky/_/husky.sh`.
 The suppression is limited to those correction-commit invocations. It does not change the repository, Git configuration, or daemon environment; CI repair commits and all other commit paths keep normal hook behavior. Pipeline gates remain authoritative; whether a CI repair returns through the local gates before publication is controlled by [`ci.revalidate_repairs`](/no-mistakes/reference/repo-config/#cirevalidate_repairs).
 Agent roles that can write, repair, or review tests reject tests whose only evidence is matching implementation source text, tokens, syntax, or incidental snapshots.
@@ -30,7 +31,7 @@ Review flags every newly added violation and requires same-pattern tests encount
 
 When a human resolves a findings gate with Approve, Skip, or Abort without selecting a fix, no-mistakes records that the round's findings were declined. A gate with no findings records no decision. When the human selects only some findings to fix, the unselected complement is recorded as declined; findings merely left out by automatic filtering remain undecided.
 
-Review, Test, Document, Lint, and CI fix agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
+Review, Test, Document, Lint, CI, and repository gate fix agent prompts receive a sanitized history containing the current step's earlier rounds, decisions from other steps in the same run, and a bounded window of decisions from earlier runs on the same branch. A recorded decision takes precedence over conflicting user-intent wording, and later decisions about the same concern supersede earlier ones. Completing Review does not clear branch decisions.
 
 This context is advisory and fails open. It tells agents not to implement or re-report a declined finding unless the current code introduces a materially different problem, but it does not block a step or commit and is not a reversion detector. Rebase fix prompts do not receive this decision history.
 
@@ -122,9 +123,9 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 **Default auto-fix limit:** `0`.
 
-### Post-review HEAD continuity
+### Pipeline HEAD continuity
 
-At entry to every remaining step in the fixed pipeline order - Test, Document, Lint, Push, PR, and CI - no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
+At entry to every repository gate and every core step from Test through CI, no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
 
 ## Test
 
@@ -273,12 +274,12 @@ The `v1` payload is compact JSON with these required fields:
 - `head_sha`: the exact git commit SHA recorded for the run when no-mistakes writes the PR body
 - `steps`: the ordered pipeline step snapshot; every item has exactly the fields below
 
-- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`
+- `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`; a repository-declared [gate](/no-mistakes/reference/repo-config/#gates) appears as `gate.<anchor>.<name>`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
 
 When the Test step validated the same `head_sha`, the payload also includes `live_validation` with `verdict`, `live` (the number of scenarios driven live), and `total`. The field is omitted for pre-contract findings and whenever a later Document, Lint, Push, or repair commit changes the head without validating that new commit. Consumers therefore never receive a previous head's live-validation verdict as a claim about the current head.
 
-Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can reject a stale comment after the PR head changes.
+Items follow pipeline order, with each repository gate immediately after its anchor. They represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can reject a stale comment after the PR head changes.
 
 For an existing GitHub PR on a non-base branch, every later no-mistakes publication rewrites that existing attestation for the proposed head **before** pushing the branch. This ordering ensures a `synchronize` check cannot observe a newly pushed legitimate head with the old binding. The ordinary Push step replaces the step list with its own current snapshot; a continuity-proven CI repair published without revalidation keeps the prior attested statuses because Review, Test, and Document did not run for that repair. A PR that never carried an attestation remains unchanged. A rewrite error aborts before branch mutation, while an unavailable GitHub SCM host skips the rewrite and leaves strict head equality to reject any stale binding. If the attestation write succeeds but the subsequent git push fails, the body can temporarily point ahead of the PR head, and the Push step reports the failure.
 

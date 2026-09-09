@@ -37,6 +37,12 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		}
 		m.stateRev = event.StateRev
 	}
+	// A client can subscribe before the executor inserts the run's dynamic gate
+	// rows. The first event for an unknown step means the synthetic core-only
+	// plan is stale, so read the authoritative snapshot before applying it.
+	if event.StepName != nil && ipc.ClassOf(event.Type) == ipc.ClassState && !m.hasStep(*event.StepName) {
+		return true
+	}
 	switch event.Type {
 	case ipc.EventRunUpdated, ipc.EventRunCreated:
 		m.err = nil
@@ -333,6 +339,15 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 			return
 		}
 	}
+}
+
+func (m Model) hasStep(name types.StepName) bool {
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) stepInFixReview(name types.StepName) bool {
