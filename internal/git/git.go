@@ -48,6 +48,15 @@ func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return runInDirWithEnvRaw(ctx, dir, nil, args...)
 }
 
+// RunWithInput executes a git command with exact standard input and returns
+// trimmed stdout. It carries the same bare-repository handling as Run.
+func RunWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithEnvAndInput(ctx, dir, nil, input, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithEnvAndInput(ctx, dir, nil, input, args...)
+}
+
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls
 // back to cwd-based repository discovery when bareDir is malformed. Gate
 // recovery uses this after structural validation so an invalid directory under
@@ -77,14 +86,25 @@ func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
-	out, err := runInDirWithEnvRaw(ctx, dir, extraEnv, args...)
+	return runInDirWithEnvAndInput(ctx, dir, extraEnv, "", args...)
+}
+
+func runInDirWithEnvAndInput(ctx context.Context, dir string, extraEnv []string, input string, args ...string) (string, error) {
+	out, err := runInDirWithEnvAndInputRaw(ctx, dir, extraEnv, input, args...)
 	return strings.TrimSpace(string(out)), err
 }
 
 func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
+	return runInDirWithEnvAndInputRaw(ctx, dir, extraEnv, "", args...)
+}
+
+func runInDirWithEnvAndInputRaw(ctx context.Context, dir string, extraEnv []string, input string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(nonInteractiveEnvForContext(ctx, dir), extraEnv...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	winproc.Harden(cmd)
 	// OutputShellCommand captures stdout only, so unlike cmd.Output it never
 	// fills ExitError.Stderr. Capture stderr explicitly or the git error text
