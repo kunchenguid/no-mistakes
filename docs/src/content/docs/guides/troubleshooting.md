@@ -199,8 +199,22 @@ gh auth login --with-token < new-pat.txt
 gh auth setup-git
 ```
 
-If your push target's HTTPS remote embeds the PAT in its URL (for example `https://<token>@github.com/...`), `gh auth setup-git` updates only the credential helper.
-no-mistakes pushes using the token in the remote URL, so update that URL with the refreshed credential too.
+If your push target's HTTPS remote embeds the PAT in its URL (for example `https://<token>@github.com/...`), `gh auth setup-git` updates only the credential helper — no-mistakes pushes using the token in the remote URL, so that URL must be refreshed too.
+
+no-mistakes keeps its own copy of the push target's URL on the gate's bare repo, so updating the URL in your checkout alone is not enough: re-run `no-mistakes init` afterward so the gate picks up the refreshed URL.
+
+```sh
+git remote set-url origin https://<new-token>@github.com/<owner>/<repo>.git
+no-mistakes init
+```
+
+If you push to a fork (see [GitHub fork contributions](/no-mistakes/guides/provider-integration/#github-fork-contributions)), the fork URL is stored separately and a bare `no-mistakes init` preserves it. Pass the refreshed URL explicitly:
+
+```sh
+no-mistakes init --fork-url https://<new-token>@github.com/<fork-owner>/<repo>.git
+```
+
+Prefer authenticating through the credential helper (`gh auth setup-git`) over embedding a PAT in the URL — a clean URL with no embedded token needs no `init` after a credential refresh.
 
 This only affects branches that modify workflow files.
 A branch that touches no `.github/workflows/*.yml` or `*.yaml` pushes normally with a standard `repo`-scoped token.
