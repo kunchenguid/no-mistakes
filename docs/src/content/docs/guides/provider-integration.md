@@ -280,7 +280,7 @@ The GitLab backend is pinned against `glab v1.5x`. Self-hosted detection and the
 
 ## SSH host aliases
 
-SSH remotes that use a host alias from your SSH configuration (for example `git@github-personal:owner/repo` or `git@gitlab-work:group/repo`, where `github-personal`/`gitlab-work` map to a real `HostName` via `~/.ssh/config`) are supported. `no-mistakes` resolves the alias through `ssh -G` and uses the resolved host for provider detection and provider-specific routing, including scoping `gh` or `glab` authentication and matching an SSH Forgejo remote to `FORGEJO_BASE_URL`. GitLab MR URLs use the authenticated repository's canonical web origin instead, as described in the [GitLab section](#gitlab). The original Git remote URL is left untouched, so authentication and pushes continue to use the alias exactly as your SSH configuration expects.
+SSH remotes that use a host alias from your SSH configuration (for example `git@github-personal:owner/repo` or `git@gitlab-work:group/repo`, where `github-personal`/`gitlab-work` map to a real `HostName` via `~/.ssh/config`) are supported. `no-mistakes` resolves the alias through `ssh -G` and uses the resulting provider identity for detection, routing, and authentication scope. Provider-specific canonicalization is described in the [GitHub](#github) and [GitLab](#gitlab) sections; SSH Forgejo remotes match the resolved host to `FORGEJO_BASE_URL`. The original Git remote URL is left untouched, so authentication and pushes continue to use the alias exactly as your SSH configuration expects.
 
 If `ssh -G` is unavailable or the alias does not resolve, detection falls back to the literal host in the remote URL rather than failing the run.
 
