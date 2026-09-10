@@ -562,6 +562,97 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 	}
 }
 
+// TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite reproduces the
+// custody wedge underlying the "sync --check says relation=equal but the next
+// push is rejected as non-fast-forward" bug: the production run worktree is a
+// DETACHED checkout of the gate's own bare repo (git.WorktreeAdd), so `git
+// rebase` there moves only the worktree's detached HEAD and never the shared
+// refs/heads/<branch> ref the gate exposes to a future `no-mistakes axi run`
+// push and to branch-sync custody recovery. Every sibling code path that
+// advances a run's head this way (commitFixAndAdvance in common_fix.go,
+// recordLocalRepair in ci_fix.go) explicitly moves that branch ref alongside
+// the DB write; updateHeadSHA must do the same or the gate ref is left pinned
+// at the pre-rebase commit - which is not even an ancestor of the rebased
+// head, so the next plain (non-force) push to the gate is rejected
+// non-fast-forward even though the DB-recorded run head (what sync --check
+// reports) matches the worktree exactly.
+func TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	// Advance main so the rebase below genuinely rewrites the feature commit
+	// onto a new base instead of trivially fast-forwarding.
+	gitCmd(t, seed, "checkout", "main")
+	os.WriteFile(filepath.Join(seed, "advance.txt"), []byte("advance\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "main advance")
+	gitCmd(t, seed, "push", gateDir, "main")
+	mainTip := gitCmd(t, gateDir, "rev-parse", "refs/heads/main")
+
+	// The production run worktree: a detached checkout off the gate's own bare
+	// repo, exactly as daemon startRun creates it via git.WorktreeAdd.
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err != nil {
+		t.Fatalf("rebase step: %v", err)
+	}
+
+	newHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if newHead == submittedSHA {
+		t.Fatal("rebase did not rewrite the submitted head; test setup did not exercise a real rebase")
+	}
+	if ancestor := gitCmdAllowFail(t, runWorktree, "merge-base", "--is-ancestor", submittedSHA, newHead); ancestor {
+		t.Fatalf("rebased head %s is still a descendant of submitted %s; test did not rewrite history", newHead, submittedSHA)
+	}
+
+	gateBranchRef := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
+	if gateBranchRef != newHead {
+		t.Fatalf("gate branch ref = %s, want rebased head %s (stuck at pre-rebase submitted %s: a future plain push to the gate would be rejected non-fast-forward)", gateBranchRef, newHead, submittedSHA)
+	}
+	if sctx.Run.HeadSHA != newHead {
+		t.Fatalf("run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, newHead)
+	}
+	if mainTip == "" {
+		t.Fatal("mainTip was not resolved")
+	}
+}
+
+// gitCmdAllowFail runs a git command that is expected to fail (a boolean-style
+// check like merge-base --is-ancestor) and reports whether it succeeded,
+// without failing the test on a non-zero exit.
+func gitCmdAllowFail(t *testing.T, dir string, args ...string) bool {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
 func TestRebaseStep_HangingConflictAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

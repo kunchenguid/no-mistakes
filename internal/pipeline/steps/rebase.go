@@ -513,6 +513,20 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 
 // updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
 // When the branch diff against the default branch is empty, SkipRemaining is set.
+//
+// The run worktree is a detached checkout of the gate's bare repo (see
+// git.WorktreeAdd), so a `git rebase` here moves only the worktree's detached
+// HEAD - never the shared refs/heads/<branch> the gate exposes to future
+// `no-mistakes axi run` pushes and to branch-sync custody recovery. Every other
+// step that advances the run's head this way (commitAgentFixes in
+// common_fix.go, recordLocalRepair in ci_fix.go) explicitly moves that branch
+// ref alongside the DB write; this call keeps rebase consistent with them. Skipping
+// it left the gate ref pinned at the pre-rebase commit, so a run that
+// terminated here without a later fix-round commit or a successful publish
+// (both of which incidentally repair the ref) returned custody at a head
+// sync --check reported as "relation=equal" while the gate's real branch ref
+// was still the stale, non-ancestor pre-rebase commit - so the next plain push
+// that starts a fresh run was rejected as non-fast-forward.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -521,6 +535,10 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
 		oldHead := sctx.Run.HeadSHA
 		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
+		ref := normalizedBranchRef(sctx.Run.Branch)
+		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
+			return nil, fmt.Errorf("update local branch ref: %w", err)
+		}
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err
