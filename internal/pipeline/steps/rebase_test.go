@@ -729,6 +729,71 @@ func TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently(t *test
 	}
 }
 
+// TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef covers the other
+// half of the CAS: if the ref CAS succeeds but the durable DB write that
+// follows it fails, the shared gate ref must not be left pointing past the
+// persisted run head - that split would make custody recovery reject the
+// already-advanced ref as unverified. updateHeadSHA must revert the ref back
+// to the pre-rebase head (and not advance sctx.Run.HeadSHA in memory) so both
+// sides agree again after the failure.
+func TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	os.WriteFile(filepath.Join(runWorktree, "feature.txt"), []byte("feature rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "feature commit (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	// Force the durable head SHA write to fail after the ref CAS has already
+	// succeeded, simulating a DB failure in that window.
+	if err := sctx.DB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail when the DB write fails, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != submittedSHA {
+		t.Fatalf("gate branch ref = %s, want reverted to pre-rebase head %s after the DB write failed", got, submittedSHA)
+	}
+	if sctx.Run.HeadSHA != submittedSHA {
+		t.Fatalf("run.HeadSHA = %s, want unchanged %s (must not record a head write whose persistence failed)", sctx.Run.HeadSHA, submittedSHA)
+	}
+}
+
 // TestRebaseStep_FailedCASLeavesUncertifiedRangeUntouched covers a second
 // consequence of the same race the CAS guards against: updateHeadSHA must not
 // call RemapUncertifiedPipelineRangeAfterRebase - which durably rewrites the

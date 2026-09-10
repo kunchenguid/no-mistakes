@@ -590,6 +590,13 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 // changes so a run that lost the race leaves nothing behind for a later run
 // to misread - a remap applied ahead of a failed ref update would otherwise
 // bind review provenance to a rebased head the gate never actually published.
+//
+// If the CAS succeeds but the durable head SHA write that follows it fails,
+// the gate ref has already moved past the persisted run head. Left alone that
+// splits custody state: recovery treats the persisted head as authoritative
+// and would reject the already-advanced ref as unverified. This function
+// reverts the ref (best effort) back to the pre-rebase head in that case so
+// both sides agree again.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -607,6 +614,16 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+			// The ref CAS above already moved the shared gate branch ref to
+			// headSHA. Leaving it there while the persisted run head stays at
+			// oldHead splits custody state: recovery reads the persisted head
+			// as authoritative and would reject the already-advanced gate ref
+			// as unverified. Revert the ref (best effort) so both sides agree
+			// again on the pre-rebase head.
+			if _, revertErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, oldHead, headSHA); revertErr != nil {
+				sctx.Log(fmt.Sprintf("failed to revert gate ref after head SHA persistence failure: %v", revertErr))
+			}
+			sctx.Run.HeadSHA = oldHead
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
