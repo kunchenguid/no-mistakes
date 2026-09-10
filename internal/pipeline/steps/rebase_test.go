@@ -582,6 +582,15 @@ func TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite(t *testing.T) 
 	t.Parallel()
 	gateDir := t.TempDir()
 	gitCmd(t, gateDir, "init", "--bare")
+	// A worktree added from gateDir shares gateDir's local config, not seed's,
+	// and the RebaseStep.Execute call below performs a real `git rebase` in
+	// that worktree - which creates new commits and so needs a resolvable
+	// committer identity. Without a local identity here, that falls back to
+	// the ambient global git config, which is absent on CI runners lacking a
+	// configured `user.name`/`user.email` (unlike this repo's own dev
+	// machines), failing with "unable to auto-detect email address".
+	gitCmd(t, gateDir, "config", "user.name", "test")
+	gitCmd(t, gateDir, "config", "user.email", "test@test.com")
 
 	seed := t.TempDir()
 	gitCmd(t, seed, "init")
