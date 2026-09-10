@@ -348,30 +348,6 @@ func TestFindPRAcceptsCanonicalWebHostForTransportAlias(t *testing.T) {
 	}
 }
 
-func TestFindPRAcceptsCanonicalHostResolvedFromSSHConfigAlias(t *testing.T) {
-	t.Parallel()
-
-	// buildHost passes scm.ResolveHost's ssh -G result into New. A true SSH
-	// alias therefore arrives here as the canonical transport hostname.
-	const mrURL = "https://gitlab.example.com/group/project/-/merge_requests/42"
-	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
-		"glab mr list --source-branch feature/ssh-alias --target-branch main --output json": {
-			stdout: `[{"iid":42,"web_url":"` + mrURL + `"}]` + "\n",
-		},
-		"glab repo view --output json": {
-			stdout: `{"web_url":"https://gitlab.example.com/group/project","path_with_namespace":"group/project"}` + "\n",
-		},
-	}), nil, "gitlab.example.com", "group/project")
-
-	pr, err := host.FindPR(context.Background(), "feature/ssh-alias", "main")
-	if err != nil {
-		t.Fatalf("FindPR() error = %v", err)
-	}
-	if pr == nil || pr.URL != mrURL {
-		t.Fatalf("FindPR() = %+v, want canonical SSH-alias MR", pr)
-	}
-}
-
 func TestFindPRRejectsCanonicalHostFromAnotherGitLabInstance(t *testing.T) {
 	t.Parallel()
 

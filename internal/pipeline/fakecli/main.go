@@ -43,6 +43,8 @@ func handleFakeCLI(mode string) {
 		fakeGHHandler(args)
 	case "glab":
 		fakeGlabHandler(args)
+	case "gitlab-ssh-config-alias":
+		fakeGitLabSSHConfigAliasHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
@@ -364,10 +366,42 @@ func fakeGitForward(args []string, realGit string) {
 	os.Exit(0)
 }
 
+func fakeGitLabSSHConfigAliasHandler(args []string) {
+	name := strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0]))
+	switch name {
+	case "ssh":
+		alias := os.Getenv("FAKE_CLI_SSH_ALIAS")
+		hostname := os.Getenv("FAKE_CLI_SSH_HOSTNAME")
+		if len(args) != 3 || args[0] != "-G" || args[1] != "--" || args[2] != alias || hostname == "" {
+			fmt.Fprintln(os.Stderr, "unexpected ssh argv:", strings.Join(args, " "))
+			os.Exit(1)
+		}
+		fmt.Printf("host %s\nhostname %s\n", alias, hostname)
+	case "glab":
+		if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+			hostname, ok := fakeCLIFlagValue(args, "--hostname")
+			if !ok || hostname != os.Getenv("FAKE_CLI_SSH_HOSTNAME") {
+				fmt.Fprintln(os.Stderr, "unexpected glab auth hostname:", hostname)
+				os.Exit(1)
+			}
+		}
+		fakeGlabHandler(args)
+	default:
+		os.Exit(1)
+	}
+}
+
 func fakeGlabHandler(args []string) {
 	mrViewJSON := os.Getenv("FAKE_CLI_MR_VIEW_JSON")
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "repo" && args[1] == "view" {
+		if repoViewJSON := os.Getenv("FAKE_CLI_REPO_VIEW_JSON"); repoViewJSON != "" {
+			fmt.Println(repoViewJSON)
+			os.Exit(0)
+		}
+		os.Exit(1)
 	}
 	if len(args) >= 2 && args[0] == "mr" && args[1] == "list" {
 		if mrViewJSON == "" {
