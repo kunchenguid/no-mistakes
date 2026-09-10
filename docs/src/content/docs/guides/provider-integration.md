@@ -123,7 +123,7 @@ glab auth login
 
 When no-mistakes updates an existing merge request, it reads the live title and preserves any GitLab draft marker. If `glab mr view` fails or returns an empty title, the update stops instead of risking a change from draft to ready.
 
-GitLab SSH remotes may use either an SSH config alias or a transport/DNS hostname that differs from the instance's canonical web hostname. no-mistakes leaves that remote unchanged. For MR URL validation, no-mistakes confirms the canonical web origin with `glab repo view` for the current authenticated repository and still requires the exact namespace/project; URLs for another instance, port, protocol, or project are rejected.
+GitLab SSH remotes may use either an SSH config alias or a transport/DNS hostname that differs from the instance's canonical web hostname. no-mistakes leaves that remote unchanged. MR URLs returned by list, create, or view commands, and persisted URLs used for updates, checks, or retargeting, follow one identity rule: `glab repo view --output json` must report the same namespace/project, and its canonical web origin (scheme, hostname, and effective port) must match the MR URL. This accepts transport aliases while rejecting URLs for another GitLab origin or project.
 
 ## Forgejo
 
@@ -280,7 +280,7 @@ The GitLab backend is pinned against `glab v1.5x`. Self-hosted detection and the
 
 ## SSH host aliases
 
-SSH remotes that use a host alias from your SSH configuration (for example `git@github-personal:owner/repo` or `git@gitlab-work:group/repo`, where `github-personal`/`gitlab-work` map to a real `HostName` via `~/.ssh/config`) are supported. `no-mistakes` resolves the alias through `ssh -G` to its real host name and uses that host only for provider detection and identity checks, including scoping `gh` or `glab` to the right instance and matching an SSH Forgejo remote to `FORGEJO_BASE_URL`. The original Git remote URL is left untouched, so authentication and pushes continue to use the alias exactly as your SSH configuration expects.
+SSH remotes that use a host alias from your SSH configuration (for example `git@github-personal:owner/repo` or `git@gitlab-work:group/repo`, where `github-personal`/`gitlab-work` map to a real `HostName` via `~/.ssh/config`) are supported. `no-mistakes` resolves the alias through `ssh -G` and uses the resolved host for provider detection and provider-specific routing, including scoping `gh` or `glab` authentication and matching an SSH Forgejo remote to `FORGEJO_BASE_URL`. GitLab MR URLs use the authenticated repository's canonical web origin instead, as described in the [GitLab section](#gitlab). The original Git remote URL is left untouched, so authentication and pushes continue to use the alias exactly as your SSH configuration expects.
 
 If `ssh -G` is unavailable or the alias does not resolve, detection falls back to the literal host in the remote URL rather than failing the run.
 

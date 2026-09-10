@@ -166,7 +166,7 @@ Symptom: a run stops with a failed step.
 Check the per-step log at `~/.no-mistakes/logs/<runID>/<step>.log`.
 Fatal step errors are appended to that log, so failures such as rejected pushes include the returned error output there instead of only appearing in `daemon.log`.
 
-If GitLab PR discovery rejects an MR URL because the SSH transport/DNS host differs from the canonical web host, see the [GitLab provider integration guidance](/no-mistakes/guides/provider-integration/#gitlab).
+If GitLab PR discovery reports a canonical web-origin or project mismatch, verify that `glab repo view --output json` selects the intended repository under the daemon's authentication, then see the [GitLab provider integration guidance](/no-mistakes/guides/provider-integration/#gitlab).
 
 ### Push fails with `refusing to force-push`
 
