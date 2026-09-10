@@ -612,6 +612,8 @@ func TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite(t *testing.T) 
 	// repo, exactly as daemon startRun creates it via git.WorktreeAdd.
 	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
 	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+	gitCmd(t, runWorktree, "config", "user.name", "test")
+	gitCmd(t, runWorktree, "config", "user.email", "test@test.com")
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
