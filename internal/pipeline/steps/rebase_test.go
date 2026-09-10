@@ -653,6 +653,82 @@ func gitCmdAllowFail(t *testing.T, dir string, args ...string) bool {
 	return cmd.Run() == nil
 }
 
+// TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently covers
+// the compare-and-swap half of the fix above: updateHeadSHA's update-ref must
+// pass the run's recorded pre-rebase head as the expected current value, not
+// just the new one, or it would silently clobber a gate branch ref that
+// another push or custody-recovery operation moved in the window between this
+// run reading its head and this step running. Simulates that race directly
+// (rather than through a timing-dependent concurrent goroutine) by moving the
+// gate's real branch ref out from under the run before calling updateHeadSHA,
+// and asserts the call fails instead of overwriting the concurrently-moved ref.
+func TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	// The production run worktree: a detached checkout off the gate's own bare
+	// repo, exactly as daemon startRun creates it via git.WorktreeAdd.
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	// Stand in for the rebase step having already rewritten the worktree's
+	// HEAD (an amend here, a real rebase in production - updateHeadSHA only
+	// cares that HEAD no longer matches sctx.Run.HeadSHA).
+	os.WriteFile(filepath.Join(runWorktree, "feature.txt"), []byte("feature rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "feature commit (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	// Concurrently to this run, another push or custody-recovery operation
+	// moves the gate's real branch ref away from the run's recorded
+	// pre-rebase head before updateHeadSHA gets to it.
+	gitCmd(t, seed, "commit", "--allow-empty", "-m", "concurrent move")
+	concurrentSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "-f", gateDir, "feature")
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want concurrent move %s; test setup did not simulate the race", got, concurrentSHA)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail closed when the gate ref moved concurrently, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want unchanged concurrent move %s (the rewritten head must not clobber it)", got, concurrentSHA)
+	}
+	if sctx.Run.HeadSHA != submittedSHA {
+		t.Fatalf("run.HeadSHA = %s, want unchanged %s (must not record a head write that failed)", sctx.Run.HeadSHA, submittedSHA)
+	}
+}
+
 func TestRebaseStep_HangingConflictAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

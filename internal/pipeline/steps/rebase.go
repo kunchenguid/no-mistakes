@@ -569,6 +569,20 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 // sync --check reported as "relation=equal" while the gate's real branch ref
 // was still the stale, non-ancestor pre-rebase commit - so the next plain push
 // that starts a fresh run was rejected as non-fast-forward.
+//
+// The update-ref call passes oldHead (the run's pre-rebase recorded head) as
+// the expected current value, not just the new one: without that compare-
+// and-swap, this write would silently clobber a branch ref moved concurrently
+// by another push or custody-recovery operation between this run reading its
+// head and this step running. Passing the expected old value makes a
+// concurrent move fail this step closed instead. When WorkDir is a normal
+// (non-detached) checkout of the branch itself rather than the detached gate
+// worktree this fix targets, the rebase can advance refs/heads/<branch> to
+// headSHA on its own before this call runs, so a CAS against oldHead then
+// fails even though the ref already holds the value this call wants to write.
+// That is the ref already being correct, not the hostile concurrent move the
+// CAS guards against, so a failed CAS is only an error when the ref has
+// landed somewhere other than headSHA too.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -578,8 +592,11 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		oldHead := sctx.Run.HeadSHA
 		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		ref := normalizedBranchRef(sctx.Run.Branch)
-		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-			return nil, fmt.Errorf("update local branch ref: %w", err)
+		if _, casErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA, oldHead); casErr != nil {
+			current, verifyErr := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref)
+			if verifyErr != nil || strings.TrimSpace(current) != headSHA {
+				return nil, fmt.Errorf("update local branch ref: %w", casErr)
+			}
 		}
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
