@@ -107,7 +107,7 @@ func SupportsUserAttachments(host string) bool {
 }
 
 func normalizeGitHubHost(host string) string {
-	return strings.ToLower(strings.TrimSpace(host))
+	return strings.ToLower(CanonicalHost(host))
 }
 
 func userAssetUploadPrefix(host string) string {

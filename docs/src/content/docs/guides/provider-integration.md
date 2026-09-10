@@ -69,7 +69,7 @@ gh auth status
 ```
 
 `no-mistakes doctor` also checks for `gh` availability.
-For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory.
+For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory. If SSH configuration routes `github.com` through GitHub's `ssh.github.com:443` transport endpoint, provider commands still use the canonical `github.com` API/web identity; `ssh.github.com` does not need separate `gh` authentication.
 
 ### Multiple GitHub or GitLab identities
 

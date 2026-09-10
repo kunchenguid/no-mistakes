@@ -406,9 +406,10 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 	logFile = filepath.Join(t.TempDir(), "glab.log")
 	linkTestBinary(t, binDir, "glab")
 	env = fakeCLIEnv(binDir, map[string]string{
-		"FAKE_CLI_MODE":         "glab",
-		"FAKE_CLI_LOG":          logFile,
-		"FAKE_CLI_MR_VIEW_JSON": mrViewJSON,
+		"FAKE_CLI_MODE":           "glab",
+		"FAKE_CLI_LOG":            logFile,
+		"FAKE_CLI_MR_VIEW_JSON":   mrViewJSON,
+		"FAKE_CLI_REPO_VIEW_JSON": `{"web_url":"https://gitlab.com/test/repo","path_with_namespace":"test/repo"}`,
 	})
 	return env, logFile
 }

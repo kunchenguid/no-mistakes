@@ -50,7 +50,7 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 	return &Host{
 		cmd:          cmd,
 		cliAvailable: cliAvailable,
-		host:         strings.TrimSpace(host),
+		host:         CanonicalHost(host),
 		repo:         strings.TrimSpace(repo),
 	}
 }
@@ -76,6 +76,18 @@ func RepoSlug(remoteURL string) string {
 	return parts[0] + "/" + parts[1]
 }
 
+// CanonicalHost converts GitHub's official SSH-over-443 transport endpoint to
+// the API/web identity gh expects. ssh -G may legitimately resolve github.com
+// to ssh.github.com, but the latter is not a separately authenticated forge.
+// Other hosts, including GitHub Enterprise Server SSH aliases, remain unchanged.
+func CanonicalHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "ssh.github.com") {
+		return "github.com"
+	}
+	return host
+}
+
 // HostPrefixedSlug returns "host/owner/name" for GitHub Enterprise Server
 // instances and plain "owner/name" for github.com. This is the format that
 // the gh CLI's --repo flag requires for GHE.
@@ -90,7 +102,7 @@ func HostPrefixedSlugForHost(remoteURL, host string) string {
 	if slug == "" {
 		return ""
 	}
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.ToLower(CanonicalHost(host))
 	if host == "" || strings.EqualFold(host, "github.com") {
 		return slug
 	}

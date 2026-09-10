@@ -45,6 +45,8 @@ func handleFakeCLI(mode string) {
 		fakeGlabHandler(args)
 	case "gitlab-ssh-config-alias":
 		fakeGitLabSSHConfigAliasHandler(args)
+	case "github-ssh-transport-endpoint":
+		fakeGitHubSSHTransportEndpointHandler(args)
 	case "record-success":
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
@@ -364,6 +366,38 @@ func fakeGitForward(args []string, realGit string) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func fakeGitHubSSHTransportEndpointHandler(args []string) {
+	name := strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0]))
+	switch name {
+	case "ssh":
+		if len(args) != 3 || args[0] != "-G" || args[1] != "--" || args[2] != "github.com" {
+			fmt.Fprintln(os.Stderr, "unexpected ssh argv:", strings.Join(args, " "))
+			os.Exit(1)
+		}
+		fmt.Println("host github.com")
+		fmt.Println("hostname ssh.github.com")
+		fmt.Println("port 443")
+	case "gh":
+		if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+			hostname, ok := fakeCLIFlagValue(args, "--hostname")
+			if !ok || hostname != "github.com" {
+				fmt.Fprintln(os.Stderr, "unexpected gh auth hostname:", hostname)
+				os.Exit(1)
+			}
+		}
+		if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+			repo, ok := fakeCLIFlagValue(args, "--repo")
+			if !ok || repo != "kunchenguid/no-mistakes" {
+				fmt.Fprintln(os.Stderr, "unexpected gh repository:", repo)
+				os.Exit(1)
+			}
+		}
+		fakeGHHandler(args)
+	default:
+		os.Exit(1)
+	}
 }
 
 func fakeGitLabSSHConfigAliasHandler(args []string) {

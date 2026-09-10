@@ -19,6 +19,7 @@ func TestSupportsUserAttachments(t *testing.T) {
 		"":                  true,
 		"github.com":        true,
 		"GitHub.COM":        true,
+		"ssh.github.com":    true,
 		"github.localhost":  true,
 		"contoso.ghe.com":   true,
 		"ghe.com":           true,

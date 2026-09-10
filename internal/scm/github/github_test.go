@@ -92,6 +92,9 @@ func TestHostPrefixedSlugForHost_SSHAlias(t *testing.T) {
 	if got := HostPrefixedSlugForHost(remote, "github.com"); got != "owner/repo" {
 		t.Fatalf("HostPrefixedSlugForHost() = %q, want owner/repo", got)
 	}
+	if got := HostPrefixedSlugForHost(remote, "ssh.github.com"); got != "owner/repo" {
+		t.Fatalf("HostPrefixedSlugForHost() for SSH transport endpoint = %q, want owner/repo", got)
+	}
 	if got := HostPrefixedSlugForHost(remote, "ghe.example.com"); got != "ghe.example.com/owner/repo" {
 		t.Fatalf("HostPrefixedSlugForHost() = %q, want ghe.example.com/owner/repo", got)
 	}
