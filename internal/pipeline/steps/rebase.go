@@ -583,6 +583,13 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 // That is the ref already being correct, not the hostile concurrent move the
 // CAS guards against, so a failed CAS is only an error when the ref has
 // landed somewhere other than headSHA too.
+//
+// The CAS runs before RemapUncertifiedPipelineRangeAfterRebase, not after:
+// that remap durably rewrites the run's authoritative uncertified-range
+// bookkeeping, and a genuine CAS failure must return before any durable state
+// changes so a run that lost the race leaves nothing behind for a later run
+// to misread - a remap applied ahead of a failed ref update would otherwise
+// bind review provenance to a rebased head the gate never actually published.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -590,7 +597,6 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	}
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
 		oldHead := sctx.Run.HeadSHA
-		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		ref := normalizedBranchRef(sctx.Run.Branch)
 		if _, casErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA, oldHead); casErr != nil {
 			current, verifyErr := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref)
@@ -598,6 +604,7 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 				return nil, fmt.Errorf("update local branch ref: %w", casErr)
 			}
 		}
+		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err

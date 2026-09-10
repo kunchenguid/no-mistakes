@@ -729,6 +729,86 @@ func TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently(t *test
 	}
 }
 
+// TestRebaseStep_FailedCASLeavesUncertifiedRangeUntouched covers a second
+// consequence of the same race the CAS guards against: updateHeadSHA must not
+// call RemapUncertifiedPipelineRangeAfterRebase - which durably rewrites the
+// run's persisted uncertified-pipeline-range row - until the CAS is known to
+// have succeeded (or already been satisfied). Remapping ahead of a CAS that
+// then genuinely fails would bind a later run's review provenance to a
+// rebased head the gate branch never actually came to point at.
+func TestRebaseStep_FailedCASLeavesUncertifiedRangeUntouched(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "author.txt"), []byte("author\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "author")
+	fromSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(seed, "fixer.txt"), []byte("fixer\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "fixer")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	// Stand in for the rebase step having rewritten only the tip commit -
+	// fromSHA stays a valid ancestor, matching a real rebase that doesn't
+	// touch commits below the point it forked from.
+	os.WriteFile(filepath.Join(runWorktree, "fixer.txt"), []byte("fixer rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "fixer (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	// Concurrently to this run, another push or custody-recovery operation
+	// moves the gate's real branch ref away from the run's recorded
+	// pre-rebase head before updateHeadSHA gets to it.
+	gitCmd(t, seed, "commit", "--allow-empty", "-m", "concurrent move")
+	concurrentSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "-f", gateDir, "feature")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+	if err := sctx.DB.UpsertUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch, fromSHA, submittedSHA, sctx.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail closed when the gate ref moved concurrently, got nil error")
+	}
+
+	got, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != fromSHA || got.ToSHA != submittedSHA {
+		t.Fatalf("uncertified range = %#v, want unchanged from=%s to=%s (a failed CAS must not durably remap it to %s)", got, fromSHA, submittedSHA, rewrittenHead)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want unchanged concurrent move %s", got, concurrentSHA)
+	}
+}
+
 func TestRebaseStep_HangingConflictAgentFailsAfterTimeout(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
