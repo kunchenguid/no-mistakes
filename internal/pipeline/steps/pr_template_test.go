@@ -16,8 +16,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-const testPRTemplate = "## Overview\n\n<!-- Describe the final change. -->\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
-const filledPRTemplate = "## Overview\n\nAdd a Bar helper.\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
+const testPRTemplate = "# Overview\n\n<!-- Describe the final change. -->\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
+const filledPRTemplate = "# Overview\n\nAdd a Bar helper.\n\n## Testing\n\n- [ ] Maintainer approves rollout\n"
 
 func templateTestContext(t *testing.T) (*pipeline.StepContext, *mockAgent, string) {
 	t.Helper()
@@ -194,7 +194,7 @@ func TestPRTemplateRegenerationPreservesAuthorsAndClosingReferences(t *testing.T
 
 func TestPRTemplateDraftFailureDoesNotFallBackOrPublish(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"agent-error", "missing", "nested-json", "checkbox", "heading", "ownership", "fenced", "oversized"} {
+	for _, mode := range []string{"agent-error", "missing", "nested-json", "missing-heading", "heading", "ownership", "fenced", "oversized"} {
 		t.Run(mode, func(t *testing.T) {
 			sctx, ag, _ := templateTestContext(t)
 			ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
@@ -206,10 +206,10 @@ func TestPRTemplateDraftFailureDoesNotFallBackOrPublish(t *testing.T) {
 					return &agent.Result{}, nil
 				case "nested-json":
 					body = `{"body":"## Overview"}`
-				case "checkbox":
-					body = strings.ReplaceAll(body, "[ ]", "[x]")
+				case "missing-heading":
+					body = strings.ReplaceAll(body, "# Overview", "")
 				case "heading":
-					body = strings.ReplaceAll(body, "## Testing", "## Tests")
+					body = strings.ReplaceAll(body, "# Overview", "# Summary")
 				case "ownership":
 					body += prAppendixEnd
 				case "fenced":
@@ -233,7 +233,7 @@ func TestPRTemplateDraftFailureDoesNotFallBackOrPublish(t *testing.T) {
 	}
 }
 
-func TestPRTemplateStructurePreservesTaskCheckboxStates(t *testing.T) {
+func TestPRTemplateStructureAllowsTaskEdits(t *testing.T) {
 	t.Parallel()
 	for _, line := range []string{"- [ ]", "*\t[ ] Approval", "+   [x] Approval", "1. [ ] Approval", "2) [X] Approval"} {
 		template := "## Overview\n\n" + line + "\n"
@@ -245,11 +245,11 @@ func TestPRTemplateStructurePreservesTaskCheckboxStates(t *testing.T) {
 		if changed == body {
 			changed = strings.ReplaceAll(strings.ReplaceAll(body, "[x]", "[ ]"), "[X]", "[ ]")
 		}
-		if err := validateTemplateStructure(template, changed); err == nil {
-			t.Errorf("changed checklist state %q accepted", line)
+		if err := validateTemplateStructure(template, changed); err != nil {
+			t.Errorf("changed checklist state %q rejected: %v", line, err)
 		}
-		if err := validateTemplateStructure(template, "## Overview\n\nFilled narrative."); err == nil {
-			t.Errorf("omitted checklist %q accepted", line)
+		if err := validateTemplateStructure(template, "Filled narrative."); err != nil {
+			t.Errorf("omitted checklist/subheading %q rejected: %v", line, err)
 		}
 	}
 }

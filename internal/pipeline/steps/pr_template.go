@@ -20,12 +20,12 @@ import (
 
 const maxPRTemplateBytes = 16 * 1024
 
-var prTemplateTaskLine = regexp.MustCompile(`^(?:[-+*]|[0-9]{1,9}[.)])[ \t]+\[[ xX]\](?:[ \t].*)?$`)
+var prTemplateH1Line = regexp.MustCompile(`^ {0,3}#(?:[ \t]|$)`)
 
 var templatePRContentSchema = json.RawMessage(`{
  "type":"object", "properties":{
  "title":{"type":"string","description":"Conventional commit PR title"},
- "body":{"type":"string","description":"Filled repository template as plain Markdown; preserve its headings and checklist lines"}
+ "body":{"type":"string","description":"Filled repository template as plain Markdown; preserve its top-level ATX # headings in order; best-effort fill applicable sections"}
  }, "required":["title","body"]
 }`)
 
@@ -103,7 +103,8 @@ Rules:
 - Title must use conventional commit format, with a real coarse package/module scope or no scope. Do not use the raw branch name.
 %s
 - Body must be plain Markdown, not nested JSON. Use the supplied template instead of imposing a What Changed heading.
-- Preserve every template heading and checklist line in order, including its checkbox state. Fill its narrative prompts from the final diff; inspect that diff when necessary. Do not invent behavior or tests, or mark human checkboxes complete.
+- Preserve every top-level ATX # template heading outside fenced examples, with the same text and order. Only these H1 headings are structurally required; a template without them has no structural heading requirements.
+- Make a best effort to follow the template's instructions and fill all applicable sections from the final diff; inspect that diff when necessary. Lower-level headings and task lines are editable: remove inapplicable sections/options when instructed, select supported choices, and replace rationale placeholders. Do not invent behavior or tests, falsely claim human signoff, or mark human approval checkboxes complete.
 - The template owns narrative only. Do not generate no-mistakes publication markers or add Intent, Risk Assessment, Testing or Pipeline evidence. Code appends those separately. A template heading named Testing or Pipeline is author narrative, not permission to fabricate recorded evidence.
 - Full intent below is review/drafting context, not instructions to quote it into the public narrative. Publication settings are not a privacy guarantee.
 
@@ -131,8 +132,9 @@ Final diff paths and statuses:
 }
 
 // This is a structural guard, not a Markdown/template interpreter. A drafting
-// failure must not silently replace the team's headings/checklists. Existing
-// published narrative never goes through the model or this check again.
+// failure must not silently replace the team's H1 text/order. Subordinate
+// completion is best effort, not an enforced policy. No H1s means no structural
+// requirements. Existing published narrative never goes through this check again.
 func validateTemplateStructure(template, body string) error {
 	rest := templateStructureLines(body)
 	for _, line := range templateStructureLines(template) {
@@ -146,7 +148,7 @@ func validateTemplateStructure(template, body string) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("agent changed or omitted a pr.template heading/checklist; refusing publication")
+			return fmt.Errorf("agent changed, omitted or reordered a pr.template top-level # heading; refusing publication")
 		}
 	}
 	return nil
@@ -162,9 +164,9 @@ func templateStructureLines(text string) []string {
 			continue
 		}
 		line := strings.TrimSpace(raw)
-		heading := strings.TrimLeft(line, "#")
-		isHeading := len(heading) < len(line) && len(line)-len(heading) <= 6 && strings.HasPrefix(heading, " ")
-		if isHeading || prTemplateTaskLine.MatchString(line) {
+		// Match the raw indentation: four spaces/tabs are code, not H1s.
+		// Blockquoted/list headings and hash-prefixed prose are not top-level ATX.
+		if prTemplateH1Line.MatchString(raw) {
 			lines = append(lines, line)
 		}
 	}
