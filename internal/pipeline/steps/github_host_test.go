@@ -3,9 +3,12 @@ package steps
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -16,8 +19,9 @@ func TestBuildHostGitHubCanonicalizesSSHTransportEndpoint(t *testing.T) {
 	linkTestBinary(t, binDir, "gh")
 
 	const (
-		remote = "git@github.com:kunchenguid/no-mistakes.git"
-		prURL  = "https://github.com/kunchenguid/no-mistakes/pull/1016"
+		remote  = "git@github.com:kunchenguid/no-mistakes.git"
+		forkURL = "https://github.com/HackXIt/no-mistakes.git"
+		prURL   = "https://github.com/kunchenguid/no-mistakes/pull/1016"
 	)
 	vars := map[string]string{
 		"FAKE_CLI_MODE": "github-ssh-transport-endpoint",
@@ -30,15 +34,30 @@ func TestBuildHostGitHubCanonicalizesSSHTransportEndpoint(t *testing.T) {
 		t.Setenv(key, value)
 	}
 
+	profileDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    user: contributor\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	forgeCtx, err := forgecontext.Resolve(context.Background(), config.ForgeProfiles{
+		"github.com": {GHConfigDir: profileDir},
+	}, remote, forkURL)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if forgeCtx == nil || forgeCtx.Host != "github.com" {
+		t.Fatalf("Resolve() = %#v, want canonical GitHub forge host", forgeCtx)
+	}
+
 	sctx := &pipeline.StepContext{
 		Ctx: context.Background(),
 		Run: &db.Run{Branch: "feature/github-ssh-transport"},
 		Repo: &db.Repo{
 			UpstreamURL:   remote,
-			ForkURL:       "https://github.com/HackXIt/no-mistakes.git",
+			ForkURL:       forkURL,
 			DefaultBranch: "main",
 		},
-		Env: fakeCLIEnv(binDir, vars),
+		Env:          fakeCLIEnv(binDir, vars),
+		ForgeContext: forgeCtx,
 	}
 	host, reason := buildHost(sctx, scm.ProviderGitHub)
 	if host == nil || reason != "" {

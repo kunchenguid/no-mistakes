@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -70,6 +71,7 @@ func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, fo
 	profileProvider := scm.ProviderGitLab
 	if profile.GHConfigDir != "" {
 		profileProvider = scm.ProviderGitHub
+		targetHost = github.CanonicalHost(targetHost)
 	}
 	if detected := scm.DetectProviderStaticContext(ctx, targetRemote); detected != scm.ProviderUnknown && detected != profileProvider {
 		return nil, fmt.Errorf("forge profile %q selects provider %s but the upstream remote is %s", profileHost, profileProvider, detected)
