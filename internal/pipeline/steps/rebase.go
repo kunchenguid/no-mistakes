@@ -596,7 +596,9 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 // splits custody state: recovery treats the persisted head as authoritative
 // and would reject the already-advanced ref as unverified. This function
 // reverts the ref (best effort) back to the pre-rebase head in that case so
-// both sides agree again.
+// both sides agree again, and also remaps the uncertified range back onto
+// oldHead so its provenance bookkeeping does not stay bound to the
+// unpublished rebased lineage the ref revert just abandoned.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -623,6 +625,7 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 			if _, revertErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, oldHead, headSHA); revertErr != nil {
 				sctx.Log(fmt.Sprintf("failed to revert gate ref after head SHA persistence failure: %v", revertErr))
 			}
+			pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, headSHA, oldHead)
 			sctx.Run.HeadSHA = oldHead
 			return nil, err
 		}
