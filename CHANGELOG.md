@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.74.0](https://github.com/kunchenguid/no-mistakes/compare/v1.73.0...v1.74.0) (2026-09-10)
+
+
+### Features
+
+* **pipeline:** add repository command gates ([#1030](https://github.com/kunchenguid/no-mistakes/issues/1030)) ([74143ae](https://github.com/kunchenguid/no-mistakes/commit/74143aee1fa6f316491c9d5c105993198c895b8e))
+
+
+### Bug Fixes
+
+* **branchsync:** recover reviewed equal-tree rewrites ([#1037](https://github.com/kunchenguid/no-mistakes/issues/1037)) ([947c64c](https://github.com/kunchenguid/no-mistakes/commit/947c64c7046d47a924cdfb374887202edf560fc8))
+
 ## [1.73.0](https://github.com/kunchenguid/no-mistakes/compare/v1.72.0...v1.73.0) (2026-09-09)
 
 
