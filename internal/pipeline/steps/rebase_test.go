@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
@@ -791,6 +793,113 @@ func TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef(t *testing.T) {
 	}
 	if sctx.Run.HeadSHA != submittedSHA {
 		t.Fatalf("run.HeadSHA = %s, want unchanged %s (must not record a head write whose persistence failed)", sctx.Run.HeadSHA, submittedSHA)
+	}
+}
+
+// TestRebaseStep_HeadSHAPersistenceFailureRemapsUncertifiedRangeBackToOldHead
+// exercises the reverse remap on the path
+// TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef cannot: that test
+// forces the DB write failure by closing the whole database, which also
+// breaks the reverse remap's own DB read before it can run. Here only the
+// runs table write fails (via a trigger), so RemapUncertifiedPipelineRangeAfterRebase
+// actually runs against a real, previously-forward-remapped uncertified
+// range and must put it back onto the pre-rebase lineage the reverted gate
+// ref now agrees with.
+func TestRebaseStep_HeadSHAPersistenceFailureRemapsUncertifiedRangeBackToOldHead(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "author.txt"), []byte("author\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "author")
+	fromSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(seed, "fixer.txt"), []byte("fixer\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "fixer")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	os.WriteFile(filepath.Join(runWorktree, "fixer.txt"), []byte("fixer rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "fixer (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	repo, err := database.InsertRepo(runWorktree, "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "refs/heads/feature", submittedSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, "refs/heads/feature", fromSHA, submittedSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.DB = database
+	sctx.Run = run
+	sctx.Repo = repo
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	// Force only the durable head SHA write to fail, after the ref CAS and
+	// the forward remap have already run against real data - not the whole
+	// DB, which would also block the reverse remap's own read.
+	trigger, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer trigger.Close()
+	if _, err := trigger.Exec(`CREATE TRIGGER fail_runs_update BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'forced failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail when the DB write fails, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != submittedSHA {
+		t.Fatalf("gate branch ref = %s, want reverted to pre-rebase head %s after the DB write failed", got, submittedSHA)
+	}
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, "refs/heads/feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("uncertified range disappeared after the reverse remap")
+	}
+	if got.ToSHA != submittedSHA || got.FromSHA != fromSHA {
+		t.Fatalf("reverse remap left range %#v, want it back on the pre-rebase lineage from=%s to=%s (not still bound to abandoned rewritten head %s)", got, fromSHA, submittedSHA, rewrittenHead)
 	}
 }
 
