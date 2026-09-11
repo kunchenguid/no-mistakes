@@ -110,13 +110,7 @@ func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 }
 
 func ApplyToProcess() error {
-	return ApplyToProcessWithShellRetry(0)
-}
-
-// ApplyToProcessWithShellRetry applies ResolveWithShellRetry(window) to the
-// current process environment.
-func ApplyToProcessWithShellRetry(window time.Duration) error {
-	return ApplyToProcessWithShellRetryExcept(window)
+	return ApplyToProcessWithShellRetryExcept(0)
 }
 
 func ApplyToProcessWithShellRetryExcept(window time.Duration, excluded ...string) error {
