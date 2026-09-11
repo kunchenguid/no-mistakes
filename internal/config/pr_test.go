@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,19 @@ func TestPRRenderTitle_CustomFormat(t *testing.T) {
 	}
 	if want := "PROJ-123: add widget"; got != want {
 		t.Fatalf("RenderTitle() = %q, want %q", got, want)
+	}
+}
+
+func TestPRRenderTitle_DoesNotApplyProviderLimit(t *testing.T) {
+	t.Parallel()
+
+	title := strings.Repeat("x", 256)
+	got, err := (PR{TitleFormat: "{{.Title}}"}).RenderTitle("", title)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != title {
+		t.Fatalf("RenderTitle() length = %d, want %d", len(got), len(title))
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -24,7 +23,7 @@ var prTemplateH1Line = regexp.MustCompile(`^ {0,3}#(?:[ \t]|$)`)
 
 var templatePRContentSchema = json.RawMessage(`{
  "type":"object", "properties":{
- "title":{"type":"string","description":"Conventional commit PR title"},
+ "title":{"type":"string","description":"Concise pull request title text"},
  "body":{"type":"string","description":"Filled repository template as plain Markdown; preserve its top-level ATX # headings in order; best-effort fill applicable sections"}
  }, "required":["title","body"]
 }`)
@@ -102,6 +101,8 @@ func (s *PRStep) draftTemplateNarrative(sctx *pipeline.StepContext, branch, base
 	// JSON quoting delimits the trusted template without inventing a template
 	// language. It supplies prose instructions/structure, never recorded facts.
 	quoted, _ := json.Marshal(template)
+	titleRules := prTitlePromptRules(sctx)
+	scopeRules := prTitleScopeRules(sctx)
 	prompt := fmt.Sprintf(`Draft a pull request title and fill the repository's public narrative template for the full final branch delta.
 Branch: %s
 PR base branch: %s
@@ -109,7 +110,7 @@ Base commit: %s
 Target commit: %s
 
 Rules:
-- Title must use conventional commit format, with a real coarse package/module scope or no scope. Do not use the raw branch name.
+%s
 %s
 - Body must be plain Markdown, not nested JSON. Use the supplied template instead of imposing a What Changed heading.
 - Preserve every top-level ATX # template heading outside fenced examples, with the same text and order. Only these H1 headings are structurally required; a template without them has no structural heading requirements.
@@ -121,7 +122,7 @@ Trusted repository template (JSON string):
 %s
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, conventional.ReleaseTypeRule, quoted, paths, userIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+%s%s%s`, branch, baseBranch, baseSHA, sctx.Run.HeadSHA, titleRules, scopeRules, quoted, paths, userIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{Prompt: prompt, CWD: sctx.WorkDir, JSONSchema: templatePRContentSchema, OnChunk: sctx.LogChunk})
 	if err != nil {
 		return prContent{}, fmt.Errorf("draft pr.template narrative (template will not be replaced by a generic fallback): %w", err)
@@ -130,7 +131,10 @@ Final diff paths and statuses:
 	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Body) == "" {
 		return prContent{}, fmt.Errorf("agent returned no valid pr.template narrative; refusing generic fallback")
 	}
-	content.Title = conventional.TightenTitle(strings.TrimSpace(content.Title))
+	content.Title, err = renderPRTitle(sctx, strings.TrimSpace(content.Title))
+	if err != nil {
+		return prContent{}, err
+	}
 	if len(content.Body) > maxPullRequestBodyBytes || !utf8.ValidString(content.Body) || strings.ContainsRune(content.Body, '\x00') || hasPRAppendixMarkers(content.Body) {
 		return prContent{}, fmt.Errorf("agent returned invalid template narrative or reserved ownership markers")
 	}

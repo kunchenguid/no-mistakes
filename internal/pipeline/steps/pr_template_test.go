@@ -151,6 +151,73 @@ func TestPRTemplateCreateThroughFakeGitHubAndReadback(t *testing.T) {
 	}
 }
 
+func TestPRTemplateCreateAppliesConfiguredTitleFormat(t *testing.T) {
+	t.Parallel()
+	sctx, ag, _ := templateTestContext(t)
+	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
+	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if strings.Contains(opts.Prompt, sctx.Config.PR.TitleFormat) {
+			t.Fatal("prompt exposed configured title format")
+		}
+		data, _ := json.Marshal(prContent{Title: "add widget", Body: filledPRTemplate})
+		return &agent.Result{Output: data}, nil
+	}
+
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature/PROJ-123-add-widget", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.Title != "PROJ-123: add widget" {
+		t.Fatalf("title = %q, want configured title", content.Title)
+	}
+}
+
+func TestPRTemplateUpdateAppliesConfiguredTitleFormat(t *testing.T) {
+	t.Parallel()
+	sctx, ag, _ := templateTestContext(t)
+	sctx.Run.Branch = "refs/heads/feature/PROJ-123-add-widget"
+	sctx.Config.Commit.BranchPattern = `([A-Z]+-[0-9]+)`
+	sctx.Config.PR.TitleFormat = "{{.Branch}}: {{.Title}}"
+	ag.runFn = func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		if strings.Contains(opts.Prompt, sctx.Config.PR.TitleFormat) {
+			t.Fatal("prompt exposed configured title format")
+		}
+		data, _ := json.Marshal(map[string]string{"title": "add widget"})
+		return &agent.Result{Output: data}, nil
+	}
+	author := "## Overview\n\nHuman account.\n\nCloses https://github.com/test/repo/issues/7\n"
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyFile, []byte(author), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+	sctx.Env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile, "FAKE_CLI_PR_TITLE=Author title")
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logs), "--title PROJ-123: add widget") {
+		t.Fatalf("configured title was not published:\n%s", logs)
+	}
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := parsePROwnedBody(string(body))
+	if err != nil || strings.TrimSpace(parts.before) != strings.TrimSpace(author) {
+		t.Fatalf("author body changed: %+v, %v", parts, err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("agent calls = %d, want one title draft", len(ag.calls))
+	}
+}
+
 func TestPRTemplateRegenerationPreservesAuthorsAndClosingReferences(t *testing.T) {
 	t.Parallel()
 	sctx, ag, _ := templateTestContext(t)
@@ -322,7 +389,7 @@ func TestPRTemplateIncompleteGitHubReadsNeverOverwriteAuthor(t *testing.T) {
 						t.Fatal(reason)
 					}
 					_, appendix := ownedFixture(t)
-					err = updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: author}, "", appendix, 0)
+					err = updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: author}, "", "", appendix, 0)
 				}
 				if err == nil {
 					t.Fatal("incomplete read permitted publication")

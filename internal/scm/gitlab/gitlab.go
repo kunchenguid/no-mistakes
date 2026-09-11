@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -264,6 +265,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
+	effectiveTitle := content.Title
+	if h.draft && !isDraftTitle(effectiveTitle) {
+		effectiveTitle = "Draft: " + effectiveTitle
+	}
+	if err := validateMRTitle(effectiveTitle); err != nil {
+		return nil, fmt.Errorf("glab mr create: %w", err)
+	}
 	args := []string{"mr", "create",
 		"--source-branch", branch,
 		"--target-branch", base,
@@ -321,6 +329,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		if isDraftTitle(mr.Title) && !isDraftTitle(title) {
 			title = "Draft: " + title
 		}
+		if err := validateMRTitle(title); err != nil {
+			return nil, fmt.Errorf("glab mr update: %w", err)
+		}
 		args = append(args, "--title", title)
 	}
 	args = append(args, "--description", content.Body)
@@ -359,6 +370,13 @@ func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch strin
 func isDraftTitle(title string) bool {
 	t := strings.ToLower(strings.TrimSpace(title))
 	return strings.HasPrefix(t, "draft:") || strings.HasPrefix(t, "[draft]") || strings.HasPrefix(t, "(draft)")
+}
+
+func validateMRTitle(title string) error {
+	if utf8.RuneCountInString(title) > 255 {
+		return errors.New("GitLab merge request title must not exceed 255 characters")
+	}
+	return nil
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
