@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 var daemonHealthCheck = daemonIsRunningViaIPC
@@ -24,10 +25,10 @@ var daemonKillPID = killPID
 var daemonEndpointUsesRegularFile = func() bool { return runtime.GOOS == "windows" }
 
 func daemonStartTimeout() time.Duration {
-	// Login-shell environment resolution alone has a 30s safety budget. A
-	// production readiness deadline must cover that cold work plus exclusive
-	// recovery, while remaining bounded for genuine startup failures.
-	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", 45*time.Second)
+	// Readiness covers the missing-shell retry window, the final login-shell
+	// probe, and the existing budget for recovery and other startup work.
+	fallback := shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout + 45*time.Second
+	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", fallback)
 }
 
 // daemonStopTimeout bounds how long waitForDaemonStop polls for a graceful

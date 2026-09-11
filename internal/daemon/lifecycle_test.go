@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 type failingRenameError string
@@ -114,12 +115,9 @@ func TestWaitForDaemonStopRetriesProcessProbeErrors(t *testing.T) {
 
 func TestDaemonStartTimeoutCoversColdProductionWork(t *testing.T) {
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "")
-	oldGOOS := runtimeGOOS
-	runtimeGOOS = "windows"
-	t.Cleanup(func() { runtimeGOOS = oldGOOS })
-
-	if got := daemonStartTimeout(); got != 45*time.Second {
-		t.Fatalf("daemonStartTimeout() = %v, want 45s", got)
+	minimum := shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout
+	if got := daemonStartTimeout(); got < minimum {
+		t.Fatalf("daemonStartTimeout() = %v, want at least %v", got, minimum)
 	}
 }
 

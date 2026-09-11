@@ -21,12 +21,14 @@ var lookupEnv = os.LookupEnv
 var currentUser = user.Current
 var shellCommandOutput = defaultShellCommandOutput
 
-// shellCommandTimeout bounds each login-shell probe. It is deliberately
+// DefaultShellProbeTimeout bounds each login-shell probe. It is deliberately
 // forgiving: a 2s budget was too tight for an interactive login shell under
 // cold-start/system load, and exceeding it silently dropped the daemon onto a
 // degraded fallback PATH that omitted version-manager dirs (nvm/fnm/volta),
 // the intermittent trigger behind #143.
-var shellCommandTimeout = 30 * time.Second
+const DefaultShellProbeTimeout = 30 * time.Second
+
+var shellCommandTimeout = DefaultShellProbeTimeout
 
 // DefaultShellRetryWindow is how long a daemon startup keeps re-probing while
 // the login shell binary itself is missing. The window only needs to cover a
