@@ -43,7 +43,7 @@ func TestPRTemplateProviderCompositionUpdateAndRestamp(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", appendix+"\nNew recorded fact.", budget); err != nil {
+			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", appendix+"\nNew recorded fact.", budget); err != nil {
 				t.Fatal(err)
 			}
 			parts, err := parsePROwnedBody(host.body)

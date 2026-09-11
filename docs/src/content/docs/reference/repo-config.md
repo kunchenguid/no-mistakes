@@ -13,7 +13,7 @@ The daemon also reads `document.instructions`, `review.path_instructions`, `gate
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, and `providers`) are still read from the pushed branch, except `test.instructions` and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.instructions` and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -58,10 +58,12 @@ disable_project_settings: true
 # Read only from the trusted default branch. Defaults to false (CI expected).
 # no_ci: true
 
-# Optional PR target branch, read from the trusted default branch.
-# When unset, PRs target the repository's forge default branch.
+# Optional PR settings.
+# base_branch is read from the trusted default branch.
+# title_format is a repository convention and is read from this branch.
 pr:
   base_branch: develop
+  # title_format: "{{.Branch}}: {{.Title}}"
 
 auto_fix:
   rebase: 3
@@ -79,6 +81,9 @@ ci:
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+  # branch_pattern: '([A-Z]+-[0-9]+)'
+  # To use the captured identifier in the subject:
+  # fix_message: "{{.Branch}}: {{.Summary}}"
 
 intent:
   enabled: true
@@ -251,11 +256,11 @@ The path is read as a literal Git tree entry, never through the pushed worktree 
 
 #### Author-preserving regeneration
 
-A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative or replace an author's title. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The full intent remains available to reviewers. Removing the generated Intent section is controlled separately below.
+A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative. An author's title is also preserved unless `pr.title_format` is configured; that explicit repository convention redrafts the bare title and applies the format on every managed update. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The full intent remains available to reviewers. Removing the generated Intent section is controlled separately below.
 
 Ownership is never inferred from a heading's name. An existing author-only body can be adopted without model rewriting. **Legacy descriptions containing an unowned attestation require explicit author reconciliation** before template mode can adopt them: separate/remove their obsolete generated evidence while retaining the desired author text and closing references, then retry. Do not manufacture ownership markers by hand. An edited appendix, missing/duplicate/malformed markers, or a competing attestation fails rather than risking discarded author content. Put author additions outside the generated appendix. The integrity guard detects accidental edits; it is not authentication or a cryptographic signature by no-mistakes.
 
-Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
+Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Without `pr.title_format`, body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify the body afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and body divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
 
 If the complete author text, closing references and rendered evidence cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
 
@@ -263,7 +268,7 @@ Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behav
 
 **Provider caveats:** Azure DevOps' 4,000-character budget is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary Azure truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled Azure description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
-Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing readback fails visibly rather than being normalized into success.
+Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing body readback fails visibly rather than being normalized into success.
 
 ### pr.publish_intent
 
@@ -278,6 +283,30 @@ Control publication of the **generated `Intent` section**, independently of inte
 `false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
+
+### pr.title_format
+
+Configure the title shape no-mistakes applies to newly created and updated pull requests.
+
+| | |
+| --- | --- |
+| Type | `string` template |
+| Default | Unset, which preserves conventional commit titles |
+| Trust | Pushed branch, like other non-executing repository conventions |
+
+The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
+`{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) when one is configured.
+`{{.Title}}` is the bare concise title text returned by the PR agent, or `update pull request` when ordinary drafting uses its deterministic fallback.
+For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
+The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
+
+The format is validated when configuration loads.
+It must be valid UTF-8, contain only the two documented placeholders and literal text, and contain no control or unsafe Unicode format characters.
+The template source is limited to 1,024 bytes and 16 placeholders, and the rendered title must be non-empty and no more than 4,096 bytes.
+Providers can impose lower publication limits. GitLab titles are checked at its publication boundary and may contain at most 255 Unicode characters, including a preserved or requested draft marker.
+If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
+
+When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
 
 ### commands.prepare
 
@@ -664,7 +693,23 @@ The value follows the [global `commit.fix_message` template syntax and validatio
 That includes the 1,024-byte template limit, 16-placeholder limit, 4,096-byte summary and rendered-subject limits, and rejection of bidi and invisible Unicode format characters.
 The setting applies to the Review, Test, Document, Lint, and CI repair paths, plus operator-authorized repository gate repairs. It does not apply to commits created by the Rebase or Push steps.
 
-This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
+This non-executing field is read from the pushed branch, so a branch can adopt its own commit-subject convention without enabling `allow_repo_commands`.
+
+### commit.branch_pattern
+
+Override the branch-identifier extraction pattern for this repository.
+
+| | |
+| --- | --- |
+| Type | `string` regular expression |
+| Default | Inherits from global config; when unset there, `{{.Branch}}` is the normalized full branch name |
+
+The value follows the [global `commit.branch_pattern` syntax and validation rules](/no-mistakes/reference/global-config/#commitbranch_pattern).
+Its only capture group becomes `{{.Branch}}` in both `commit.fix_message` and `pr.title_format`.
+For example, `branch_pattern: '([A-Z]+-[0-9]+)'` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
+When either template uses `{{.Branch}}` and the pattern does not find a non-empty identifier, rendering fails safely instead of producing an empty prefix.
+
+This non-executing field is read from the pushed branch without enabling `allow_repo_commands`.
 
 ### intent
 

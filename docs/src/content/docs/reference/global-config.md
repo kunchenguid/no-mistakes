@@ -83,6 +83,9 @@ ci:
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+  # branch_pattern: '([A-Z]+-[0-9]+)'
+  # To use the captured identifier in the subject:
+  # fix_message: "{{.Branch}}: {{.Summary}}"
 
 intent:
   enabled: true
@@ -671,12 +674,13 @@ Template for the subject of commits created by the Review, Test, Document, Lint,
 | Type | `string` |
 | Default | `no-mistakes({{.Step}}): {{.Summary}}` |
 
-The template supports literal text and two Go-style placeholders:
+The template supports literal text and three Go-style placeholders:
 
 | Variable | Value |
 | --- | --- |
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, `lint`, `ci`, or `gate.test.mutation-budget` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
+| `{{.Branch}}` | Normalized branch name, or the identifier captured by [`commit.branch_pattern`](#commitbranch_pattern) |
 
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
 The template source is limited to 1,024 bytes and 16 placeholders.
@@ -688,6 +692,20 @@ Legitimate `U+200C` zero-width non-joiner and `U+200D` zero-width joiner text sh
 The final rendered subject is validated again, so unsafe characters in an agent-provided summary are also rejected.
 The setting does not change commit subjects created by the Rebase or Push steps.
 A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
+
+### commit.branch_pattern
+
+Optional regular expression for extracting the value exposed as `{{.Branch}}` to commit and PR title templates.
+
+| | |
+| --- | --- |
+| Type | `string` regular expression |
+| Default | Unset, so `{{.Branch}}` is the normalized full branch name |
+
+The expression is limited to 1,024 bytes, must be valid UTF-8, must exclude the same control and unsafe Unicode format characters as `commit.fix_message`, and must compile with exactly one capture group.
+The first capture group becomes `{{.Branch}}`, so `([A-Z]+-[0-9]+)` extracts `PROJ-123` from `feature/PROJ-123-add-widget`.
+When a template uses `{{.Branch}}` and the pattern does not find a non-empty identifier, rendering fails safely instead of producing an empty prefix.
+A per-repo [`commit.branch_pattern`](/no-mistakes/reference/repo-config/#commitbranch_pattern) value overrides this global setting.
 
 ### intent
 

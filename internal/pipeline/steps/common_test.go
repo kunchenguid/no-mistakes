@@ -1076,6 +1076,52 @@ func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_UsesBranchIdentifier(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/topic-PROJ-123-add-widget"
+	sctx.Config.Commit = config.Commit{
+		FixMessage:    "{{.Branch}}: {{.Summary}}",
+		BranchPattern: `([A-Z]+-[0-9]+)`,
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepReview, "repair widget", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := lastCommitMessage(t, dir), "PROJ-123: repair widget"; got != want {
+		t.Fatalf("commit subject = %q, want %q", got, want)
+	}
+}
+
+func TestCommitAgentFixes_MissingBranchIdentifierDoesNotStageChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/topic-no-issue"
+	sctx.Config.Commit = config.Commit{
+		FixMessage:    "{{.Branch}}: {{.Summary}}",
+		BranchPattern: `([A-Z]+-[0-9]+)`,
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := commitAgentFixes(sctx, types.StepReview, "repair widget", "fallback")
+	if err == nil || !strings.Contains(err.Error(), "did not find an identifier") {
+		t.Fatalf("commitAgentFixes() error = %v, want missing-identifier error", err)
+	}
+	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("staged files after missing identifier = %q, want none", got)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD = %q, want unchanged %q", got, headSHA)
+	}
+}
+
 func TestCommitAgentFixes_OversizedRenderedMessageDoesNotStageChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

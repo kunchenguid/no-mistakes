@@ -560,7 +560,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if summary == "" {
 		summary = "repair failing checks"
 	}
-	message, err := sctx.Config.Commit.RenderFixMessage(types.StepCI, summary)
+	message, err := sctx.Config.Commit.RenderFixMessageForBranch(types.StepCI, summary, sctx.Run.Branch)
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("render CI repair commit message: %w", err)
 	}

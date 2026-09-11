@@ -34,10 +34,18 @@ type prContent struct {
 var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"title": {"type": "string", "description": "Conventional commit PR title, e.g. fix(scope): short description"},
+		"title": {"type": "string", "description": "Concise pull request title following repository configuration"},
 		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## What Changed. Plain text, NOT JSON."}
 	},
 	"required": ["title", "body"]
+}`)
+
+var prTitleSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"title": {"type": "string", "description": "Bare concise pull request title text"}
+	},
+	"required": ["title"]
 }`)
 
 const (
@@ -126,12 +134,19 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 			var emptyNarrative string
+			var title string
 			if live.Body == "" && template != "" {
 				draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
 				if err != nil {
 					return nil, err
 				}
 				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
+				title = draft.Title
+			} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+				title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
+				if err != nil {
+					return nil, err
+				}
 			}
 			appendix, err := s.buildPRAppendix(sctx, provider)
 			if err != nil {
@@ -140,7 +155,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 				return nil, err
 			}
-			if err := updateOwnedPR(sctx, host, existing, live, emptyNarrative, appendix, bodyLimit); err != nil {
+			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
 				return nil, err
 			}
 		} else {
@@ -406,6 +421,8 @@ func (s *PRStep) draftPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	}
 	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx, provider)
 
+	titleRules := prTitlePromptRules(sctx)
+	scopeRules := prTitleScopeRules(sctx)
 	prompt := fmt.Sprintf(`Draft a pull request title and summary for the full branch delta.
 
 Context:
@@ -416,10 +433,8 @@ Context:
 
 Rules:
 - Cover the full branch delta, not just the latest commit.
-- Title must use conventional commit format: "type(scope): description" or "type: description". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.
 %s
-- When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
-- Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
+%s
 - Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Derive every body claim from the final diff. Inspect it directly when the paths and statuses below do not provide enough detail.
 - Do not invent tests or behavior.
@@ -428,7 +443,7 @@ Diff stat:
 %s
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, titleRules, scopeRules, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
@@ -440,7 +455,8 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+		fallback, fallbackErr := fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit)
+		return fallback, fallbackErr
 	}
 
 	var content prContent
@@ -453,9 +469,12 @@ Final diff paths and statuses:
 			content.Body = neutralizeAttestationMarkers(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
-				content.Title = conventional.TightenTitle(content.Title)
+				content.Title, err = renderPRTitle(sctx, content.Title)
+				if err != nil {
+					return prContent{}, err
+				}
 				if content.Title != originalTitle {
-					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
+					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
 				if bodyLimit > 0 {
 					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
@@ -467,7 +486,77 @@ Final diff paths and statuses:
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit)
+}
+
+func (s *PRStep) draftConfiguredPRTitle(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string) (string, error) {
+	paths, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--name-status", baseSHA+".."+sctx.Run.HeadSHA)
+	if err != nil {
+		return "", fmt.Errorf("read final branch diff for PR title: %w", err)
+	}
+	prompt := fmt.Sprintf(`Draft only the bare concise pull request title text for the full final branch delta.
+
+Context:
+- branch: %s
+- base commit: %s
+- target commit: %s
+- PR base branch: %s
+
+Rules:
+- Return only the title component in the structured title field.
+- Do not include a branch identifier or any repository formatter prefix or suffix; those are applied deterministically after drafting.
+- Derive the title from the final diff and inspect it directly when the paths below do not provide enough detail.
+- Do not invent behavior.
+
+Final diff paths and statuses:
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, paths, userIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
+		Prompt:     prompt,
+		CWD:        sctx.WorkDir,
+		JSONSchema: prTitleSchema,
+		OnChunk:    sctx.LogChunk,
+	})
+	if err != nil {
+		return "", fmt.Errorf("draft configured PR title: %w", err)
+	}
+	var content prContent
+	if result == nil || json.Unmarshal(result.Output, &content) != nil || strings.TrimSpace(content.Title) == "" {
+		return "", fmt.Errorf("agent returned no valid configured PR title")
+	}
+	title, err := renderPRTitle(sctx, strings.TrimSpace(content.Title))
+	if err != nil {
+		return "", err
+	}
+	return title, nil
+}
+
+func prTitlePromptRules(sctx *pipeline.StepContext) string {
+	if sctx != nil && sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+		return "- Title must be only the bare concise title text used by the repository's configured title formatter. Do not include a branch identifier or any formatter prefix or suffix; those are applied deterministically after drafting."
+	}
+	return "- Title must use conventional commit format: \"type(scope): description\" or \"type: description\". Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. Scope is optional. Do not capitalize the type. Do not use the raw branch name.\n" + conventional.ReleaseTypeRule
+}
+
+func prTitleScopeRules(sctx *pipeline.StepContext) string {
+	if sctx != nil && sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+		return ""
+	}
+	return "- When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.\n- Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. \"daemon\", \"pipeline\", \"cli\") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use \"type: description\"."
+}
+
+func renderPRTitle(sctx *pipeline.StepContext, title string) (string, error) {
+	if sctx == nil || sctx.Config == nil || sctx.Config.PR.TitleFormat == "" {
+		return conventional.TightenTitle(title), nil
+	}
+	branch := strings.TrimSpace(strings.TrimPrefix(sctx.Run.Branch, "refs/heads/"))
+	if sctx.Config.PR.RequiresBranch() {
+		var err error
+		branch, err = sctx.Config.Commit.BranchValue(sctx.Run.Branch)
+		if err != nil {
+			return "", fmt.Errorf("resolve branch identifier for PR title: %w", err)
+		}
+	}
+	return sctx.Config.PR.RenderTitle(branch, title)
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
@@ -1385,8 +1474,11 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
-	title := "chore: update pull request"
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) (prContent, error) {
+	title, err := renderPRTitle(sctx, "update pull request")
+	if err != nil {
+		return prContent{}, err
+	}
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
 	if diffSummary == "" {
@@ -1401,5 +1493,5 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 	return prContent{
 		Title: title,
 		Body:  body,
-	}
+	}, nil
 }
