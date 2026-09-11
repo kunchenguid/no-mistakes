@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS step_results (
     override_reason             TEXT
 );
 
+CREATE TABLE IF NOT EXISTS retained_ci_repairs (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    step_id TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,
+    repo_id TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    recorded_head TEXT NOT NULL,
+    reviewed_head TEXT NOT NULL,
+    retained_head TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_rounds (
     id                   TEXT PRIMARY KEY,
     step_result_id       TEXT NOT NULL REFERENCES step_results(id) ON DELETE CASCADE,

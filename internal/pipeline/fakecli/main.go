@@ -66,6 +66,12 @@ func handleFakeCLI(mode string) {
 		fakeGitRemoteErrorHandler(args)
 	case "ci-gh":
 		fakeCIGHHandler(args)
+	case "ci-gh-local-publication":
+		if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "git" {
+			fakeLocalPublication(args)
+		} else {
+			fakeCIGHHandler(args)
+		}
 	case "ci-gh-seq":
 		fakeCIGHSequenceHandler(args)
 	case "ci-gh-nochecks":

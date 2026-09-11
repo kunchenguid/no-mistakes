@@ -496,15 +496,23 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 // UpdateRunPublication atomically records the exact published head and its
 // successful-push provenance.
 func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin run publication: %w", err)
+	}
+	defer tx.Rollback()
 	ts := now()
-	_, err := d.sql.Exec(
+	_, err = tx.Exec(
 		`UPDATE runs SET head_sha = ?, last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
 		binding.HeadSHA, binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update run publication: %w", err)
 	}
-	return nil
+	if _, err := tx.Exec(`DELETE FROM retained_ci_repairs WHERE run_id = ? AND retained_head = ?`, id, binding.HeadSHA); err != nil {
+		return fmt.Errorf("settle retained CI publication: %w", err)
+	}
+	return tx.Commit()
 }
 
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly

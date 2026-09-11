@@ -149,10 +149,14 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		return nil, fmt.Errorf("worktree is missing")
 	}
 	headSHA, err := git.HeadSHA(ctx, workDir)
-	if err != nil || headSHA != run.HeadSHA {
+	if err != nil {
 		return nil, fmt.Errorf("worktree head does not match run head")
 	}
 	gateDir := m.paths.RepoDir(repo.ID)
+	binding, bindingErr := pipeline.VerifyRetainedCIRepair(ctx, m.db, run, gateDir, workDir)
+	if bindingErr != nil || (headSHA != run.HeadSHA && binding == nil) {
+		return nil, fmt.Errorf("worktree head does not match run head: no verified retained CI repair (%v)", bindingErr)
+	}
 	commonDir, err := git.Run(ctx, workDir, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree common git dir: %w", err)

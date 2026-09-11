@@ -279,7 +279,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if url == "" {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d missing PR URL", i)
 		}
-		number, err := parsePullRequestURL(url, h.host, h.repoSlug())
+		number, err := h.parseDiscoveredPRURL(ctx, url)
 		if err != nil {
 			return nil, fmt.Errorf("parse gh pr list JSON: entry %d invalid PR URL: %w", i, err)
 		}

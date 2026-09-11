@@ -699,6 +699,9 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if err := publishRunHead(sctx, headSHA, headSHA, nil); err != nil {
 		if errors.Is(err, errAttestationWriteFailed) {
+			if bindErr := pipeline.BindRetainedCIRepair(sctx.Ctx, sctx.DB, sctx.Run, sctx.StepResultID, sctx.GateDir, sctx.WorkDir, headSHA); bindErr != nil {
+				err = errors.Join(err, fmt.Errorf("preserve retained CI repair: %w", bindErr))
+			}
 			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
 		}
 		return ciRepairResult{}, err
@@ -735,22 +738,38 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // other failure (PR discovery errors, or a discoverable PR whose write does
 // not settle) is wrapped in errAttestationWriteFailed and returned.
 func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
+	retained, retainedErr := sctx.DB.RetainedCIRepair(sctx.Run.ID)
+	if retainedErr != nil {
+		return fmt.Errorf("%w: read retained repair: %v", errAttestationWriteFailed, retainedErr)
+	}
 	provider := resolvedProvider(sctx)
 	if !supportsPRTemplates(provider) {
+		if retained != nil {
+			return fmt.Errorf("%w: retained repair provider no longer supports attestation", errAttestationWriteFailed)
+		}
 		return nil
 	}
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	if branch == effectivePRBaseBranch(sctx) {
+		if retained != nil {
+			return fmt.Errorf("%w: retained repair branch is now the configured base", errAttestationWriteFailed)
+		}
 		return nil
 	}
 	host, reason := buildHost(sctx, provider)
 	if host == nil {
+		if retained != nil {
+			return fmt.Errorf("%w: retained repair requires attestation: %s", errAttestationWriteFailed, reason)
+		}
 		if sctx.Log != nil && strings.TrimSpace(reason) != "" {
 			sctx.Log(fmt.Sprintf("skipping attestation write: %s", reason))
 		}
 		return nil
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
+		if retained != nil {
+			return fmt.Errorf("%w: retained repair requires authenticated SCM: %v", errAttestationWriteFailed, err)
+		}
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("skipping attestation write: %v", err))
 		}
@@ -765,6 +784,9 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
 	}
 	if pr == nil {
+		if retained != nil {
+			return fmt.Errorf("%w: retained repair PR is unavailable", errAttestationWriteFailed)
+		}
 		return nil
 	}
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log); err != nil {
