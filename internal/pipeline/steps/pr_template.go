@@ -29,6 +29,15 @@ var templatePRContentSchema = json.RawMessage(`{
  }, "required":["title","body"]
 }`)
 
+func supportsPRTemplates(provider scm.Provider) bool {
+	switch provider {
+	case scm.ProviderGitHub, scm.ProviderGitLab, scm.ProviderGitea, scm.ProviderForgejo, scm.ProviderAzureDevOps, scm.ProviderBitbucket:
+		return true
+	default:
+		return false
+	}
+}
+
 func configuredPRTemplate(sctx *pipeline.StepContext) string {
 	if sctx.Config == nil {
 		return ""
@@ -174,7 +183,7 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSection(sctx, provider)
+	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
 	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
 		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
 	}

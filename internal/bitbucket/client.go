@@ -173,9 +173,9 @@ func (c *Client) CreatePR(ctx context.Context, repo RepoRef, sourceBranch, destB
 }
 
 func (c *Client) UpdatePR(ctx context.Context, repo RepoRef, prID int, title, body string) (*PullRequest, error) {
-	requestBody := map[string]any{
-		"title":       title,
-		"description": body,
+	requestBody := map[string]any{"description": body}
+	if title != "" {
+		requestBody["title"] = title
 	}
 	var response bitbucketPullRequest
 	if err := c.doJSON(ctx, http.MethodPut, fmt.Sprintf("%s/%d", repoPRPath(repo), prID), nil, requestBody, &response); err != nil {

@@ -190,6 +190,14 @@ type attestationTestHost struct {
 	updates            int
 	reads              int
 	failUpdates        int
+	provider           scm.Provider
+}
+
+func (h *attestationTestHost) Provider() scm.Provider {
+	if h.provider == "" {
+		return scm.ProviderGitHub
+	}
+	return h.provider
 }
 
 func (h *attestationTestHost) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {

@@ -125,8 +125,8 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 		before += "\n\n"
 	}
 	content := prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
-	if len(content.Body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(content.Body) > bodyLimit) {
-		return prContent{}, fmt.Errorf("PR body exceeds provider budget; refusing to drop author text, closing references or recorded evidence")
+	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
+		return prContent{}, err
 	}
 	if _, err := parsePROwnedBody(content.Body); err != nil {
 		return prContent{}, err
@@ -134,8 +134,15 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 	return content, nil
 }
 
+func validateOwnedPRBudget(body string, bodyLimit int) error {
+	if len(body) > maxPullRequestBodyBytes || (bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit) {
+		return fmt.Errorf("PR body exceeds provider budget; refusing to drop author text, closing references or recorded evidence")
+	}
+	return nil
+}
+
 // updateOwnedPR re-reads before the full-body write and verifies afterwards.
-// This is NOT compare-and-swap: GitHub has no atomic marker-only edit. Detected
+// This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); a write error
 // or post-write divergence fails without replaying a potentially applied write.
 func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, emptyNarrative, appendix string, bodyLimit int) error {

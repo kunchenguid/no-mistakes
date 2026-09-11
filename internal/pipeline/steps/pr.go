@@ -83,12 +83,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
 
-	// Capture live author content before model drafting. Template mode is
-	// GitHub-first; an unreadable provider cannot promise preservation.
+	// Capture live author content before model drafting. An unreadable
+	// provider cannot promise template preservation.
 	var template string
 	if name := configuredPRTemplate(sctx); name != "" {
-		if provider != scm.ProviderGitHub {
-			return nil, fmt.Errorf("pr.template currently requires GitHub PR content reads; this provider is unsupported")
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil, fmt.Errorf("pr.template requires raw PR content reads; this provider is unsupported")
 		}
 		var err error
 		template, err = loadPRTemplate(ctx, sctx.WorkDir, sctx.Config.TrustedConfigSHA, name)
@@ -363,8 +363,8 @@ func describePR(pr *scm.PR) string {
 // covers sources nobody has written yet.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
 	if name := configuredPRTemplate(sctx); name != "" {
-		if provider != scm.ProviderGitHub {
-			return prContent{}, fmt.Errorf("pr.template currently requires GitHub")
+		if !supportsPRTemplates(provider) {
+			return prContent{}, fmt.Errorf("pr.template is unsupported by this provider")
 		}
 		template, err := loadPRTemplate(sctx.Ctx, sctx.WorkDir, sctx.Config.TrustedConfigSHA, name)
 		if err != nil {
@@ -475,6 +475,10 @@ Final diff paths and statuses:
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD string) {
+	return s.buildPipelineSectionFor(sctx, provider, false)
+}
+
+func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
@@ -492,6 +496,12 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 	}
 
 	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
+	// Ordinary Bitbucket descriptions keep their existing Markdown-only skin.
+	// Owned templates additionally carry the exact existing declaration as
+	// visible text; the raw consumer/restamper uses the same marker and schema.
+	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
+		pipelineMD += "\n\n```text\n" + buildPipelineAttestation(steps, rounds, sctx.Run.HeadSHA) + "\n```"
+	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD
 }

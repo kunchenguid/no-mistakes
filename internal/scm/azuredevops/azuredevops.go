@@ -301,9 +301,9 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		return nil, errors.New("az repos pr update: missing PR id")
 	}
 	if _, err := h.runWithDescription(ctx, content.Body, func(descArg string) []string {
-		args := []string{"repos", "pr", "update", "--id", id,
-			"--title", content.Title,
-			"--description", descArg,
+		args := []string{"repos", "pr", "update", "--id", id, "--description", descArg}
+		if content.Title != "" {
+			args = append(args, "--title", content.Title)
 		}
 		args = append(args, h.orgArgs()...)
 		return append(args, "--output", "json")

@@ -290,7 +290,7 @@ func TestPRTemplateBarePinnedReadsUnderExplicitBarePolicy(t *testing.T) {
 func TestPRTemplateUnsupportedProviderIsExplicit(t *testing.T) {
 	t.Parallel()
 	sctx, ag, _ := templateTestContext(t)
-	for _, provider := range []scm.Provider{scm.ProviderGitLab, scm.ProviderBitbucket, scm.ProviderAzureDevOps, scm.ProviderUnknown} {
+	for _, provider := range []scm.Provider{scm.ProviderUnknown} {
 		if _, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, provider, 4000); err == nil {
 			t.Errorf("provider %v silently accepted template preservation", provider)
 		}
