@@ -211,6 +211,16 @@ func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []strin
 	// --mcp-config yields zero MCP servers. An operator who pins their own
 	// --mcp-config keeps those servers; an operator who already passes
 	// --strict-mcp-config themselves does not get it twice.
+	// Unlike --setting-sources above, this is unconditional rather than gated
+	// behind an opt-in: --strict-mcp-config has shipped since Claude Code's
+	// earliest public releases (added in v0.2.75, already relied upon in bug
+	// reports against v1.0.73), so any Claude Code CLI new enough to still be
+	// receiving updates supports it. No local version-check or capability-probe
+	// facility exists for any agent CLI in this repo (see doctorAgentChecks in
+	// internal/cli/doctor.go, which only checks binary presence via PATH), and
+	// adding a runtime probe here would trade the crash this flag removes for a
+	// new subprocess-call failure mode - a worse deal than documenting the
+	// minimum version operators are expected to run.
 	if !claudeUserSetStrictMCPConfig(a.extraArgs) {
 		args = append(args, "--strict-mcp-config")
 	}
