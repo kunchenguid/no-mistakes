@@ -278,8 +278,10 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
 	}
 
-	gateTip, _ := git.Run(ctx, gateDir, "rev-parse", "--verify", ref)
-	gateTip = strings.TrimSpace(gateTip)
+	gateTip, exists, err := git.DirectRefTarget(ctx, gateDir, ref)
+	if err != nil {
+		return fmt.Errorf("inspect gate mirror ref %s: %w", ref, err)
+	}
 
 	shouldUpdate := gateTip == "" || gateTip == headBeingPushed
 	if !shouldUpdate {
@@ -294,7 +296,10 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 		}
 	}
 	if shouldUpdate {
-		if _, updateErr := git.Run(ctx, gateDir, "update-ref", ref, headBeingPushed, gateTip); updateErr != nil {
+		if !exists {
+			gateTip = strings.Repeat("0", len(headBeingPushed))
+		}
+		if _, updateErr := git.Run(ctx, gateDir, "update-ref", "--no-deref", ref, headBeingPushed, gateTip); updateErr != nil {
 			return fmt.Errorf("update gate mirror ref %s to %s: %w", ref, headBeingPushed, updateErr)
 		}
 	}

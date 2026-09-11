@@ -112,8 +112,11 @@ not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
 Fresh AXI submissions do not receive this exception.
 
-Before deleting a reconciled branch ref, the gate archives its exact head at
-`refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
+Reconciliation requires direct private branch and archive refs; symbolic refs,
+including dangling symbolic refs, are refused before containment checks. Ref
+creation and deletion use exact names without dereferencing and expected old
+values. Before deleting a reconciled branch ref, the gate archives its exact
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
 unproven private content refuses before upstream publication, leaves the
 private branch untouched, and names every at-risk commit. An ancestor already
 supports an ordinary fast-forward. A gate head that is a newer descendant of

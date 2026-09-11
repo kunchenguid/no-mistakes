@@ -85,11 +85,22 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		return plan, fmt.Errorf("reconcile stale gate branch %s: resolve worktree path: %w", branch, err)
 	}
 	branchRef := "refs/heads/" + branch
-	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, branchRef)
+	gateHead, exists, err := git.DirectRefTarget(ctx, gateDir, branchRef)
 	if err != nil {
 		return plan, fmt.Errorf("inspect private mirror ref %s: %w", branchRef, err)
 	}
-	if !exists || gateHead == liveHead {
+	if !exists {
+		return plan, nil
+	}
+	archiveTag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + gateHead
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, archiveTag)
+	if err != nil {
+		return plan, fmt.Errorf("inspect private mirror archive tag %s: %w", archiveTag, err)
+	}
+	if archived && archivedHead != gateHead {
+		return plan, fmt.Errorf("private mirror archive tag %s already points at %s, not %s", archiveTag, archivedHead, gateHead)
+	}
+	if gateHead == liveHead {
 		return plan, nil
 	}
 	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
@@ -137,7 +148,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 		Branch:               branch,
 		BranchRef:            branchRef,
 		PreviousHead:         gateHead,
-		ArchiveTag:           "refs/tags/no-mistakes-abandoned/" + branch + "/" + gateHead,
+		ArchiveTag:           archiveTag,
 	}, nil
 }
 
@@ -155,7 +166,7 @@ func ApplyStaleBranchReconciliation(ctx context.Context, gateDir string, plan St
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return result, fmt.Errorf("apply private mirror reconciliation: %w", err)
 	}
-	currentHead, exists, err := git.ExactRefTarget(ctx, gateDir, plan.BranchRef)
+	currentHead, exists, err := git.DirectRefTarget(ctx, gateDir, plan.BranchRef)
 	if err != nil {
 		return result, fmt.Errorf("inspect private mirror ref %s: %w", plan.BranchRef, err)
 	}
@@ -173,7 +184,7 @@ func ApplyStaleBranchReconciliation(ctx context.Context, gateDir string, plan St
 			plan.BranchRef, currentHead, plan.PreviousHead,
 		)
 	}
-	archivedHead, archived, err := git.ExactRefTarget(ctx, gateDir, plan.ArchiveTag)
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, plan.ArchiveTag)
 	if err != nil {
 		return result, fmt.Errorf("inspect private mirror archive tag %s: %w", plan.ArchiveTag, err)
 	}
@@ -181,11 +192,11 @@ func ApplyStaleBranchReconciliation(ctx context.Context, gateDir string, plan St
 		return result, fmt.Errorf("private mirror archive tag %s already points at %s, not %s", plan.ArchiveTag, archivedHead, plan.PreviousHead)
 	}
 	if !archived {
-		if _, err := git.Run(ctx, gateDir, "update-ref", plan.ArchiveTag, plan.PreviousHead, "0000000000000000000000000000000000000000"); err != nil {
+		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", plan.ArchiveTag, plan.PreviousHead, strings.Repeat("0", len(plan.PreviousHead))); err != nil {
 			return result, fmt.Errorf("archive stale private mirror head %s at %s: %w", plan.PreviousHead, plan.ArchiveTag, err)
 		}
 	}
-	if _, err := git.Run(ctx, gateDir, "update-ref", "-d", plan.BranchRef, plan.PreviousHead); err != nil {
+	if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", "-d", plan.BranchRef, plan.PreviousHead); err != nil {
 		return result, fmt.Errorf("delete archived stale private mirror ref %s at %s: %w", plan.BranchRef, plan.PreviousHead, err)
 	}
 	return StaleBranchReconciliation{Reconciled: true, PreviousHead: plan.PreviousHead, ArchivedTag: plan.ArchiveTag}, nil
@@ -202,11 +213,11 @@ func RestoreReconciledBranch(ctx context.Context, gateDir, branch string, result
 		return fmt.Errorf("restore private mirror %q: archived head %s is unavailable", branch, result.PreviousHead)
 	}
 	ref := "refs/heads/" + branch
-	if _, exists, err := git.ExactRefTarget(ctx, gateDir, ref); err != nil || exists {
+	if _, exists, err := git.DirectRefTarget(ctx, gateDir, ref); err != nil || exists {
 		return err
 	}
 	if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", ref, result.PreviousHead, strings.Repeat("0", len(result.PreviousHead))); err != nil {
-		if _, exists, readErr := git.ExactRefTarget(ctx, gateDir, ref); readErr == nil && exists {
+		if _, exists, readErr := git.DirectRefTarget(ctx, gateDir, ref); readErr == nil && exists {
 			return nil
 		}
 		return fmt.Errorf("restore private mirror %s: %w", ref, err)
@@ -227,7 +238,7 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 		return false
 	}
 	tag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + head
-	archivedHead, archived, err := git.ExactRefTarget(ctx, gateDir, tag)
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, tag)
 	if err != nil || !archived || archivedHead != head {
 		return false
 	}
