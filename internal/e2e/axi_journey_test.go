@@ -506,7 +506,10 @@ func TestAxiTerminalEqualTreeRecoveryJourney(t *testing.T) {
 	submitted := h.CommitChange(branch, "feature.txt", "operator work\n", "operator work")
 	operator := h.AddWorktree(branch)
 	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
-	if out, err := h.runGit(context.Background(), operator, "push", gateDir, "HEAD:refs/heads/"+branch); err != nil {
+	// Fetch rather than push: a push fires the gate's post-receive hook, which
+	// starts a real run on this branch, and branch sync reports any active run
+	// as owning the branch, so recovery would race that unrelated run.
+	if out, err := h.runGit(context.Background(), gateDir, "fetch", operator, submitted+":refs/heads/"+branch); err != nil {
 		t.Fatalf("seed gate branch: %v\n%s", err, out)
 	}
 	mainBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", submitted+"^")
