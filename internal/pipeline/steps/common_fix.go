@@ -232,7 +232,11 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no agent changes to commit")
-		return false, nil
+		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return false, fmt.Errorf("resolve agent head: %w", err)
+		}
+		return false, recordAgentFixHead(sctx, stepName, headSHA)
 	}
 	if summary == "" {
 		summary = fallbackSummary
@@ -249,7 +253,7 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	}
 	headBeforeCommit, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head before %s commit: %w", stepName, err)
+		return false, fmt.Errorf("resolve head before %s commit: %w", stepName, err)
 	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
 		return false, fmt.Errorf("commit %s changes: %w", stepName, err)
@@ -262,28 +266,39 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	// as one would claim a head advance that never happened.
 	if headSHA == headBeforeCommit {
 		sctx.Log("no staged agent changes to commit")
+	} else {
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	}
+	if err := recordAgentFixHead(sctx, stepName, headSHA); err != nil {
+		return false, err
+	}
+	return headSHA != headBeforeCommit, nil
+}
+
+func recordAgentFixHead(sctx *pipeline.StepContext, stepName types.StepName, headSHA string) error {
+	if headSHA == sctx.Run.HeadSHA {
 		return nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return false, err
+		return err
 	}
+	ctx := sctx.Ctx
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return false, fmt.Errorf("update local branch ref: %w", err)
+		return fmt.Errorf("update local branch ref: %w", err)
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {
 		startingHead = sctx.Run.HeadSHA
 	}
-	sctx.Run.HeadSHA = headSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-		return false, err
+		return err
 	}
+	sctx.Run.HeadSHA = headSHA
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
-	return true, nil
+	return nil
 }
 
 func fixResultSummary(committed bool) string {

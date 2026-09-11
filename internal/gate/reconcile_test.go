@@ -302,3 +302,88 @@ func reconcileGit(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+func TestReconcileStaleBranchIncludesPatchesHiddenByMergeSimplification(t *testing.T) {
+	t.Parallel()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+	writeReconcileFile(t, work, "feature.txt", "final content\n")
+	reconcileGit(t, work, "add", "-A")
+	reconcileGit(t, work, "commit", "-m", "private change")
+	privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
+	reconcileGit(t, work, "checkout", "--detach", base)
+	writeReconcileFile(t, work, "feature.txt", "final content\n")
+	reconcileGit(t, work, "add", "-A")
+	reconcileGit(t, work, "commit", "-m", "equivalent side change")
+	sideHead := reconcileGit(t, work, "rev-parse", "HEAD")
+	reconcileGit(t, work, "checkout", "--detach", base)
+	writeReconcileFile(t, work, "feature.txt", "intermediate content\n")
+	reconcileGit(t, work, "add", "-A")
+	reconcileGit(t, work, "commit", "-m", "different initial patch")
+	writeReconcileFile(t, work, "feature.txt", "final content\n")
+	reconcileGit(t, work, "add", "-A")
+	reconcileGit(t, work, "commit", "-m", "reach same tree through different patches")
+	reconcileGit(t, work, "merge", "--no-ff", "-s", "ours", sideHead, "-m", "merge side history")
+	liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+	result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+	if err != nil || !result.Reconciled {
+		t.Fatalf("merge-contained patch was refused: result=%+v err=%v", result, err)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag); got != privateHead {
+		t.Fatalf("archive = %s, want %s", got, privateHead)
+	}
+	reconcileGit(t, work, "push", gateDir, liveHead+":refs/heads/feature")
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != liveHead {
+		t.Fatalf("ordinary push reached %s, want %s", got, liveHead)
+	}
+}
+
+func TestRestoreReconciledBranchPreservesConcurrentRefAndRequiresArchive(t *testing.T) {
+	for _, state := range []string{"absent", "concurrent", "missing_archive"} {
+		t.Run(state, func(t *testing.T) {
+			work := initReconcileRepo(t)
+			base := reconcileGit(t, work, "rev-parse", "HEAD")
+			reconcileGit(t, work, "commit", "--allow-empty", "-m", "private")
+			privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
+			reconcileGit(t, work, "checkout", "--detach", base)
+			reconcileGit(t, work, "commit", "--allow-empty", "-m", "live")
+			liveHead := reconcileGit(t, work, "rev-parse", "HEAD")
+			gateDir := filepath.Join(t.TempDir(), "gate.git")
+			reconcileGit(t, "", "init", "--bare", gateDir)
+			reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature")
+			result, err := ReconcileStaleBranch(context.Background(), gateDir, work, "feature", liveHead, "")
+			if err != nil || !result.Reconciled {
+				t.Fatalf("reconciliation = %+v, err = %v", result, err)
+			}
+			if state == "concurrent" {
+				reconcileGit(t, gateDir, "update-ref", "refs/heads/feature", liveHead)
+			}
+			if state == "missing_archive" {
+				reconcileGit(t, gateDir, "update-ref", "-d", result.ArchivedTag)
+			}
+			err = RestoreReconciledBranch(context.Background(), gateDir, "feature", result)
+			if state == "missing_archive" {
+				if err == nil {
+					t.Fatal("restored without archive evidence")
+				}
+				if refs := reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname)", "refs/heads/"); refs != "" {
+					t.Fatalf("failed restoration created ref: %s", refs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := privateHead
+			if state == "concurrent" {
+				want = liveHead
+			}
+			if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature"); got != want {
+				t.Fatalf("restored ref = %s, want %s", got, want)
+			}
+		})
+	}
+}

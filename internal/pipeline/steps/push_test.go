@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1172,7 +1173,7 @@ func TestPushStep_SkipsWhenGateMirrorDirectoryMissing(t *testing.T) {
 	}
 }
 
-func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) {
+func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 
@@ -1226,11 +1227,121 @@ func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) 
 	sctx.Run.HeadSHA = rebasedHead
 	recordReviewApproval(t, sctx, rebasedHead)
 
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("push with newer descendant mirror failed: %v", err)
+	}
+	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if remoteHead != rebasedHead {
+		t.Fatalf("expected remote head = %s, got %s", rebasedHead, remoteHead)
+	}
+	if tags := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("descendant was archived: %s", tags)
+	}
+
+	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
+	if gateHead != interveningHead {
+		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
+	}
+}
+
+func TestPushStep_MirrorMovesAfterPlanning(t *testing.T) {
+	for _, descendant := range []bool{true, false} {
+		t.Run(fmt.Sprintf("descendant=%t", descendant), func(t *testing.T) {
+			dir, baseSHA, submittedHead := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+			sctx.Run.SubmittedHeadSHA = &submittedHead
+			sctx.Run.Branch = "feature"
+			gateDir := t.TempDir()
+			sctx.GateDir = gateDir
+			gitCmd(t, gateDir, "init", "--bare")
+			gitCmd(t, gateDir, "fetch", dir, submittedHead+":refs/heads/feature")
+			gitCmd(t, dir, "checkout", "--detach", baseSHA)
+			if err := os.WriteFile(filepath.Join(dir, "reviewed.txt"), []byte("reviewed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "reviewed rewrite")
+			reviewedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			plan, err := planGateMirrorReconciliation(sctx.Ctx, sctx, "refs/heads/feature", "feature", reviewedHead)
+			if err != nil || !plan.Reconcile {
+				t.Fatalf("plan = %+v, err = %v", plan, err)
+			}
+			if !descendant {
+				gitCmd(t, dir, "checkout", "--detach", submittedHead)
+			}
+			gitCmd(t, dir, "commit", "--allow-empty", "-m", "intervening commit")
+			interveningHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, gateDir, "fetch", dir, interveningHead)
+			gitCmd(t, gateDir, "update-ref", "refs/heads/feature", interveningHead)
+			err = updateGateMirrorAfterPush(sctx.Ctx, sctx, "refs/heads/feature", reviewedHead, plan)
+			if (err == nil) != descendant {
+				t.Fatalf("descendant=%t, mirror update error = %v", descendant, err)
+			}
+			if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != interveningHead {
+				t.Fatalf("mirror = %s, want preserved %s", got, interveningHead)
+			}
+			if tags := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+				t.Fatalf("moved mirror was archived: %s", tags)
+			}
+		})
+	}
+}
+
+func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.SubmittedHeadSHA = &submittedHead
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+
+	gitCmd(t, gateDir, "fetch", dir, "refs/heads/feature:refs/heads/feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rebased commit")
+	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "reset", "--hard", submittedHead)
+	if err := os.WriteFile(filepath.Join(dir, "intervening.txt"), []byte("intervening\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "intervening commit")
+	interveningHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, gateDir, "fetch", dir, "HEAD:refs/heads/feature")
+
+	gitCmd(t, dir, "reset", "--hard", rebasedHead)
+
+	sctx.Run.HeadSHA = rebasedHead
+	recordReviewApproval(t, sctx, rebasedHead)
+
 	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), interveningHead) || !strings.Contains(err.Error(), "intervening commit") {
 		t.Fatalf("push did not name the at-risk intervening commit: %v", err)
 	}
 
-	// The refusal happens before the upstream or private refs move.
 	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if remoteHead != submittedHead {
 		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)

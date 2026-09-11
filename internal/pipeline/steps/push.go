@@ -242,7 +242,7 @@ func planGateMirrorReconciliation(ctx context.Context, sctx *pipeline.StepContex
 		}
 		return plan, fmt.Errorf("update gate mirror ref %s before push: stat repository: %w", ref, err)
 	}
-	plan, err := gatepkg.PlanStaleBranchReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, runOwnedSubmittedHead(sctx))
+	plan, err := gatepkg.PlanMirrorPublicationReconciliation(ctx, gateDir, sctx.WorkDir, branch, headBeingPushed, runOwnedSubmittedHead(sctx))
 	if err != nil {
 		return gatepkg.StaleBranchPlan{}, fmt.Errorf("update gate mirror ref %s before push: %w", ref, err)
 	}
@@ -270,10 +270,6 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
 	}
-	// The upstream push is verified by now, so the proven-stale private head
-	// can be archived and removed. Applying revalidates the exact head the
-	// pre-push proof covered, so a private commit that arrived in between is
-	// never deleted; it falls through to the divergence check below.
 	if _, err := gatepkg.ApplyStaleBranchReconciliation(ctx, gateDir, mirrorPlan); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: %w", ref, err)
 	}
