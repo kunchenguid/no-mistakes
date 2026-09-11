@@ -609,15 +609,35 @@ func TestFinalizeTextResult_FusesAdjacentSplitObjects(t *testing.T) {
 
 func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T) {
 	// Fusion must never let two competing verdicts combine; a repeated key is
-	// the signal that they are alternatives, not two halves of one answer.
-	text := `{"findings":[]}{"findings":[]}`
+	// the signal that they are alternatives, not two halves of one answer. The
+	// union here would satisfy the schema if the duplicate risk_level were
+	// merged (last wins), so accepting it is the failure this guards.
+	text := `{"findings":[{"id":"F1"}],"risk_level":"low"}{"risk_level":"high","risk_rationale":"r","risk_scope":"source"}`
 	schema := json.RawMessage(`{
 		"type":"object",
-		"properties":{"findings":{"type":"array"},"summary":{"type":"string"}},
-		"required":["findings","summary"]
+		"properties":{
+			"findings":{"type":"array"},
+			"risk_level":{"type":"string"},
+			"risk_rationale":{"type":"string"},
+			"risk_scope":{"type":"string"}
+		},
+		"required":["findings","risk_level","risk_rationale","risk_scope"]
 	}`)
 	if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
 		t.Fatal("expected duplicate-key objects to be rejected")
+	}
+}
+
+func TestFinalizeTextResult_RejectsFusableObjectsFollowedByProse(t *testing.T) {
+	// Only a concluding run of objects is a verdict: a fusable pair quoted
+	// mid-output and followed by substantive prose must not be returned as the
+	// answer while the prose after it is ignored.
+	text := `I will answer with:
+{"findings":[]}
+{"risk_level":"low","risk_rationale":"r","risk_scope":"source-or-external"}
+Now let me actually read the diff:`
+	if _, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{}); err == nil {
+		t.Fatal("expected objects followed by substantive prose to be rejected")
 	}
 }
 

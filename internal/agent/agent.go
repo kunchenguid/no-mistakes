@@ -689,14 +689,17 @@ func isProtocolResidueToken(token string) bool {
 // example {"findings":...} then {"risk_level":...}); each half fails
 // validation alone while the union satisfies it. Adjacent means only whitespace
 // separates the objects, and no key may repeat across the run, so two competing
-// verdicts embedded in prose are never fused.
+// verdicts embedded in prose are never fused. A run counts only when it is
+// concluding, on the same rule as the single-object path: anything other than
+// protocol residue after the run means the objects were quoted mid-answer, not
+// answered.
 func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {
 	for i := 0; i < len(objects); {
 		j := i
 		for j+1 < len(objects) && strings.TrimSpace(text[objects[j].endIndex:objects[j+1].startIndex]) == "" {
 			j++
 		}
-		if j > i {
+		if j > i && trailingNonJSONResidue(text[objects[j].endIndex:]) {
 			if fused, ok := fuseBareObjects(objects[i:j+1], schema); ok {
 				return fused, true
 			}
