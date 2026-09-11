@@ -113,11 +113,20 @@ func TestWaitForDaemonStopRetriesProcessProbeErrors(t *testing.T) {
 	}
 }
 
-func TestDaemonStartTimeoutCoversColdProductionWork(t *testing.T) {
+func TestDaemonStartTimeoutMatchesPlatformStartupWork(t *testing.T) {
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "")
-	minimum := shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout
-	if got := daemonStartTimeout(); got < minimum {
-		t.Fatalf("daemonStartTimeout() = %v, want at least %v", got, minimum)
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+
+	runtimeGOOS = "windows"
+	if got := daemonStartTimeout(); got != 45*time.Second {
+		t.Fatalf("daemonStartTimeout() on Windows = %v, want 45s", got)
+	}
+
+	runtimeGOOS = "linux"
+	want := 45*time.Second + shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout
+	if got := daemonStartTimeout(); got != want {
+		t.Fatalf("daemonStartTimeout() on Linux = %v, want %v", got, want)
 	}
 }
 

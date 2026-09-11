@@ -25,9 +25,13 @@ var daemonKillPID = killPID
 var daemonEndpointUsesRegularFile = func() bool { return runtime.GOOS == "windows" }
 
 func daemonStartTimeout() time.Duration {
-	// Readiness covers the missing-shell retry window, the final login-shell
-	// probe, and the existing budget for recovery and other startup work.
-	fallback := shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout + 45*time.Second
+	// Unix readiness covers the missing-shell retry window, the final
+	// login-shell probe, and the existing budget for recovery and other startup
+	// work. Windows bypasses login-shell probing and keeps the original budget.
+	fallback := 45 * time.Second
+	if runtimeGOOS != "windows" {
+		fallback += shellenv.DefaultShellRetryWindow + shellenv.DefaultShellProbeTimeout
+	}
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", fallback)
 }
 
