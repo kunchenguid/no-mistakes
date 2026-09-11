@@ -39,7 +39,15 @@ import (
 // age floor because it owns that run.
 var orphanProcessMinAge = procreap.DefaultMinAge
 
-var applyShellEnvToProcess = shellenv.ApplyToProcess
+// applyShellEnvToProcess is the startup probe: it may wait for a login shell
+// binary that a boot-time race has not yet produced (see
+// shellenv.DefaultShellRetryWindow). refreshShellEnvToProcess is the run-start
+// re-probe, which must never wait because it runs on the push path.
+var applyShellEnvToProcess = func() error {
+	return shellenv.ApplyToProcessWithShellRetry(shellenv.DefaultShellRetryWindow)
+}
+var refreshShellEnvToProcess = shellenv.ApplyToProcess
+var shellEnvDegraded = shellenv.Degraded
 var createDaemonPIDTempFile = os.CreateTemp
 var renameDaemonPIDFile = os.Rename
 
@@ -119,16 +127,48 @@ func prepareDaemonEnvironment() error {
 			return fmt.Errorf("unset %s: %w", key, err)
 		}
 	}
-	if err := applyShellEnvToProcess(); err != nil {
+	if err := applyLoginShellEnvironment(applyShellEnvToProcess, nmHome); err != nil {
 		return fmt.Errorf("apply login shell environment: %w", err)
+	}
+	logDaemonPathSummary()
+	return nil
+}
+
+// applyLoginShellEnvironment applies a login-shell probe to the process and
+// keeps the service-supplied NM_HOME authoritative over anything the shell's
+// rc files export.
+func applyLoginShellEnvironment(apply func() error, nmHome string) error {
+	if err := apply(); err != nil {
+		return err
 	}
 	if nmHome != "" {
 		if err := os.Setenv("NM_HOME", nmHome); err != nil {
 			return fmt.Errorf("restore NM_HOME: %w", err)
 		}
 	}
-	logDaemonPathSummary()
 	return nil
+}
+
+// refreshDegradedShellEnvironment re-probes the login shell at run start when
+// the startup probe fell back to the degraded process environment. The
+// startup probe runs once per daemon lifetime, so without this a single
+// failure (a login shell that did not exist yet at boot, #143) would pin a
+// PATH without version-manager or Nix directories on every run until the next
+// restart. A healthy environment costs nothing here; a still-degraded one
+// costs a single probe and keeps the run going on the fallback.
+func refreshDegradedShellEnvironment() {
+	if !shellEnvDegraded() {
+		return
+	}
+	if err := applyLoginShellEnvironment(refreshShellEnvToProcess, os.Getenv("NM_HOME")); err != nil {
+		slog.Warn("login shell environment refresh failed; run continues with the degraded PATH (#143)", "error", err)
+		return
+	}
+	if shellEnvDegraded() {
+		return
+	}
+	slog.Info("login shell environment recovered from the degraded fallback (#143)")
+	logDaemonPathSummary()
 }
 
 // logDaemonPathSummary records the effective PATH at daemon startup so that

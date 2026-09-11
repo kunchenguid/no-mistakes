@@ -143,3 +143,19 @@ func groupGoneWithin(pgid int, window time.Duration) bool {
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+// detachFromTerminal runs cmd in a new session instead of merely a new process
+// group. It exists for the login-shell probe: an interactive shell (zsh -i)
+// that inherits a controlling terminal insists on being that terminal's
+// foreground process group before it runs anything, and a Setpgid child of a
+// foreground process never is, so zsh stops itself with SIGTTIN and the probe
+// sits there until the timeout kills it. That is exactly what happens when
+// `daemon run` is started from a terminal. A session of its own has no
+// controlling terminal, which is the condition the probe already works under
+// as a launchd/systemd service. Setsid also makes the child its own process
+// group leader (pgid == pid), so TerminateShellCommandGroup still reaps the
+// whole tree; Setpgid must not be combined with it because setpgid(2) fails
+// for a session leader.
+func detachFromTerminal(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}

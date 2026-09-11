@@ -302,3 +302,7 @@ func isTaskkillAlreadyGone(err error) bool {
 	}
 	return exitErr.ExitCode() == taskkillExitNoSuchProcess
 }
+
+// detachFromTerminal is a no-op where there is no POSIX session or controlling
+// terminal for an interactive shell to contend for.
+func detachFromTerminal(cmd *exec.Cmd) {}

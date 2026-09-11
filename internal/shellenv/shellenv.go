@@ -2,7 +2,9 @@ package shellenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,15 +21,34 @@ var lookupEnv = os.LookupEnv
 var currentUser = user.Current
 var shellCommandOutput = defaultShellCommandOutput
 
-// shellCommandTimeout bounds the one-time login-shell probe at daemon startup.
-// It is deliberately forgiving: a 2s budget was too tight for an interactive
-// login shell under cold-start/system load, and exceeding it silently dropped
-// the daemon onto a degraded fallback PATH that omitted version-manager dirs
-// (nvm/fnm/volta), the intermittent trigger behind #143.
+// shellCommandTimeout bounds each login-shell probe. It is deliberately
+// forgiving: a 2s budget was too tight for an interactive login shell under
+// cold-start/system load, and exceeding it silently dropped the daemon onto a
+// degraded fallback PATH that omitted version-manager dirs (nvm/fnm/volta),
+// the intermittent trigger behind #143.
 var shellCommandTimeout = 30 * time.Second
+
+// DefaultShellRetryWindow is how long a daemon startup keeps re-probing while
+// the login shell binary itself is missing. The window only needs to cover a
+// boot-time race: on macOS with nix-darwin the login shell lives under
+// /run/current-system, a symlink that the org.nixos.activate-system daemon
+// recreates only after the Nix store volume is mounted, and a RunAtLoad launch
+// agent can start before that. The probe then fails with fork/exec ENOENT in
+// about a millisecond, so waiting is the only way to see the real shell.
+const DefaultShellRetryWindow = 60 * time.Second
+
+// shellRetrySleep is the retry sleeper, swapped by tests so retry behavior is
+// asserted without wall-clock waits.
+var shellRetrySleep = time.Sleep
+
+const (
+	shellRetryInitialBackoff = time.Second
+	shellRetryMaxBackoff     = 10 * time.Second
+)
 
 var cacheMu sync.Mutex
 var cachedEnv []string
+var degraded bool
 
 func LoginShell() string {
 	if shell, ok := lookupEnv("SHELL"); ok && strings.TrimSpace(shell) != "" {
@@ -51,7 +72,18 @@ func SupportsInteractive(shell string) bool {
 	return base == "bash" || base == "zsh"
 }
 
+// Resolve returns the login shell environment, probing the shell at most once
+// and falling back to the augmented process environment when the probe fails.
 func Resolve() ([]string, error) {
+	return ResolveWithShellRetry(0)
+}
+
+// ResolveWithShellRetry is Resolve for callers that can afford to wait for a
+// login shell binary that does not exist yet (see DefaultShellRetryWindow).
+// Only that failure is retried: a shell that exists but fails or prints no
+// environment is not going to heal by waiting, and blocking on it would only
+// delay startup. The retry sleeps add up to at most window.
+func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 	cacheMu.Lock()
 	if cachedEnv != nil {
 		defer cacheMu.Unlock()
@@ -59,25 +91,40 @@ func Resolve() ([]string, error) {
 	}
 	cacheMu.Unlock()
 
-	resolved, resolvedFromShell := resolveUncached()
+	resolved, resolvedFromShell := resolveUncached(window)
 
 	// Only cache a successful shell resolution. A degraded fallback (the shell
 	// probe failed or returned nothing) must never be cached: one bad daemon
 	// startup would otherwise poison every spawned agent for the daemon's whole
 	// lifetime - the failure mode behind #143. Leaving it uncached lets a later
-	// call retry and recover the real login-shell PATH.
-	if resolvedFromShell {
-		cacheMu.Lock()
-		if cachedEnv == nil {
-			cachedEnv = append([]string(nil), resolved...)
-		}
-		cacheMu.Unlock()
+	// call (the daemon re-probes at run start while Degraded) recover the real
+	// login-shell PATH.
+	cacheMu.Lock()
+	if resolvedFromShell && cachedEnv == nil {
+		cachedEnv = append([]string(nil), resolved...)
 	}
+	degraded = !resolvedFromShell
+	cacheMu.Unlock()
 	return append([]string(nil), resolved...), nil
 }
 
+// Degraded reports whether the most recent resolution fell back to the
+// augmented process environment instead of a successful login-shell probe. It
+// is false before any resolution and after a successful one.
+func Degraded() bool {
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	return degraded
+}
+
 func ApplyToProcess() error {
-	env, err := Resolve()
+	return ApplyToProcessWithShellRetry(0)
+}
+
+// ApplyToProcessWithShellRetry applies ResolveWithShellRetry(window) to the
+// current process environment.
+func ApplyToProcessWithShellRetry(window time.Duration) error {
+	env, err := ResolveWithShellRetry(window)
 	if err != nil {
 		return err
 	}
@@ -96,35 +143,71 @@ func ApplyToProcess() error {
 	return nil
 }
 
-// resolveUncached probes the login shell for its environment. The bool return
-// reports whether the result came from a successful shell probe (true) or a
-// degraded fallback (false); callers use it to decide whether the result is
-// safe to cache.
-func resolveUncached() ([]string, bool) {
+// errNoEntries marks a probe whose shell ran but printed no parseable
+// environment entries.
+var errNoEntries = errors.New("login shell printed no environment entries")
+
+// resolveUncached probes the login shell for its environment, waiting up to
+// window for a missing shell binary to appear. The bool return reports whether
+// the result came from a successful shell probe (true) or a degraded fallback
+// (false); callers use it to decide whether the result is safe to cache.
+func resolveUncached(window time.Duration) ([]string, bool) {
 	if runtimeGOOS == "windows" {
 		return append([]string(nil), os.Environ()...), true
 	}
 
 	shell := LoginShell()
+	resolved, err := probeLoginShell(shell)
+	backoff := shellRetryInitialBackoff
+	for attempt := 1; shellBinaryMissing(err) && backoff <= window; attempt++ {
+		slog.Warn("login shell binary is missing, waiting for it before resolving the login shell environment (#143)",
+			"shell", shell, "attempt", attempt, "backoff", backoff, "err", err)
+		shellRetrySleep(backoff)
+		window -= backoff
+		if backoff *= 2; backoff > shellRetryMaxBackoff {
+			backoff = shellRetryMaxBackoff
+		}
+		resolved, err = probeLoginShell(shell)
+	}
+	switch {
+	case errors.Is(err, errNoEntries):
+		slog.Warn("login shell environment resolution returned no entries; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
+			"shell", shell)
+	case err != nil:
+		slog.Warn("login shell environment resolution failed; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
+			"shell", shell, "err", err)
+	}
+	if err != nil {
+		fallback := append([]string(nil), os.Environ()...)
+		return augmentPath(ensureShellEntry(fallback, shell)), false
+	}
+	return augmentPath(ensureShellEntry(resolved, shell)), true
+}
+
+// probeLoginShell runs the login shell once and returns its environment.
+// Interactive mode is deliberate for bash and zsh: version managers such as
+// nvm, fnm, and volta are sourced from .zshrc/.bashrc, not the profile.
+func probeLoginShell(shell string) ([]string, error) {
 	args := []string{"-l", "-c", "env -0"}
 	if SupportsInteractive(shell) {
 		args = []string{"-l", "-i", "-c", "env -0"}
 	}
 	out, err := shellCommandOutput(shell, args...)
 	if err != nil {
-		slog.Warn("login shell environment resolution failed; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
-			"shell", shell, "err", err)
-		fallback := append([]string(nil), os.Environ()...)
-		return augmentPath(ensureShellEntry(fallback, shell)), false
+		return nil, err
 	}
 	resolved := parseEnvOutput(out)
 	if len(resolved) == 0 {
-		slog.Warn("login shell environment resolution returned no entries; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)",
-			"shell", shell)
-		fallback := append([]string(nil), os.Environ()...)
-		return augmentPath(ensureShellEntry(fallback, shell)), false
+		return nil, errNoEntries
 	}
-	return augmentPath(ensureShellEntry(resolved, shell)), true
+	return resolved, nil
+}
+
+// shellBinaryMissing reports whether the probe failed because the shell
+// executable itself is absent (fork/exec ENOENT for an absolute path, or an
+// unresolvable bare name), the only failure that waiting can fix.
+func shellBinaryMissing(err error) bool {
+	return err != nil && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound))
 }
 
 // WellKnownBinDirs returns common binary install locations that should be on
@@ -322,6 +405,7 @@ func defaultShellCommandOutput(name string, args ...string) ([]byte, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	ConfigureShellCommand(cmd)
+	detachFromTerminal(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 	return OutputShellCommand(cmd)
 }
@@ -330,4 +414,5 @@ func resetForTests() {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	cachedEnv = nil
+	degraded = false
 }

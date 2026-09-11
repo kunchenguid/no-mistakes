@@ -19,3 +19,7 @@ func StartShellCommand(cmd *exec.Cmd) error {
 // primitive, mirroring ConfigureShellCommand. The reap-the-group-on-exit
 // guarantee is best-effort and platform-gated.
 func TerminateShellCommandGroup(cmd *exec.Cmd) {}
+
+// detachFromTerminal is a no-op where there is no POSIX session or controlling
+// terminal for an interactive shell to contend for.
+func detachFromTerminal(cmd *exec.Cmd) {}

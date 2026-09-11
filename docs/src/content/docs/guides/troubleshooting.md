@@ -134,7 +134,7 @@ acp_registry_overrides:
 For Antigravity or Gemini-based driving agents, install a supported native agent CLI separately or configure a working ACP target such as `agent: acp:gemini` with `acpx` installed.
 The calling agent is the AXI driver, not an implicit pipeline-agent backend.
 
-The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing.
+The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing. A `login shell binary is missing` warning means the daemon started before its login shell existed (on macOS with Nix, before `/run/current-system` was recreated after a reboot) and waited for it; the fallback is retried at the start of every run, and `login shell environment recovered from the degraded fallback` marks the recovery with a fresh `daemon environment ready` line. The `PATH` baked into the launchd plist or systemd unit is only the bootstrap value the service manager hands the daemon binary; the login-shell probe replaces it, so a reinstall does not change the effective `PATH`.
 
 ### Restart the daemon after installing a new agent
 
