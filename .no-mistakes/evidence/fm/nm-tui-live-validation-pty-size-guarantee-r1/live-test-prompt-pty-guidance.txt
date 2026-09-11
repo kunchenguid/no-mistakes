@@ -1,0 +1,7 @@
+Live no-mistakes Test-step prompt observed by the evidence agent in run 01M29CKS7M9WGBQV5STT3M0FY4 at target commit 8ce0afc9661584ec0ffd061bd697ae3207ac0b03:
+
+Drive each scenario:
+- Stand the product up the way an end user runs it, in an isolated environment, and drive each scenario end-to-end against that running product.
+- When a live scenario drives a TUI through a pseudo-terminal, give the pty a non-zero window size (TIOCSWINSZ) before the TUI reads its grid, and drain the master. A 0x0 grid makes the TUI exit immediately with a symptom such as "terminal reported a zero-sized grid" and never register, so a live UI check silently becomes a fake. Bare script(1) and pty.fork() from a non-tty parent typically yield that 0x0 grid.
+
+This excerpt is from the generated runtime prompt delivered by the real active product, not from the reference documentation or source file.
