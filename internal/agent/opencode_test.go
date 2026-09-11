@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -771,6 +772,15 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		{name: "canonical provider wording", text: `Thinking may not be enabled when tool_choice forces tool use.`, want: true},
 		{name: "issue wording", text: `thinking mode can't be combined with a forced tool_choice`, want: true},
 		{name: "reasoning variant", text: `Required tool choice cannot be combined with reasoning`, want: true},
+		// Review findings F1 and F2 on the #965 change: an only-auto verdict
+		// that names thinking is this conditional conflict, not a blanket
+		// gateway restriction, even with no relational verb to match on.
+		{name: "must be auto when thinking is enabled", text: `tool_choice must be auto when thinking is enabled`, want: true},
+		{name: "only auto supported when thinking is active", text: `only auto is supported for tool_choice when thinking is active`, want: true},
+		{name: "unsupported when extended thinking is enabled", text: `tool_choice parameter is unsupported when extended thinking is enabled`, want: true},
+		{name: "reasoning variant of the same overlap", text: `tool_choice must be auto when reasoning is enabled`, want: true},
+		// The blanket rejection must not be claimed as a thinking conflict.
+		{name: "free gateway payload is not a thinking conflict", text: `only "auto" is supported for "tool_choice". "none", "required", and named function choices are not currently supported`, want: false},
 		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
 		{name: "unrelated multi-clause limitation", text: `tool_choice is required. Thinking is not supported when streaming.`, want: false},
 		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
@@ -780,6 +790,247 @@ func TestThinkingToolChoiceConflictClassification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isThinkingToolChoiceConflictText(tt.text); got != tt.want {
 				t.Fatalf("isThinkingToolChoiceConflictText(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+			// The two detectors stay disjoint: a thinking conflict never
+			// reports itself as a blanket only-auto rejection.
+			if tt.want && isForcedToolChoiceUnsupportedText(tt.text) {
+				t.Fatalf("isForcedToolChoiceUnsupportedText(%q) = true, want false", tt.text)
+			}
+		})
+	}
+}
+
+func TestForcedToolChoiceUnsupportedClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "free gateway exact payload", text: `only "auto" is supported for "tool_choice". "none", "required", and named function choices are not currently supported`, want: true},
+		{name: "unquoted only auto", text: `only auto is supported for tool_choice`, want: true},
+		{name: "must be auto", text: `tool_choice must be "auto"`, want: true},
+		{name: "unsupported tool_choice", text: `unsupported tool_choice`, want: true},
+		{name: "reversed tool_choice only auto", text: `tool_choice: only "auto" is supported`, want: true},
+		{name: "thinking conflict is not a blanket rejection", text: `tool_choice 'required' is incompatible with thinking enabled`, want: false},
+		{name: "canonical thinking wording is not a blanket rejection", text: `Thinking may not be enabled when tool_choice forces tool use.`, want: false},
+		{name: "thinking without auto is not a blanket rejection", text: `Thinking mode does not support this tool_choice`, want: false},
+		{name: "compatible requirement", text: `tool_choice is required and cannot be disabled when thinking is enabled`, want: false},
+		{name: "unrelated multi-clause limitation", text: `tool_choice is required. Thinking is not supported when streaming.`, want: false},
+		{name: "ordinary structured failure", text: `Model did not produce structured output`, want: false},
+		{name: "unrelated provider failure", text: `provider does not support this model`, want: false},
+		{name: "rate limit is not a rejection", text: `rate limit exceeded for model, retry after 60s`, want: false},
+		{name: "429 rate limit is not a rejection", text: `429 Too Many Requests: rate-limit exceeded, retry later`, want: false},
+		{name: "generic 500 is not a rejection", text: `internal server error (status 500)`, want: false},
+		{name: "mere mention without a verdict", text: `tool_choice is required for structured output`, want: false},
+		// Review findings F1 and F2 on the #965 change: these name a thinking
+		// mode, so they are thinking conflicts even though the thinking
+		// patterns miss them for want of a relational verb. The blanket
+		// detector must decline them rather than misreport the cause.
+		{name: "must be auto when thinking is enabled", text: `tool_choice must be auto when thinking is enabled`, want: false},
+		{name: "only auto supported when thinking is active", text: `only auto is supported for tool_choice when thinking is active`, want: false},
+		{name: "unsupported when extended thinking is enabled", text: `tool_choice parameter is unsupported when extended thinking is enabled`, want: false},
+		{name: "reasoning variant of the same overlap", text: `tool_choice must be auto when reasoning is enabled`, want: false},
+		// A blanket rejection in one sentence still matches when an adjacent
+		// sentence happens to mention thinking.
+		{name: "blanket rejection beside an unrelated thinking sentence", text: `only "auto" is supported for "tool_choice". Thinking is configured per request.`, want: true},
+		// Gate finding review-1: the dead [^.] guard let the token and the
+		// verdict sit in different clauses of one sentence. Both of these
+		// matched before that guard was replaced.
+		{name: "only auto scaling in a later clause", text: `tool_choice is restricted, and only auto scaling is enabled`, want: false},
+		{name: "only auto placement in a later clause", text: `tool_choice rejected, only auto placement is supported here`, want: false},
+		{name: "colon as clause separator with only auto scaling", text: `tool_choice logged: only auto scaling remains in this region`, want: false},
+		{name: "colon as clause separator with only auto placement", text: `tool_choice quota note: only auto placement left on the cluster`, want: false},
+		// A colon straight after the token is still one clause.
+		{name: "colon then only auto", text: `tool_choice: only auto`, want: true},
+		{name: "unsupported model beside tool_choice", text: `tool_choice set, but the requested model is unsupported`, want: false},
+		{name: "tool_choice value unsupported", text: `tool_choice value is unsupported`, want: true},
+		{name: "invalid parameter without a verdict", text: `invalid tool_choice parameter`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isForcedToolChoiceUnsupportedText(tt.text); got != tt.want {
+				t.Fatalf("isForcedToolChoiceUnsupportedText(%q) = %v, want %v", tt.text, got, tt.want)
+			}
+			// The two detectors stay disjoint: a blanket rejection never
+			// reports itself as a thinking conflict.
+			if tt.want && isThinkingToolChoiceConflictText(tt.text) {
+				t.Fatalf("isThinkingToolChoiceConflictText(%q) = true, want false", tt.text)
+			}
+		})
+	}
+}
+
+// TestOpencodeFallbackTrigger_SentinelsStayDistinct pins the sentinel
+// contract the fallback relies on: each builder carries its own sentinel,
+// never the other's, and both open the same prompt-only fallback while an
+// unrelated error opens none.
+func TestOpencodeFallbackTrigger_SentinelsStayDistinct(t *testing.T) {
+	conflict := thinkingConflict(opencodeToolsNone, nil)
+	if !errors.Is(conflict, errOpencodeThinkingToolChoiceConflict) {
+		t.Errorf("thinkingConflict must carry the thinking sentinel, got %v", conflict)
+	}
+	if errors.Is(conflict, errOpencodeForcedToolChoiceUnsupported) {
+		t.Errorf("thinkingConflict must not carry the only-auto sentinel, got %v", conflict)
+	}
+	if !opencodeFallbackTrigger(conflict) {
+		t.Errorf("thinkingConflict must trigger the prompt-only fallback, got %v", conflict)
+	}
+
+	rejection := forcedToolChoiceConflict(opencodeToolsNone, nil)
+	if !errors.Is(rejection, errOpencodeForcedToolChoiceUnsupported) {
+		t.Errorf("forcedToolChoiceConflict must carry the only-auto sentinel, got %v", rejection)
+	}
+	if errors.Is(rejection, errOpencodeThinkingToolChoiceConflict) {
+		t.Errorf("forcedToolChoiceConflict must not carry the thinking sentinel, got %v", rejection)
+	}
+	if !opencodeFallbackTrigger(rejection) {
+		t.Errorf("forcedToolChoiceConflict must trigger the prompt-only fallback, got %v", rejection)
+	}
+
+	if opencodeFallbackTrigger(errors.New("provider does not support this model")) {
+		t.Error("an unrelated provider error must not trigger the prompt-only fallback")
+	}
+
+	// The pre-existing thinking wording keeps its own detector and sentinel.
+	for _, text := range []string{
+		`tool_choice 'required' is incompatible with thinking enabled`,
+		`Thinking may not be enabled when tool_choice forces tool use.`,
+	} {
+		if !isThinkingToolChoiceConflictText(text) {
+			t.Errorf("isThinkingToolChoiceConflictText(%q) = false, want true", text)
+		}
+		if isForcedToolChoiceUnsupportedText(text) {
+			t.Errorf("isForcedToolChoiceUnsupportedText(%q) = true, want false", text)
+		}
+	}
+}
+
+func TestOpencodeAgent_ForcedToolChoiceFallsBackToValidatedText(t *testing.T) {
+	var sessions atomic.Int32
+	var fallbackFormatSeen atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"APIError","data":{"message":"only \"auto\" is supported for \"tool_choice\". \"none\", \"required\", and named function choices are not currently supported","statusCode":400,"isRetryable":false}}},"parts":[]}`)
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode fallback request: %v", err)
+			}
+			_, hasFormat := body["format"]
+			fallbackFormatSeen.Store(hasFormat)
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":\"gateway fallback passed\"}"}]}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(result.Output); got != `{"summary":"gateway fallback passed"}` {
+		t.Fatalf("output = %s", got)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want exactly one fallback retry", got)
+	}
+	if fallbackFormatSeen.Load() {
+		t.Error("fallback request unexpectedly used native json_schema format")
+	}
+	t.Logf("gateway only-auto rejection triggered one fallback; validated output=%s", result.Output)
+}
+
+func TestOpencodeAgent_ForcedToolChoiceFromSSEFallsBackOnce(t *testing.T) {
+	var sessions atomic.Int32
+	var eventStreams atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			id := sessions.Add(1)
+			fmt.Fprintf(w, `{"id":"s%d"}`, id)
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			if eventStreams.Add(1) == 1 {
+				fmt.Fprint(w, `data: {"payload":{"type":"session.error","properties":{"sessionID":"s1","error":{"name":"APIError","data":{"message":"only \"auto\" is supported for \"tool_choice\". \"none\", \"required\", and named function choices are not currently supported"}}}}}`+"\n\n")
+				return
+			}
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant"}}`)
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant"},"parts":[{"type":"text","text":"{\"summary\":\"sse gateway fallback passed\"}"}]}`)
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := string(result.Output); got != `{"summary":"sse gateway fallback passed"}` {
+		t.Fatalf("output = %s", got)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want exactly one fallback retry", got)
+	}
+	t.Logf("SSE gateway only-auto rejection triggered one fallback; validated output=%s", result.Output)
+}
+
+// TestToolChoiceDetectorsPartitionRejections pins the invariant the two
+// sentinels exist for: every tool_choice rejection reaches the prompt-only
+// fallback, exactly one detector claims it, and an unrelated provider error
+// triggers no fallback at all.
+func TestToolChoiceDetectorsPartitionRejections(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		thinking bool
+		forced   bool
+	}{
+		{name: "free gateway blanket rejection", text: `only "auto" is supported for "tool_choice". "none", "required", and named function choices are not currently supported`, forced: true},
+		{name: "must be auto", text: `tool_choice must be auto`, forced: true},
+		{name: "relational thinking conflict", text: `tool_choice 'required' is incompatible with thinking enabled`, thinking: true},
+		{name: "verdict naming thinking", text: `tool_choice must be auto when thinking is enabled`, thinking: true},
+		{name: "verdict naming reasoning", text: `tool_choice parameter is unsupported when extended reasoning is enabled`, thinking: true},
+		{name: "rate limit", text: `rate limit exceeded for model, retry after 60s`},
+		{name: "unsupported model", text: `tool_choice set, but the requested model is unsupported`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			thinking := isThinkingToolChoiceConflictText(tc.text)
+			forced := isForcedToolChoiceUnsupportedText(tc.text)
+			if thinking != tc.thinking || forced != tc.forced {
+				t.Fatalf("thinking=%v forced=%v, want thinking=%v forced=%v", thinking, forced, tc.thinking, tc.forced)
+			}
+			if thinking && forced {
+				t.Fatal("both detectors claimed the same rejection; the sentinels must stay disjoint")
 			}
 		})
 	}
