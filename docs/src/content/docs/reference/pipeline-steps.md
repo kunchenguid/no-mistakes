@@ -89,9 +89,9 @@ AI code review of your diff. This is probabilistic evidence, not a security or c
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
-- When no-mistakes itself rejects the reviewer's final output, reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
-  That covers an agent without native schema enforcement, such as Pi, whose final JSON fails validation (for example a missing required `risk_level`, or `tested` given as a boolean), and any output that fails Review's own checks.
-  An agent that enforces the schema natively, such as Claude Code, retries within its own limit first, and exhausting that limit fails the step as before.
+- When the reviewer's final output is rejected, reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
+  It reruns when the agent adapter marks that output as rejected against the schema, which covers Pi when its final JSON fails validation (for example a missing required `risk_level`, or `tested` given as a boolean) and opencode once its own internal StructuredOutput retries run out, and when Review's own checks refuse the output.
+  Claude Code's `--json-schema` re-prompts within its own limit and reports exhaustion as `error_max_structured_output_retries`; that result is not marked as a rejection, so it fails the step as before.
   Findings come only from the attempt that validates, and nothing else from a rejected attempt carries over.
   Exhausting the attempts fails the step as a parse failure, so an unreadable review is never treated as a pass.
   The same applies to every post-fix rereview, while the fixer's own turn is not retried.
