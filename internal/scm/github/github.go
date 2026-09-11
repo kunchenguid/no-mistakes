@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/safecontent"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -325,7 +326,29 @@ func (h *Host) matchesHead(headRefName string, owner *struct {
 	return strings.EqualFold(strings.TrimSpace(owner.Login), h.forkOwner)
 }
 
+// preparePRContentForPublication is the final privacy boundary before gh sees
+// a title or body. Both full-body write paths use it, including attestation
+// restamps through UpdatePR, so a renderer or a new caller cannot bypass the
+// guard. It runs before the command factory is called: rejected raw content is
+// never placed in argv, stdin, or a network-bound body file.
+func preparePRContentForPublication(content scm.PRContent) (scm.PRContent, error) {
+	var err error
+	content.Title, err = safecontent.ScrubPullRequestText(content.Title)
+	if err != nil {
+		return scm.PRContent{}, fmt.Errorf("refusing to publish pull request title: %w", err)
+	}
+	content.Body, err = safecontent.ScrubPullRequestText(content.Body)
+	if err != nil {
+		return scm.PRContent{}, fmt.Errorf("refusing to publish pull request body: %w", err)
+	}
+	return content, nil
+}
+
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
+	content, err := preparePRContentForPublication(content)
+	if err != nil {
+		return nil, err
+	}
 	args := append([]string{"pr", "create",
 		"--head", h.headRef(branch),
 		"--base", base,
@@ -349,6 +372,10 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
+	content, err := preparePRContentForPublication(content)
+	if err != nil {
+		return nil, err
+	}
 	selector, err := prSelector(pr)
 	if err != nil {
 		return nil, err

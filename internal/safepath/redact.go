@@ -2,8 +2,9 @@
 // out of the text a caller passes it.
 //
 // It guarantees nothing on its own about what no-mistakes publishes: coverage
-// is exactly the set of publication boundaries that call it. Today that is the
-// pull request title and body (PRStep.buildPRContent). Agent-authored commit
+// is exactly the set of publication boundaries that call it. Today PRStep uses
+// it as provider-neutral defense in depth, and safecontent uses it inside the
+// GitHub connector's final title/body publication check. Agent-authored commit
 // subjects, which reach the remote through the auto-fix commit path
 // (commitAgentFixes -> Commit.RenderFixMessage), are a separate surface with a
 // different rendering and are deliberately not covered; so is the opt-in

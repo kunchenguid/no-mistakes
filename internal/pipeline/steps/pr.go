@@ -283,16 +283,12 @@ func describePR(pr *scm.PR) string {
 }
 
 // buildPRContent drafts the pull request title and body and then applies the
-// publication redaction boundary. It is the only producer of PR content, and
-// Execute publishes exactly what it returns, so this is the one place a scrub
-// has to happen for every source that can reach a PR body: agent-authored
-// prose, extracted user intent, findings, fix summaries, step errors, artifact
-// paths, artifact captions, and captured output embedded from evidence files.
-//
-// The scrub deliberately sits here rather than at each of those sources. A
-// per-source scrub is a set of guards that has to be complete to work, and the
-// next rendering path somebody adds is not going to have one; a boundary scrub
-// covers sources nobody has written yet.
+// provider-neutral home-path scrub. Keeping this assembly-time defense covers
+// agent-authored prose, extracted user intent, findings, fix summaries, step
+// errors, artifact paths and captions, and captured evidence output for every
+// SCM provider. GitHub additionally owns the authoritative final local-identity
+// check in preparePRContentForPublication, shared by CreatePR and UpdatePR, so
+// direct connector callers and body-only attestation restamps cannot bypass it.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
@@ -301,10 +297,11 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	return redactPRContent(content), nil
 }
 
-// redactPRContent removes the operator's home directory from the content about
-// to be published. It runs after every length cap has been applied, which is
-// safe because safepath's placeholder is never longer than the path it
-// replaces, so a redacted body can only be shorter than the clamped one.
+// redactPRContent removes the operator's home directory from assembled content
+// as provider-neutral defense in depth. It runs after every length cap has been
+// applied, which is safe because safepath's placeholder is never longer than
+// the path it replaces, so a redacted body can only be shorter than the
+// clamped one.
 func redactPRContent(content prContent) prContent {
 	content.Title = safepath.RedactText(content.Title)
 	content.Body = safepath.RedactText(content.Body)
