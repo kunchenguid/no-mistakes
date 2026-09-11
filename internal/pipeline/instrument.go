@@ -246,9 +246,6 @@ func invocationSessionKey(opts agent.RunOpts, result *agent.Result) string {
 // low-cardinality category. Only the category is stored - never the error
 // text, which can embed agent output.
 func classifyInvocationFailure(err error) string {
-	if agent.IsStructuredOutputRejected(err) {
-		return "parse"
-	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "parse events") || strings.Contains(msg, "output parse"):

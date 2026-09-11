@@ -11,7 +11,7 @@ intent → rebase → review → test → document → lint → push → pr → 
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
-The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and so does the Review analyzer when its rejected output is a readable review with valid findings, which the correction cannot change; exhausting that bound, and every other invalid analyzer output, still stops the affected step.
+The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and Review reruns a fresh review up to three times; exhausting either bound, and every other step's invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
 See [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
@@ -89,16 +89,11 @@ AI code review of your diff. This is probabilistic evidence, not a security or c
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
-- If that structured output is a readable review that fails schema validation (for example a missing required `risk_level`, or `tested` given as a boolean), a fresh, session-free, correction-only invocation receives the complete rejected output and the validation errors as untrusted data.
-  It cannot use tools or re-review the code, may repair only the review's fields outside `findings`, and must not invent a default risk assessment.
-  Because validation reports only the first violation it finds, the correction is asked to check every field outside `findings` against the review schema and repair each one that does not match, not just the field the error names.
-  The rejected review's findings are final: the step keeps them exactly as reported whatever the correction returns, so a correction can never drop, add, or downgrade a finding.
-  The step allows two extra correction attempts after the first invalid payload, and exhausting that bound fails the step as a parse failure.
-  The rejected review is found in the response by the same rules the agent adapter applied to it, so other JSON quoted in the surrounding prose does not hide it.
-  A review with no findings to keep - no structured output at all, an absent or null `findings` array, or findings that break the schema themselves - is never corrected, because a correction could only invent them; it fails the step on the first attempt, the step log records why, and it is never treated as a pass.
-  A valid payload is accepted on the first attempt.
-  Ordinary agent failures (exit, timeout, transient) are not retried here.
-  The same path applies to the initial review and every post-fix rereview.
+- If that structured output is missing, malformed, or fails validation (for example a missing required `risk_level`, or `tested` given as a boolean), reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
+  Findings come only from the attempt that validates, and nothing else from a rejected attempt carries over.
+  Exhausting the attempts fails the step as a parse failure, so an unreadable review is never treated as a pass.
+  The same applies to every post-fix rereview, while the fixer's own turn is not retried.
+  Ordinary agent failures (exit, timeout, cancellation) are not retried here.
 - Appends the [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) blocks whose glob matches at least one changed file, in configured order, each labelled with its own `path` and the files it matched so a scoped rule cannot read as a repository-wide instruction; a change that matches nothing, or a repo with none configured, gets the prompt unchanged
 - Selects those blocks against the complete changed-file list rather than the `ignore_patterns`-filtered one, so a pushed-branch ignore entry cannot suppress a trusted rule, and reads them from the trusted default-branch config copy regardless of `allow_repo_commands`
 - Logs which of those rules it applied and which matched no changed path

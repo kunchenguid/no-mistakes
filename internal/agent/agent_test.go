@@ -413,64 +413,6 @@ func TestFinalizeTextResult_WithSchemaPreservesTypeErrorForValidJSON(t *testing.
 	}
 }
 
-// A caller correcting a rejected response needs all of it, while the error
-// text stays a bounded snippet for logs, step errors, and invocation records.
-func TestFinalizeTextResult_RejectionCarriesTheFullResponseOutsideTheError(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","required":["risk_level"],"properties":{"findings":{"type":"array"},"risk_level":{"type":"string"}}}`)
-	text := "```json\n{\"findings\":[\"" + strings.Repeat("x", 500) + "\",\"tail finding\"]}\n```"
-	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
-	if !IsStructuredOutputRejected(err) {
-		t.Fatalf("err = %v, want a structured-output rejection", err)
-	}
-	rejected := RejectedStructuredOutput(err)
-	if string(rejected.Text) != text || rejected.PreferTerminal {
-		t.Fatalf("rejected output = %+v, want the complete response under the single-object rule", rejected)
-	}
-	if strings.Contains(err.Error(), "tail finding") {
-		t.Fatalf("error text carries the full response instead of a snippet: %v", err)
-	}
-	if extracted, extractErr := rejected.JSON(findingsOnlySchema); extractErr != nil || !strings.Contains(string(extracted), "tail finding") {
-		t.Fatalf("rejected JSON = %s, %v; want the fenced object", extracted, extractErr)
-	}
-
-	_, err = finalizeTextResult("pi", "", schema, TokenUsage{})
-	if !IsStructuredOutputRejected(err) || len(RejectedStructuredOutput(err).Text) != 0 {
-		t.Fatalf("empty response: err = %v, rejected = %+v; want a rejection carrying nothing", err, RejectedStructuredOutput(err))
-	}
-}
-
-var findingsOnlySchema = json.RawMessage(`{"type":"object","required":["findings"],"properties":{"findings":{"type":"array"}}}`)
-
-// A caller re-reading a rejected response must pick the candidate the
-// rejecting adapter would have: incidental JSON in the prose drops out under
-// the caller's schema, and an ACP adapter's last-object rule (#931) still
-// applies to a response that repeats its object.
-func TestRejectedOutput_JSONChoosesTheCandidateTheAdapterWould(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","required":["findings","risk_level"],"properties":{"findings":{"type":"array"},"risk_level":{"type":"string"}}}`)
-
-	_, err := finalizeTextResult("pi", "On error it returns `Findings{}` unchanged.\n"+`{"findings":["kept"],"tested":true}`, schema, TokenUsage{})
-	extracted, extractErr := RejectedStructuredOutput(err).JSON(findingsOnlySchema)
-	if extractErr != nil || !strings.Contains(string(extracted), "kept") {
-		t.Fatalf("prose with an incidental object: JSON = %s, %v; want the review object", extracted, extractErr)
-	}
-
-	repeated := `{"findings":["draft"]}` + "\n\nFinal answer:\n" + `{"findings":["final"]}`
-	_, err = finalizeTextResult("acp:gemini", repeated, schema, TokenUsage{})
-	rejected := RejectedStructuredOutput(err)
-	if !rejected.PreferTerminal {
-		t.Fatalf("ACP rejection = %+v, want the last-object rule recorded", rejected)
-	}
-	extracted, extractErr = rejected.JSON(findingsOnlySchema)
-	if extractErr != nil || !strings.Contains(string(extracted), "final") || strings.Contains(string(extracted), "draft") {
-		t.Fatalf("ACP repeated object: JSON = %s, %v; want the last one", extracted, extractErr)
-	}
-
-	_, err = finalizeTextResult("pi", repeated, schema, TokenUsage{})
-	if extracted, extractErr := RejectedStructuredOutput(err).JSON(findingsOnlySchema); extractErr == nil {
-		t.Fatalf("non-ACP repeated object: JSON = %s, want the same ambiguity refusal the adapter applies", extracted)
-	}
-}
-
 func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	text := "review complete\n\n```json\n{\"done\":true}\n```"
 	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})

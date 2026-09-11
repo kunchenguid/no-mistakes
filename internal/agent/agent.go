@@ -72,52 +72,17 @@ func IsStructuredOutputRejected(err error) bool {
 	return errors.As(err, &rejection) && rejection.StructuredOutputRejected()
 }
 
-// RejectedOutput is a final response whose structured output was rejected:
-// its complete text, empty when none arrived, and whether the rejecting
-// adapter takes the last of several JSON objects in it, as ACP adapters do.
-type RejectedOutput struct {
-	Text           []byte
-	PreferTerminal bool
-}
-
-// JSON returns the one JSON value in the rejected response that satisfies
-// schema, found by the same candidate rules the rejecting adapter applied:
-// bare, fenced, or set in prose.
-func (r RejectedOutput) JSON(schema json.RawMessage) (json.RawMessage, error) {
-	return parseStructuredTextOutput(string(r.Text), schema, r.PreferTerminal)
-}
-
-// RejectedStructuredOutput returns the final response whose structured output
-// was rejected. Callers read it here rather than from the error text, which
-// carries only a bounded snippet.
-func RejectedStructuredOutput(err error) RejectedOutput {
-	var rejection interface{ RejectedOutput() RejectedOutput }
-	if errors.As(err, &rejection) {
-		return rejection.RejectedOutput()
-	}
-	return RejectedOutput{}
-}
-
-type structuredOutputRejection struct {
-	err      error
-	rejected RejectedOutput
-}
+type structuredOutputRejection struct{ err error }
 
 func (e *structuredOutputRejection) Error() string                { return e.err.Error() }
 func (e *structuredOutputRejection) Unwrap() error                { return e.err }
 func (*structuredOutputRejection) StructuredOutputRejected() bool { return true }
-func (e *structuredOutputRejection) RejectedOutput() RejectedOutput {
-	return e.rejected
-}
 
-// rejectStructuredOutput marks err as a structured-output rejection of the
-// given response. The response stays out of Error() so logs, step errors, and
-// invocation records only ever see the bounded snippet an adapter puts in err.
-func rejectStructuredOutput(err error, rejected RejectedOutput) error {
+func rejectStructuredOutput(err error) error {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return err
 	}
-	return &structuredOutputRejection{err: err, rejected: rejected}
+	return &structuredOutputRejection{err: err}
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -339,7 +304,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 	if text == "" {
 		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return nil, rejectStructuredOutput(err, RejectedOutput{})
+			return nil, rejectStructuredOutput(err)
 		}
 		return nil, err
 	}
@@ -347,10 +312,9 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 	}
 
-	preferTerminal := strings.HasPrefix(agentName, "acp:")
-	output, err := parseStructuredTextOutput(text, schema, preferTerminal)
+	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)), RejectedOutput{Text: []byte(text), PreferTerminal: preferTerminal})
+		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
