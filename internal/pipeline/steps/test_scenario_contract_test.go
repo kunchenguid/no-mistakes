@@ -46,6 +46,10 @@ func TestTestStep_PromptDerivesScenariosAndMarksLive(t *testing.T) {
 		"add an adversarial scenario that actively tries to break it",
 		// Live is a claim about what actually ran.
 		"drive each scenario end-to-end against that running product",
+		"give the pty a non-zero window size (TIOCSWINSZ)",
+		"drain the master",
+		"terminal reported a zero-sized grid",
+		"a live UI check silently becomes a fake",
 		`Mark a scenario "live": true ONLY when you drove it against the real product in this run`,
 		"A unit test, a stub, a mock, a recorded fixture, or reading the code is NOT live",
 		// Untested is honest and cheap; a guessed pass is not.
