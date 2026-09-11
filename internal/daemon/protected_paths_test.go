@@ -470,3 +470,72 @@ func TestProtectedPathRefusalParksBeforeManagerCleanup(t *testing.T) {
 		})
 	}
 }
+
+// TestProtectedPathsBranchLocalRefusedBeforeRun is the end-to-end regression
+// for #1036: a submitted branch that declares protected_paths the trusted
+// default branch does not carry must be refused before the run starts, rather
+// than failing open and letting auto-fix mutate those paths. The trusted branch
+// here has no protected_paths at all, so the branch's declaration would be
+// silently dropped without this check.
+func TestProtectedPathsBranchLocalRefusedBeforeRun(t *testing.T) {
+	p, database := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&steps.PushStep{}}
+	})
+	repo, _ := setupTestGitRepo(t, p, database, "protected-branch-local")
+	// setupTestGitRepo already committed a .no-mistakes.yaml (auto_fix only)
+	// and pushed it to main, so the trusted default branch has no
+	// protected_paths. The feature branch now declares some - which the
+	// trusted-only policy would silently drop, so the run must be refused
+	// instead.
+	configFile := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configFile, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nprotected_paths:\n  - tests/**\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "declare protected paths on feature")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/feature")
+	featureHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/feature",
+		Old: strings.Repeat("0", 40), New: featureHead,
+	}, &result)
+	if err == nil {
+		t.Fatalf("expected the run to be refused, but it started (run %s)", result.RunID)
+	}
+	if !strings.Contains(err.Error(), "protected_paths") {
+		t.Fatalf("refusal does not name the setting: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tests/**") {
+		t.Fatalf("refusal does not name the dropped entry: %v", err)
+	}
+	if !strings.Contains(err.Error(), "default branch") {
+		t.Fatalf("refusal does not explain the trusted-only policy: %v", err)
+	}
+	t.Logf("refused branch-local protected_paths: %v", err)
+
+	// The refusal must not have left a run that could later resume into
+	// auto-fix of the protected paths. Any run row created before the refusal
+	// is terminal and carries the reason.
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range runs {
+		if run.Branch != "feature" {
+			continue
+		}
+		if !run.Status.Terminal() {
+			t.Fatalf("refused run is not terminal: %+v", run)
+		}
+		if run.Error == nil || !strings.Contains(*run.Error, "protected_paths") {
+			t.Fatalf("refused run did not record the reason: %+v", run)
+		}
+	}
+}

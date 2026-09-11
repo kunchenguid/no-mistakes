@@ -243,6 +243,15 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	// SECURITY: same fail-closed refusal as startRun. A recovered run must not
+	// resume into auto-fix of paths its own branch asked to protect but the
+	// trusted config does not carry.
+	if err := config.CheckProtectedPathsBranchLocal(repoCfg, trustedRepoCfg); err != nil {
+		if pple, ok := err.(*config.ProtectedPathsBranchLocalError); ok {
+			pple.Branch = run.Branch
+		}
+		return nil, err
+	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	// Gates are read back from the run, never re-resolved. Everything else here
 	// is deliberately re-read from the live default branch, but a gate decides
@@ -1350,6 +1359,18 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	// SECURITY: protected_paths is trusted-only, so a submitted branch's own
+	// declaration is inert. Refuse the run before any fix commit is created
+	// rather than fail open and let auto-fix mutate the paths the branch asked
+	// to protect (see config.CheckProtectedPathsBranchLocal).
+	if err := config.CheckProtectedPathsBranchLocal(repoCfg, trustedRepoCfg); err != nil {
+		if pple, ok := err.(*config.ProtectedPathsBranchLocalError); ok {
+			pple.Branch = branch
+		}
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("branch_local_protected_paths")
+		return "", err
+	}
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
 	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
