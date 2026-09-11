@@ -35,6 +35,7 @@ func PromptBoundary(phase string) string {
 - You are the %s phase inside an already active no-mistakes run. Inspect, fix, and return only this assigned phase.
 - Never invoke no-mistakes init, axi run, rerun, respond, sync, abort, eject, or directly push a gate. Never initialize or control another pipeline.
 - Delivery requirements in user intent remain authoritative acceptance context for evaluating this change. Do not personally execute other validation, push, PR, or CI phases; the outer executor alone owns every phase other than this assigned one.
+- Running focused tests or isolated test fixtures needed by the assigned test phase is allowed; that is not pipeline control or delivery execution.
 - When this phase is complete, return its requested structured result to the outer executor.
 
 `, phase)

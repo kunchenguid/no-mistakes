@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,6 +286,34 @@ func TestDocumentStep_UserFix_PassesPreviousFindingsIntoPrompt(t *testing.T) {
 	}
 	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): address config docs" {
 		t.Fatalf("last commit message = %q", got)
+	}
+}
+
+func TestDocumentStep_UserFixRestartsFromReviewWithoutAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	called := false
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			called = true
+			return nil, fmt.Errorf("document agent must not repair source findings")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"source-repair","severity":"error","file":"internal/pipeline/executor.go","description":"fix source behavior","action":"auto-fix"}],"summary":"source repair"}`
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("document agent ran for a source repair")
+	}
+	if outcome.RestartFrom != types.StepReview {
+		t.Fatalf("RestartFrom = %q, want %q", outcome.RestartFrom, types.StepReview)
 	}
 }
 
