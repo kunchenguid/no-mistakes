@@ -589,8 +589,9 @@ type bareObject struct {
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
 // verdict, and provider protocol residue after a complete object is. A single
-// answer split across adjacent objects is returned as their union when their
-// keys are disjoint and the union validates (see fuseAdjacentBareObjects).
+// answer split across adjacent objects - nothing between them but whitespace or
+// a single comma - is returned as their union when their keys are disjoint and
+// the union validates (see fuseAdjacentBareObjects).
 func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
 	var valid []bareObject
 	var objects []bareObject
@@ -640,7 +641,11 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 		return []json.RawMessage{valid[0].obj}, nil
 	}
 	if len(valid) == 0 {
-		if fused, ok := fuseAdjacentBareObjects(text, objects, schema); ok {
+		fused, err := fuseAdjacentBareObjects(text, objects, schema)
+		if err != nil {
+			return nil, err
+		}
+		if fused != nil {
 			return []json.RawMessage{fused}, nil
 		}
 	}
@@ -685,30 +690,49 @@ func isProtocolResidueToken(token string) bool {
 	})
 }
 
+// errSplitBareObjects marks a split answer whose adjacent objects could not be
+// merged into one schema-valid object (a repeated key, or a union that still
+// fails validation). It is deliberately distinct from a generic schema error so
+// the retry classifier can retry it: the step's real work is done and only the
+// final text shape is wrong.
+var errSplitBareObjects = errors.New("split bare JSON objects could not be fused into one valid object")
+
 // fuseAdjacentBareObjects merges runs of adjacent top-level objects whose keys
 // are disjoint, returning the merged object when it validates against the full
 // schema. Models sometimes split one structured answer across two objects (for
 // example {"findings":...} then {"risk_level":...}); each half fails
-// validation alone while the union satisfies it. Adjacent means only whitespace
-// separates the objects, and no key may repeat across the run, so two competing
-// verdicts embedded in prose are never fused. A run counts only when it is
-// concluding, on the same rule as the single-object path: anything other than
-// protocol residue after the run means the objects were quoted mid-answer, not
-// answered.
-func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {
+// validation alone while the union satisfies it. Adjacent means nothing
+// separates the objects but whitespace or a single comma, and no key may repeat
+// across the run, so two competing verdicts embedded in prose are never fused.
+// A run counts only when it is concluding, on the same rule as the
+// single-object path: anything other than protocol residue after the run means
+// the objects were quoted mid-answer, not answered. A concluding run that
+// cannot be fused reports errSplitBareObjects rather than the generic schema
+// error.
+func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
 	for i := 0; i < len(objects); {
 		j := i
-		for j+1 < len(objects) && strings.TrimSpace(text[objects[j].endIndex:objects[j+1].startIndex]) == "" {
+		for j+1 < len(objects) && isBareObjectSeparator(text[objects[j].endIndex:objects[j+1].startIndex]) {
 			j++
 		}
 		if j > i && trailingNonJSONResidue(text[objects[j].endIndex:]) {
-			if fused, ok := fuseBareObjects(objects[i:j+1], schema); ok {
-				return fused, true
+			fused, ok := fuseBareObjects(objects[i:j+1], schema)
+			if !ok {
+				return nil, errSplitBareObjects
 			}
+			return fused, nil
 		}
 		i = j + 1
 	}
-	return nil, false
+	return nil, nil
+}
+
+// isBareObjectSeparator reports whether the text between two bare objects marks
+// them as halves of one split answer rather than separate statements: nothing
+// but whitespace, or a single comma.
+func isBareObjectSeparator(gap string) bool {
+	trimmed := strings.TrimSpace(gap)
+	return trimmed == "" || trimmed == ","
 }
 
 func fuseBareObjects(objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {

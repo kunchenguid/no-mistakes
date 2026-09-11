@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -607,6 +608,39 @@ func TestFinalizeTextResult_FusesAdjacentSplitObjects(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_FusesCommaSeparatedSplitObjects(t *testing.T) {
+	// The split can arrive with a comma between the halves rather than only
+	// whitespace; it is still one answer, not two statements, so the halves must
+	// fuse into the schema-valid union.
+	text := `{"findings":[]},
+{"risk_level":"low","risk_rationale":"r","risk_scope":"source-or-external"}`
+	result, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["risk_level"] != "low" {
+		t.Errorf("expected risk_level=low, got %v", output["risk_level"])
+	}
+}
+
+func TestFinalizeTextResult_UnfusedSplitObjectsReturnDedicatedRetryableError(t *testing.T) {
+	// A concluding split pair whose union is still not schema-valid must fail
+	// with its own dedicated error instead of the generic schema error, so the
+	// retry classifier gives the step a fresh turn rather than killing the run.
+	text := `{"findings":[]},{"risk_level":"low"}`
+	_, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if !errors.Is(err, errSplitBareObjects) {
+		t.Fatalf("expected errSplitBareObjects, got %v", err)
+	}
+	if _, retry := classifyTransient(err); !retry {
+		t.Fatalf("expected the unfused split error to be retryable, got %v", err)
+	}
+}
+
 func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T) {
 	// Fusion must never let two competing verdicts combine; a repeated key is
 	// the signal that they are alternatives, not two halves of one answer. The
@@ -623,8 +657,9 @@ func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T
 		},
 		"required":["findings","risk_level","risk_rationale","risk_scope"]
 	}`)
-	if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
-		t.Fatal("expected duplicate-key objects to be rejected")
+	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if !errors.Is(err, errSplitBareObjects) {
+		t.Fatalf("expected duplicate-key objects to be rejected, got %v", err)
 	}
 }
 

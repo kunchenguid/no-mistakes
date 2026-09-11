@@ -86,9 +86,9 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "protocol residue",
 		},
 		{
-			name:    "multiple bare JSON objects",
-			errMsg:  `pi output parse: multiple bare JSON objects found in output`,
-			wantSub: "multiple bare JSON objects",
+			name:    "unfused split bare JSON objects",
+			errMsg:  `pi output parse: split bare JSON objects could not be fused into one valid object`,
+			wantSub: "split",
 		},
 	}
 
@@ -129,6 +129,10 @@ func TestClassifyTransient_Negative(t *testing.T) {
 		{
 			name:   "schema validation",
 			errMsg: `JSON output missing required field "summary"`,
+		},
+		{
+			name:   "competing verdicts",
+			errMsg: `pi output parse: multiple bare JSON objects found in output`,
 		},
 		{
 			name:   "free usage limit",
