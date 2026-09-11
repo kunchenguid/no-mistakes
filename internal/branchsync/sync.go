@@ -1413,7 +1413,16 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 	// Import the verified remote object through a private temporary ref before
 	// changing the lane. FetchRemoteRef rejects a target race and removes its
 	// temporary ref itself, so it cannot leave a long-lived staging branch.
-	if err := git.FetchRemoteRef(ctx, s.GateDir, pushURL, branchRef, state.Local.Head); err != nil {
+	// Like every other network operation here it gets its own fresh budget
+	// rather than the caller's unbounded context: a credential helper or
+	// connection that stalls after the ls-remote answered would otherwise hang
+	// past branch_sync_remote_timeout and never deliver the documented
+	// closed refusal. FetchRemoteRef's own cleanup runs on a WithoutCancel
+	// context, so an expired budget still removes the temporary ref.
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	fetchErr := git.FetchRemoteRef(fetchCtx, s.GateDir, pushURL, branchRef, state.Local.Head)
+	fetchCancel()
+	if fetchErr != nil {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_fetch_failed", "the published head could not be imported into the local gate; no files or gate refs were changed")
 	}
 	liveCtx, cancel = context.WithTimeout(ctx, s.remoteTimeout())
