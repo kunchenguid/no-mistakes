@@ -383,8 +383,9 @@ func findModuleRoot() (string, error) {
 	}
 }
 
-// linkTestBinary creates a hard link (or copy) of the tiny fake-CLI helper
-// with the given name in binDir. On Windows, .exe is appended.
+// LinkFakeCLI aliases the tiny fake-CLI helper with the given name in binDir.
+// macOS uses symlinks; other platforms use hard links (or copies).
+// On Windows, .exe is appended.
 func LinkFakeCLI(t *testing.T, binDir, name string) {
 	t.Helper()
 	if fakeCLIHelperPath == "" {
@@ -394,6 +395,15 @@ func LinkFakeCLI(t *testing.T, binDir, name string) {
 		name += ".exe"
 	}
 	dst := filepath.Join(binDir, name)
+	if runtime.GOOS == "darwin" {
+		// Keep one executable path for macOS code-signature validation.
+		// Concurrent creation/removal of hard-link aliases can make AMFI
+		// reject the shared helper before main runs (signal: killed).
+		if err := os.Symlink(fakeCLIHelperPath, dst); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if err := os.Link(fakeCLIHelperPath, dst); err != nil {
 		// Fallback to copy if hard link fails (cross-device, etc.)
 		data, readErr := os.ReadFile(fakeCLIHelperPath)
