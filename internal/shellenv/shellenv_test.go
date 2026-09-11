@@ -91,6 +91,34 @@ func TestApplyToProcess_SetsResolvedEnvEntries(t *testing.T) {
 	}
 }
 
+func TestApplyToProcessWithShellRetryExcept_PreservesExcludedEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("NM_HOME", "/service/root")
+
+	oldOutput := shellCommandOutput
+	defer func() {
+		shellCommandOutput = oldOutput
+		resetForTests()
+	}()
+	shellCommandOutput = func(string, ...string) ([]byte, error) {
+		return []byte("PATH=/resolved/bin\x00NM_HOME=/shell/root\x00SPECIAL=1\x00"), nil
+	}
+
+	if err := ApplyToProcessWithShellRetryExcept(0, "NM_HOME"); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("NM_HOME"); got != "/service/root" {
+		t.Fatalf("NM_HOME = %q, want excluded service value", got)
+	}
+	if got := os.Getenv("SPECIAL"); got != "1" {
+		t.Fatalf("SPECIAL = %q, want included shell value", got)
+	}
+}
+
 func TestResolve_ReturnsProcessEnvOnWindows(t *testing.T) {
 	resetForTests()
 	oldGOOS := runtimeGOOS

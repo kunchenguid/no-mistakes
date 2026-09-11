@@ -31,7 +31,7 @@ func (s *stubShellEnv) install(t *testing.T) {
 	oldApply, oldRefresh, oldDegraded := applyShellEnvToProcess, refreshShellEnvToProcess, shellEnvDegraded
 	t.Setenv("PATH", os.Getenv("PATH"))
 	shellEnvDegraded = func() bool { return s.degraded }
-	refreshShellEnvToProcess = func() error {
+	refreshShellEnvToProcess = func(...string) error {
 		s.refreshes++
 		if s.err != nil {
 			return s.err
@@ -79,60 +79,70 @@ func TestConcurrentRefreshDegradedShellEnvironment_PreservesServiceNMHome(t *tes
 	var degraded atomic.Bool
 	degraded.Store(true)
 	var calls atomic.Int32
+	var observedShellValue atomic.Bool
 	firstApplied := make(chan struct{})
-	secondApplied := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	releaseSecond := make(chan struct{})
 	shellEnvDegraded = degraded.Load
-	refreshShellEnvToProcess = func() error {
-		switch calls.Add(1) {
-		case 1:
+	refreshShellEnvToProcess = func(excluded ...string) error {
+		if calls.Add(1) != 1 {
+			return errors.New("unexpected refresh")
+		}
+		protectNMHome := false
+		for _, key := range excluded {
+			protectNMHome = protectNMHome || key == "NM_HOME"
+		}
+		if !protectNMHome {
 			if err := os.Setenv("NM_HOME", "/shell/root"); err != nil {
 				return err
 			}
-			close(firstApplied)
-			<-releaseFirst
-			degraded.Store(false)
-			return nil
-		case 2:
-			close(secondApplied)
-			<-releaseSecond
-			return nil
-		default:
-			return errors.New("unexpected refresh")
 		}
+		close(firstApplied)
+		<-releaseFirst
+		degraded.Store(false)
+		return nil
 	}
 	t.Cleanup(func() {
 		refreshShellEnvToProcess, shellEnvDegraded = oldRefresh, oldDegraded
 	})
 
+	stopObserving := make(chan struct{})
+	observerDone := make(chan struct{})
+	go func() {
+		defer close(observerDone)
+		for {
+			select {
+			case <-stopObserving:
+				return
+			default:
+				if os.Getenv("NM_HOME") == "/shell/root" {
+					observedShellValue.Store(true)
+				}
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
-	firstDone := make(chan struct{})
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		refreshDegradedShellEnvironment()
-		close(firstDone)
 	}()
 	<-firstApplied
 	go func() {
 		defer wg.Done()
 		refreshDegradedShellEnvironment()
 	}()
-
-	select {
-	case <-secondApplied:
-		close(releaseFirst)
-		<-firstDone
-	case <-time.After(100 * time.Millisecond):
-		close(releaseFirst)
-		<-firstDone
-	}
-	close(releaseSecond)
+	time.Sleep(10 * time.Millisecond)
+	close(releaseFirst)
 	wg.Wait()
+	close(stopObserving)
+	<-observerDone
 
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("refreshes = %d, want one serialized successful refresh", got)
+	}
+	if observedShellValue.Load() {
+		t.Fatal("NM_HOME was temporarily replaced by the login shell value")
 	}
 	if got := os.Getenv("NM_HOME"); got != "/service/root" {
 		t.Fatalf("NM_HOME = %q, want service value after concurrent refreshes", got)

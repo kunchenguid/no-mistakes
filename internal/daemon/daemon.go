@@ -43,10 +43,12 @@ var orphanProcessMinAge = procreap.DefaultMinAge
 // binary that a boot-time race has not yet produced (see
 // shellenv.DefaultShellRetryWindow). refreshShellEnvToProcess is the run-start
 // re-probe, which must never wait because it runs on the push path.
-var applyShellEnvToProcess = func() error {
-	return shellenv.ApplyToProcessWithShellRetry(shellenv.DefaultShellRetryWindow)
+var applyShellEnvToProcess = func(excluded ...string) error {
+	return shellenv.ApplyToProcessWithShellRetryExcept(shellenv.DefaultShellRetryWindow, excluded...)
 }
-var refreshShellEnvToProcess = shellenv.ApplyToProcess
+var refreshShellEnvToProcess = func(excluded ...string) error {
+	return shellenv.ApplyToProcessWithShellRetryExcept(0, excluded...)
+}
 var shellEnvDegraded = shellenv.Degraded
 var refreshShellEnvMu sync.Mutex
 var createDaemonPIDTempFile = os.CreateTemp
@@ -138,16 +140,11 @@ func prepareDaemonEnvironment() error {
 // applyLoginShellEnvironment applies a login-shell probe to the process and
 // keeps the service-supplied NM_HOME authoritative over anything the shell's
 // rc files export.
-func applyLoginShellEnvironment(apply func() error, nmHome string) error {
-	if err := apply(); err != nil {
-		return err
-	}
+func applyLoginShellEnvironment(apply func(...string) error, nmHome string) error {
 	if nmHome != "" {
-		if err := os.Setenv("NM_HOME", nmHome); err != nil {
-			return fmt.Errorf("restore NM_HOME: %w", err)
-		}
+		return apply("NM_HOME")
 	}
-	return nil
+	return apply()
 }
 
 // refreshDegradedShellEnvironment re-probes the login shell at run start when

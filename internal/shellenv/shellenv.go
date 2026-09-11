@@ -125,9 +125,17 @@ func ApplyToProcess() error {
 // ApplyToProcessWithShellRetry applies ResolveWithShellRetry(window) to the
 // current process environment.
 func ApplyToProcessWithShellRetry(window time.Duration) error {
+	return ApplyToProcessWithShellRetryExcept(window)
+}
+
+func ApplyToProcessWithShellRetryExcept(window time.Duration, excluded ...string) error {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 
+	excludedKeys := make(map[string]struct{}, len(excluded))
+	for _, key := range excluded {
+		excludedKeys[key] = struct{}{}
+	}
 	env, err := resolveWithShellRetryLocked(window)
 	if err != nil {
 		return err
@@ -135,6 +143,9 @@ func ApplyToProcessWithShellRetry(window time.Duration) error {
 	for _, entry := range env {
 		key, value, found := strings.Cut(entry, "=")
 		if key == "" {
+			continue
+		}
+		if _, skip := excludedKeys[key]; skip {
 			continue
 		}
 		if !found {
