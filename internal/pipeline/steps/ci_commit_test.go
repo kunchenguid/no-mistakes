@@ -187,6 +187,7 @@ func TestCIStep_CommitAndPush_StaleDirtyStatusWithEmptyIndexIsNoOp(t *testing.T)
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("empty-index CI handoff moved HEAD to %s, want %s", got, headSHA)
 	}
+	t.Logf("CI handoff result: error=%v; head_advanced=%t; HEAD before=%s after=%s; staged paths=%q", err, repair.HeadAdvanced, headSHA, gitCmd(t, dir, "rev-parse", "HEAD"), gitCmd(t, dir, "diff", "--cached", "--name-only"))
 }
 
 func TestCIStep_CommitAndPush_RealCommitFailureStillFails(t *testing.T) {

@@ -720,6 +720,7 @@ func TestCommitPipelineCorrection_EmptyIndexIsSuccessfulNoOp(t *testing.T) {
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("empty-index correction moved HEAD to %s, want %s", got, headSHA)
 	}
+	t.Logf("Correction result: error=%v; HEAD before=%s after=%s; staged paths=%q", err, headSHA, gitCmd(t, dir, "rev-parse", "HEAD"), gitCmd(t, dir, "diff", "--cached", "--name-only"))
 }
 
 func TestCommitPipelineCorrection_RealCommitFailureStillFails(t *testing.T) {

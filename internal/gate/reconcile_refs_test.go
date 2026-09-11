@@ -39,6 +39,7 @@ func TestReconciliationRejectsSymbolicRefs(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "symbolic") || !strings.Contains(err.Error(), ref) {
 					t.Fatalf("%s accepted symbolic ref %s or lost its cause: %v", phase, ref, err)
 				}
+				t.Logf("Reconciliation refusal: %v; preserved symbolic target=%s; refs=%s", err, reconcileGit(t, gateDir, "symbolic-ref", "--no-recurse", ref), refsBefore)
 				if got := reconcileGit(t, gateDir, "symbolic-ref", "--no-recurse", ref); got != target {
 					t.Fatalf("symbolic ref changed to %s, want %s", got, target)
 				}
@@ -100,6 +101,7 @@ done
 			if got := reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)", archive); got != wantArchive {
 				t.Fatalf("archive moved after branch recreation: %q", got)
 			}
+			t.Logf("Archive observed before deletion=%s; refs after ordinary branch recreation: %s; recoverable private.txt=%q", observed, reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"), reconcileGit(t, gateDir, "show", archive+":private.txt"))
 			if !ArchivedHeadRecorded(ctx, gateDir, "feature", privateHead) {
 				t.Fatal("direct abandoned head was not retained")
 			}

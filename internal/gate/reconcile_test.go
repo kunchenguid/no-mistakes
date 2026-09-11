@@ -33,6 +33,12 @@ func TestReconcileStaleBranchArchivesPatchEquivalentHeadBeforeNonForcePush(t *te
 	reconcileGit(t, "", "init", "--bare", gateDir)
 	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/reconcile")
 
+	before, pushErr := exec.Command("git", "-C", work, "push", gateDir, liveHead+":refs/heads/feature/reconcile").CombinedOutput()
+	if pushErr == nil || !strings.Contains(string(before), "non-fast-forward") {
+		t.Fatalf("fixture must reproduce ordinary push rejection: %s, err=%v", before, pushErr)
+	}
+	t.Logf("Before reconciliation, ordinary push: %s", before)
+
 	result, err := ReconcileStaleBranch(ctx, gateDir, work, "feature/reconcile", liveHead, "")
 	if err != nil {
 		t.Fatal(err)
@@ -49,7 +55,8 @@ func TestReconcileStaleBranchArchivesPatchEquivalentHeadBeforeNonForcePush(t *te
 
 	// The live head now enters through an ordinary new-branch push. No force or
 	// force-with-lease is used by the supported handoff.
-	reconcileGit(t, work, "push", gateDir, liveHead+":refs/heads/feature/reconcile")
+	t.Logf("After reconciliation, ordinary push: %s", reconcileGit(t, work, "push", gateDir, liveHead+":refs/heads/feature/reconcile"))
+	t.Logf("Persisted refs: %s", reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"))
 	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != liveHead {
 		t.Fatalf("non-force push reached %s, want %s", got, liveHead)
 	}
@@ -126,6 +133,8 @@ func TestReconcileStaleBranchRefusesAndNamesUniquePrivateCommits(t *testing.T) {
 	if result.Reconciled {
 		t.Fatalf("unique private commit reported reconciliation: %+v", result)
 	}
+	t.Logf("Publication refusal: %v", err)
+	t.Logf("Preserved private branch: %s", reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"))
 	for _, want := range []string{firstPrivateHead, "private-only trailer trim", privateHead, "second private-only change"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("refusal did not name every at-risk commit; missing %q in: %v", want, err)

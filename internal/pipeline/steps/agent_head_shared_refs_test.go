@@ -119,6 +119,8 @@ func TestAgentHeadRecordingPreservesSharedGateRefs(t *testing.T) {
 				}
 				assertRecorded()
 				assertPrivateRef()
+				rng, rangeErr := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
+				t.Logf("Handoff: recorder=%s relation=%s publication_error=%v; recorded_head=%s; uncertified_range=%+v (read_error=%v); preserved_gate_head=%s; upstream=%s", recorder, relation, err, sctx.Run.HeadSHA, rng, rangeErr, gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"), gitCmd(t, upstream, "rev-parse", "refs/heads/feature"))
 				if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != wantRemote {
 					t.Fatalf("upstream = %s, want %s", got, wantRemote)
 				}

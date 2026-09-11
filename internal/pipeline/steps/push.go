@@ -135,8 +135,8 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	// Prove the private mirror is safe to reconcile BEFORE anything is
-	// published: unique private content must refuse while the branch is still
-	// intact. Applying the plan (archive then delete) is deliberately deferred
+	// published: outside the exact submitted-head exception, unproven private
+	// content must refuse while the branch is intact. Applying the plan is deferred
 	// until the upstream push is verified, because a refused or failed push is
 	// a designed outcome and a gate left with no branch ref would strand
 	// `rerun` and branch-sync recovery on a branch that never published.
@@ -225,11 +225,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 }
 
 // planGateMirrorReconciliation inspects the gate mirror without mutating it.
-// The run's own submitted head is passed as run-owned: the gate ref still
-// carrying the exact commit this run was launched from proves nothing external
-// landed, so republishing that run's rebased lineage does not additionally have
-// to be patch-identical to it. The head is still archived when the plan is
-// applied.
+// Only the exact submitted head is eligible for the policy exception owned by
+// docs/src/content/docs/concepts/gate-model.md. Do not substitute an agent-created
+// or later recorded head: those still require preservation checks.
 func planGateMirrorReconciliation(ctx context.Context, sctx *pipeline.StepContext, ref, branch, headBeingPushed string) (gatepkg.StaleBranchPlan, error) {
 	var plan gatepkg.StaleBranchPlan
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {

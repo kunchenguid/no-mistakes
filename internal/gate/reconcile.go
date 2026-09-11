@@ -18,8 +18,8 @@ type StaleBranchReconciliation struct {
 }
 
 // StaleBranchPlan is the verdict of a non-mutating stale-branch inspection.
-// Planning proves containment and refuses unique private content without
-// touching any ref, so a caller can decide before it publishes anything;
+// Planning checks containment or the exact submitted-head policy exception
+// without touching any ref, so a caller can decide before it publishes anything;
 // applying the plan is the only step that archives and removes the branch.
 type StaleBranchPlan struct {
 	PreserveDescendantOf string
@@ -32,8 +32,8 @@ type StaleBranchPlan struct {
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
 // reconciliation. It removes the branch only after Git proves the live head
-// contains all of its content, or after runOwnedHead proves the branch still
-// carries this run's own submission.
+// contains all of its content, or under the exact submitted-head exception
+// described in docs/src/content/docs/concepts/gate-model.md.
 func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
 	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
 	if err != nil || !plan.Reconcile {
@@ -44,16 +44,14 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 
 // PlanStaleBranchReconciliation inspects a private gate branch and reports
 // whether it must be archived and removed before the live head can enter
-// through an ordinary push. It mutates no ref: an unproven private head is
-// refused here, before the caller publishes anything.
+// through an ordinary push. It mutates no ref: outside the submitted-head
+// exception, an unproven private head is refused before publication.
 //
-// Containment is proven by direct ancestry, by Git's stable per-file patch-id
-// comparison for rewritten histories, or by runOwnedHead. The last is the
-// exact commit this run was launched from: the run already owns and is
-// republishing that content, so requiring its rebased lineage to also be
-// patch-identical would refuse the pipeline's own ordinary rebase whenever
-// context drift or an agent-resolved conflict changed the patch. The head is
-// still archived before removal, so the commit remains recoverable.
+// Rewritten histories require both stable per-file patch identities and final
+// tree survival. runOwnedHead is a policy exception, not containment evidence:
+// publication callers must supply only Run.SubmittedHeadSHA, and fresh
+// submissions must leave it empty. The contract and rationale are owned by
+// docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
 	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, false)
 }
@@ -246,12 +244,14 @@ func ArchivedHeadRecorded(ctx context.Context, gateDir, branch, head string) boo
 	return err == nil && objectType == "commit"
 }
 
-// privateCommitsAbsentFromLive names every private-only commit whose per-file
-// content is not also present in the live-only history.
+// privateCommitsAbsentFromLive names private-only commits lacking matching
+// per-file patches, or the entire private-only range when final-tree survival
+// cannot be proven.
 //
 // The private side is computed first so the live scan can be bounded to the
-// paths the private commits actually touch, and it short-circuits on the first
-// unmatched patch. A rebased live head otherwise carries every default-branch
+// paths the private commits actually touch. Comparison stops at the first
+// unmatched patch within each commit, but visits every private-only commit.
+// A rebased live head otherwise carries every default-branch
 // commit since the merge base, and hashing each of those files would cost
 // thousands of git invocations to answer a question about a handful of paths.
 func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privateHead string) ([]string, error) {

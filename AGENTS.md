@@ -107,7 +107,7 @@ Safest local verification sequence after non-trivial changes:
 **Private Mirror and Empty-Index Handoffs**
 
 - `internal/gate` owns private-mirror reconciliation. The accepted Decision 41-A exception, containment and final-tree survival requirements, exact archive-before-delete contract, and descendant preservation are owned by `docs/src/content/docs/concepts/gate-model.md` (Private mirror reconciliation). Decision 41-A permits only a mirror head exactly equal to `Run.SubmittedHeadSHA` to bypass patch proof; it is an explicit exception, not a claim that ownership proves containment. `push.go` must settle shared gate/worktree refs only once. Behavioral coverage lives in `internal/gate/reconcile_test.go` and `internal/pipeline/steps/push_test.go`.
-- Pipeline correction and CI repair commits decide whether a commit is needed from the staged index after `git add`, via `stagedChangesPresent`; an empty index is a successful no-op, while any real `git commit` failure still fails the step.
+- The correction and CI repair handoff contract is owned by `docs/src/content/docs/reference/pipeline-steps.md`; `stagedChangesPresent` implements the index check in `internal/pipeline/steps/common_fix.go`.
 
 **Custody Recovery (`internal/branchsync`)**
 
