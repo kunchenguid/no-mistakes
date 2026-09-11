@@ -130,7 +130,9 @@ therefore still sees any intervening private head; ordinary worktrees with
 separate ref storage retain their local branch bookkeeping.
 
 Publication plans reconciliation before pushing and applies it only after
-verifying the upstream head. AXI reconciles before its ordinary submission
+verifying the upstream head. If mirror settlement then fails or is cancelled,
+it restores the archived branch when no intervening ref has appeared, so a
+retry can still resolve the branch. AXI reconciles before its ordinary submission
 push and restores an archived ref after a failed submission if no intervening
 ref has appeared. Neither path forces the private mirror.
 

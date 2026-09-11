@@ -2,9 +2,11 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -254,7 +256,7 @@ func runOwnedSubmittedHead(sctx *pipeline.StepContext) string {
 	return strings.TrimSpace(*sctx.Run.SubmittedHeadSHA)
 }
 
-func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string, mirrorPlan gatepkg.StaleBranchPlan) error {
+func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, ref, headBeingPushed string, mirrorPlan gatepkg.StaleBranchPlan) (err error) {
 	if sctx.Repo == nil || strings.TrimSpace(sctx.GateDir) == "" {
 		return nil
 	}
@@ -268,9 +270,23 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return fmt.Errorf("update gate mirror ref %s: validate repository: %w", ref, err)
 	}
-	if _, err := gatepkg.ApplyStaleBranchReconciliation(ctx, gateDir, mirrorPlan); err != nil {
+	reconciliation, err := gatepkg.ApplyStaleBranchReconciliation(ctx, gateDir, mirrorPlan)
+	if err != nil {
 		return fmt.Errorf("update gate mirror ref %s: %w", ref, err)
 	}
+	defer func() {
+		if err == nil || !reconciliation.Reconciled {
+			return
+		}
+		// Settlement can fail after deletion, including through cancellation.
+		// Restore the exact archived head so rerun still has a branch to read;
+		// the create-only helper preserves any intervening ref instead.
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if restoreErr := gatepkg.RestoreReconciledBranch(restoreCtx, gateDir, mirrorPlan.Branch, reconciliation); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore reconciled gate mirror ref %s: %w", ref, restoreErr))
+		}
+	}()
 
 	if fetchErr := git.FetchRemoteRef(ctx, gateDir, sctx.WorkDir, headBeingPushed, headBeingPushed); fetchErr != nil {
 		return fmt.Errorf("update gate mirror ref %s: fetch pushed head: %w", ref, fetchErr)
