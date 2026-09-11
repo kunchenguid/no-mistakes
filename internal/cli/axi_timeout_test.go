@@ -258,9 +258,9 @@ func TestAxiRun_WaitInterruptsSubscriptionAcknowledgement(t *testing.T) {
 	})
 
 	started := time.Now()
-	out, err := executeCmd("axi", "run", "--wait", "250ms")
-	assertWaitElapsed(t, err, out, "250ms")
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	out, err := executeCmd("axi", "run", "--wait", "2s")
+	assertWaitElapsed(t, err, out, "2s")
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
 		t.Fatalf("subscription acknowledgement ignored wait for %s", elapsed)
 	}
 }
