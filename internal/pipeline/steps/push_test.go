@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -800,6 +801,9 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 
 	// Worktree produces a new non-fast-forward rebased head
 	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature code\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -824,6 +828,206 @@ func TestPushStep_UpdatesGateMirrorRefOnSuccessfulPush(t *testing.T) {
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != rebasedHead {
 		t.Fatalf("expected gate mirror ref = %s, got %s", rebasedHead, gateHead)
+	}
+}
+
+func TestPushStep_PublishesRebasedHeadWhosePatchDiffersFromSubmittedHead(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+	gitCmd(t, gateDir, "fetch", dir, "refs/heads/feature:refs/heads/feature")
+
+	// A rebase whose resolution changes the submitted commit's own patch: the
+	// gate still carries this run's exact submitted head, so publication must
+	// not require the rebased lineage to be patch-identical to it.
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "conflicted.txt"), []byte("upstream neighbour\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base advanced under the feature")
+	if err := os.WriteFile(filepath.Join(dir, "conflicted.txt"), []byte("upstream neighbour\nresolved feature work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rebased with a resolved conflict")
+	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx.Run.HeadSHA = rebasedHead
+	recordReviewApproval(t, sctx, rebasedHead)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("push step refused its own submitted head: %v", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != rebasedHead {
+		t.Fatalf("remote head = %s, want %s", got, rebasedHead)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != rebasedHead {
+		t.Fatalf("gate mirror ref = %s, want %s", got, rebasedHead)
+	}
+	// The replaced head stays recoverable.
+	archived := gitCmd(t, gateDir, "rev-parse", "refs/tags/no-mistakes-abandoned/feature/"+submittedHead+"^{commit}")
+	if archived != submittedHead {
+		t.Fatalf("archived submitted head = %s, want %s", archived, submittedHead)
+	}
+}
+
+func TestPushStep_RefusedUpstreamPushLeavesGateMirrorRefIntact(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+
+	// A stale private mirror head whose content the rebased head does carry, so
+	// reconciliation is genuinely planned rather than refused.
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "mirrored.txt"), []byte("mirrored work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "stale private mirror head")
+	staleMirrorHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, gateDir, "fetch", dir, staleMirrorHead+":refs/heads/feature")
+
+	// The rebased head replays the same content on an advanced base.
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "advanced.txt"), []byte("base advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "advance base")
+	if err := os.WriteFile(filepath.Join(dir, "mirrored.txt"), []byte("mirrored work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "replay mirrored work")
+	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// An out-of-band commit reaches the remote, so the push is refused.
+	outOfBand := t.TempDir()
+	gitCmd(t, outOfBand, "clone", upstream, outOfBand)
+	gitCmd(t, outOfBand, "checkout", "feature")
+	if err := os.WriteFile(filepath.Join(outOfBand, "out-of-band.txt"), []byte("someone else's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, outOfBand, "add", "-A")
+	gitCmd(t, outOfBand, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-m", "out-of-band commit")
+	gitCmd(t, outOfBand, "push", "origin", "feature")
+
+	sctx.Run.HeadSHA = rebasedHead
+	recordReviewApproval(t, sctx, rebasedHead)
+
+	outOfBandHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), outOfBandHead[:12]) {
+		t.Fatalf("push did not refuse over the out-of-band remote commit: %v", err)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != staleMirrorHead {
+		t.Fatalf("gate mirror ref = %s after a refused push, want %s", got, staleMirrorHead)
+	}
+	if tags := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("refused push archived and removed the gate branch: %q", tags)
+	}
+}
+
+func TestPushStep_RefusesUniquePrivateMirrorCommitBeforeRemotePush(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "private-only.txt"), []byte("unique private work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "private-only.txt")
+	gitCmd(t, dir, "commit", "-m", "private-only trailer trim")
+	privateHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "reset", "--hard", submittedHead)
+	if err := os.WriteFile(filepath.Join(dir, "live-only.txt"), []byte("live branch work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "live-only.txt")
+	gitCmd(t, dir, "commit", "-m", "live branch work")
+	liveHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.HeadSHA = liveHead
+	recordReviewApproval(t, sctx, liveHead)
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+	gitCmd(t, gateDir, "fetch", dir, privateHead+":refs/heads/feature")
+
+	_, err = (&PushStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("push overwrote a private mirror head with unique content")
+	}
+	if !strings.Contains(err.Error(), privateHead) || !strings.Contains(err.Error(), "private-only trailer trim") {
+		t.Fatalf("push refusal did not name the at-risk commit: %v", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != submittedHead {
+		t.Fatalf("remote moved to %s before private content was protected; want %s", got, submittedHead)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != privateHead {
+		t.Fatalf("private mirror moved to %s, want unique head %s", got, privateHead)
 	}
 }
 
@@ -1024,18 +1228,194 @@ func TestPushStep_GateMirrorDoesNotRewindNewerInterveningPush(t *testing.T) {
 	recordReviewApproval(t, sctx, rebasedHead)
 
 	if _, err := (&PushStep{}).Execute(sctx); err != nil {
-		t.Fatalf("push step failed: %v", err)
+		t.Fatalf("push with newer descendant mirror failed: %v", err)
 	}
-
-	// Remote head should be updated to rebasedHead
 	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if remoteHead != rebasedHead {
 		t.Fatalf("expected remote head = %s, got %s", rebasedHead, remoteHead)
 	}
+	if tags := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("descendant was archived: %s", tags)
+	}
 
-	// Gate mirror ref must NOT be rewound to rebasedHead; it must remain at interveningHead
 	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
 	if gateHead != interveningHead {
 		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
+	}
+}
+
+func TestPushStep_MirrorMovesAfterPlanning(t *testing.T) {
+	for _, descendant := range []bool{true, false} {
+		t.Run(fmt.Sprintf("descendant=%t", descendant), func(t *testing.T) {
+			dir, baseSHA, submittedHead := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+			sctx.Run.SubmittedHeadSHA = &submittedHead
+			sctx.Run.Branch = "feature"
+			gateDir := t.TempDir()
+			sctx.GateDir = gateDir
+			gitCmd(t, gateDir, "init", "--bare")
+			gitCmd(t, gateDir, "fetch", dir, submittedHead+":refs/heads/feature")
+			gitCmd(t, dir, "checkout", "--detach", baseSHA)
+			if err := os.WriteFile(filepath.Join(dir, "reviewed.txt"), []byte("reviewed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitCmd(t, dir, "add", "-A")
+			gitCmd(t, dir, "commit", "-m", "reviewed rewrite")
+			reviewedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			plan, err := planGateMirrorReconciliation(sctx.Ctx, sctx, "refs/heads/feature", "feature", reviewedHead)
+			if err != nil || !plan.Reconcile {
+				t.Fatalf("plan = %+v, err = %v", plan, err)
+			}
+			if !descendant {
+				gitCmd(t, dir, "checkout", "--detach", submittedHead)
+			}
+			gitCmd(t, dir, "commit", "--allow-empty", "-m", "intervening commit")
+			interveningHead := gitCmd(t, dir, "rev-parse", "HEAD")
+			gitCmd(t, gateDir, "fetch", dir, interveningHead)
+			gitCmd(t, gateDir, "update-ref", "refs/heads/feature", interveningHead)
+			err = updateGateMirrorAfterPush(sctx.Ctx, sctx, "refs/heads/feature", reviewedHead, plan)
+			if (err == nil) != descendant {
+				t.Fatalf("descendant=%t, mirror update error = %v", descendant, err)
+			}
+			if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != interveningHead {
+				t.Fatalf("mirror = %s, want preserved %s", got, interveningHead)
+			}
+			if tags := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+				t.Fatalf("moved mirror was archived: %s", tags)
+			}
+		})
+	}
+}
+
+func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Run.SubmittedHeadSHA = &submittedHead
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(sctx.Repo.ID)
+	sctx.GateDir = gateDir
+	if err := os.MkdirAll(filepath.Dir(gateDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, filepath.Dir(gateDir), "init", "--bare", filepath.Base(gateDir))
+
+	gitCmd(t, gateDir, "fetch", dir, "refs/heads/feature:refs/heads/feature")
+
+	if err := os.WriteFile(filepath.Join(dir, "rebased.txt"), []byte("rebased\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rebased commit")
+	rebasedHead := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "reset", "--hard", submittedHead)
+	if err := os.WriteFile(filepath.Join(dir, "intervening.txt"), []byte("intervening\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "intervening commit")
+	interveningHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, gateDir, "fetch", dir, "HEAD:refs/heads/feature")
+
+	gitCmd(t, dir, "reset", "--hard", rebasedHead)
+
+	sctx.Run.HeadSHA = rebasedHead
+	recordReviewApproval(t, sctx, rebasedHead)
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), interveningHead) || !strings.Contains(err.Error(), "intervening commit") {
+		t.Fatalf("push did not name the at-risk intervening commit: %v", err)
+	}
+
+	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
+	if remoteHead != submittedHead {
+		t.Fatalf("expected remote head = %s, got %s", submittedHead, remoteHead)
+	}
+
+	gateHead := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
+	if gateHead != interveningHead {
+		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
+	}
+}
+
+func TestPushStep_DetachedGateWorktreePreservesDescendantAfterEmptyIndex(t *testing.T) {
+	t.Setenv("NM_HOME", t.TempDir())
+	source, baseSHA, _ := setupGitRepo(t)
+	submodule, _, _ := setupGitRepo(t)
+	gitCmd(t, source, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "sub")
+	gitCmd(t, source, "commit", "-m", "add submodule")
+	reviewedHead := gitCmd(t, source, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(source, "newer.txt"), []byte("newer private work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", "newer.txt")
+	gitCmd(t, source, "commit", "-m", "newer private work")
+	descendantHead := gitCmd(t, source, "rev-parse", "HEAD")
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	gitCmd(t, source, "clone", "--bare", source, gateDir)
+	workDir := filepath.Join(t.TempDir(), "detached")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", workDir, reviewedHead)
+	gitCmd(t, workDir, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	if err := os.WriteFile(filepath.Join(workDir, "sub", "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitStatusPorcelain(t, workDir); strings.TrimSpace(status) == "" {
+		t.Fatal("fixture must have unstaged submodule dirt")
+	}
+	gitCmd(t, workDir, "add", "-A")
+	if staged := gitCmd(t, workDir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("fixture must have an empty staged index: %s", staged)
+	}
+	commonDir := gitCmd(t, workDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonInfo, err := os.Stat(commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateInfo, err := os.Stat(gateDir)
+	if err != nil || !os.SameFile(commonInfo, gateInfo) {
+		t.Fatalf("fixture does not share gate refs: common=%s gate=%s err=%v", commonDir, gateDir, err)
+	}
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, gateDir, "remote", "set-url", "origin", upstream)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, workDir, baseSHA, reviewedHead, config.Commands{})
+	sctx.GateDir = gateDir
+	sctx.Repo.UpstreamURL = upstream
+	recordReviewApproval(t, sctx, reviewedHead)
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("publish from shared detached worktree: %v", err)
+	}
+	for _, dir := range []string{gateDir, workDir} {
+		if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != descendantHead {
+			t.Fatalf("shared branch in %s = %s, want preserved descendant %s", dir, got, descendantHead)
+		}
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != reviewedHead {
+		t.Fatalf("published head = %s, want reviewed %s", got, reviewedHead)
+	}
+	if got := gitCmd(t, workDir, "rev-parse", "HEAD"); got != reviewedHead {
+		t.Fatalf("empty-index handoff created a commit: %s", got)
+	}
+	if got := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); got != "" {
+		t.Fatalf("preserved descendant was archived: %s", got)
+	}
+	persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || persisted == nil || persisted.HeadSHA != reviewedHead || persisted.LastPushedSHA == nil || *persisted.LastPushedSHA != reviewedHead {
+		t.Fatalf("publication binding = %+v, err = %v, want reviewed head %s", persisted, err, reviewedHead)
 	}
 }

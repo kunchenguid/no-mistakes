@@ -281,7 +281,7 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 				runID = launchReceipt.RunID
 			}
 		} else {
-			runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, baseBranch)
+			runID, err = triggerRun(ctx, env, branch, skipSteps, intent, baseBranch)
 		}
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
@@ -505,7 +505,7 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []types.StepName, intent, baseBranch string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
@@ -513,7 +513,11 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if opt := formatPRBaseBranchPushOption(baseBranch); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
-	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
+	observedHead, err := git.HeadSHA(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: resolve submission head: %w", branch, err)
+	}
+	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, observedHead)
 	if err != nil {
 		// An active run can still be found below. Without a baseline, however,
 		// a matching terminal run may predate this push, so do not attach to it.
@@ -522,8 +526,38 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return "", &branchOwnershipError{state: *state}
 	}
-	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
+	// The ownership lookup above is an IPC boundary. Preserve AXI's existing
+	// behavior of accepting a clean commit made while that lookup is in flight,
+	// then bind every later operation to the newly observed immutable commit.
+	submissionHead, err := git.HeadSHA(ctx, ".")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: refresh submission head: %w", branch, err)
+	}
+	if submissionHead != observedHead {
+		priorRunIDs, err = runIDsForHead(env.client, env.repo.ID, branch, submissionHead)
+		if err != nil {
+			priorRunIDs = nil
+		}
+	}
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	if err != nil {
+		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	// A reconciled branch is re-created by this push, so the hook reports no
+	// previous head. Carry the archived pre-reconciliation head so the run's
+	// base stays the head the caller actually rewrote, rather than a zero SHA
+	// that would make a deliberate rewrite look like an ordinary push.
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, submissionHead, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return "", fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		// Close the inspection-to-push race: if the pipeline advanced ownership
 		// after the pre-push check, preserve the structured branch-sync refusal
 		// instead of leaking the resulting Git non-fast-forward.
@@ -532,7 +566,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 		}
 	}
 
-	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
+	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, submissionHead, priorRunIDs, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {

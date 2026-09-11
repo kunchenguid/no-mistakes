@@ -180,6 +180,15 @@ func commitPipelineCorrectionWithCleanup(
 	logf func(string),
 	cleanup func(string) error,
 ) error {
+	gitRun := func(args ...string) (string, error) { return git.Run(ctx, workDir, args...) }
+	staged, err := stagedChangesPresent(gitRun)
+	if err != nil {
+		return fmt.Errorf("inspect staged correction: %w", err)
+	}
+	if !staged {
+		return nil
+	}
+
 	emptyHooksDir, err := os.MkdirTemp("", "no-mistakes-correction-hooks-")
 	if err != nil {
 		return fmt.Errorf("prepare hook-free commit environment: %w", err)
@@ -193,6 +202,18 @@ func commitPipelineCorrectionWithCleanup(
 		}
 	}
 	return commitErr
+}
+
+// stagedChangesPresent is the handoff between catch-all staging and commit.
+// Worktree status can become stale when an agent completes a rebase itself, or
+// can report dirt that `git add -A` cannot put in the superproject index. Only
+// the staged index answers whether a correction commit is actually required.
+func stagedChangesPresent(gitRun gitRunner) (bool, error) {
+	staged, err := gitRun("diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return false, err
+	}
+	return staged != "", nil
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
@@ -211,7 +232,11 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	}
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no agent changes to commit")
-		return false, nil
+		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return false, fmt.Errorf("resolve agent head: %w", err)
+		}
+		return false, recordAgentFixHead(sctx, stepName, headSHA)
 	}
 	if summary == "" {
 		summary = fallbackSummary
@@ -226,6 +251,10 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	if err := stagePipelineChanges(sctx); err != nil {
 		return false, fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
+	headBeforeCommit, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return false, fmt.Errorf("resolve head before %s commit: %w", stepName, err)
+	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
 		return false, fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
@@ -233,26 +262,41 @@ func commitAgentFixesWithResult(sctx *pipeline.StepContext, stepName types.StepN
 	if err != nil {
 		return false, fmt.Errorf("resolve head after %s commit: %w", stepName, err)
 	}
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+	// An empty staged index is a successful no-op, not a commit. Reporting it
+	// as one would claim a head advance that never happened.
+	if headSHA == headBeforeCommit {
+		sctx.Log("no staged agent changes to commit")
+	} else {
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	}
+	if err := recordAgentFixHead(sctx, stepName, headSHA); err != nil {
 		return false, err
 	}
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return false, fmt.Errorf("update local branch ref: %w", err)
+	return headSHA != headBeforeCommit, nil
+}
+
+func recordAgentFixHead(sctx *pipeline.StepContext, stepName types.StepName, headSHA string) error {
+	if headSHA == sctx.Run.HeadSHA {
+		return nil
+	}
+	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+		return err
+	}
+	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
+		return err
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {
 		startingHead = sctx.Run.HeadSHA
 	}
-	sctx.Run.HeadSHA = headSHA
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
-		return false, err
+		return err
 	}
+	sctx.Run.HeadSHA = headSHA
 	if stepName == types.StepReview {
 		pipeline.PersistUncertifiedPipelineRange(sctx, startingHead, headSHA)
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
-	return true, nil
+	return nil
 }
 
 func fixResultSummary(committed bool) string {
@@ -337,4 +381,37 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		return "", err
 	}
 	return fixResultSummary(committed), nil
+}
+
+func updateNonSharedBranchRef(sctx *pipeline.StepContext, headSHA string) error {
+	shared, err := worktreeSharesGateRefs(sctx)
+	if err != nil || shared {
+		return err
+	}
+	if _, err := stepGitRun(sctx, "update-ref", normalizedBranchRef(sctx.Run.Branch), headSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	return nil
+}
+
+func worktreeSharesGateRefs(sctx *pipeline.StepContext) (bool, error) {
+	if strings.TrimSpace(sctx.GateDir) == "" {
+		return false, nil
+	}
+	gateInfo, err := os.Stat(sctx.GateDir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect gate ref storage: %w", err)
+	}
+	commonDir, err := stepGitRun(sctx, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return false, fmt.Errorf("resolve worktree ref storage: %w", err)
+	}
+	commonInfo, err := os.Stat(commonDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect worktree ref storage: %w", err)
+	}
+	return os.SameFile(gateInfo, commonInfo), nil
 }

@@ -79,6 +79,11 @@ type PushReceivedParams struct {
 	LaunchNonce          string           `json:"launch_nonce,omitempty"`
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
+	// ReconciledPreviousHead is the head a reconciled private mirror branch
+	// carried before the pusher archived and removed it. The push re-creates the
+	// branch, so the hook reports no previous head of its own. It is a claim the
+	// daemon accepts only against the gate's own archive tag.
+	ReconciledPreviousHead string `json:"reconciled_previous_head,omitempty"`
 }
 
 // StartFreshRunParams requests a nonce-bound fresh launch for one exact gate

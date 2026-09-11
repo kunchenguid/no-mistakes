@@ -773,14 +773,23 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
+	baseSHA := params.Old
+	// A push that re-creates a branch the pusher reconciled reports no previous
+	// head, which would record a zero base and make a deliberate history
+	// rewrite look like an ordinary push to the rebase step. Restore the head
+	// the branch actually carried, but only when the gate's own archive tag
+	// records it: the claim itself arrives over the push and is not evidence.
+	if git.IsZeroSHA(baseSHA) && gate.ArchivedHeadRecorded(ctx, m.paths.RepoDir(repo.ID), branch, params.ReconciledPreviousHead) {
+		baseSHA = strings.TrimSpace(params.ReconciledPreviousHead)
+	}
 	if params.LaunchNonce != "" {
-		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, params.Old, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "push")
+		receipt, err := m.startFreshLaunch(ctx, repo, branch, params.New, baseSHA, params.Gate, params.SkipSteps, params.Intent, params.LaunchNonce, params.ValidationGeneration, params.PRBaseBranch, "push")
 		if err != nil {
 			return "", err
 		}
 		return receipt.RunID, nil
 	}
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.PRBaseBranch)
+	return m.startRun(ctx, repo, branch, params.New, baseSHA, "push", params.SkipSteps, params.Intent, params.PRBaseBranch)
 }
 
 // HandleStartFreshRun creates or replays a proof-mode launch only after
