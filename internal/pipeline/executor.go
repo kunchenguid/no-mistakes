@@ -35,6 +35,11 @@ const (
 	defaultGateReconcileTimeout  = config.DefaultGateReconcileTimeout
 )
 
+// ErrDaemonShutdown lets the run manager stop a parked executor without
+// terminalizing the persisted gate. A restarted daemon validates that durable
+// state again before it resumes anything.
+var ErrDaemonShutdown = errors.New("daemon shutting down")
+
 type approvalResponse struct {
 	action        types.ApprovalAction
 	findingIDs    []string
@@ -243,6 +248,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
+			if errors.Is(err, ErrDaemonShutdown) {
+				return ErrDaemonShutdown
+			}
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
@@ -444,6 +452,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
+	if errors.Is(context.Cause(ctx), ErrDaemonShutdown) {
+		return ErrDaemonShutdown
+	}
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 	}
@@ -1068,6 +1079,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
 
 		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, outcome.Findings, true)
+		if errors.Is(context.Cause(ctx), ErrDaemonShutdown) {
+			return false, "", ErrDaemonShutdown
+		}
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
 		}

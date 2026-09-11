@@ -133,6 +133,17 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 	return plans
 }
 
+// preserveParkedRunOnShutdown identifies the only state shutdown may retain. The
+// normal startup admission path still validates its worktree, configuration,
+// sessions, and recorded gate before any execution resumes.
+func (m *RunManager) preserveParkedRunOnShutdown(runID string) bool {
+	if !m.shuttingDown.Load() {
+		return false
+	}
+	run, err := m.db.GetRun(runID)
+	return err == nil && run != nil && run.Status == types.RunRunning && run.AwaitingAgentSince != nil
+}
+
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
@@ -423,13 +434,15 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
-			m.closeSubscribers(plan.run.ID)
-			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
-			// A recovered run is a finished run too. This is the second of the
-			// two completion boundaries, and leaving it out is what let a run
-			// resumed after a daemon restart keep its empty evidence directory
-			// until some later run or restart happened to sweep it.
-			m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+			if !m.preserveParkedRunOnShutdown(plan.run.ID) {
+				m.closeSubscribers(plan.run.ID)
+				m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
+				// A recovered run is a finished run too. This is the second of the
+				// two completion boundaries, and leaving it out is what let a run
+				// resumed after a daemon restart keep its empty evidence directory
+				// until some later run or restart happened to sweep it.
+				m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+			}
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
@@ -438,7 +451,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}()
 
 		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
-			if plan.run.Status == types.RunRunning {
+			if plan.run.Status == types.RunRunning && !m.preserveParkedRunOnShutdown(plan.run.ID) {
 				errMsg := err.Error()
 				plan.run.Status = types.RunFailed
 				plan.run.Error = &errMsg
@@ -446,7 +459,11 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 				}
 			}
-			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
+			if m.preserveParkedRunOnShutdown(plan.run.ID) {
+				slog.Info("preserved parked recovered run during shutdown", "run_id", plan.run.ID)
+			} else {
+				slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
+			}
 		}
 		fields := telemetry.Fields{
 			"action":      "finished",
@@ -1485,10 +1502,12 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			}
 			cancel(nil)
 			ag.Close()
-			// Close subscriber channels for this run.
-			m.closeSubscribers(run.ID)
-			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
-			m.cleanupRunEvidence(cfg, run.ID)
+			if !m.preserveParkedRunOnShutdown(run.ID) {
+				// Close subscriber channels for this run.
+				m.closeSubscribers(run.ID)
+				m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
+				m.cleanupRunEvidence(cfg, run.ID)
+			}
 			// Remove tracking.
 			m.mu.Lock()
 			delete(m.executors, run.ID)
@@ -1513,7 +1532,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			}
 			addRunPerformanceSummary(m.db, run.ID, fields)
 			telemetry.Track("run", fields)
-			slog.Error("pipeline failed", "run_id", run.ID, "error", err)
+			if m.preserveParkedRunOnShutdown(run.ID) {
+				slog.Info("preserved parked run during shutdown", "run_id", run.ID)
+			} else {
+				slog.Error("pipeline failed", "run_id", run.ID, "error", err)
+			}
 		} else {
 			fields := telemetry.Fields{
 				"action":      "finished",
@@ -1742,7 +1765,7 @@ func (m *RunManager) Shutdown() {
 	m.mu.Unlock()
 
 	for id, cancel := range cancels {
-		cancel(fmt.Errorf("daemon shutting down"))
+		cancel(pipeline.ErrDaemonShutdown)
 		slog.Info("cancelled run on shutdown", "run_id", id)
 	}
 
