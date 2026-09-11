@@ -167,7 +167,9 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			select {
 			case err = <-done:
 				done <- err
-			case <-time.After(15 * time.Second):
+			// Rebased repairs run Review, Test, attestation, and Push before
+			// monitoring resumes. Allow for Windows Git process startup costs.
+			case <-time.After(60 * time.Second):
 				t.Fatal("explicit retry did not finish")
 			}
 			local, remote := f.localHead(t), f.remoteHead(t)
