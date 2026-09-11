@@ -612,6 +612,34 @@ sleep 30
 	}
 }
 
+func TestPiAgent_LocalStartupTimeoutStopsSilentChild(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakePi(t, dir, `#!/bin/sh
+sleep 30
+`, strings.Join([]string{
+		"@echo off",
+		"timeout /t 30 /nobreak > nul",
+	}, "\r\n"))
+
+	pa := &piAgent{bin: bin, localStartupTimeout: 100 * time.Millisecond}
+	started := time.Now()
+	_, err := pa.Run(context.Background(), RunOpts{Prompt: "review", CWD: dir})
+	if err == nil || !errors.Is(err, errPiLocalStartupTimeout) {
+		t.Fatalf("Run error = %v, want local startup timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("local startup timeout returned after %s, want a bounded failure", elapsed)
+	}
+}
+
+func TestPiParser_RejectsOversizedJSONEvent(t *testing.T) {
+	line := strings.Repeat("x", maxPiEventBytes+1)
+	err := (&piParser{}).parse(context.Background(), strings.NewReader(line))
+	if err == nil || !strings.Contains(err.Error(), "pi JSON event exceeded 16 MiB limit") {
+		t.Fatalf("parse error = %v, want bounded event diagnostic", err)
+	}
+}
+
 // TestPiAgent_ToolOnlyStreamStillReportsSubprocessLiveness pins the proof of
 // life that separates a working native agent from a wedged one.
 //
@@ -639,13 +667,13 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"
 	}, "\r\n"))
 
 	var chunks []string
-	var phases []string
+	var events []LifecycleEvent
 	pa := &piAgent{bin: bin}
 	if _, err := pa.Run(context.Background(), RunOpts{
 		Prompt:      "fix ci",
 		CWD:         t.TempDir(),
 		OnChunk:     func(s string) { chunks = append(chunks, s) },
-		OnLifecycle: func(e LifecycleEvent) { phases = append(phases, e.Phase) },
+		OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
 	}); err != nil {
 		t.Fatalf("run pi: %v", err)
 	}
@@ -655,19 +683,34 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"
 	}
 	activityAt := -1
 	exitAt := -1
-	for i, phase := range phases {
-		if phase == LifecyclePhaseActivity && activityAt < 0 {
+	readyAt := -1
+	toolStartedAt := -1
+	toolFinishedAt := -1
+	for i, event := range events {
+		if event.Phase == LifecyclePhaseActivity && activityAt < 0 {
 			activityAt = i
 		}
-		if phase == LifecyclePhaseExit {
+		if event.Phase == LifecyclePhaseReady {
+			readyAt = i
+		}
+		if event.Phase == LifecyclePhaseToolStarted && event.Message == "pi tool started: bash" {
+			toolStartedAt = i
+		}
+		if event.Phase == LifecyclePhaseToolFinished && event.Message == "pi tool finished: bash" {
+			toolFinishedAt = i
+		}
+		if event.Phase == LifecyclePhaseExit {
 			exitAt = i
 		}
 	}
 	if activityAt < 0 {
-		t.Fatalf("lifecycle phases = %v, want subprocess liveness reported for a tool-only turn", phases)
+		t.Fatalf("lifecycle events = %v, want subprocess liveness reported for a tool-only turn", events)
 	}
 	if exitAt < 0 || activityAt > exitAt {
-		t.Fatalf("lifecycle phases = %v, want liveness reported while the agent was still running", phases)
+		t.Fatalf("lifecycle events = %v, want liveness reported while the agent was still running", events)
+	}
+	if readyAt < 0 || toolStartedAt < readyAt || toolFinishedAt < toolStartedAt || exitAt < toolFinishedAt {
+		t.Fatalf("lifecycle events = %v, want ready then bounded tool start/finish diagnostics before exit", events)
 	}
 }
 
