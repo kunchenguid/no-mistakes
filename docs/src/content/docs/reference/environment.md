@@ -23,6 +23,43 @@ When set, everything else moves under this root:
 - Managed agent server PID records: `$NM_HOME/servers/`
 - Local evaluation cases and registry: `$NM_HOME/eval/` (created by automatic collection or an explicit `no-mistakes eval` command)
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
+- Publish-firewall portal store: `$NM_HOME/firewall.sqlite` (not the pipeline `state.sqlite`)
+
+## `NO_MISTAKES_FIREWALL_PORTAL_URL`
+
+LAN portal base URL advertised in generic GitHub check text and used as the ingest base (`POST /v1/firewall/verdicts`).
+
+|         |        |
+| ------- | ------ |
+| Type    | `URL`  |
+| Default | (none) |
+
+Cluster default is the ClusterIP service `http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787`. GitHub-hosted runners cannot reach it; the check is designed for self-hosted runners in namespace `no-mistakes`.
+
+## `NO_MISTAKES_FIREWALL_LISTEN`
+
+Listen address for `no-mistakes firewall serve`.
+
+|         |                 |
+| ------- | --------------- |
+| Type    | `host:port`     |
+| Default | `127.0.0.1:8787` |
+
+Must stay loopback unless the process is behind the cluster ClusterIP Service. Do not put this on a public VIP.
+
+## `NO_MISTAKES_FIREWALL_INGEST_TOKEN`
+
+Optional bearer token required for every portal request that mutates stored
+state: `POST /v1/firewall/verdicts`, `POST /v1/axi/runs/{id}/respond`, and
+`POST /v1/axi/runs/{id}/abort`. Read surfaces stay open on the LAN.
+
+|         |        |
+| ------- | ------ |
+| Type    | `string` |
+| Default | (none) |
+
+When set, a mutating request without the token fails closed. Never log the
+token value.
 
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 

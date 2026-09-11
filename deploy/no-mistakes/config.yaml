@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: publish-firewall
+  namespace: no-mistakes
+data:
+  # Public product repositories that must require the publish-policy check.
+  # Scanner code does not hard-code this list; add SDK and others here.
+  repos: |
+    carverauto/serviceradar
+  listen: "0.0.0.0:8787"
+  portal_url: "http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: firewall-ingest
+  namespace: no-mistakes
+type: Opaque
+stringData:
+  token: ""

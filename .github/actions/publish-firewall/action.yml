@@ -1,0 +1,46 @@
+name: Publish firewall
+description: >-
+  Scan a pull request for live-system values that must not be published.
+  Public logs emit "publish-policy ok" on success, "publish-policy violation"
+  for findings, or "publish-policy error" for scanner or portal failures,
+  with an optional LAN portal URL. Match details stay on the LAN portal.
+
+inputs:
+  portal-url:
+    description: LAN portal base URL (ClusterIP or LAN DNS). Empty skips ingest and still fails closed on hits.
+    required: false
+    default: ""
+  portal-token:
+    description: Optional bearer token for portal ingest.
+    required: false
+    default: ""
+  repo:
+    description: owner/name. Defaults to github.repository.
+    required: false
+    default: ${{ github.repository }}
+  pr-number:
+    description: Pull request number. Defaults to the event payload.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+
+outputs:
+  conclusion:
+    description: success, failure, or error. Never includes match text.
+    value: ${{ steps.scan.outputs.conclusion }}
+
+runs:
+  using: composite
+  steps:
+    - name: Scan publish policy
+      id: scan
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        NM_PORTAL_URL: ${{ inputs.portal-url }}
+        NM_PORTAL_TOKEN: ${{ inputs.portal-token }}
+        NM_REPO: ${{ inputs.repo }}
+        NM_PR_NUMBER: ${{ inputs.pr-number }}
+        NM_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        NM_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        NM_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      run: bash "${GITHUB_ACTION_PATH}/check.sh"

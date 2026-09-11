@@ -541,6 +541,32 @@ Each validation run performs the authoritative agent resolution again after appl
 
 `tea` stays docs-only like `glab`, `forgejo-axi`, and Bitbucket's env vars, rather than an active `doctor` check like `gh`/`az`: Gitea is almost always self-hosted, so a bare "`tea` not found" row would be a near-universal, low-value warning for the vast majority of users who have no Gitea instance at all.
 
+## no-mistakes firewall
+
+Publish-policy scanner and LAN portal. See the [publish firewall guide](/no-mistakes/guides/publish-firewall/).
+
+```sh
+no-mistakes firewall github-check --diff pr.diff --private-json /tmp/verdict.json
+no-mistakes firewall serve --listen 127.0.0.1:8787
+```
+
+`github-check` uses the [generic public output](/no-mistakes/guides/publish-firewall/#public-vs-lan). Full detail goes to `--private-json` and the LAN portal. `serve` does not start the pipeline daemon.
+
+Exit `0` is a clean scan, `1` is a Hard Rules verdict, and `2` is a failure to judge or record one — an unreadable diff, or a portal that refused or could not be reached. Both non-zero codes fail closed. The composite action exposes `failure` or `error` through its `conclusion` output; either fails the Actions job. Omitted title, body, and commit-message file flags skip those surfaces; a supplied file that cannot be read exits `2`. The CLI scans the supplied diff; the shared action collects aggregate and commit-history diffs.
+
+## no-mistakes axi firewall
+
+Axi-shaped LAN records for firewall verdicts.
+
+```sh
+no-mistakes axi firewall status
+no-mistakes axi firewall status --run <id>
+no-mistakes axi firewall logs --run <id>
+no-mistakes axi firewall respond --run <id> --action acknowledge
+```
+
+`respond` records acknowledgement only. It does not pass the GitHub check.
+
 ## no-mistakes update
 
 Update the installed binary and reset the daemon.

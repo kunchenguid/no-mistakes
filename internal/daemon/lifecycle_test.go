@@ -597,7 +597,12 @@ func TestWaitForProcessExitRetriesTransientInspectionErrors(t *testing.T) {
 		daemonProcessRunning = originalProcessRunning
 	})
 
-	waitForProcessExit(4242, 50*time.Millisecond)
+	// A short wall-clock timeout races real elapsed time against a slow CI
+	// runner: under load the 10ms-spaced retries can miss the deadline
+	// before reaching the 3rd stub call. Give the loop a timeout far larger
+	// than the handful of checks it actually needs, so the test asserts the
+	// retry behavior rather than scheduler timing.
+	waitForProcessExit(4242, 5*time.Second)
 
 	if checks < 3 {
 		t.Fatalf("waitForProcessExit stopped after %d checks, want at least 3", checks)
