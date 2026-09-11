@@ -60,11 +60,13 @@ Safest local verification sequence after non-trivial changes:
 
 **Review Schema Retry (`internal/pipeline/steps/review.go`)**
 
-- A review turn whose final JSON fails validation (an adapter's structured-output rejection, or `parseReviewAnalyzerOutput` refusing the output) is a formatting slip, not a verdict: `ReviewStep.Execute` reruns a fresh, session-free review of the same prompt plus a note quoting the validation error, up to `reviewAnalyzerMaxAttempts` (3) attempts.
+- When no-mistakes itself rejects a review turn's final output - an adapter without native schema enforcement, such as Pi, rejecting its JSON (`agent.IsStructuredOutputRejected`), or `parseReviewAnalyzerOutput` refusing the output - that is a formatting slip, not a verdict: `ReviewStep.Execute` reruns a fresh, session-free review of the same prompt plus a note quoting the validation error, up to `reviewAnalyzerMaxAttempts` (3) attempts in total.
+An agent that enforces the schema natively, such as Claude Code (`--json-schema`), re-prompts within its own retry limit first; its `error_max_structured_output_retries` result is deliberately not marked as a rejection and fails the step as before, so there is no second retry layer and Test's correction loop is untouched.
 Findings come only from the attempt that validates; nothing else from a rejected attempt carries over, and fix-mode turns are never retried.
 Exhausting the bound fails the step with `validate review analyzer findings after 3 attempts: <last error>`, so an unreadable review never passes (issue #703); the unconfigured "pass" meaning is unchanged.
 - Every other failure returns at once, and so does a rejection from a turn its deadline or a cancellation cut short (`agentInvocationError` carries both the adapter's rejection and `errReviewAgentTimeout`). This is a rerun of the review, not a correction turn; Test's correction behaviour is separate and unchanged.
-- Regressions: `internal/pipeline/steps/review_schema_retry_test.go`, `TestReviewStep_UnrunAnalyzerDoesNotApprove`, e2e `TestAnalyzerEvidenceFailuresFailPipelineJourney`.
+- Eval replay (`internal/eval/replay.go` `observedAgent`) sums token usage across every review attempt and reports none when any attempt lacks reported usage, matching the captured baseline, so a candidate that needed reruns never reads as cheaper.
+- Regressions: `internal/pipeline/steps/review_schema_retry_test.go`, `TestReviewStep_UnrunAnalyzerDoesNotApprove`, `TestReplayTokensCoverEveryReviewAttempt`, e2e `TestAnalyzerEvidenceFailuresFailPipelineJourney`.
 
 **CI Step Findings Model**
 
