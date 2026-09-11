@@ -333,9 +333,10 @@ type ReviewCommentsHost interface {
 }
 
 // PRContentReader is an optional interface for hosts that can read the current
-// title and body of an existing PR. The CI repair publisher uses it to rebind
-// a live pipeline attestation to a newly published head without rewriting the
-// rest of the body or inventing an attestation that was not already there.
+// title and raw body of an existing PR. Readers must distinguish an explicitly
+// empty body from missing, null, or malformed content and reject the latter.
+// Author-preserving publication and pre-push/CI attestation refresh depend on
+// this distinction to avoid replacing author text after an incomplete read.
 type PRContentReader interface {
 	GetPRContent(ctx context.Context, pr *PR) (PRContent, error)
 }
