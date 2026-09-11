@@ -100,6 +100,11 @@ Re-running `no-mistakes init` later preserves the stored fork URL unless you pas
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 GitLab, Forgejo, Bitbucket, and Azure DevOps fork MR/PR routing are not implemented yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.
 
+#### Workflow-file changes require the `workflow` scope
+
+If your branch touches a `.github/workflows/*.yml` or `*.yaml` file, the push to your fork requires a GitHub credential with the `workflow` scope; GitHub rejects it with `refusing to allow an OAuth App to create or update workflow ... without workflow scope` when the stored token lacks it.
+See [Troubleshooting](/no-mistakes/guides/troubleshooting/#push-fails-with-refusing-to-allow-an-oauth-app-to-create-or-update-workflow--without-workflow-scope) for the recovery steps.
+
 ## GitLab
 
 Install the GitLab CLI and authenticate:
