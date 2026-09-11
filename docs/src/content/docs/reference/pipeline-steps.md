@@ -11,7 +11,7 @@ intent → rebase → review → test → document → lint → push → pr → 
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
 Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
-The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and so does the Review analyzer when its rejected output is still a readable review; exhausting that bound, and every other invalid analyzer output, still stops the affected step.
+The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and so does the Review analyzer when its rejected output is a readable review with valid findings, which the correction cannot change; exhausting that bound, and every other invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
 See [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
@@ -90,9 +90,10 @@ AI code review of your diff. This is probabilistic evidence, not a security or c
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
 - If that structured output is a readable review that fails schema validation (for example a missing required `risk_level`, or `tested` given as a boolean), a fresh, session-free, correction-only invocation receives the complete rejected output and the validation errors as untrusted data.
-  It cannot use tools or re-review the code, must keep the findings the rejected output reported, and must not invent a default risk assessment.
+  It cannot use tools or re-review the code, may repair only the review's fields outside `findings`, and must not invent a default risk assessment.
+  The rejected review's findings are final: the step keeps them exactly as reported whatever the correction returns, so a correction can never drop, add, or downgrade a finding.
   The step allows two extra correction attempts after the first invalid payload, and exhausting that bound fails the step as a parse failure.
-  An unreadable review - no structured output at all, or an absent or null `findings` array - is never corrected, because a correction would have no review to repair and could only invent one; it fails the step on the first attempt and is never treated as a pass.
+  A review with no findings to keep - no structured output at all, an absent or null `findings` array, or findings that break the schema themselves - is never corrected, because a correction could only invent them; it fails the step on the first attempt and is never treated as a pass.
   A valid payload is accepted on the first attempt.
   Ordinary agent failures (exit, timeout, transient) are not retried here.
   The same path applies to the initial review and every post-fix rereview.

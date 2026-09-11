@@ -360,6 +360,17 @@ func StructuredTextJSON(text []byte) (json.RawMessage, error) {
 	return parseStructuredTextOutput(string(text), nil, false)
 }
 
+// ValidateStructuredText checks a JSON value against schema by the rule the
+// text adapters apply to a final response, where an optional field may be
+// null.
+func ValidateStructuredText(value, schema json.RawMessage) error {
+	validationSchema, err := textValidationSchema(schema)
+	if err != nil {
+		return err
+	}
+	return validateStructuredOutput(value, validationSchema)
+}
+
 func parseStructuredTextOutput(text string, schema json.RawMessage, preferTerminal bool) (json.RawMessage, error) {
 	validationSchema, err := textValidationSchema(schema)
 	if err != nil {

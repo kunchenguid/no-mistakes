@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +22,11 @@ const (
 	reviewFindingJSON    = `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":"a.txt","line":1,"review_scope":"source"}],"risk_level":"medium","risk_rationale":"one warning","risk_scope":"source-or-external"}`
 	missingRiskLevelJSON = `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":"a.txt","line":1,"review_scope":"source"}]}`
 	testedBooleanJSON    = `{"findings":[],"tested":false,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	// riskOnlyCorrectionJSON is a correction that repairs the risk assessment
+	// and returns no findings at all; the step must keep the rejected ones.
+	riskOnlyCorrectionJSON = `{"findings":[],"risk_level":"medium","risk_rationale":"restored from the rejected review","risk_scope":"source-or-external"}`
+	// blockingFindingsJSON is a findings array whose items gate Review.
+	blockingFindingsJSON = `[{"severity":"error","action":"auto-fix","description":"nil dereference when the config file is empty","file":"a.txt","line":1,"review_scope":"source"},{"severity":"warning","action":"ask-user","description":"retry loop never backs off after a 503","file":"a.txt","line":2,"review_scope":"source"}]`
 	distinctUserIntent   = "Ship the helper only if the captain confirms it is required"
 )
 
@@ -31,27 +37,13 @@ func schemaRejected(message, output string) error {
 	return rejectedStructuredOutputError{message: message, output: output}
 }
 
-// correctRejectedReview stands in for a correcting model. It repairs only the
-// schema slip in the rejected review handed to it through the correction
-// prompt, so every finding it returns must have reached it through that
-// prompt.
-func correctRejectedReview(prompt string) (*agent.Result, error) {
-	_, section, _ := strings.Cut(prompt, "<rejected-json>")
-	section, _, _ = strings.Cut(section, "</rejected-json>")
-	start, end := strings.Index(section, "{"), strings.LastIndex(section, "}")
-	if start < 0 || end < start {
-		return nil, errors.New("correction prompt carried no rejected review")
+func decodeFindingItems(t *testing.T, raw string) []types.Finding {
+	t.Helper()
+	var items []types.Finding
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		t.Fatal(err)
 	}
-	var review map[string]any
-	if err := json.Unmarshal([]byte(section[start:end+1]), &review); err != nil {
-		return nil, fmt.Errorf("correction prompt carried an incomplete rejected review: %w", err)
-	}
-	delete(review, "tested")
-	review["risk_level"] = "medium"
-	review["risk_rationale"] = "restored from the rejected review"
-	review["risk_scope"] = types.FindingsRiskScopeSourceOrExternal
-	output, err := json.Marshal(review)
-	return &agent.Result{Output: output}, err
+	return items
 }
 
 // TestReviewStep_InvalidSchemaTriggersCorrectionRound is issue #1045's
@@ -85,6 +77,12 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			rejected:   "```json\n" + missingRiskLevelJSON + "\n```",
 			wantPrompt: `JSON output missing required field "risk_level"`,
 		},
+		{
+			name:       "optional finding fields left null",
+			message:    `pi output parse: JSON output missing required field "risk_level"`,
+			rejected:   `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":null,"line":null,"review_scope":"source"}]}`,
+			wantPrompt: `JSON output missing required field "risk_level"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -92,12 +90,12 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			calls := 0
 			ag := &mockAgent{
 				name: "pi",
-				runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 					calls++
 					if calls == 1 {
 						return nil, schemaRejected(tc.message, tc.rejected)
 					}
-					return correctRejectedReview(opts.Prompt)
+					return &agent.Result{Output: json.RawMessage(riskOnlyCorrectionJSON)}, nil
 				},
 			}
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -127,7 +125,8 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 				"was REJECTED",
 				"This is a correction-only turn",
 				"Do not use tools",
-				"Keep every finding",
+				"keeps them exactly as reported",
+				"unrequired helper",
 				tc.wantPrompt,
 			} {
 				if !strings.Contains(correction, want) {
@@ -160,37 +159,86 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 	}
 }
 
-// TestReviewStep_PiRejectionHandsTheFullReviewToCorrection covers the adapter
-// shape issue #1045 hit: Pi validates its final text itself, so its rejection
-// arrives with no Result and an error text holding at most a 200-character
-// snippet. The correction must still receive the whole review, or findings
-// past the snippet silently disappear from the corrected review.
-func TestReviewStep_PiRejectionHandsTheFullReviewToCorrection(t *testing.T) {
+// TestReviewStep_CorrectionCannotChangeTheRejectedReviewsFindings pins the
+// rule that makes a correction safe: it may repair the review's other fields,
+// but the rejected review's findings are final. Whatever a correction turn
+// does to them, Review ends with exactly the findings the reviewer reported,
+// so a blocking review can never turn into an approval.
+func TestReviewStep_CorrectionCannotChangeTheRejectedReviewsFindings(t *testing.T) {
 	t.Parallel()
-	descriptions := []string{
-		"nil dereference when the config file is empty",
-		"retry loop never backs off after a 503",
-		"cache key ignores the tenant id",
+	downgraded := func(old, new string) string {
+		return `{"findings":` + strings.ReplaceAll(blockingFindingsJSON, old, new) + `,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
 	}
-	items := make([]string, 0, len(descriptions))
-	for i, description := range descriptions {
-		items = append(items, fmt.Sprintf(`{"severity":"error","action":"auto-fix","description":%q,"file":"a.txt","line":%d,"review_scope":"source"}`, description, i+1))
+	for _, tc := range []struct {
+		name       string
+		correction string
+	}{
+		{name: "returns an empty findings list", correction: validReviewJSON},
+		{name: "downgrades every finding to info", correction: strings.ReplaceAll(downgraded(`"severity":"error"`, `"severity":"info"`), `"severity":"warning"`, `"severity":"info"`)},
+		{name: "downgrades every finding to no-op", correction: strings.ReplaceAll(downgraded(`"action":"auto-fix"`, `"action":"no-op"`), `"action":"ask-user"`, `"action":"no-op"`)},
+		{name: "adds a finding", correction: `{"findings":[{"severity":"info","action":"no-op","description":"invented by the correction","review_scope":"source"}],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			calls := 0
+			ag := &mockAgent{
+				name: "pi",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					calls++
+					if calls == 1 {
+						return nil, schemaRejected("pi output parse: JSON output tested must be array or null", `{"findings":`+blockingFindingsJSON+`,"tested":true,"risk_level":"high","risk_rationale":"two defects","risk_scope":"source-or-external"}`)
+					}
+					return &agent.Result{Output: json.RawMessage(tc.correction)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(ag.calls) != 2 {
+				t.Fatalf("agent calls = %d, want 1 rejected review plus 1 correction", len(ag.calls))
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := decodeFindingItems(t, blockingFindingsJSON); !slices.Equal(findings.Items, want) {
+				t.Fatalf("findings = %+v, want the rejected review's findings exactly as reported %+v", findings.Items, want)
+			}
+			if !outcome.NeedsApproval {
+				t.Fatal("the rejected review's blocking findings must still gate Review, not approve it")
+			}
+		})
 	}
-	rejected := "```json\n{\"findings\":[" + strings.Join(items, ",") + "],\"tested\":true}\n```"
-	if len(rejected) <= 400 {
-		t.Fatalf("rejected review is %d bytes, want it well past the error snippet", len(rejected))
+}
+
+// TestReviewStep_PiCorrectionRepairsRiskAndKeepsBlockingFindings is issue
+// #1045's Pi case end to end: the rejection arrives with no Result and an
+// error text holding at most a 200-character snippet, the correction still
+// sees the whole review, repairs the missing risk_level, and Review completes
+// with the reported findings still blocking.
+func TestReviewStep_PiCorrectionRepairsRiskAndKeepsBlockingFindings(t *testing.T) {
+	t.Parallel()
+	rejected := "```json\n{\"findings\":" + blockingFindingsJSON + ",\"tested\":[\"go test ./...\"]}\n```"
+	lastDescription := "retry loop never backs off after a 503"
+	if strings.Index(rejected, lastDescription) < 200 {
+		t.Fatal("the last finding must sit past the error snippet for this test to prove the full review reached the correction")
 	}
+	corrected := `{"findings":` + blockingFindingsJSON + `,"tested":["go test ./..."],"risk_level":"high","risk_rationale":"two defects in the retry path","risk_scope":"source-or-external"}`
 
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	calls := 0
 	ag := &mockAgent{
 		name: "pi",
-		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 			calls++
 			if calls == 1 {
 				return nil, schemaRejected(`pi output parse: JSON output missing required field "risk_level"`, rejected)
 			}
-			return correctRejectedReview(opts.Prompt)
+			return &agent.Result{Output: json.RawMessage(corrected)}, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -202,33 +250,30 @@ func TestReviewStep_PiRejectionHandsTheFullReviewToCorrection(t *testing.T) {
 	if len(ag.calls) != 2 {
 		t.Fatalf("agent calls = %d, want 1 rejected review plus 1 correction", len(ag.calls))
 	}
+	if !strings.Contains(ag.calls[1].Prompt, lastDescription) {
+		t.Fatalf("correction prompt did not carry the whole rejected review:\n%s", ag.calls[1].Prompt)
+	}
 	findings, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]bool{}
-	for _, item := range findings.Items {
-		got[item.Description] = true
+	if want := decodeFindingItems(t, blockingFindingsJSON); !slices.Equal(findings.Items, want) {
+		t.Fatalf("findings = %+v, want %+v", findings.Items, want)
 	}
-	for _, description := range descriptions {
-		if !got[description] {
-			t.Fatalf("corrected review lost %q; findings = %+v", description, findings.Items)
-		}
-	}
-	if len(findings.Items) != len(descriptions) {
-		t.Fatalf("corrected review has %d findings, want the %d the rejected review reported", len(findings.Items), len(descriptions))
+	if findings.RiskLevel != "high" || findings.RiskRationale != "two defects in the retry path" {
+		t.Fatalf("risk = %q/%q, want the correction's repaired assessment", findings.RiskLevel, findings.RiskRationale)
 	}
 	if !outcome.NeedsApproval {
-		t.Fatal("the corrected review's blocking findings must still gate the step")
+		t.Fatal("the review's blocking findings must still gate Review after the correction")
 	}
 }
 
-// TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection keeps issue
-// #703's guarantee under the correction loop. With no review content to
-// repair - no output at all, or no findings array - a correction turn could
-// only invent a clean review, so the step fails on the first turn exactly as
-// it did before corrections existed.
-func TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection(t *testing.T) {
+// TestReviewStep_UncorrectableReviewFailsOnFirstTurn keeps issue #703's
+// guarantee under the correction loop. A correction may repair only a
+// review's other fields, so a review with no findings to keep - no output at
+// all, no findings array, or findings that break the schema themselves -
+// fails on the first turn exactly as it did before corrections existed.
+func TestReviewStep_UncorrectableReviewFailsOnFirstTurn(t *testing.T) {
 	t.Parallel()
 	nullFindings := `{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
 	for _, tc := range []struct {
@@ -267,6 +312,21 @@ func TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection(t *testing.T) {
 			err:       schemaRejected("pi output parse: JSON output findings must be array", nullFindings),
 			wantError: "findings must be array",
 		},
+		{
+			name:      "finding with an unknown severity",
+			err:       schemaRejected("pi output parse: JSON output findings[0].severity must match one of the allowed values", `{"findings":[{"severity":"critical","action":"auto-fix","description":"nil dereference","review_scope":"source"}],"risk_level":"high","risk_rationale":"one defect","risk_scope":"source-or-external"}`),
+			wantError: "severity must match one of the allowed values",
+		},
+		{
+			name:      "finding with an unknown action",
+			err:       schemaRejected("pi output parse: JSON output findings[0].action must match one of the allowed values", `{"findings":[{"severity":"error","action":"fix-now","description":"nil dereference","review_scope":"source"}],"tested":true}`),
+			wantError: "action must match one of the allowed values",
+		},
+		{
+			name:      "finding without a description",
+			result:    &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","action":"auto-fix","review_scope":"source"}]}`)},
+			wantError: "review analyzer findings missing risk assessment",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -286,13 +346,13 @@ func TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection(t *testing.T) {
 
 			outcome, err := (&ReviewStep{}).Execute(sctx)
 			if err == nil {
-				t.Fatalf("an unreadable review must fail the step, got outcome %+v", outcome)
+				t.Fatalf("a review with no findings to keep must fail the step, got outcome %+v", outcome)
 			}
 			if outcome != nil {
 				t.Fatalf("outcome = %+v, want none", outcome)
 			}
 			if len(ag.calls) != 1 {
-				t.Fatalf("agent calls = %d, want 1: an unreadable review has nothing to correct", len(ag.calls))
+				t.Fatalf("agent calls = %d, want 1: a correction cannot supply a review's findings", len(ag.calls))
 			}
 			if !strings.Contains(err.Error(), tc.wantError) || strings.Contains(err.Error(), "attempts") {
 				t.Fatalf("error = %q, want the first turn's own failure %q", err, tc.wantError)
@@ -538,7 +598,7 @@ func TestReviewStep_SchemaRejectionIsRecordedAsParseFailure(t *testing.T) {
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 			calls++
 			if calls == 1 {
-				return nil, schemaRejected(`JSON output missing required field "risk_level"`, missingRiskLevelJSON)
+				return nil, schemaRejected(`JSON output missing required field "risk_level"`, `{"findings":[]}`)
 			}
 			return &agent.Result{Output: json.RawMessage(validReviewJSON)}, nil
 		},

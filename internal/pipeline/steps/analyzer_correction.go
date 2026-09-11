@@ -31,16 +31,20 @@ type analyzerCorrection struct {
 	wrapError    func(ctx context.Context, timeout time.Duration, err error) error
 	run          func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
 	parse        func(*agent.Result) (Findings, error)
-	// correctable, when set, decides whether a rejected payload still holds
-	// the analyzer's own content; any other rejection fails immediately
-	// instead of asking a correction turn to invent that content.
-	correctable      func(rejected []byte) bool
+	// keepFindings, when set, returns the findings the first rejected payload
+	// reported. They are final: every correction turn repairs only that
+	// payload's other fields and is accepted with exactly these findings, and
+	// a payload whose findings cannot be kept fails at once, since no
+	// correction could supply them.
+	keepFindings     func(rejected []byte) ([]Finding, error)
 	correctionPrompt func(err error, rejected []byte) string
 }
 
 func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg analyzerCorrection) (Findings, error) {
 	current := prompt
 	var lastErr error
+	var keptPayload []byte
+	var keptFindings []Finding
 	for attempt := 1; attempt <= analyzerCorrectionMaxAttempts; attempt++ {
 		if attempt > 1 {
 			sctx.Log(fmt.Sprintf(
@@ -78,6 +82,9 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 			var findings Findings
 			findings, valErr = cfg.parse(result)
 			if valErr == nil {
+				if keptPayload != nil {
+					findings.Items = keptFindings
+				}
 				return findings, nil
 			}
 		}
@@ -85,8 +92,15 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 		if result != nil && result.Output != nil {
 			rejected = result.Output
 		}
-		if cfg.correctable != nil && !cfg.correctable(rejected) {
-			return Findings{}, valErr
+		if cfg.keepFindings != nil {
+			if keptPayload == nil {
+				var keepErr error
+				if keptFindings, keepErr = cfg.keepFindings(rejected); keepErr != nil {
+					return Findings{}, valErr
+				}
+				keptPayload = rejected
+			}
+			rejected = keptPayload
 		}
 		lastErr = valErr
 		if attempt == analyzerCorrectionMaxAttempts {
