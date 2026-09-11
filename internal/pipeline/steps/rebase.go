@@ -555,6 +555,50 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 
 // updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
 // When the branch diff against the default branch is empty, SkipRemaining is set.
+//
+// The run worktree is a detached checkout of the gate's bare repo (see
+// git.WorktreeAdd), so a `git rebase` here moves only the worktree's detached
+// HEAD - never the shared refs/heads/<branch> the gate exposes to future
+// `no-mistakes axi run` pushes and to branch-sync custody recovery. Every other
+// step that advances the run's head this way (commitAgentFixes in
+// common_fix.go, recordLocalRepair in ci_fix.go) explicitly moves that branch
+// ref alongside the DB write; this call keeps rebase consistent with them. Skipping
+// it left the gate ref pinned at the pre-rebase commit, so a run that
+// terminated here without a later fix-round commit or a successful publish
+// (both of which incidentally repair the ref) returned custody at a head
+// sync --check reported as "relation=equal" while the gate's real branch ref
+// was still the stale, non-ancestor pre-rebase commit - so the next plain push
+// that starts a fresh run was rejected as non-fast-forward.
+//
+// The update-ref call passes oldHead (the run's pre-rebase recorded head) as
+// the expected current value, not just the new one: without that compare-
+// and-swap, this write would silently clobber a branch ref moved concurrently
+// by another push or custody-recovery operation between this run reading its
+// head and this step running. Passing the expected old value makes a
+// concurrent move fail this step closed instead. When WorkDir is a normal
+// (non-detached) checkout of the branch itself rather than the detached gate
+// worktree this fix targets, the rebase can advance refs/heads/<branch> to
+// headSHA on its own before this call runs, so a CAS against oldHead then
+// fails even though the ref already holds the value this call wants to write.
+// That is the ref already being correct, not the hostile concurrent move the
+// CAS guards against, so a failed CAS is only an error when the ref has
+// landed somewhere other than headSHA too.
+//
+// The CAS runs before RemapUncertifiedPipelineRangeAfterRebase, not after:
+// that remap durably rewrites the run's authoritative uncertified-range
+// bookkeeping, and a genuine CAS failure must return before any durable state
+// changes so a run that lost the race leaves nothing behind for a later run
+// to misread - a remap applied ahead of a failed ref update would otherwise
+// bind review provenance to a rebased head the gate never actually published.
+//
+// If the CAS succeeds but the durable head SHA write that follows it fails,
+// the gate ref has already moved past the persisted run head. Left alone that
+// splits custody state: recovery treats the persisted head as authoritative
+// and would reject the already-advanced ref as unverified. This function
+// reverts the ref (best effort) back to the pre-rebase head in that case so
+// both sides agree again, and also remaps the uncertified range back onto
+// oldHead so its provenance bookkeeping does not stay bound to the
+// unpublished rebased lineage the ref revert just abandoned.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -562,9 +606,27 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	}
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
 		oldHead := sctx.Run.HeadSHA
+		ref := normalizedBranchRef(sctx.Run.Branch)
+		if _, casErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA, oldHead); casErr != nil {
+			current, verifyErr := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref)
+			if verifyErr != nil || strings.TrimSpace(current) != headSHA {
+				return nil, fmt.Errorf("update local branch ref: %w", casErr)
+			}
+		}
 		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+			// The ref CAS above already moved the shared gate branch ref to
+			// headSHA. Leaving it there while the persisted run head stays at
+			// oldHead splits custody state: recovery reads the persisted head
+			// as authoritative and would reject the already-advanced gate ref
+			// as unverified. Revert the ref (best effort) so both sides agree
+			// again on the pre-rebase head.
+			if _, revertErr := git.Run(ctx, sctx.WorkDir, "update-ref", ref, oldHead, headSHA); revertErr != nil {
+				sctx.Log(fmt.Sprintf("failed to revert gate ref after head SHA persistence failure: %v", revertErr))
+			}
+			pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, headSHA, oldHead)
+			sctx.Run.HeadSHA = oldHead
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))

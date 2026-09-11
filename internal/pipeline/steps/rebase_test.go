@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
@@ -559,6 +561,434 @@ func TestRebaseStep_RemapsUncertifiedRangeWhenHeadRewritten(t *testing.T) {
 	pipeline.BindUncertifiedPipelineRange(bind)
 	if bind.UncertifiedFromSHA != got.FromSHA || bind.UncertifiedToSHA != got.ToSHA {
 		t.Fatalf("bind after rebase remap from=%q to=%q, want from=%q to=%q", bind.UncertifiedFromSHA, bind.UncertifiedToSHA, got.FromSHA, got.ToSHA)
+	}
+}
+
+// TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite reproduces the
+// custody wedge underlying the "sync --check says relation=equal but the next
+// push is rejected as non-fast-forward" bug: the production run worktree is a
+// DETACHED checkout of the gate's own bare repo (git.WorktreeAdd), so `git
+// rebase` there moves only the worktree's detached HEAD and never the shared
+// refs/heads/<branch> ref the gate exposes to a future `no-mistakes axi run`
+// push and to branch-sync custody recovery. Every sibling code path that
+// advances a run's head this way (commitFixAndAdvance in common_fix.go,
+// recordLocalRepair in ci_fix.go) explicitly moves that branch ref alongside
+// the DB write; updateHeadSHA must do the same or the gate ref is left pinned
+// at the pre-rebase commit - which is not even an ancestor of the rebased
+// head, so the next plain (non-force) push to the gate is rejected
+// non-fast-forward even though the DB-recorded run head (what sync --check
+// reports) matches the worktree exactly.
+func TestRebaseStep_UpdatesSharedGateBranchRefAfterHistoryRewrite(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+	// A worktree added from gateDir shares gateDir's local config, not seed's,
+	// and the RebaseStep.Execute call below performs a real `git rebase` in
+	// that worktree - which creates new commits and so needs a resolvable
+	// committer identity. Without a local identity here, that falls back to
+	// the ambient global git config, which is absent on CI runners lacking a
+	// configured `user.name`/`user.email` (unlike this repo's own dev
+	// machines), failing with "unable to auto-detect email address".
+	gitCmd(t, gateDir, "config", "user.name", "test")
+	gitCmd(t, gateDir, "config", "user.email", "test@test.com")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	// Advance main so the rebase below genuinely rewrites the feature commit
+	// onto a new base instead of trivially fast-forwarding.
+	gitCmd(t, seed, "checkout", "main")
+	os.WriteFile(filepath.Join(seed, "advance.txt"), []byte("advance\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "main advance")
+	gitCmd(t, seed, "push", gateDir, "main")
+	mainTip := gitCmd(t, gateDir, "rev-parse", "refs/heads/main")
+
+	// The production run worktree: a detached checkout off the gate's own bare
+	// repo, exactly as daemon startRun creates it via git.WorktreeAdd.
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	if _, err := (&RebaseStep{}).Execute(sctx); err != nil {
+		t.Fatalf("rebase step: %v", err)
+	}
+
+	newHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if newHead == submittedSHA {
+		t.Fatal("rebase did not rewrite the submitted head; test setup did not exercise a real rebase")
+	}
+	if ancestor := gitCmdAllowFail(t, runWorktree, "merge-base", "--is-ancestor", submittedSHA, newHead); ancestor {
+		t.Fatalf("rebased head %s is still a descendant of submitted %s; test did not rewrite history", newHead, submittedSHA)
+	}
+
+	gateBranchRef := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature")
+	if gateBranchRef != newHead {
+		t.Fatalf("gate branch ref = %s, want rebased head %s (stuck at pre-rebase submitted %s: a future plain push to the gate would be rejected non-fast-forward)", gateBranchRef, newHead, submittedSHA)
+	}
+	if sctx.Run.HeadSHA != newHead {
+		t.Fatalf("run.HeadSHA = %s, want %s", sctx.Run.HeadSHA, newHead)
+	}
+	if mainTip == "" {
+		t.Fatal("mainTip was not resolved")
+	}
+}
+
+// gitCmdAllowFail runs a git command that is expected to fail (a boolean-style
+// check like merge-base --is-ancestor) and reports whether it succeeded,
+// without failing the test on a non-zero exit.
+func gitCmdAllowFail(t *testing.T, dir string, args ...string) bool {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+// TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently covers
+// the compare-and-swap half of the fix above: updateHeadSHA's update-ref must
+// pass the run's recorded pre-rebase head as the expected current value, not
+// just the new one, or it would silently clobber a gate branch ref that
+// another push or custody-recovery operation moved in the window between this
+// run reading its head and this step running. Simulates that race directly
+// (rather than through a timing-dependent concurrent goroutine) by moving the
+// gate's real branch ref out from under the run before calling updateHeadSHA,
+// and asserts the call fails instead of overwriting the concurrently-moved ref.
+func TestRebaseStep_UpdateHeadSHAFailsClosedWhenGateRefMovedConcurrently(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	// The production run worktree: a detached checkout off the gate's own bare
+	// repo, exactly as daemon startRun creates it via git.WorktreeAdd.
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	// Stand in for the rebase step having already rewritten the worktree's
+	// HEAD (an amend here, a real rebase in production - updateHeadSHA only
+	// cares that HEAD no longer matches sctx.Run.HeadSHA).
+	os.WriteFile(filepath.Join(runWorktree, "feature.txt"), []byte("feature rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "feature commit (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	// Concurrently to this run, another push or custody-recovery operation
+	// moves the gate's real branch ref away from the run's recorded
+	// pre-rebase head before updateHeadSHA gets to it.
+	gitCmd(t, seed, "commit", "--allow-empty", "-m", "concurrent move")
+	concurrentSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "-f", gateDir, "feature")
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want concurrent move %s; test setup did not simulate the race", got, concurrentSHA)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail closed when the gate ref moved concurrently, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want unchanged concurrent move %s (the rewritten head must not clobber it)", got, concurrentSHA)
+	}
+	if sctx.Run.HeadSHA != submittedSHA {
+		t.Fatalf("run.HeadSHA = %s, want unchanged %s (must not record a head write that failed)", sctx.Run.HeadSHA, submittedSHA)
+	}
+}
+
+// TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef covers the other
+// half of the CAS: if the ref CAS succeeds but the durable DB write that
+// follows it fails, the shared gate ref must not be left pointing past the
+// persisted run head - that split would make custody recovery reject the
+// already-advanced ref as unverified. updateHeadSHA must revert the ref back
+// to the pre-rebase head (and not advance sctx.Run.HeadSHA in memory) so both
+// sides agree again after the failure.
+func TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "feature commit")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	os.WriteFile(filepath.Join(runWorktree, "feature.txt"), []byte("feature rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "feature commit (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	// Force the durable head SHA write to fail after the ref CAS has already
+	// succeeded, simulating a DB failure in that window.
+	if err := sctx.DB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail when the DB write fails, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != submittedSHA {
+		t.Fatalf("gate branch ref = %s, want reverted to pre-rebase head %s after the DB write failed", got, submittedSHA)
+	}
+	if sctx.Run.HeadSHA != submittedSHA {
+		t.Fatalf("run.HeadSHA = %s, want unchanged %s (must not record a head write whose persistence failed)", sctx.Run.HeadSHA, submittedSHA)
+	}
+}
+
+// TestRebaseStep_HeadSHAPersistenceFailureRemapsUncertifiedRangeBackToOldHead
+// exercises the reverse remap on the path
+// TestRebaseStep_HeadSHAPersistenceFailureRevertsGateRef cannot: that test
+// forces the DB write failure by closing the whole database, which also
+// breaks the reverse remap's own DB read before it can run. Here only the
+// runs table write fails (via a trigger), so RemapUncertifiedPipelineRangeAfterRebase
+// actually runs against a real, previously-forward-remapped uncertified
+// range and must put it back onto the pre-rebase lineage the reverted gate
+// ref now agrees with.
+func TestRebaseStep_HeadSHAPersistenceFailureRemapsUncertifiedRangeBackToOldHead(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "author.txt"), []byte("author\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "author")
+	fromSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(seed, "fixer.txt"), []byte("fixer\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "fixer")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	os.WriteFile(filepath.Join(runWorktree, "fixer.txt"), []byte("fixer rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "fixer (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	repo, err := database.InsertRepo(runWorktree, "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "refs/heads/feature", submittedSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, "refs/heads/feature", fromSHA, submittedSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.DB = database
+	sctx.Run = run
+	sctx.Repo = repo
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+
+	// Force only the durable head SHA write to fail, after the ref CAS and
+	// the forward remap have already run against real data - not the whole
+	// DB, which would also block the reverse remap's own read.
+	trigger, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer trigger.Close()
+	if _, err := trigger.Exec(`CREATE TRIGGER fail_runs_update BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'forced failure'); END;`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail when the DB write fails, got nil error")
+	}
+
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != submittedSHA {
+		t.Fatalf("gate branch ref = %s, want reverted to pre-rebase head %s after the DB write failed", got, submittedSHA)
+	}
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, "refs/heads/feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("uncertified range disappeared after the reverse remap")
+	}
+	if got.ToSHA != submittedSHA || got.FromSHA != fromSHA {
+		t.Fatalf("reverse remap left range %#v, want it back on the pre-rebase lineage from=%s to=%s (not still bound to abandoned rewritten head %s)", got, fromSHA, submittedSHA, rewrittenHead)
+	}
+}
+
+// TestRebaseStep_FailedCASLeavesUncertifiedRangeUntouched covers a second
+// consequence of the same race the CAS guards against: updateHeadSHA must not
+// call RemapUncertifiedPipelineRangeAfterRebase - which durably rewrites the
+// run's persisted uncertified-pipeline-range row - until the CAS is known to
+// have succeeded (or already been satisfied). Remapping ahead of a CAS that
+// then genuinely fails would bind a later run's review provenance to a
+// rebased head the gate branch never actually came to point at.
+func TestRebaseStep_FailedCASLeavesUncertifiedRangeUntouched(t *testing.T) {
+	t.Parallel()
+	gateDir := t.TempDir()
+	gitCmd(t, gateDir, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "base commit")
+	baseSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "main")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(seed, "author.txt"), []byte("author\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "author")
+	fromSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	os.WriteFile(filepath.Join(seed, "fixer.txt"), []byte("fixer\n"), 0o644)
+	gitCmd(t, seed, "add", "-A")
+	gitCmd(t, seed, "commit", "-m", "fixer")
+	submittedSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", gateDir, "feature")
+
+	runWorktree := filepath.Join(t.TempDir(), "run-worktree")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", runWorktree, submittedSHA)
+
+	// Stand in for the rebase step having rewritten only the tip commit -
+	// fromSHA stays a valid ancestor, matching a real rebase that doesn't
+	// touch commits below the point it forked from.
+	os.WriteFile(filepath.Join(runWorktree, "fixer.txt"), []byte("fixer rewritten\n"), 0o644)
+	gitCmd(t, runWorktree, "add", "-A")
+	gitCmd(t, runWorktree, "commit", "--amend", "-m", "fixer (rewritten)")
+	rewrittenHead := gitCmd(t, runWorktree, "rev-parse", "HEAD")
+	if rewrittenHead == submittedSHA {
+		t.Fatal("amend did not rewrite the head; test setup did not exercise a real head change")
+	}
+
+	// Concurrently to this run, another push or custody-recovery operation
+	// moves the gate's real branch ref away from the run's recorded
+	// pre-rebase head before updateHeadSHA gets to it.
+	gitCmd(t, seed, "commit", "--allow-empty", "-m", "concurrent move")
+	concurrentSHA := gitCmd(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "-f", gateDir, "feature")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, runWorktree, baseSHA, submittedSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = gateDir
+	sctx.Repo.WorkingPath = ""
+	if err := sctx.DB.UpsertUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch, fromSHA, submittedSHA, sctx.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := updateHeadSHA(context.Background(), sctx); err == nil {
+		t.Fatal("expected updateHeadSHA to fail closed when the gate ref moved concurrently, got nil error")
+	}
+
+	got, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != fromSHA || got.ToSHA != submittedSHA {
+		t.Fatalf("uncertified range = %#v, want unchanged from=%s to=%s (a failed CAS must not durably remap it to %s)", got, fromSHA, submittedSHA, rewrittenHead)
+	}
+	if got := gitCmd(t, gateDir, "rev-parse", "refs/heads/feature"); got != concurrentSHA {
+		t.Fatalf("gate branch ref = %s, want unchanged concurrent move %s", got, concurrentSHA)
 	}
 }
 
