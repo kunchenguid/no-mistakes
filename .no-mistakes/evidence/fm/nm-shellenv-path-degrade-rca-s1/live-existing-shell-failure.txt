@@ -1,0 +1,8 @@
+Scenario: actual daemon uses immediate fallback when an existing login shell exits nonzero
+Daemon readiness elapsed: 426ms
+Status output:
+  ● daemon running (pid 62239)
+
+Lifecycle evidence:
+time=2026-09-11T14:49:30.020-07:00 level=WARN msg="login shell environment resolution failed; using a degraded fallback PATH that may omit version-manager dirs (nvm/fnm/volta), so agents may not find tools like pnpm (#143)" shell=.test-live-shellenv/failing-shell err="exit status 42"
+time=2026-09-11T14:49:30.020-07:00 level=INFO msg="daemon environment ready" path_entries=13 path=/live/bootstrap/bin:/usr/bin:/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin

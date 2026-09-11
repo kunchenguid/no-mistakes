@@ -1,0 +1,7 @@
+Scenario: actual daemon starts from a foreground pseudo-terminal with interactive zsh
+Status output:
+  ● daemon running (pid 77622)
+
+Lifecycle evidence:
+time=2026-09-11T14:49:50.207-07:00 level=INFO msg="daemon environment ready" path_entries=22 path=/Users/kunchen/.local/libexec/pi-launcher/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/kunchen/.pi/agent/bin:/Users/kunchen/.local/libexec/pi-launcher/bin:/Users/kunchen/.nvm/versions/node/v24.14.1/bin:/Users/kunchen/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/etc/profiles/per-user/kunchen/bin:/run/current-system/sw/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Library/Frameworks/Python.framework/Versions/3.13/bin:/usr/local/libexec/mosh-signed:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/usr/local/sbin
+time=2026-09-11T14:49:50.207-07:00 level=INFO msg="daemon startup phase complete" phase=environment duration_ms=451

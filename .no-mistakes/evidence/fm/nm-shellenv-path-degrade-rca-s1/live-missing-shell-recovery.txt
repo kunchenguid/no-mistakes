@@ -1,0 +1,11 @@
+Scenario: actual daemon starts while configured login shell is absent
+Login shell materialized after: 2s
+Daemon readiness elapsed: 3s
+Status output:
+  ● daemon running (pid 58867)
+
+Lifecycle evidence:
+time=2026-09-11T14:49:12.293-07:00 level=WARN msg="login shell binary is missing, waiting for it before resolving the login shell environment (#143)" shell=.test-live-shellenv/late-shell attempt=1 backoff=1s err="fork/exec .test-live-shellenv/late-shell: no such file or directory"
+time=2026-09-11T14:49:13.299-07:00 level=WARN msg="login shell binary is missing, waiting for it before resolving the login shell environment (#143)" shell=.test-live-shellenv/late-shell attempt=2 backoff=2s err="fork/exec .test-live-shellenv/late-shell: no such file or directory"
+time=2026-09-11T14:49:15.571-07:00 level=INFO msg="daemon environment ready" path_entries=14 path=/live/nix/bin:/live/nvm/bin:/usr/bin:/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin
+time=2026-09-11T14:49:15.571-07:00 level=INFO msg="daemon startup phase complete" phase=environment duration_ms=3278

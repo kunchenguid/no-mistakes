@@ -1,0 +1,9 @@
+Scenario: actual daemon keeps service NM_HOME when login shell exports another value
+Status output:
+  ● daemon running (pid 8608)
+
+Observed daemon process environment (NM_HOME only):
+NM_HOME=.test-live-shellenv/r4
+
+Lifecycle PATH from shell probe:
+time=2026-09-11T14:50:16.792-07:00 level=INFO msg="daemon environment ready" path_entries=13 path=/live/shell/bin:/usr/bin:/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin
