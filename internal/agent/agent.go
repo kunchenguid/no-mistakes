@@ -316,15 +316,12 @@ func resultFromUsage(usage TokenUsage) *Result {
 }
 
 func textResult(text string, usage TokenUsage) *Result {
-	res := resultFromUsage(usage)
-	if res == nil {
-		res = &Result{}
+	return &Result{
+		Text:                  text,
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
 	}
-	res.Text = text
-	res.Usage = usage
-	res.UsageReported = usage.Reported
-	res.CacheCreationReported = usage.CacheCreationReported
-	return res
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {

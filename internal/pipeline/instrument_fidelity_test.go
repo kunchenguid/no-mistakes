@@ -309,6 +309,39 @@ func TestPerfRecording_SchemaRejectedInvocationRecordsReportedUsage(t *testing.T
 	assertPtr(t, "fresh input", inv.FreshInputTokens, 153_000)
 }
 
+// TestPerfRecording_FailedResumedInvocationStaysResumed proves a resumed turn
+// that reports usage and then fails is still recorded as a resume. Adapters set
+// Resumed only after finalizing, so a failed result's Resumed=false is no
+// evidence the session was silently replaced - recording it as a fallback would
+// invent a fallback with no reason and skew the resume-health counts.
+func TestPerfRecording_FailedResumedInvocationStaysResumed(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    &schemaRejectedUsageAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 2 },
+	}
+	_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review-fix",
+		Session: &agent.SessionRef{ID: "sess-xyz"},
+	})
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	if invs[0].SessionMode != db.InvocationModeResumed {
+		t.Fatalf("session mode = %q, want %q", invs[0].SessionMode, db.InvocationModeResumed)
+	}
+	if invs[0].FallbackReason != nil {
+		t.Fatalf("failed resume must not invent a fallback reason: %v", *invs[0].FallbackReason)
+	}
+}
+
 func TestPerfRecording_FailedInvocationWithoutUsageIsUnknown(t *testing.T) {
 	inv := recordOneInvocation(t, failedNoUsageAgent{err: errors.New("pi exited: status 1")}, context.Background())
 	if inv.ExitStatus != "error" {

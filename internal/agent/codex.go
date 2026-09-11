@@ -118,12 +118,23 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var codexErr string
 	var threadID string
 	metrics := newCodexMetricsAccumulator()
+	// An error return carries the same session facts the success path sets
+	// below, so cumulative thread usage is never read as a per-round delta.
+	partialResult := func() *Result {
+		res := resultFromUsage(usage)
+		if res != nil {
+			res.SessionID = threadID
+			res.Resumed = resumeID != ""
+			res.SessionUsageCumulative = true
+		}
+		return res
+	}
 	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
 		emitAgentExited(opts, "codex", pid, retErr)
-		return resultFromUsage(usage), retErr
+		return partialResult(), retErr
 	}
 
 	waitErr := started.wait()
@@ -138,7 +149,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		}
 		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
 		emitAgentExited(opts, "codex", pid, retErr)
-		return resultFromUsage(usage), retErr
+		return partialResult(), retErr
 	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)

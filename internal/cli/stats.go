@@ -75,14 +75,17 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 		return nil
 	}
 
-	// Table 1: session modes and token totals.
+	// Table 1: session modes and token totals. USAGE is how many of COUNT rows
+	// reported token usage, so the totals that follow read as covering exactly
+	// those rows rather than the whole group.
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK\tFRESH IN TOK\tREASON TOK")
+	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tUSAGE\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK\tFRESH IN TOK\tREASON TOK")
 	for _, a := range aggregates {
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			invocationPurposeLabel(a.Purpose), a.Count,
 			formatMS(a.AvgDurationMS), formatMS(a.TotalDurationMS),
 			a.Cold, a.Started, a.Resumed, a.Fallback, a.Errors,
+			fmt.Sprintf("%d/%d", a.UsageRows, a.Count),
 			optInt64(a.InputTokens), optInt64(a.OutputTokens), optInt64(a.CacheReadTokens), optInt64(a.CacheCreationTokens),
 			optInt64(a.FreshInputTokens), optInt64(a.ReasoningTokens),
 		)

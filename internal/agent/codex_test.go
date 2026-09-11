@@ -381,6 +381,47 @@ exit 1
 	}
 }
 
+// TestCodexAgent_FailedExitCarriesCumulativeUsageMarker proves a turn that
+// reported usage and then exited non-zero still returns codex's own session
+// facts. codex counts usage cumulatively across a resumed thread, so a result
+// missing SessionUsageCumulative is recorded as a per-round delta and charges
+// every earlier round of the thread a second time.
+func TestCodexAgent_FailedExitCarriesCumulativeUsageMarker(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2500,"output_tokens":250,"cached_input_tokens":1800}}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":2500,\"output_tokens\":250,\"cached_input_tokens\":1800}}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	ca := &codexAgent{bin: bin}
+	res, err := ca.Run(context.Background(), RunOpts{
+		Prompt:  "review",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: "thread-1"},
+	})
+	if err == nil {
+		t.Fatal("expected codex failure")
+	}
+	if res == nil {
+		t.Fatal("failed codex turn that reported usage must return its usage")
+	}
+	if !res.UsageReported || res.Usage.InputTokens != 2500 {
+		t.Fatalf("usage = %+v, want reported input 2500", res.Usage)
+	}
+	if !res.SessionUsageCumulative {
+		t.Fatal("failed codex turn must mark its usage cumulative")
+	}
+	if !res.Resumed {
+		t.Fatal("failed codex turn must report the resume it was asked for")
+	}
+}
+
 func TestCodexAgent_RunAcceptsNormalizedNullableFields(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh
