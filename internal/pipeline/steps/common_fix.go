@@ -282,10 +282,8 @@ func recordAgentFixHead(sctx *pipeline.StepContext, stepName types.StepName, hea
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
-	ctx := sctx.Ctx
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+	if err := updateNonSharedBranchRef(sctx, headSHA); err != nil {
+		return err
 	}
 	startingHead := strings.TrimSpace(sctx.ReviewStartingHeadSHA)
 	if startingHead == "" {
@@ -383,4 +381,37 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		return "", err
 	}
 	return fixResultSummary(committed), nil
+}
+
+func updateNonSharedBranchRef(sctx *pipeline.StepContext, headSHA string) error {
+	shared, err := worktreeSharesGateRefs(sctx)
+	if err != nil || shared {
+		return err
+	}
+	if _, err := stepGitRun(sctx, "update-ref", normalizedBranchRef(sctx.Run.Branch), headSHA); err != nil {
+		return fmt.Errorf("update local branch ref: %w", err)
+	}
+	return nil
+}
+
+func worktreeSharesGateRefs(sctx *pipeline.StepContext) (bool, error) {
+	if strings.TrimSpace(sctx.GateDir) == "" {
+		return false, nil
+	}
+	gateInfo, err := os.Stat(sctx.GateDir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect gate ref storage: %w", err)
+	}
+	commonDir, err := stepGitRun(sctx, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return false, fmt.Errorf("resolve worktree ref storage: %w", err)
+	}
+	commonInfo, err := os.Stat(commonDir)
+	if err != nil {
+		return false, fmt.Errorf("inspect worktree ref storage: %w", err)
+	}
+	return os.SameFile(gateInfo, commonInfo), nil
 }

@@ -120,6 +120,12 @@ supports an ordinary fast-forward. A gate head that is a newer descendant of
 the published head stays untouched, including through the detached worktree's
 shared branch refs.
 
+Correction and CI-repair recording persist the agent-created worktree head in
+the run and database without moving a branch ref shared with the gate. Repairs
+awaiting review retain their uncertified range. Publication reconciliation
+therefore still sees any intervening private head; ordinary worktrees with
+separate ref storage retain their local branch bookkeeping.
+
 Publication plans reconciliation before pushing and applies it only after
 verifying the upstream head. AXI reconciles before its ordinary submission
 push and restores an archived ref after a failed submission if no intervening
