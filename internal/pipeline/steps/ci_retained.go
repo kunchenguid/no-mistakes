@@ -19,11 +19,8 @@ func (s *CIStep) retryRetainedPublication(sctx *pipeline.StepContext) (bool, *pi
 		return park(fmt.Sprintf("read retained CI repair: %v", err))
 	}
 	if binding == nil {
-		if sctx.Fixing && !pipeline.HasProtectedPathRefusal(sctx.PreviousFindings) {
-			head, err := stepGitHeadSHA(sctx)
-			if err != nil || head != sctx.Run.HeadSHA {
-				return park("Unbound retained CI correction: refusing publication or another fixer invocation; preserve this worktree for explicit recovery")
-			}
+		if sctx.Fixing && !pipeline.HasProtectedPathRefusal(sctx.PreviousFindings) && unpublishedCIHead(sctx) {
+			return park("Unbound retained CI correction: refusing publication or another fixer invocation; preserve this worktree for explicit recovery")
 		}
 		return false, nil
 	}
@@ -54,4 +51,18 @@ func (s *CIStep) retryRetainedPublication(sctx *pipeline.StepContext) (bool, *pi
 		}
 	}
 	return true, nil
+}
+
+// unpublishedCIHead distinguishes an unbound local correction from an ordinary
+// already-published advance. The latter still passes the existing repair guards.
+func unpublishedCIHead(sctx *pipeline.StepContext) bool {
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil {
+		return true
+	}
+	if head == sctx.Run.HeadSHA {
+		return false
+	}
+	published, err := publishedBranchHead(sctx)
+	return err != nil || published != head
 }

@@ -9,13 +9,16 @@ import (
 )
 
 func TestDLOCK31RetainedRetryFailsClosed(t *testing.T) {
-	for _, condition := range []string{"unbound", "auth_failure", "missing_pr", "attestation_still_failing", "moved_anchor", "changed_owner_branch"} {
+	for _, condition := range []string{"unbound", "unbound_unreadable_remote", "auth_failure", "missing_pr", "attestation_still_failing", "moved_anchor", "changed_owner_branch"} {
 		t.Run(condition, func(t *testing.T) {
 			f := newDLOCK31Publication(t)
 			switch condition {
-			case "unbound":
+			case "unbound", "unbound_unreadable_remote":
 				if err := f.sctx.DB.ClearRetainedCIRepair(f.sctx.Run.ID, f.retained); err != nil {
 					t.Fatal(err)
+				}
+				if condition == "unbound_unreadable_remote" {
+					f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_REMOTE_HEAD_FILE="+f.remoteFile+".missing")
 				}
 			case "auth_failure":
 				f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_AUTH_ERR=fixture unauthorized")

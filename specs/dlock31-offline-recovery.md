@@ -29,6 +29,10 @@ v1.72.0; retain those changes rather than patching the obsolete base.
   missing, moved, dirty, unbound or divergent correction remains refused.
 - Clear the pending binding only after successful publication. Failed retries
   preserve it and remain parked. No broad retry engine or review-budget changes.
+- Preserve ordinary CI repair when a stale recorded head trails the exact live
+  push-target branch head. A missing binding only blocks an unpublished local
+  advance (or unreadable remote), not an already-published advance. Reuse the
+  existing bounded remote-head read and retain all subsequent repair guards.
 
 **Legacy limitation:** the existing v1.72.0 DLOCK31 run predates this explicit
 binding. A prose summary and descendant commit are not provenance. This patch
@@ -254,3 +258,16 @@ repairs. It deliberately does not retroactively bless the unbound v1.72.0
 SoulSwap repair. That run still requires an explicit, exact-head legacy-adoption
 design/authorization and a separately approved deployment/handover. Do not use
 this candidate's passing synthetic tests as permission to restart the live daemon.
+
+### Parent pre-gate regression check
+
+With the missing public Go dependencies downloaded, lint and the CLI build
+passed in a clean committed worktree. The full race suite exposed two ordinary
+CI-repair regressions caused by rejecting every recorded/local head mismatch.
+Both existing tests pass on upstream and failed on the initial candidate.
+The guard now permits an exact already-published push-target head; the existing
+repair validation still applies. Both regressions and the focused recovery cases
+pass after this change, including an unreadable-remote refusal control.
+The first suite also disabled a test's synthetic credential-helper configuration
+via `GIT_CONFIG_GLOBAL=/dev/null`; removing that override (while retaining an
+isolated HOME) makes that existing test pass without changing source.
