@@ -1199,7 +1199,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
 	}
-
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
 	// the exact prior repo value and continue when discovery, validation, or the

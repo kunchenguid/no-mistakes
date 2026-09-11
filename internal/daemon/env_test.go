@@ -24,7 +24,7 @@ func TestPrepareDaemonEnvironment_RemovesClaudeSessionVarsAndAppliesShellEnv(t *
 	defer func() { applyShellEnvToProcess = oldApply }()
 
 	applied := false
-	applyShellEnvToProcess = func() error {
+	applyShellEnvToProcess = func(...string) error {
 		applied = true
 		return os.Setenv("PATH", "/resolved/bin")
 	}
@@ -58,9 +58,15 @@ func TestPrepareDaemonEnvironment_PreservesExistingNMHome(t *testing.T) {
 	oldApply := applyShellEnvToProcess
 	defer func() { applyShellEnvToProcess = oldApply }()
 
-	applyShellEnvToProcess = func() error {
-		if err := os.Setenv("NM_HOME", "/login/shell/root"); err != nil {
-			return err
+	applyShellEnvToProcess = func(excluded ...string) error {
+		protectNMHome := false
+		for _, key := range excluded {
+			protectNMHome = protectNMHome || key == "NM_HOME"
+		}
+		if !protectNMHome {
+			if err := os.Setenv("NM_HOME", "/login/shell/root"); err != nil {
+				return err
+			}
 		}
 		return os.Setenv("PATH", "/resolved/bin")
 	}
@@ -85,7 +91,7 @@ func TestPrepareDaemonEnvironment_LogsPathSummary(t *testing.T) {
 
 	oldApply := applyShellEnvToProcess
 	defer func() { applyShellEnvToProcess = oldApply }()
-	applyShellEnvToProcess = func() error {
+	applyShellEnvToProcess = func(...string) error {
 		return os.Setenv("PATH", "/a/bin"+string(os.PathListSeparator)+"/b/bin"+string(os.PathListSeparator)+"/c/bin")
 	}
 
