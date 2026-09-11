@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -131,17 +132,6 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		plans = append(plans, *plan)
 	}
 	return plans
-}
-
-// preserveParkedRunOnShutdown identifies the only state shutdown may retain. The
-// normal startup admission path still validates its worktree, configuration,
-// sessions, and recorded gate before any execution resumes.
-func (m *RunManager) preserveParkedRunOnShutdown(runID string) bool {
-	if !m.shuttingDown.Load() {
-		return false
-	}
-	run, err := m.db.GetRun(runID)
-	return err == nil && run != nil && run.Status == types.RunRunning && run.AwaitingAgentSince != nil
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
@@ -421,6 +411,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
+		suspended := false
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -434,8 +425,10 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
-			if !m.preserveParkedRunOnShutdown(plan.run.ID) {
-				m.closeSubscribers(plan.run.ID)
+			m.closeSubscribers(plan.run.ID)
+			if suspended {
+				m.sweepRunWorktreeProcesses(plan.repo.ID, plan.run.ID, plan.workDir)
+			} else {
 				m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 				// A recovered run is a finished run too. This is the second of the
 				// two completion boundaries, and leaving it out is what let a run
@@ -451,7 +444,12 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		}()
 
 		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
-			if plan.run.Status == types.RunRunning && !m.preserveParkedRunOnShutdown(plan.run.ID) {
+			if errors.Is(err, pipeline.ErrRunSuspended) {
+				suspended = true
+				slog.Info("preserved parked run on shutdown", "run_id", plan.run.ID)
+				return
+			}
+			if plan.run.Status == types.RunRunning {
 				errMsg := err.Error()
 				plan.run.Status = types.RunFailed
 				plan.run.Error = &errMsg
@@ -459,11 +457,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 				}
 			}
-			if m.preserveParkedRunOnShutdown(plan.run.ID) {
-				slog.Info("preserved parked recovered run during shutdown", "run_id", plan.run.ID)
-			} else {
-				slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
-			}
+			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
 		}
 		fields := telemetry.Fields{
 			"action":      "finished",
@@ -1466,6 +1460,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
+		suspended := false
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
@@ -1502,9 +1497,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			}
 			cancel(nil)
 			ag.Close()
-			if !m.preserveParkedRunOnShutdown(run.ID) {
-				// Close subscriber channels for this run.
-				m.closeSubscribers(run.ID)
+			// Close subscriber channels for this run.
+			m.closeSubscribers(run.ID)
+			if suspended {
+				m.sweepRunWorktreeProcesses(repo.ID, run.ID, wtDir)
+			} else {
 				m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
 				m.cleanupRunEvidence(cfg, run.ID)
 			}
@@ -1517,6 +1514,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		}()
 
 		if err := executor.Execute(runCtx, run, repo, wtDir); err != nil {
+			if errors.Is(err, pipeline.ErrRunSuspended) {
+				suspended = true
+				slog.Info("preserved parked run on shutdown", "run_id", run.ID)
+				return
+			}
 			fields := telemetry.Fields{
 				"action":      "finished",
 				"trigger":     trigger,
@@ -1532,11 +1534,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			}
 			addRunPerformanceSummary(m.db, run.ID, fields)
 			telemetry.Track("run", fields)
-			if m.preserveParkedRunOnShutdown(run.ID) {
-				slog.Info("preserved parked run during shutdown", "run_id", run.ID)
-			} else {
-				slog.Error("pipeline failed", "run_id", run.ID, "error", err)
-			}
+			slog.Error("pipeline failed", "run_id", run.ID, "error", err)
 		} else {
 			fields := telemetry.Fields{
 				"action":      "finished",
@@ -1754,6 +1752,8 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 
 // Shutdown cancels all active runs. Called during daemon shutdown to prevent
 // orphaned goroutines from continuing agent calls and git operations.
+// Executors at persisted approval waits suspend for validated startup recovery;
+// actively executing steps retain normal cancellation semantics.
 func (m *RunManager) Shutdown() {
 	m.shuttingDown.Store(true)
 

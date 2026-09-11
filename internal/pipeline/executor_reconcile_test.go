@@ -418,7 +418,7 @@ func TestExecutor_GateRecheckStopsAfterApprovalCancelAndShutdown(t *testing.T) {
 		{
 			name: "shutdown",
 			finish: func(_ *Executor, cancel context.CancelCauseFunc) error {
-				cancel(errors.New("daemon shutting down"))
+				cancel(ErrDaemonShutdown)
 				return nil
 			},
 		},

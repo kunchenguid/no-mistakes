@@ -35,11 +35,6 @@ const (
 	defaultGateReconcileTimeout  = config.DefaultGateReconcileTimeout
 )
 
-// ErrDaemonShutdown lets the run manager stop a parked executor without
-// terminalizing the persisted gate. A restarted daemon validates that durable
-// state again before it resumes anything.
-var ErrDaemonShutdown = errors.New("daemon shutting down")
-
 type approvalResponse struct {
 	action        types.ApprovalAction
 	findingIDs    []string
@@ -248,9 +243,6 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
-			if errors.Is(err, ErrDaemonShutdown) {
-				return ErrDaemonShutdown
-			}
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
@@ -452,8 +444,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, gate.findings, false)
-	if errors.Is(context.Cause(ctx), ErrDaemonShutdown) {
-		return ErrDaemonShutdown
+	if errors.Is(err, ErrRunSuspended) {
+		return err
 	}
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
@@ -921,6 +913,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if refusal := ProtectedPathOutcome(err); refusal != nil {
 			outcome, err = refusal, nil
 		}
+		if err == nil && ctx.Err() != nil {
+			// A late outcome from interrupted active work is not a parked
+			// approval wait and must not become recoverable on shutdown.
+			err = context.Cause(ctx)
+		}
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
@@ -1079,8 +1076,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
 
 		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, outcome.Findings, true)
-		if errors.Is(context.Cause(ctx), ErrDaemonShutdown) {
-			return false, "", ErrDaemonShutdown
+		if errors.Is(err, ErrRunSuspended) {
+			return false, "", err
 		}
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
@@ -1416,7 +1413,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		case response := <-e.approvalCh:
 			return response, false, nil
 		case <-ctx.Done():
-			return approvalResponse{}, false, context.Cause(ctx)
+			return e.cancelApprovalWait(ctx)
 		}
 	}
 
@@ -1431,11 +1428,11 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		case response := <-e.approvalCh:
 			return response, false, nil
 		case <-ctx.Done():
-			return approvalResponse{}, false, context.Cause(ctx)
+			return e.cancelApprovalWait(ctx)
 		case <-timer.C:
 			resolved, err := e.reconcileApprovalGate(ctx, step, sctx, findings)
 			if resolved {
-				if e.claimGateReconciliation() {
+				if e.claimGateResolution() {
 					return approvalResponse{}, true, nil
 				}
 				return <-e.approvalCh, false, nil
@@ -1455,7 +1452,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 	}
 }
 
-func (e *Executor) claimGateReconciliation() bool {
+func (e *Executor) claimGateResolution() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.waiting {
@@ -1489,6 +1486,9 @@ func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *S
 // It accepts an optional context; if the context was cancelled with a cause,
 // the cause message is used as the run's error (more informative than "context canceled").
 func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...context.Context) error {
+	if errors.Is(err, ErrRunSuspended) {
+		return err
+	}
 	errMsg := err.Error()
 	for _, ctx := range ctxs {
 		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled {
