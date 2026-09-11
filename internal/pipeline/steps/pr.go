@@ -83,13 +83,21 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
 	}
 
-	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
-	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, scm.MaxPRBodyChars(provider))
-	if err != nil {
-		return nil, err
+	// Capture live author content before model drafting. An unreadable
+	// provider cannot promise template preservation.
+	var template string
+	if name := configuredPRTemplate(sctx); name != "" {
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil, fmt.Errorf("pr.template requires raw PR content reads; this provider is unsupported")
+		}
+		var err error
+		template, err = loadPRTemplate(ctx, sctx.WorkDir, sctx.Config.TrustedConfigSHA, name)
+		if err != nil {
+			return nil, err
+		}
 	}
-
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	bodyLimit := scm.MaxPRBodyChars(provider)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {
@@ -100,14 +108,54 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
-		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
-			return nil, err
+		var live scm.PRContent
+		if reader, ok := host.(scm.PRContentReader); ok {
+			live, err = reader.GetPRContent(ctx, existing)
+			if err != nil {
+				return nil, fmt.Errorf("read existing PR before publication: %w", err)
+			}
+		} else if template != "" {
+			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
 		}
-		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
-			updated = existing
+		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
+		updated := existing
+		// Removing pr.template must not switch an already owned body back to
+		// destructive drafting. Its live author narrative still wins.
+		if template != "" || hasPRAppendixMarkers(live.Body) {
+			if _, err := parsePROwnedBody(live.Body); err != nil {
+				return nil, err
+			}
+			var emptyNarrative string
+			if live.Body == "" && template != "" {
+				draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
+				if err != nil {
+					return nil, err
+				}
+				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
+			}
+			appendix, err := s.buildPRAppendix(sctx, provider)
+			if err != nil {
+				return nil, err
+			}
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+				return nil, err
+			}
+			if err := updateOwnedPR(sctx, host, existing, live, emptyNarrative, appendix, bodyLimit); err != nil {
+				return nil, err
+			}
+		} else {
+			content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+			if err != nil {
+				return nil, err
+			}
+			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+				return nil, err
+			}
+			updated, err = host.UpdatePR(ctx, existing, scm.PRContent(content))
+			if err != nil {
+				sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
+				updated = existing
+			}
 		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
@@ -118,17 +166,37 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 
+	content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+	if err != nil {
+		return nil, err
+	}
 	sctx.Log("creating pull request...")
 	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent(content))
 	if err != nil {
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
+		if template != "" {
+			return nil, fmt.Errorf("templated PR create returned no readable PR identity")
+		}
 		return &pipeline.StepOutcome{}, nil
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+	}
+	if template != "" {
+		reader, ok := host.(scm.PRContentReader)
+		if !ok {
+			return nil, fmt.Errorf("provider cannot verify the created template body")
+		}
+		actual, err := reader.GetPRContent(ctx, created)
+		if err != nil {
+			return nil, fmt.Errorf("verify created templated PR: %w", err)
+		}
+		if actual.Body != content.Body {
+			return nil, fmt.Errorf("created PR body differs from the proposed template and evidence; refusing successful publication")
+		}
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
@@ -283,9 +351,9 @@ func describePR(pr *scm.PR) string {
 }
 
 // buildPRContent drafts the pull request title and body and then applies the
-// publication redaction boundary. It is the only producer of PR content, and
-// Execute publishes exactly what it returns, so this is the one place a scrub
-// has to happen for every source that can reach a PR body: agent-authored
+// publication redaction boundary. New template bodies and author-preserving
+// updates use composeOwnedPRContent, which calls the same redactPRContent owner
+// before stamping its integrity guard. This covers every source: agent-authored
 // prose, extracted user intent, findings, fix summaries, step errors, artifact
 // paths, artifact captions, and captured output embedded from evidence files.
 //
@@ -294,6 +362,24 @@ func describePR(pr *scm.PR) string {
 // next rendering path somebody adds is not going to have one; a boundary scrub
 // covers sources nobody has written yet.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
+	if name := configuredPRTemplate(sctx); name != "" {
+		if !supportsPRTemplates(provider) {
+			return prContent{}, fmt.Errorf("pr.template is unsupported by this provider")
+		}
+		template, err := loadPRTemplate(sctx.Ctx, sctx.WorkDir, sctx.Config.TrustedConfigSHA, name)
+		if err != nil {
+			return prContent{}, err
+		}
+		content, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
+		if err != nil {
+			return prContent{}, err
+		}
+		appendix, err := s.buildPRAppendix(sctx, provider)
+		if err != nil {
+			return prContent{}, err
+		}
+		return composeOwnedPRContent(prOwnedBody{before: neutralizeAttestationMarkers(content.Body)}, content.Title, appendix, bodyLimit)
+	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
 		return prContent{}, err
@@ -302,9 +388,9 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 }
 
 // redactPRContent removes the operator's home directory from the content about
-// to be published. It runs after every length cap has been applied, which is
-// safe because safepath's placeholder is never longer than the path it
-// replaces, so a redacted body can only be shorter than the clamped one.
+// to be published. Ordinary drafts call it after length caps; the placeholder
+// never grows a path. Owned composition calls it before its integrity guard
+// and non-truncating size check so publication cannot invalidate that guard.
 func redactPRContent(content prContent) prContent {
 	content.Title = safepath.RedactText(content.Title)
 	content.Body = safepath.RedactText(content.Body)
@@ -389,6 +475,10 @@ Final diff paths and statuses:
 // scoped to this run's own steps and rounds, so they already describe only
 // the final terminal state each step reached in this run.
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.Provider) (pipelineMD, riskLine, testingMD string) {
+	return s.buildPipelineSectionFor(sctx, provider, false)
+}
+
+func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider scm.Provider, owned bool) (pipelineMD, riskLine, testingMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
@@ -406,6 +496,12 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext, provider scm.P
 	}
 
 	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
+	// Ordinary Bitbucket descriptions keep their existing Markdown-only skin.
+	// Owned templates additionally carry the exact existing declaration as
+	// visible text; the raw consumer/restamper uses the same marker and schema.
+	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
+		pipelineMD += "\n\n```text\n" + buildPipelineAttestation(steps, rounds, sctx.Run.HeadSHA) + "\n```"
+	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD
 }

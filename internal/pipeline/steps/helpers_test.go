@@ -175,7 +175,7 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 		Agent:       ag,
 		Config:      &config.Config{Agent: types.AgentClaude, Commands: cmds},
 		DB:          database,
-		Log:         func(s string) {},
+		Log:         func(s string) { t.Log(s) },
 		LogChunk:    func(s string) {},
 		LogFile:     func(s string) {},
 	}
@@ -290,6 +290,8 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 				api.existingPRID,
 				api.existingPRURL,
 			)
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
+			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
 		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.createCalls++
 			body, err := io.ReadAll(r.Body)

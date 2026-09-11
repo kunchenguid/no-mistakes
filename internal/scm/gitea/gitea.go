@@ -194,9 +194,11 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	args := []string{"pulls", "edit", id,
 		"--repo", h.repoSlug,
 		"--login", h.login,
-		"--title", content.Title,
-		"--description", content.Body,
 	}
+	if content.Title != "" {
+		args = append(args, "--title", content.Title)
+	}
+	args = append(args, "--description", content.Body)
 	if out, err := h.cmd(ctx, "tea", args...).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tea pulls edit: %s: %w", strings.TrimSpace(string(out)), err)
 	}

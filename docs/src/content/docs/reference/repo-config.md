@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `test.instructions`, `test.evidence.branch`, and `pr.publish_intent` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `test.instructions`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -149,7 +149,7 @@ Opt in to honoring the code-executing selection fields (`commands.{prepare,test,
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.publish_intent` and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. The PR-target exception is documented under [`pr.base_branch`](#prbase_branch); `pr.template`, `pr.publish_intent`, and the other trusted-only fields listed above do not follow this opt-in. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
@@ -215,6 +215,56 @@ It is read from the trusted default-branch copy regardless of `allow_repo_comman
 The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
 An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
 
+### pr.template
+
+Use a repository Markdown template for the public narrative, followed by no-mistakes' protected evidence appendix. Supported on **GitHub, GitLab, Gitea, Forgejo, Azure DevOps, and Bitbucket Cloud**, using each backend's authenticated raw-description transport. Forgejo requires `forgejo-axi` with the raw `api` command (contract verified against 1.3.0); an older CLI without it fails rather than using a preview. Self-hosted instances use the existing provider routing.
+
+| | |
+| --- | --- |
+| Type | `string` (literal repository-relative path) |
+| Default | Empty (existing generated narrative) |
+| Trust | Path and bytes from the pinned trusted default-branch commit, even under `allow_repo_commands: true`; no global setting |
+
+```yaml
+pr:
+  template: .github/pull_request_template.md
+  publish_intent: false # Optional; otherwise original Intent is still published.
+```
+
+For example, commit this template and the configuration to the default branch:
+
+```markdown
+## Overview
+
+<!-- Explain the final change for a later reader. -->
+
+## Rollout
+
+<!-- Describe rollout and rollback considerations. -->
+
+- [ ] Maintainer approves rollout
+```
+
+On a new or empty PR, the agent makes a best effort to follow template instructions and fill applicable sections from the final branch delta. Only top-level ATX `#` headings outside fenced examples are structurally required, with their trimmed text and order retained. Lower-level headings (`##`–`######`) and task lines are editable: the model may remove inapplicable sections/options, select supported choices, and fill checkbox rationale placeholders. It is instructed not to invent behavior/tests or falsely claim human signoff; human approval boxes must not be marked complete. Subordinate completion and factual correctness are best effort, not mechanically guaranteed. No fixed `What Changed` heading is imposed. This is ordinary Markdown, not a variable/loop/plugin language, and there is no implicit template discovery. Template headings such as `Testing` remain author narrative; recorded Risk, Testing and Pipeline content is still appended by code in its existing order. Extra evidence headings are intentional: this does **not** satisfy a policy requiring only the template's headings or bytes.
+
+The path is read as a literal Git tree entry, never through the pushed worktree filesystem. Absolute/Windows paths, traversal, ref expressions, symlinks, submodules, missing/unreadable files, empty/non-UTF-8/NUL-containing content, and files over 16 KiB fail rather than silently replacing the template with a generic summary. Raw no-mistakes ownership/attestation markers are reserved. Invalid agent output, missing/changed/reordered required H1 headings, and agent failure also fail template drafting rather than using the ordinary fallback. Templates without H1 headings have no structural heading requirements; they are not malformed for that reason. Matching retains the existing ordered-subsequence contract: extra headings are allowed. The structural guard is not a full Markdown parser, a visibility/uniqueness proof, or a template policy engine; it does not enforce subordinate sections, checkbox states, or placeholder completion.
+
+#### Author-preserving regeneration
+
+A templated PR contains one delimited, integrity-checked generated appendix. Later runs preserve live author text before and after it, including human checkbox choices and explicit issue-closing lines, and refresh only that appendix. They do not re-fill the narrative or replace an author's title. Changing or removing `pr.template` does not regenerate an already owned narrative; edit it on the PR when it needs updating. The full intent remains available to reviewers. Removing the generated Intent section is controlled separately below.
+
+Ownership is never inferred from a heading's name. An existing author-only body can be adopted without model rewriting. **Legacy descriptions containing an unowned attestation require explicit author reconciliation** before template mode can adopt them: separate/remove their obsolete generated evidence while retaining the desired author text and closing references, then retry. Do not manufacture ownership markers by hand. An edited appendix, missing/duplicate/malformed markers, or a competing attestation fails rather than risking discarded author content. Put author additions outside the generated appendix. The integrity guard detects accidental edits; it is not authentication or a cryptographic signature by no-mistakes.
+
+Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
+
+If the complete author text, closing references and rendered evidence cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
+
+Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behavior; existing owned bodies retain author-safe updates even after the setting is removed. Providers without a raw content contract reject configured templates.
+
+**Provider caveats:** Azure DevOps' 4,000-character budget is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary Azure truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled Azure description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
+
+Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing readback fails visibly rather than being normalized into success.
+
 ### pr.publish_intent
 
 Control publication of the **generated `Intent` section**, independently of intent extraction and review input.
@@ -225,12 +275,7 @@ Control publication of the **generated `Intent` section**, independently of inte
 | Default | `true` (missing or `null` also preserves the default) |
 | Trust | Trusted default branch only, regardless of `allow_repo_commands`; no global setting |
 
-```yaml
-pr:
-  publish_intent: false
-```
-
-`false` suppresses that section in ordinary drafting and fallback output. It never removes full intent from review or PR-drafting context or changes evidence/attestation policy. Unconfigured defaults remain unchanged. This setting adds no author-preserving regeneration behavior to the ordinary description update path.
+`false` suppresses that section in ordinary drafting, fallback output, and template appendices. It works without `pr.template` and does not otherwise enable template mode. It never removes full intent from review or PR-drafting context, changes evidence/attestation policy, or erases author-written sections named `Intent`. Unconfigured defaults remain unchanged.
 
 This is not a privacy filter: generated narrative and other evidence can still contain sensitive information, and LLM drafting is not a confidentiality guarantee. No caller-written public-body override is introduced by this setting.
 

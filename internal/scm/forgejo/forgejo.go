@@ -150,7 +150,11 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			Total    *int `json:"total"`
 		} `json:"search_info"`
 	}
-	args := []string{"--repo", h.repository, "--head", branch, "--base", base, "--state", "open"}
+	args := []string{"--repo", h.repository, "--head", branch}
+	if base != "" {
+		args = append(args, "--base", base)
+	}
+	args = append(args, "--state", "open")
 	if err := h.runJSON(ctx, "pr find", args, &response); err != nil {
 		return nil, err
 	}
@@ -174,7 +178,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err != nil {
 		return nil, err
 	}
-	if response.PullRequest.Head != branch || response.PullRequest.Base != base {
+	if response.PullRequest.Head != branch || (base != "" && response.PullRequest.Base != base) {
 		return nil, fmt.Errorf("Forgejo PR branch identity mismatch: got %q -> %q, expected %q -> %q", response.PullRequest.Head, response.PullRequest.Base, branch, base)
 	}
 	return pr, nil
@@ -208,7 +212,11 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 		Updated     bool        `json:"updated"`
 		PullRequest pullRequest `json:"pull_request"`
 	}
-	args := []string{"--repo", h.repository, number, "--title", content.Title, "--body", content.Body}
+	args := []string{"--repo", h.repository, number}
+	if content.Title != "" {
+		args = append(args, "--title", content.Title)
+	}
+	args = append(args, "--body", content.Body)
 	if err := h.runJSON(ctx, "pr update", args, &response); err != nil {
 		return nil, err
 	}

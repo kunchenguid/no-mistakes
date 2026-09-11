@@ -725,8 +725,8 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // Push step (which always runs after this run's review/test/document have
 // already completed).
 //
-// It is a no-op - not an error - when: the provider is not GitHub (only
-// GitHub emits the HTML attestation comment and implements PRContentReader);
+// It is a no-op - not an error - when: the provider has no supported raw
+// content contract;
 // the branch is the configured PR base branch (the PR step never manages a
 // PR there either, see effectivePRBaseBranch); the SCM host is unavailable
 // (matches the PR step's own skip semantics); or no PR exists yet for this
@@ -736,7 +736,7 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // not settle) is wrapped in errAttestationWriteFailed and returned.
 func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
 	provider := resolvedProvider(sctx)
-	if provider != scm.ProviderGitHub {
+	if !supportsPRTemplates(provider) {
 		return nil
 	}
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
@@ -777,8 +777,8 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 // pipeline-attestation marker to newHeadSHA, and writes the body back without
 // sending a title. It does not insert an attestation that was not already
 // there. A host without PRContentReader is skipped with a warning rather than
-// failed: missing-reader is not a settlement miss, and making it fatal parks
-// every non-GitHub publish.
+// failed: missing-reader is not a settlement miss. All currently supported
+// providers have readers; this keeps the optional-interface fallback intact.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
 	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn)
 }
@@ -801,12 +801,22 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound := rebindPipelineAttestationWithSteps(content.Body, newHeadSHA, steps)
+			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps)
+			if rebindErr != nil {
+				return fmt.Errorf("rebind PR appendix: %w", rebindErr)
+			}
+			// Azure's adapter clamps ordinary descriptions. Owned writes must
+			// fail before that boundary can cut off author text or the digest.
+			if rebound && hasPRAppendixMarkers(updated) {
+				if err := validateOwnedPRBudget(updated, scm.MaxPRBodyChars(host.Provider())); err != nil {
+					return err
+				}
+			}
 			if !rebound || updated == content.Body {
 				return nil
 			}
 
-			// UpdatePR replaces the complete body and GitHub offers no atomic
+			// UpdatePR replaces the complete body; this is not an atomic
 			// marker-only edit. Confirm that the body is still the version we
 			// prepared before writing it. If someone edited it meanwhile, retry
 			// from their version instead of overwriting their changes.

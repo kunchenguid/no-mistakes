@@ -1975,3 +1975,25 @@ func TestHost_GetReviewComments(t *testing.T) {
 		t.Fatalf("unexpected paginated comment: %#v", comments[1])
 	}
 }
+
+func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{`{}`, `null`, `{"title":"Author"}`, `{"body":"Author text"}`, `{"title":"Author","body":null}`, `{"title":null,"body":"Author text"}`, `{"title":"Author","body":42}`, `{"title":false,"body":"text"}`, `[]`, `{"title":`} {
+		t.Run(payload, func(t *testing.T) {
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 42 --repo test/repo --json title,body": {stdout: payload},
+			}), nil, "", "test/repo")
+			got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+			if err == nil || got != (scm.PRContent{}) {
+				t.Fatalf("invalid response accepted: %+v, %v", got, err)
+			}
+		})
+	}
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json title,body": {stdout: `{"title":"Author title","body":""}`},
+	}), nil, "", "test/repo")
+	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+	if err != nil || got.Title != "Author title" || got.Body != "" {
+		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
+	}
+}

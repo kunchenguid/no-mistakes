@@ -190,15 +190,16 @@ func parseMergeRequestURL(raw, expectedHost, expectedProject string) (int, error
 }
 
 type mrPayload struct {
-	IID                 int    `json:"iid"`
-	Title               string `json:"title"`
-	WebURL              string `json:"web_url"`
-	URL                 string `json:"url"`
-	State               string `json:"state"`
-	HasConflicts        bool   `json:"has_conflicts"`
-	DetailedMergeStatus string `json:"detailed_merge_status"`
-	MergeStatus         string `json:"merge_status"`
-	TargetBranch        string `json:"target_branch"`
+	Description         *string `json:"description"`
+	IID                 int     `json:"iid"`
+	Title               string  `json:"title"`
+	WebURL              string  `json:"web_url"`
+	URL                 string  `json:"url"`
+	State               string  `json:"state"`
+	HasConflicts        bool    `json:"has_conflicts"`
+	DetailedMergeStatus string  `json:"detailed_merge_status"`
+	MergeStatus         string  `json:"merge_status"`
+	TargetBranch        string  `json:"target_branch"`
 }
 
 func (p mrPayload) toPR() *scm.PR {
@@ -305,21 +306,25 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	// draft MR ready for review, so read the live title first and re-apply the
 	// marker. Preserve only: a non-draft MR never gains one. A failed read fails
 	// the update closed rather than risk toggling draft state.
-	mr, err := h.viewMR(ctx, id)
-	if err != nil {
-		return nil, err
+	args := []string{"mr", "update", id}
+	// Body-only updates must omit title, not read then resend it: doing so
+	// would overwrite a concurrent title/draft edit.
+	if content.Title != "" {
+		mr, err := h.viewMR(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(mr.Title) == "" {
+			return nil, errors.New("glab mr view: missing merge request title")
+		}
+		title := content.Title
+		if isDraftTitle(mr.Title) && !isDraftTitle(title) {
+			title = "Draft: " + title
+		}
+		args = append(args, "--title", title)
 	}
-	if strings.TrimSpace(mr.Title) == "" {
-		return nil, errors.New("glab mr view: missing merge request title")
-	}
-	title := content.Title
-	if isDraftTitle(mr.Title) && !isDraftTitle(title) {
-		title = "Draft: " + title
-	}
-	cmd := h.cmd(ctx, "glab", "mr", "update", id,
-		"--title", title,
-		"--description", content.Body,
-	)
+	args = append(args, "--description", content.Body)
+	cmd := h.cmd(ctx, "glab", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("glab mr update: %s: %w", strings.TrimSpace(string(out)), err)
 	}
