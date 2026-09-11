@@ -1,9 +1,0 @@
---- FAIL: TestAxiRunReattachesAfterManagedFix (6.62s)
-    axi_journey_test.go:259: gate head = 64ee87bb24933a0e1d31d516d16ab3c41d1011db, want managed head d2f978a76f87975043a45fef9f68dc8b679133d5
---- FAIL: TestAxiCustodyRecoveryJourney (4.30s)
-    axi_journey_test.go:397: pipeline fix commit is not preserved in the gate branch
---- FAIL: TestAxiCustodyRecoveryAfterRebaseJourney (4.62s)
-    axi_journey_test.go:710: pipeline did not rebase: preserved 07772d673bdd372e0408c583c9ea8ee5d97f42a0 still descends from submitted 07772d673bdd372e0408c583c9ea8ee5d97f42a0
-FAIL
-FAIL	github.com/kunchenguid/no-mistakes/internal/e2e	15.953s
-FAIL
