@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -156,6 +158,78 @@ func TestResolveWithShellRetry_DoesNotWaitForAShellThatExistsButFails(t *testing
 				t.Fatal("expected the degraded state")
 			}
 		})
+	}
+}
+
+func TestConcurrentApplyToProcess_SuccessfulResolutionWins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Resolve short-circuits to os.Environ() on Windows")
+	}
+	resetForTests()
+	t.Setenv("SHELL", "/run/current-system/sw/bin/zsh")
+	t.Setenv("HOME", "/Users/test")
+	t.Setenv("PATH", "/degraded/bin")
+
+	oldOutput := shellCommandOutput
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var calls atomic.Int32
+	shellCommandOutput = func(shell string, _ ...string) ([]byte, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			return []byte("PATH=/nix/profile/bin:/usr/bin\x00HOME=/Users/test\x00"), nil
+		case 2:
+			close(secondStarted)
+			<-releaseSecond
+			return nil, missingShellError(shell)
+		default:
+			return nil, fmt.Errorf("unexpected probe")
+		}
+	}
+	t.Cleanup(func() {
+		shellCommandOutput = oldOutput
+		resetForTests()
+	})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs <- ApplyToProcess()
+	}()
+	<-firstStarted
+	go func() {
+		defer wg.Done()
+		errs <- ApplyToProcess()
+	}()
+
+	select {
+	case <-secondStarted:
+		close(releaseSecond)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("login shell probes = %d, want 1 serialized successful probe", got)
+	}
+	if Degraded() {
+		t.Fatal("a competing failed refresh must not restore degraded state")
+	}
+	if got := os.Getenv("PATH"); !strings.HasPrefix(got, "/nix/profile/bin:/usr/bin") {
+		t.Fatalf("process PATH = %q, want successful login shell PATH", got)
 	}
 }
 

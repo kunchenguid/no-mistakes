@@ -85,11 +85,14 @@ func Resolve() ([]string, error) {
 // delay startup. The retry sleeps add up to at most window.
 func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	return resolveWithShellRetryLocked(window)
+}
+
+func resolveWithShellRetryLocked(window time.Duration) ([]string, error) {
 	if cachedEnv != nil {
-		defer cacheMu.Unlock()
 		return append([]string(nil), cachedEnv...), nil
 	}
-	cacheMu.Unlock()
 
 	resolved, resolvedFromShell := resolveUncached(window)
 
@@ -99,12 +102,10 @@ func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 	// lifetime - the failure mode behind #143. Leaving it uncached lets a later
 	// call (the daemon re-probes at run start while Degraded) recover the real
 	// login-shell PATH.
-	cacheMu.Lock()
-	if resolvedFromShell && cachedEnv == nil {
+	if resolvedFromShell {
 		cachedEnv = append([]string(nil), resolved...)
 	}
 	degraded = !resolvedFromShell
-	cacheMu.Unlock()
 	return append([]string(nil), resolved...), nil
 }
 
@@ -124,7 +125,10 @@ func ApplyToProcess() error {
 // ApplyToProcessWithShellRetry applies ResolveWithShellRetry(window) to the
 // current process environment.
 func ApplyToProcessWithShellRetry(window time.Duration) error {
-	env, err := ResolveWithShellRetry(window)
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+
+	env, err := resolveWithShellRetryLocked(window)
 	if err != nil {
 		return err
 	}
