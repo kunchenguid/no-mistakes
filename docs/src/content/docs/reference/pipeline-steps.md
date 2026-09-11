@@ -10,7 +10,8 @@ intent → rebase → review → test → document → lint → push → pr → 
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
-Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept. The Test evidence analyzer first returns the validation errors to the agent for a bounded correction; exhausting that bound, and every other step's invalid analyzer output, still stops the affected step.
+Pipeline steps do not treat missing, malformed, or semantically incomplete structured analyzer output as a clean result. Such output never creates a gate that unattended AXI mode can accept.
+The Test evidence analyzer first returns the validation errors to the agent for a bounded correction, and Review runs a fresh review up to three times in total when no-mistakes rejects the reviewer's final output; exhausting either bound, and every other step's invalid analyzer output, still stops the affected step.
 Beyond these core steps, a repository can declare extra checks that run immediately after one of them. [`gates`](/no-mistakes/reference/repo-config/#gates) owns their placement, failure handling, and limits.
 See [TUI yolo mode](/no-mistakes/guides/tui/#action-bar) for automatic gate handling and its exceptions.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
@@ -88,6 +89,13 @@ AI code review of your diff. This is probabilistic evidence, not a security or c
 - Diffs the base commit against head
 - Filters out files matching `ignore_patterns` from the repo config
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
+- When the reviewer's final output is rejected, reruns a fresh, session-free review with the same prompt plus a note quoting the validation error, up to three attempts in total.
+  It reruns when the agent adapter marks that output as rejected against the schema, which covers Pi when its final JSON fails validation (for example a missing required `risk_level`, or `tested` given as a boolean) and opencode once its own internal StructuredOutput retries run out, and when Review's own checks refuse the output.
+  Claude Code's `--json-schema` re-prompts within its own limit and reports exhaustion as `error_max_structured_output_retries`; that result is not marked as a rejection, so it fails the step as before.
+  Findings come only from the attempt that validates, and nothing else from a rejected attempt carries over.
+  Exhausting the attempts fails the step as a parse failure, so an unreadable review is never treated as a pass.
+  The same applies to every post-fix rereview, while the fixer's own turn is not retried.
+  Ordinary agent failures (exit, timeout, cancellation) are not retried here.
 - Appends the [`review.path_instructions`](/no-mistakes/reference/repo-config/#reviewpath_instructions) blocks whose glob matches at least one changed file, in configured order, each labelled with its own `path` and the files it matched so a scoped rule cannot read as a repository-wide instruction; a change that matches nothing, or a repo with none configured, gets the prompt unchanged
 - Selects those blocks against the complete changed-file list rather than the `ignore_patterns`-filtered one, so a pushed-branch ignore entry cannot suppress a trusted rule, and reads them from the trusted default-branch config copy regardless of `allow_repo_commands`
 - Logs which of those rules it applied and which matched no changed path

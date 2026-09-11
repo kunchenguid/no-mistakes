@@ -324,8 +324,9 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		UserIntent:   c.Intent,
 		IntentSource: c.IntentSource,
 	})
-	// Candidate wall time is the actual review invocation, matching the local
-	// agent-invocation metric rather than charging case restoration setup.
+	// Candidate wall time is the actual review invocations, every rerun
+	// included, matching the local agent-invocation metric rather than
+	// charging case restoration setup.
 	evaluation.DurationMS = observed.durationMS
 	if evaluation.DurationMS == 0 && observed.result == nil {
 		evaluation.DurationMS = time.Since(started).Milliseconds()
@@ -339,12 +340,12 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 			evaluation.Error = safeurl.RedactText(fmt.Sprintf("candidate served model %q, requested %q", evaluation.Model, candidate.Model))
 			return evaluation
 		}
-		if observed.result.UsageReported {
+		if !observed.usageMissing {
 			evaluation.TokensReported = true
-			evaluation.InputTokens = int64(observed.result.Usage.InputTokens)
-			evaluation.OutputTokens = int64(observed.result.Usage.OutputTokens)
-			evaluation.CacheReadTokens = int64(observed.result.Usage.CacheReadTokens)
-			evaluation.FreshInputTokens = int64(agent.FreshInputTokens(observed.result.Usage.InputTokens, observed.result.Usage.CacheReadTokens))
+			evaluation.InputTokens = int64(observed.usage.InputTokens)
+			evaluation.OutputTokens = int64(observed.usage.OutputTokens)
+			evaluation.CacheReadTokens = int64(observed.usage.CacheReadTokens)
+			evaluation.FreshInputTokens = int64(observed.freshInputTokens)
 		}
 	}
 	if err != nil {
@@ -481,12 +482,18 @@ func replayConfig(c Case) (*config.Config, error) {
 }
 
 type observedAgent struct {
-	inner        agent.Agent
-	ownership    *e2edaemon.Ownership
-	result       *agent.Result
-	durationMS   int64
-	ownershipErr error
-	mu           sync.Mutex
+	inner      agent.Agent
+	ownership  *e2edaemon.Ownership
+	result     *agent.Result
+	durationMS int64
+	// A review can rerun, so usage sums every call, fresh input per call as
+	// the captured baseline does. usageMissing marks a call with no reported
+	// usage, which makes the sum incomplete rather than a smaller cost.
+	usage            agent.TokenUsage
+	freshInputTokens int
+	usageMissing     bool
+	ownershipErr     error
+	mu               sync.Mutex
 }
 
 func (a *observedAgent) Name() string { return a.inner.Name() }
@@ -511,6 +518,14 @@ func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Res
 	result, err := a.inner.Run(ctx, opts)
 	a.durationMS += time.Since(started).Milliseconds()
 	a.result = result
+	if result == nil || !result.UsageReported {
+		a.usageMissing = true
+	} else {
+		a.usage.InputTokens += result.Usage.InputTokens
+		a.usage.OutputTokens += result.Usage.OutputTokens
+		a.usage.CacheReadTokens += result.Usage.CacheReadTokens
+		a.freshInputTokens += agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
+	}
 	a.mu.Lock()
 	ownershipErr := a.ownershipErr
 	a.mu.Unlock()

@@ -157,7 +157,7 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - precision bounds, and F1 only when false-positive gold exists
 - queued unmatched candidate findings, which are not scored as false positives
 - failed candidate invocations
-- reported fresh-input plus output token cost
+- reported fresh-input plus output token cost, summed over every review attempt in a replay, including Review's reruns after a rejected output, and reported as missing when any attempt reports no usage
 - average wall time
 - a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
