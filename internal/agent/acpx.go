@@ -80,7 +80,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		err = errors.Join(err, acpxStdinError(<-stdinErrCh))
 		retErr := fmt.Errorf("acpx parse events: %w", err)
 		emitAgentExited(opts, a.Name(), pid, retErr)
-		return nil, retErr
+		return resultFromUsage(usage), retErr
 	}
 	waitErr := started.wait()
 	stderrWG.Wait()
@@ -88,14 +88,14 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if waitErr != nil {
 		retErr := fmt.Errorf("acpx exited: %w: %s", errors.Join(waitErr, stdinErr), acpxProcessErrorOutput(stderrBuf, stdoutErr))
 		emitAgentExited(opts, a.Name(), pid, retErr)
-		return nil, retErr
+		return resultFromUsage(usage), retErr
 	}
 	if stdinErr != nil {
 		if out := acpxProcessErrorOutput(stderrBuf, stdoutErr); out != "" {
 			stdinErr = fmt.Errorf("%w: %s", stdinErr, out)
 		}
 		emitAgentExited(opts, a.Name(), pid, stdinErr)
-		return nil, stdinErr
+		return resultFromUsage(usage), stdinErr
 	}
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))

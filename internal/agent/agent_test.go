@@ -393,6 +393,26 @@ func TestFinalizeTextResult_WithSchemaParsesJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_SchemaRejectKeepsReportedUsage(t *testing.T) {
+	usage := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 9, CacheCreationTokens: 2, Reported: true, CacheCreationReported: true}
+	result, err := finalizeTextResult("pi", "this is not json", json.RawMessage(`{"type":"object"}`), usage)
+	if err == nil {
+		t.Fatal("expected schema rejection")
+	}
+	if !IsStructuredOutputRejected(err) {
+		t.Fatalf("want structured-output rejection, got %v", err)
+	}
+	if result == nil {
+		t.Fatal("schema rejection must still return the invocation's reported usage")
+	}
+	if result.Usage != usage || !result.UsageReported || !result.CacheCreationReported {
+		t.Fatalf("usage = %+v reported=%v cacheCreation=%v, want %+v", result.Usage, result.UsageReported, result.CacheCreationReported, usage)
+	}
+	if result.Output != nil {
+		t.Fatalf("rejected output must not be treated as structured JSON, got %s", result.Output)
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaPreservesTypeErrorForValidJSON(t *testing.T) {
 	for _, text := range []string{"[]", "null"} {
 		t.Run(text, func(t *testing.T) {

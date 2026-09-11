@@ -65,11 +65,12 @@ func runWithRetry(
 ) (*Result, error) {
 	var lastErr error
 	var lastLabel string
+	var lastResult *Result
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
-				return nil, err
+				return lastResult, err
 			}
 		}
 		startedAt := time.Now()
@@ -78,9 +79,10 @@ func runWithRetry(
 		if err == nil {
 			return result, nil
 		}
+		lastResult = result
 		label, retry := classify(err)
 		if !retry {
-			return nil, err
+			return result, err
 		}
 		if recoverRetry != nil {
 			recoverRetry(label)
@@ -88,7 +90,7 @@ func runWithRetry(
 		lastErr = err
 		lastLabel = label
 	}
-	return nil, lastErr
+	return lastResult, lastErr
 }
 
 func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, startedAt, completedAt time.Time) {

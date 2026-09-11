@@ -57,7 +57,8 @@ func TestReplayTokensCoverEveryReviewAttempt(t *testing.T) {
 	}
 	const (
 		valid = `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
-		// Pi's adapter rejects this against the schema and returns no Result.
+		// Pi's adapter rejects this against the schema; usage from that
+		// failed attempt is still reported so the replay cost is honest.
 		missingRiskLevel = `{"findings":[],"risk_rationale":"clean","risk_scope":"source-or-external"}`
 		// This passes the schema, so Pi returns a Result, but Review's own
 		// check refuses the blank rationale and reruns.
@@ -71,7 +72,7 @@ func TestReplayTokensCoverEveryReviewAttempt(t *testing.T) {
 		wantOutput   int64
 		wantFresh    int64
 	}{
-		{name: "rejected attempt with no result", first: missingRiskLevel, wantReported: false},
+		{name: "schema-rejected attempt still reports usage", first: missingRiskLevel, wantReported: true, wantInput: 200, wantOutput: 40, wantFresh: 140},
 		{name: "two attempts that both report usage", first: blankRationale, wantReported: true, wantInput: 200, wantOutput: 40, wantFresh: 140},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

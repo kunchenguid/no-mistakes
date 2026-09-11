@@ -99,7 +99,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		err = errors.Join(err, piStdinError(<-stdinErrCh))
 		retErr := fmt.Errorf("pi parse events: %w", err)
 		emitAgentExited(opts, "pi", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(pp.usage), retErr
 	}
 
 	waitErr := started.wait()
@@ -110,29 +110,29 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		if stderr != "" {
 			retErr := fmt.Errorf("pi exited: %w: %s", errors.Join(waitErr, stdinErr), stderr)
 			emitAgentExited(opts, "pi", pid, retErr)
-			return nil, retErr
+			return resultFromUsage(pp.usage), retErr
 		}
 		retErr := fmt.Errorf("pi exited: %w", errors.Join(waitErr, stdinErr))
 		emitAgentExited(opts, "pi", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(pp.usage), retErr
 	}
 	if stdinErr != nil {
 		if stderr != "" {
 			stdinErr = fmt.Errorf("%w: %s", stdinErr, stderr)
 		}
 		emitAgentExited(opts, "pi", pid, stdinErr)
-		return nil, stdinErr
+		return resultFromUsage(pp.usage), stdinErr
 	}
 
 	if pp.assistantError != "" {
 		retErr := fmt.Errorf("pi reported error: %s", pp.assistantError)
 		emitAgentExited(opts, "pi", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(pp.usage), retErr
 	}
 
 	text := pp.finalText()
 	res, err := finalizeTextResult("pi", text, opts.JSONSchema, pp.usage)
-	if err == nil {
+	if res != nil {
 		res.Model = pp.model
 		res.ModelProvider = pp.provider
 	}

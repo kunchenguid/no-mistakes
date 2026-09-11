@@ -104,7 +104,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		stderrWG.Wait()
 		retErr := fmt.Errorf("claude parse events: %w", err)
 		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(usage), retErr
 	}
 
 	waitErr := started.wait()
@@ -112,13 +112,13 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if waitErr != nil {
 		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
 		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(usage), retErr
 	}
 
 	if result == nil {
 		retErr := fmt.Errorf("claude returned no result event")
 		emitAgentExited(opts, "claude", pid, retErr)
-		return nil, retErr
+		return resultFromUsage(usage), retErr
 	}
 
 	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
@@ -149,10 +149,10 @@ func (a *claudeAgent) Close() error { return nil }
 
 func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if result.IsError || result.Subtype != "success" {
-		return nil, fmt.Errorf("claude error: subtype=%s", result.Subtype)
+		return resultFromUsage(usage), fmt.Errorf("claude error: subtype=%s", result.Subtype)
 	}
 	if len(schema) > 0 && result.StructuredOutput == nil {
-		return nil, rejectStructuredOutput(errNoStructuredOutput)
+		return resultFromUsage(usage), rejectStructuredOutput(errNoStructuredOutput)
 	}
 
 	return &Result{

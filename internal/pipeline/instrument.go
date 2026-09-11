@@ -125,12 +125,14 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 		provider := result.ModelProvider
 		inv.ModelProvider = &provider
 	}
-	inv.InputTokens = result.Usage.InputTokens
-	inv.OutputTokens = result.Usage.OutputTokens
-	inv.CacheReadTokens = result.Usage.CacheReadTokens
-
 	if result.UsageReported {
-		fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
+		in := result.Usage.InputTokens
+		out := result.Usage.OutputTokens
+		cache := result.Usage.CacheReadTokens
+		inv.InputTokens = &in
+		inv.OutputTokens = &out
+		inv.CacheReadTokens = &cache
+		fresh := agent.FreshInputTokens(in, cache)
 		inv.FreshInputTokens = &fresh
 	}
 

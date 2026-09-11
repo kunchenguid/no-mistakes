@@ -506,9 +506,6 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got result %+v", result)
 	}
-	if result != nil {
-		t.Fatalf("expected nil result on error, got %+v", result)
-	}
 	msg := err.Error()
 	if !strings.Contains(msg, "structured output failed") {
 		t.Errorf("expected error to mention structured output failure, got %q", msg)
@@ -666,9 +663,6 @@ func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testi
 	})
 	if err == nil {
 		t.Fatalf("Run unexpectedly succeeded with result %+v", result)
-	}
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
 	}
 	if !strings.Contains(err.Error(), "summary must be string") {
 		t.Fatalf("error = %q, want original schema's string constraint", err)

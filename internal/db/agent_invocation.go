@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Agent invocation session modes recorded for local performance telemetry.
 const (
@@ -61,9 +64,12 @@ type AgentInvocation struct {
 	DurationMS      int64
 	ExitStatus      string // ok | error | cancelled
 	FailureCategory string // parse | exit | spawn | cancelled | other ("" when ok)
-	InputTokens     int
-	OutputTokens    int
-	CacheReadTokens int
+	// InputTokens, OutputTokens, and CacheReadTokens are the adapter's raw
+	// usage counters. Nil when the adapter did not report usage, including a
+	// failed or cancelled invocation that never produced a usage event.
+	InputTokens     *int
+	OutputTokens    *int
+	CacheReadTokens *int
 	// CacheCreationTokens is the provider's cache-creation cost. Nil when the
 	// provider does not surface it (codex), distinguishing "not reported" from a
 	// genuine zero.
@@ -229,17 +235,21 @@ func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, c
 	if sessionKey == "" {
 		return 0, 0, 0, false
 	}
+	var in, out, cache sql.NullInt64
 	err := d.sql.QueryRow(
 		`SELECT input_tokens, output_tokens, cache_read_tokens
 		 FROM agent_invocations
 		 WHERE run_id = ? AND session_key = ?
+		   AND input_tokens IS NOT NULL
+		   AND output_tokens IS NOT NULL
+		   AND cache_read_tokens IS NOT NULL
 		 ORDER BY started_at DESC, id DESC LIMIT 1`,
 		runID, sessionKey,
-	).Scan(&input, &output, &cacheRead)
-	if err != nil {
+	).Scan(&in, &out, &cache)
+	if err != nil || !in.Valid || !out.Valid || !cache.Valid {
 		return 0, 0, 0, false
 	}
-	return input, output, cacheRead, true
+	return int(in.Int64), int(out.Int64), int(cache.Int64), true
 }
 
 // AgentInvocationAggregate summarizes invocations for one purpose, powering
@@ -256,9 +266,9 @@ type AgentInvocationAggregate struct {
 	Resumed             int
 	Fallback            int
 	Errors              int
-	InputTokens         int64
-	OutputTokens        int64
-	CacheReadTokens     int64
+	InputTokens         *int64
+	OutputTokens        *int64
+	CacheReadTokens     *int64
 	CacheCreationTokens *int64
 	FreshInputTokens    *int64
 	ReasoningTokens     *int64
@@ -288,9 +298,9 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       COALESCE(SUM(CASE WHEN session_mode = 'resumed' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN session_mode = 'fallback' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN exit_status != 'ok' THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(input_tokens), 0),
-		       COALESCE(SUM(output_tokens), 0),
-		       COALESCE(SUM(cache_read_tokens), 0),
+		       CASE WHEN COUNT(input_tokens) = COUNT(*) THEN SUM(input_tokens) END,
+		       CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END,
+		       CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END,
 		       CASE WHEN COUNT(cache_creation_tokens) = COUNT(*) THEN SUM(cache_creation_tokens) END,
 		       CASE WHEN COUNT(fresh_input_tokens) = COUNT(*) THEN SUM(fresh_input_tokens) END,
 		       CASE WHEN COUNT(reasoning_tokens) = COUNT(*) THEN SUM(reasoning_tokens) END,

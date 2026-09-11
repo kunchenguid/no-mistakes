@@ -300,24 +300,57 @@ type Options struct {
 	Profile agentcfg.Profile
 }
 
+// resultFromUsage returns a Result carrying the adapter's parsed usage so a
+// failed or cancelled invocation can still record honest token counts. Nil
+// when the adapter did not report usage, which recording stores as unknown
+// rather than a fabricated zero.
+func resultFromUsage(usage TokenUsage) *Result {
+	if !usage.Reported && !usage.CacheCreationReported {
+		return nil
+	}
+	return &Result{
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
+	}
+}
+
+func textResult(text string, usage TokenUsage) *Result {
+	res := resultFromUsage(usage)
+	if res == nil {
+		res = &Result{}
+	}
+	res.Text = text
+	res.Usage = usage
+	res.UsageReported = usage.Reported
+	res.CacheCreationReported = usage.CacheCreationReported
+	return res
+}
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
 		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return nil, rejectStructuredOutput(err)
+			return resultFromUsage(usage), rejectStructuredOutput(err)
 		}
-		return nil, err
+		return resultFromUsage(usage), err
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+		return textResult(text, usage), nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		res := resultFromUsage(usage)
+		if res != nil {
+			res.Text = text
+		}
+		return res, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+	res := textResult(text, usage)
+	res.Output = output
+	return res, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for

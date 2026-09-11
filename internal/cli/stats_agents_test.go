@@ -30,8 +30,8 @@ func TestStatsAgentsReportsLocalPerformanceTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	seed := []db.AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "deadbeef00000000", StartedAt: 1, CompletedAt: 2, DurationMS: 60_000, ExitStatus: "ok", InputTokens: 100, OutputTokens: 10, CacheReadTokens: 40, CacheCreationTokens: statsIntPtr(20)},
-		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000", StartedAt: 3, CompletedAt: 4, DurationMS: 30_000, ExitStatus: "ok", InputTokens: 50, OutputTokens: 5, CacheReadTokens: 45, CacheCreationTokens: statsIntPtr(25)},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "deadbeef00000000", StartedAt: 1, CompletedAt: 2, DurationMS: 60_000, ExitStatus: "ok", InputTokens: statsIntPtr(100), OutputTokens: statsIntPtr(10), CacheReadTokens: statsIntPtr(40), CacheCreationTokens: statsIntPtr(20)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000", StartedAt: 3, CompletedAt: 4, DurationMS: 30_000, ExitStatus: "ok", InputTokens: statsIntPtr(50), OutputTokens: statsIntPtr(5), CacheReadTokens: statsIntPtr(45), CacheCreationTokens: statsIntPtr(25)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeStarted, SessionKey: "feedface00000000", StartedAt: 5, CompletedAt: 6, DurationMS: 45_000, ExitStatus: "ok"},
 		{RunID: run.ID, StepName: "document", Round: 1, Purpose: "housekeeping", Agent: "codex", Model: "gpt-5.2", SessionMode: db.InvocationModeCold, StartedAt: 7, CompletedAt: 8, DurationMS: 172_000, ExitStatus: "ok"},
 	}
@@ -99,7 +99,7 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 		Model: "gpt-5.6-sol", ModelProvider: strPtrCLI("openai"),
 		SessionMode: db.InvocationModeResumed, SessionKey: "deadbeef00000000",
 		StartedAt: 1, CompletedAt: 2, DurationMS: 10_000, SubprocessWaitMS: statsInt64Ptr(2_000),
-		ExitStatus: "ok", InputTokens: 2500, OutputTokens: 250, CacheReadTokens: 1800,
+		ExitStatus: "ok", InputTokens: statsIntPtr(2500), OutputTokens: statsIntPtr(250), CacheReadTokens: statsIntPtr(1800),
 		FreshInputTokens: statsIntPtr(700), ReasoningTokens: statsIntPtr(9),
 		DeltaInputTokens: statsIntPtr(1500), DeltaOutputTokens: statsIntPtr(150), DeltaCacheReadTokens: statsIntPtr(1200),
 		ModelRoundtrips: statsIntPtr(24), ToolCalls: statsIntPtr(7),
@@ -132,6 +132,77 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stats --run missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestStatsRunRendersUnknownRawTokensAsDashNotZero(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature/x", "abc", "def")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := db.AgentInvocation{
+		RunID: run.ID, StepName: "test", Round: 1, Purpose: "test-evidence", Agent: "pi",
+		SessionMode: db.InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 45 * 60_000,
+		ExitStatus: "error", FailureCategory: "parse",
+	}
+	zero := db.AgentInvocation{
+		RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "pi",
+		SessionMode: db.InvocationModeCold, StartedAt: 3, CompletedAt: 4, DurationMS: 1_000,
+		ExitStatus: "ok", InputTokens: statsIntPtr(0), OutputTokens: statsIntPtr(0), CacheReadTokens: statsIntPtr(0),
+	}
+	for _, inv := range []db.AgentInvocation{unknown, zero} {
+		if _, err := d.InsertAgentInvocation(inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Close()
+
+	out, err := executeCmd("stats", "--run", run.ID)
+	if err != nil {
+		t.Fatalf("stats --run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "-") {
+		t.Fatalf("unknown raw token counts must render as \"-\", not crash:\n%s", out)
+	}
+
+	aggregates, err := executeCmd("stats", "--agents")
+	if err != nil {
+		t.Fatalf("stats --agents: %v\n%s", err, aggregates)
+	}
+	if !strings.Contains(aggregates, "test-evidence") {
+		t.Fatalf("stats --agents missing purpose:\n%s", aggregates)
+	}
+	// A purpose whose only row has unknown tokens must not be presented as 0.
+	for _, line := range strings.Split(aggregates, "\n") {
+		if !strings.Contains(line, "test-evidence") {
+			continue
+		}
+		if strings.Contains(line, "\t0\t0\t0\t") || strings.HasSuffix(strings.TrimSpace(line), "0") {
+			// The unknown marker is required in the token columns.
+			if !strings.Contains(line, "-") {
+				t.Fatalf("unknown aggregate tokens presented as 0:\n%s", line)
+			}
+		}
+		if !strings.Contains(line, "-") {
+			t.Fatalf("unknown aggregate tokens must render as \"-\":\n%s", line)
+		}
+	}
+
+	// A reported zero must still render as 0, so "-" is not used for every count.
+	if !strings.Contains(out, "0") {
+		t.Fatalf("reported zero tokens must still render as 0:\n%s", out)
 	}
 }
 
