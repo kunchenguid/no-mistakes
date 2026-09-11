@@ -80,6 +80,16 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			errMsg:  `antigravity reported error: invalid tool call error (invalid_args)`,
 			wantSub: "tool call",
 		},
+		{
+			name:    "provider protocol residue after JSON",
+			errMsg:  `pi output parse: invalid character '<' after top-level value (output snippet: "{\"summary\":\"x\"}")`,
+			wantSub: "protocol residue",
+		},
+		{
+			name:    "multiple bare JSON objects",
+			errMsg:  `pi output parse: multiple bare JSON objects found in output`,
+			wantSub: "multiple bare JSON objects",
+		},
 	}
 
 	for _, tc := range cases {

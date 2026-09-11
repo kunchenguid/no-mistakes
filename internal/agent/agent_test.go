@@ -526,6 +526,101 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousBareJSON(t *testing.T) {
 	}
 }
 
+// reviewOutputTestSchema mirrors the review step's structured-output contract
+// (internal/pipeline/steps/common.go reviewFindingsSchema) for the fields the
+// parse-failure regressions below exercise.
+func reviewOutputTestSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"severity":{"type":"string","enum":["error","warning","info"]},
+					"file":{"type":"string"},
+					"line":{"type":"integer"},
+					"description":{"type":"string"},
+					"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]},
+					"review_scope":{"type":"string","enum":["source","pipeline-owned-delivery","external-delivery"]}
+				},
+				"required":["severity","description","action","review_scope"]
+			}},
+			"risk_level":{"type":"string","enum":["low","medium","high"]},
+			"risk_rationale":{"type":"string"},
+			"risk_scope":{"type":"string","enum":["source-or-external","pipeline-owned-delivery"]}
+		},
+		"required":["findings","risk_level","risk_rationale","risk_scope"]
+	}`)
+}
+
+func readAgentTestdata(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read testdata %s: %v", name, err)
+	}
+	return string(data)
+}
+
+func TestFinalizeTextResult_ToleratesTrailingProviderResidue(t *testing.T) {
+	// Regression: run 01M25W667HT9M14CBN0S05K8PC (review-fix). The model emitted a
+	// complete, schema-valid object and then stray closing DeepSeek tool-call
+	// delimiters that never open a call, so the residue landed in the assistant
+	// content text. The whole step used to fail as
+	// "invalid character '<' after top-level value".
+	text := readAgentTestdata(t, "structured_output_trailing_residue.txt")
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	result, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "fix open badge contrast and merge_method type guard" {
+		t.Errorf("expected summary preserved, got %v", output["summary"])
+	}
+}
+
+func TestFinalizeTextResult_FusesAdjacentSplitObjects(t *testing.T) {
+	// Regression: run 01M25WKCT6QYCFCJCNQ0M7ZS1G (review round 3). The model split
+	// one structured answer across two adjacent top-level objects, so each half
+	// failed validation alone ("missing required field \"risk_level\"") while the
+	// union satisfies the schema.
+	text := readAgentTestdata(t, "structured_output_split_objects.txt")
+	result, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["risk_level"] != "low" {
+		t.Errorf("expected risk_level=low, got %v", output["risk_level"])
+	}
+	findings, ok := output["findings"].([]any)
+	if !ok || len(findings) != 1 {
+		t.Fatalf("expected one finding, got %v", output["findings"])
+	}
+}
+
+func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T) {
+	// Fusion must never let two competing verdicts combine; a repeated key is
+	// the signal that they are alternatives, not two halves of one answer.
+	text := `{"findings":[]}{"findings":[]}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{"findings":{"type":"array"},"summary":{"type":"string"}},
+		"required":["findings","summary"]
+	}`)
+	if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
+		t.Fatal("expected duplicate-key objects to be rejected")
+	}
+}
+
 func TestFinalizeTextResult_ACPAgentTakesTerminalBareJSON(t *testing.T) {
 	text := `Draft: {"findings":["a"],"summary":"draft"}. Final: {"findings":["a"],"summary":"final"}`
 	schema := json.RawMessage(`{

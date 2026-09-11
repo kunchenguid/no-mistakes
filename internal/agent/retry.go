@@ -153,6 +153,14 @@ var transientNeedles = []struct {
 	// emits one malformed call; the step work is usually already complete.
 	{"declaring permissions", "agy permission declaration"},
 	{"invalid tool call", "invalid tool call"},
+	// Provider tool-protocol residue after a complete JSON object, or a
+	// structured answer split across two adjacent objects the parser could not
+	// fuse: in each case the step's real work is done and only the final text
+	// shape is wrong. Same rationale as the prose needle above. Generic schema
+	// validation failures stay non-transient (see the schema_validation
+	// negative case), so only these two parse-specific strings are added.
+	{"invalid character '<' after top-level value", "provider protocol residue after JSON"},
+	{"multiple bare json objects found in output", "multiple bare JSON objects"},
 }
 
 var terminalNeedles = []struct {

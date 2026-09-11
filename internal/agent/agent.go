@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
@@ -574,15 +575,23 @@ func indexJSONFenceClose(text string) (int, int) {
 	return -1, -1
 }
 
+// bareObject is one balanced {...} span found outside code fences, with the
+// schema-validated object (nil when the span failed validation) and its byte
+// span.
+type bareObject struct {
+	obj        json.RawMessage
+	raw        []byte
+	startIndex int
+	endIndex   int
+}
+
 // bareJSONObjects scans text for balanced {...} substrings outside code fences
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
 // verdict.
 func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
-	var valid []struct {
-		obj      json.RawMessage
-		endIndex int
-	}
+	var valid []bareObject
+	var objects []bareObject
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
@@ -606,29 +615,120 @@ func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, er
 			continue
 		}
 		candidate := text[i:end]
+		entry := bareObject{raw: []byte(candidate), startIndex: i, endIndex: end}
 		obj, err := parseStructuredCandidate([]byte(candidate), schema)
 		if err == nil {
-			valid = append(valid, struct {
-				obj      json.RawMessage
-				endIndex int
-			}{obj: obj, endIndex: end})
+			entry.obj = obj
+			valid = append(valid, entry)
 			lastErr = nil
 		} else if lastErr == nil {
 			lastErr = err
 		}
+		objects = append(objects, entry)
 		i = end - 1
 	}
 	if len(valid) > 1 {
-		objects := make([]json.RawMessage, 0, len(valid))
+		parsed := make([]json.RawMessage, 0, len(valid))
 		for _, candidate := range valid {
-			objects = append(objects, candidate.obj)
+			parsed = append(parsed, candidate.obj)
 		}
-		return objects, nil
+		return parsed, nil
 	}
-	if len(valid) == 1 && strings.TrimSpace(text[valid[0].endIndex:]) == "" {
+	if len(valid) == 1 && trailingNonJSONResidue(text[valid[0].endIndex:]) {
 		return []json.RawMessage{valid[0].obj}, nil
 	}
+	if len(valid) == 0 {
+		if fused, ok := fuseAdjacentBareObjects(text, objects, schema); ok {
+			return []json.RawMessage{fused}, nil
+		}
+	}
 	return nil, lastErr
+}
+
+// trailingNonJSONResidue reports whether rest - the text following a single
+// schema-valid bare object - is provider protocol residue rather than a second
+// structured answer or a prose continuation. Providers occasionally append
+// stray closing tool-call delimiters after a complete JSON object (DeepSeek's
+// DSML markers with full-width separators are the observed case). A prose
+// sentence, or anything containing another JSON object or a code fence, is
+// never treated as residue.
+func trailingNonJSONResidue(rest string) bool {
+	trimmed := strings.TrimSpace(rest)
+	if trimmed == "" {
+		return true
+	}
+	if strings.Contains(rest, "{") || strings.Contains(rest, "```") {
+		return false
+	}
+	for _, token := range strings.Fields(trimmed) {
+		if isProtocolResidueToken(token) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// isProtocolResidueToken accepts one whitespace-delimited piece of provider
+// tool-protocol residue: a markup tag such as </invoke> (optionally carrying
+// DeepSeek's full-width DSML separators), or a run of punctuation with no
+// letters or digits, such as a stray closing brace. Ordinary prose words fail
+// both tests, so a prose continuation is still rejected.
+func isProtocolResidueToken(token string) bool {
+	if strings.Contains(token, "<") && strings.Contains(token, ">") {
+		return true
+	}
+	return !strings.ContainsFunc(token, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	})
+}
+
+// fuseAdjacentBareObjects merges runs of adjacent top-level objects whose keys
+// are disjoint, returning the merged object when it validates against the full
+// schema. Models sometimes split one structured answer across two objects (for
+// example {"findings":...} then {"risk_level":...}); each half fails
+// validation alone while the union satisfies it. Adjacent means only whitespace
+// separates the objects, and no key may repeat across the run, so two competing
+// verdicts embedded in prose are never fused.
+func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {
+	for i := 0; i < len(objects); {
+		j := i
+		for j+1 < len(objects) && strings.TrimSpace(text[objects[j].endIndex:objects[j+1].startIndex]) == "" {
+			j++
+		}
+		if j > i {
+			if fused, ok := fuseBareObjects(objects[i:j+1], schema); ok {
+				return fused, true
+			}
+		}
+		i = j + 1
+	}
+	return nil, false
+}
+
+func fuseBareObjects(objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {
+	merged := make(map[string]json.RawMessage)
+	for _, object := range objects {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(object.raw, &fields); err != nil {
+			return nil, false
+		}
+		for key, value := range fields {
+			if _, exists := merged[key]; exists {
+				return nil, false
+			}
+			merged[key] = value
+		}
+	}
+	fused, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false
+	}
+	out, err := parseStructuredCandidate(fused, schema)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func jsonEqual(a, b json.RawMessage) bool {
