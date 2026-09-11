@@ -1445,21 +1445,27 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 	return adopted
 }
 
-// resolvedPushURL mirrors the pipeline's credential-preserving routing: the
-// database deliberately stores a redacted upstream URL, while the invoking
-// clone's origin can still carry the credentials needed to query it.
+// resolvedPushURL answers with the same authoritative push target the rest of
+// this service verifies against: Repo.PushURL(), the configured fork or the
+// registered upstream. Adoption's whole safety argument is that the head it
+// admits is already published on THAT target, so a worktree remote may stand in
+// for it only to recover a credential the redacted database copy cannot hold,
+// and only when remoteName has proven the remote is the same target by
+// credential-free TargetFingerprint identity. A worktree whose origin points
+// somewhere else therefore never decides the adoption; the registered target
+// does, and an unusable credential fails the live check closed rather than
+// verifying against a remote the pipeline does not publish to.
 func (s *Service) resolvedPushURL(ctx context.Context) string {
-	if s.Repo == nil {
+	target := s.Repo.PushURL()
+	if strings.TrimSpace(target) == "" {
 		return ""
 	}
-	if strings.TrimSpace(s.Repo.ForkURL) != "" {
-		return s.Repo.ForkURL
+	name := s.remoteName(ctx)
+	credentialled, err := git.GetConfiguredRemoteURL(ctx, s.workDir(), name)
+	if err != nil || strings.TrimSpace(credentialled) == "" || TargetFingerprint(credentialled) != TargetFingerprint(target) {
+		return target
 	}
-	if originURL, err := git.GetRemoteURL(ctx, s.workDir(), "origin"); err == nil && strings.TrimSpace(originURL) != "" &&
-		(!s.Repo.URLsVerified || safeurl.Redact(originURL) == s.Repo.UpstreamURL) {
-		return originURL
-	}
-	return s.Repo.UpstreamURL
+	return credentialled
 }
 
 func recoverAnchorRef(runID string) string {

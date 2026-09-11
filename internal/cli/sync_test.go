@@ -1212,6 +1212,39 @@ func TestAxiSyncAdoptPublishedRefusesUnpublishedRebase(t *testing.T) {
 	}
 }
 
+// TestAxiSyncAdoptPublishedIgnoresForeignWorktreeOrigin proves the published
+// head is verified against the registered push target and not against whatever
+// the invoking worktree calls origin. Here the rebase is published only to an
+// unrelated remote that origin points at, so adoption must refuse: the target
+// the pipeline publishes to has never seen this head.
+func TestAxiSyncAdoptPublishedIgnoresForeignWorktreeOrigin(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	foreign := filepath.Join(t.TempDir(), "foreign.git")
+	cliGit(t, filepath.Dir(foreign), "init", "--bare", foreign)
+	rebased := rebaseReturnedCustodyBranch(t, f, foreign, true)
+	// The registered push target still carries only the pre-rebase head.
+	cliGit(t, f.local, "push", f.remote, f.preserved+":refs/heads/feature/recover")
+
+	if got := cliGit(t, foreign, "rev-parse", "refs/heads/feature/recover"); got != rebased {
+		t.Fatalf("foreign remote = %s, want the published rebase %s", got, rebased)
+	}
+	if got := cliGit(t, f.remote, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("registered push target = %s, want the pre-rebase head %s", got, f.preserved)
+	}
+
+	out, err := executeCmd("axi", "sync", "--adopt-published")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("foreign-origin adoption should refuse, got %#v\n%s", err, out)
+	}
+	if !strings.Contains(out, "safety: blocked_published_head_mismatch") {
+		t.Errorf("foreign-origin refusal missing the target mismatch:\n%s", out)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("foreign-origin refusal moved gate lane to %s, want %s", got, f.preserved)
+	}
+}
+
 func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	if err := os.WriteFile(filepath.Join(f.local, "rescope.txt"), []byte("rescope\n"), 0o644); err != nil {
