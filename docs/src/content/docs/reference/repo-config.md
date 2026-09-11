@@ -260,7 +260,7 @@ A templated PR contains one delimited, integrity-checked generated appendix. Lat
 
 Ownership is never inferred from a heading's name. An existing author-only body can be adopted without model rewriting. **Legacy descriptions containing an unowned attestation require explicit author reconciliation** before template mode can adopt them: separate/remove their obsolete generated evidence while retaining the desired author text and closing references, then retry. Do not manufacture ownership markers by hand. An edited appendix, missing/duplicate/malformed markers, or a competing attestation fails rather than risking discarded author content. Put author additions outside the generated appendix. The integrity guard detects accidental edits; it is not authentication or a cryptographic signature by no-mistakes.
 
-Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Without `pr.title_format`, body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
+Updates read the live raw body before deciding which publication path applies. Missing/null/malformed content is not treated as an empty description. Without `pr.title_format`, body-only updates omit title and draft flags rather than reading and resending a possibly stale author title. Template updates re-read immediately before writing and verify the body afterward; observed pre-write edits are retried from the latest body up to three times. Write/readback errors and body divergence fail visibly, without replaying a possibly applied write. This is **not atomic compare-and-swap**: an edit in the provider's final read/write gap can still be lost. New template creations are read back too; a created PR identity may be recorded even if verification then fails, so it remains discoverable for recovery.
 
 If the complete author text, closing references and rendered evidence cannot fit the publication budget, the step fails instead of truncating them. Evidence rendering retains its existing artifact presentation limits; this adds no body-level eviction to make a template fit. Pre-push and CI-repair restamping update the appendix's integrity guard together with its head-bound attestation, without changing author text.
 
@@ -268,7 +268,7 @@ Unconfigured, unowned descriptions retain ordinary narrative/fallback/size behav
 
 **Provider caveats:** Azure DevOps' 4,000-character budget is checked conservatively in UTF-16 units before every owned write, including pre-push/CI-repair restamping. Oversize fails; ordinary Azure truncation must never cut an ownership marker or author evidence. The 16 KiB source-template allowance does not imply a filled Azure description will fit. Bitbucket keeps Markdown evidence (no HTML folds) and carries the exact existing attestation in a visible text code fence; ownership comments may also be visible. Ordinary, unowned Bitbucket descriptions still omit attestation. These are presentation differences, not a new attestation protocol. The bundled enforcement action remains GitHub-specific; no native enforcement workflow for other providers is installed.
 
-Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing readback fails visibly rather than being normalized into success.
+Provider contract tests use fake CLI/API responses and local HTTP fixtures, not live server acceptance. Exact server byte roundtrips, rendering, consistency and instance-specific limits remain unverified; a differing body readback fails visibly rather than being normalized into success.
 
 ### pr.publish_intent
 
@@ -291,12 +291,12 @@ Configure the title shape no-mistakes applies to newly created and updated pull 
 | | |
 | --- | --- |
 | Type | `string` template |
-| Default | Empty, which preserves conventional commit titles |
+| Default | Unset, which preserves conventional commit titles |
 | Trust | Pushed branch, like other non-executing repository conventions |
 
 The template supports literal text and `{{.Branch}}` and `{{.Title}}` placeholders.
 `{{.Branch}}` is the normalized branch identifier resolved by [`commit.branch_pattern`](#commitbranch_pattern) when one is configured.
-`{{.Title}}` is the concise title text returned by the PR agent.
+`{{.Title}}` is the bare concise title text returned by the PR agent, or `update pull request` when ordinary drafting uses its deterministic fallback.
 For example, `title_format: "{{.Branch}}: {{.Title}}"` can render `PROJ-123: add widget` from a matching branch.
 The format is applied deterministically after drafting; its literal text is not sent to the agent as an instruction.
 
@@ -304,7 +304,7 @@ The format is validated when configuration loads.
 It must be valid UTF-8, contain only the two documented placeholders and literal text, and contain no control or unsafe Unicode format characters.
 The template source is limited to 1,024 bytes and 16 placeholders, and the rendered title must be non-empty and no more than 4,096 bytes.
 Providers can impose lower publication limits. GitLab titles are checked at its publication boundary and may contain at most 255 Unicode characters, including a preserved or requested draft marker.
-If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR creation fails safely instead of publishing a malformed title.
+If a format requires `{{.Branch}}` but the branch pattern finds no identifier, PR publication fails safely instead of publishing a malformed title.
 
 When this setting is omitted, no-mistakes keeps its default conventional commit title behavior, including release type guidance and title tightening.
 
