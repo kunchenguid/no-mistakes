@@ -501,11 +501,16 @@ const untestedWithoutReasonFindingsJSON = `{
   "verdict": "inconclusive"
 }`
 
-type rejectedStructuredOutputError struct{ message, output string }
+type rejectedStructuredOutputError struct {
+	message, output string
+	preferTerminal  bool
+}
 
 func (e rejectedStructuredOutputError) Error() string                { return e.message }
 func (rejectedStructuredOutputError) StructuredOutputRejected() bool { return true }
-func (e rejectedStructuredOutputError) RejectedOutput() []byte       { return []byte(e.output) }
+func (e rejectedStructuredOutputError) RejectedOutput() agent.RejectedOutput {
+	return agent.RejectedOutput{Text: []byte(e.output), PreferTerminal: e.preferTerminal}
+}
 
 // TestTestStep_InvalidAnalyzerPayloadTriggersCorrectionRound is the
 // recoverability contract: a pass that was not live-validated, or an

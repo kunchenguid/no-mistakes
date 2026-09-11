@@ -54,10 +54,11 @@ func decodeFindingItems(t *testing.T, raw string) []types.Finding {
 func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name       string
-		message    string
-		rejected   string
-		wantPrompt string
+		name           string
+		message        string
+		rejected       string
+		preferTerminal bool
+		wantPrompt     string
 	}{
 		{
 			name:       "required risk_level missing",
@@ -83,6 +84,19 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			rejected:   `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":null,"line":null,"review_scope":"source"}]}`,
 			wantPrompt: `JSON output missing required field "risk_level"`,
 		},
+		{
+			name:       "incidental JSON object in the prose",
+			message:    "pi output parse: JSON output tested must be array or null",
+			rejected:   "On error the helper returns `Findings{}` unchanged.\n" + `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":"a.txt","line":1,"review_scope":"source"}],"tested":true}`,
+			wantPrompt: "JSON output tested must be array or null",
+		},
+		{
+			name:           "ACP response repeating its review",
+			message:        `acp:gemini output parse: JSON output missing required field "risk_level"`,
+			rejected:       `{"findings":[{"severity":"info","action":"no-op","description":"draft note","review_scope":"source"}]}` + "\n\nFinal review:\n" + missingRiskLevelJSON,
+			preferTerminal: true,
+			wantPrompt:     `JSON output missing required field "risk_level"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -93,7 +107,7 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 					calls++
 					if calls == 1 {
-						return nil, schemaRejected(tc.message, tc.rejected)
+						return nil, rejectedStructuredOutputError{message: tc.message, output: tc.rejected, preferTerminal: tc.preferTerminal}
 					}
 					return &agent.Result{Output: json.RawMessage(riskOnlyCorrectionJSON)}, nil
 				},
@@ -126,6 +140,8 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 				"This is a correction-only turn",
 				"Do not use tools",
 				"keeps them exactly as reported",
+				"lists only the first violation found",
+				"check every field outside findings",
 				"unrequired helper",
 				tc.wantPrompt,
 			} {
@@ -281,6 +297,7 @@ func TestReviewStep_UncorrectableReviewFailsOnFirstTurn(t *testing.T) {
 		result    *agent.Result
 		err       error
 		wantError string
+		wantLog   string
 	}{
 		{
 			name:      "no structured output",
@@ -326,6 +343,13 @@ func TestReviewStep_UncorrectableReviewFailsOnFirstTurn(t *testing.T) {
 			name:      "finding without a description",
 			result:    &agent.Result{Output: json.RawMessage(`{"findings":[{"severity":"error","action":"auto-fix","review_scope":"source"}]}`)},
 			wantError: "review analyzer findings missing risk assessment",
+			wantLog:   `missing required field "description"`,
+		},
+		{
+			name:      "several reviews without the ACP last-object rule",
+			err:       schemaRejected(`pi output parse: JSON output missing required field "risk_level"`, `{"findings":[{"severity":"info","action":"no-op","description":"nil dereference draft","review_scope":"source"}]}`+"\n\nFinal review:\n"+missingRiskLevelJSON),
+			wantError: `missing required field "risk_level"`,
+			wantLog:   "multiple bare JSON objects found in output",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,6 +367,8 @@ func TestReviewStep_UncorrectableReviewFailsOnFirstTurn(t *testing.T) {
 				},
 			}
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			var logs []string
+			sctx.Log = func(s string) { logs = append(logs, s) }
 
 			outcome, err := (&ReviewStep{}).Execute(sctx)
 			if err == nil {
@@ -356,6 +382,18 @@ func TestReviewStep_UncorrectableReviewFailsOnFirstTurn(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantError) || strings.Contains(err.Error(), "attempts") {
 				t.Fatalf("error = %q, want the first turn's own failure %q", err, tc.wantError)
+			}
+			var reason string
+			for _, line := range logs {
+				if strings.Contains(line, "not corrected: its findings cannot be kept") {
+					reason = line
+				}
+			}
+			if reason == "" || !strings.Contains(reason, tc.wantLog) {
+				t.Fatalf("logs = %q, want the reason no correction ran naming %q", logs, tc.wantLog)
+			}
+			if strings.Contains(reason, "nil dereference") || strings.Contains(reason, "unrequired helper") {
+				t.Fatalf("withheld-correction log %q carries review content", reason)
 			}
 		})
 	}

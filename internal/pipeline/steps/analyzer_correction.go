@@ -36,14 +36,14 @@ type analyzerCorrection struct {
 	// payload's other fields and is accepted with exactly these findings, and
 	// a payload whose findings cannot be kept fails at once, since no
 	// correction could supply them.
-	keepFindings     func(rejected []byte) ([]Finding, error)
+	keepFindings     func(rejected agent.RejectedOutput) ([]Finding, error)
 	correctionPrompt func(err error, rejected []byte) string
 }
 
 func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg analyzerCorrection) (Findings, error) {
 	current := prompt
 	var lastErr error
-	var keptPayload []byte
+	var keptPayload agent.RejectedOutput
 	var keptFindings []Finding
 	for attempt := 1; attempt <= analyzerCorrectionMaxAttempts; attempt++ {
 		if attempt > 1 {
@@ -82,7 +82,7 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 			var findings Findings
 			findings, valErr = cfg.parse(result)
 			if valErr == nil {
-				if keptPayload != nil {
+				if keptPayload.Text != nil {
 					findings.Items = keptFindings
 				}
 				return findings, nil
@@ -90,12 +90,13 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 		}
 		rejected := agent.RejectedStructuredOutput(runErr)
 		if result != nil && result.Output != nil {
-			rejected = result.Output
+			rejected = agent.RejectedOutput{Text: result.Output}
 		}
 		if cfg.keepFindings != nil {
-			if keptPayload == nil {
+			if keptPayload.Text == nil {
 				var keepErr error
 				if keptFindings, keepErr = cfg.keepFindings(rejected); keepErr != nil {
+					sctx.Log(fmt.Sprintf("%s not corrected: its findings cannot be kept (%s)", cfg.logName, strings.ReplaceAll(keepErr.Error(), "\n", "; ")))
 					return Findings{}, valErr
 				}
 				keptPayload = rejected
@@ -106,7 +107,7 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 		if attempt == analyzerCorrectionMaxAttempts {
 			break
 		}
-		current = cfg.correctionPrompt(valErr, rejected)
+		current = cfg.correctionPrompt(valErr, rejected.Text)
 	}
 	return Findings{}, fmt.Errorf("%s after %d attempts: %w", cfg.exhaustedOp, analyzerCorrectionMaxAttempts, lastErr)
 }

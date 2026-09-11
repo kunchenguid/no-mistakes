@@ -91,9 +91,11 @@ AI code review of your diff. This is probabilistic evidence, not a security or c
 - Sends the filtered diff to the agent with structured review instructions and a structured output schema
 - If that structured output is a readable review that fails schema validation (for example a missing required `risk_level`, or `tested` given as a boolean), a fresh, session-free, correction-only invocation receives the complete rejected output and the validation errors as untrusted data.
   It cannot use tools or re-review the code, may repair only the review's fields outside `findings`, and must not invent a default risk assessment.
+  Because validation reports only the first violation it finds, the correction is asked to check every field outside `findings` against the review schema and repair each one that does not match, not just the field the error names.
   The rejected review's findings are final: the step keeps them exactly as reported whatever the correction returns, so a correction can never drop, add, or downgrade a finding.
   The step allows two extra correction attempts after the first invalid payload, and exhausting that bound fails the step as a parse failure.
-  A review with no findings to keep - no structured output at all, an absent or null `findings` array, or findings that break the schema themselves - is never corrected, because a correction could only invent them; it fails the step on the first attempt and is never treated as a pass.
+  The rejected review is found in the response by the same rules the agent adapter applied to it, so other JSON quoted in the surrounding prose does not hide it.
+  A review with no findings to keep - no structured output at all, an absent or null `findings` array, or findings that break the schema themselves - is never corrected, because a correction could only invent them; it fails the step on the first attempt, the step log records why, and it is never treated as a pass.
   A valid payload is accepted on the first attempt.
   Ordinary agent failures (exit, timeout, transient) are not retried here.
   The same path applies to the initial review and every post-fix rereview.
