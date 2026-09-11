@@ -307,6 +307,17 @@ func privateCommitsAbsentFromLive(ctx context.Context, repoDir, liveHead, privat
 			livePatches[patch] = count
 		}
 	}
+	mergedTree, mergeErr := git.Run(ctx, repoDir, "merge-tree", "--write-tree", liveHead, privateHead)
+	if mergeErr != nil {
+		return privateOnly, nil
+	}
+	liveTree, err := git.Run(ctx, repoDir, "rev-parse", "--verify", liveHead+"^{tree}")
+	if err != nil {
+		return nil, err
+	}
+	if mergedTree != liveTree {
+		return privateOnly, nil
+	}
 	return atRisk, nil
 }
 

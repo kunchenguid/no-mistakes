@@ -216,7 +216,7 @@ Pushes the validated branch to the configured push target.
 - Pushes the exact verified commit SHA instead of mutable worktree `HEAD`
 - Treats the branch as already pushed when the remote already points at that verified commit
 - Uses regular push for new branches
-- When the local gate mirror exists, advances its branch ref to the delivered commit when that does not rewind a newer gate submission; skips a missing mirror and fails on a divergent ref so subsequent pushes to the gate proxy remain fast-forwardable after pipeline rebases
+- When the local gate mirror exists, applies the [private mirror reconciliation contract](/no-mistakes/concepts/gate-model/#private-mirror-reconciliation), including Decision 41-A for the exact submitted head, while preserving newer descendants through shared worktree refs; skips a missing mirror
 - Only after the remote and gate mirror settle, atomically records the exact delivered commit as both the run head and successful-push binding; until that database write succeeds, the durable database head and binding remain unchanged, so a partial failure records nothing and is safe to re-enter
 
 A remote branch can move without being rejected when all remote commits are already represented in the validated head, or when a run is intentionally rewriting history it already knew about.

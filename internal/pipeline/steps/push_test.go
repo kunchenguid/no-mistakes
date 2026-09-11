@@ -1352,3 +1352,70 @@ func TestPushStep_RefusesToOverwriteNewerInterveningPrivateCommit(t *testing.T) 
 		t.Fatalf("expected gate mirror ref to remain at %s, got %s", interveningHead, gateHead)
 	}
 }
+
+func TestPushStep_DetachedGateWorktreePreservesDescendantAfterEmptyIndex(t *testing.T) {
+	t.Setenv("NM_HOME", t.TempDir())
+	source, baseSHA, _ := setupGitRepo(t)
+	submodule, _, _ := setupGitRepo(t)
+	gitCmd(t, source, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "sub")
+	gitCmd(t, source, "commit", "-m", "add submodule")
+	reviewedHead := gitCmd(t, source, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(source, "newer.txt"), []byte("newer private work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", "newer.txt")
+	gitCmd(t, source, "commit", "-m", "newer private work")
+	descendantHead := gitCmd(t, source, "rev-parse", "HEAD")
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	gitCmd(t, source, "clone", "--bare", source, gateDir)
+	workDir := filepath.Join(t.TempDir(), "detached")
+	gitCmd(t, gateDir, "worktree", "add", "--detach", workDir, reviewedHead)
+	gitCmd(t, workDir, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+	if err := os.WriteFile(filepath.Join(workDir, "sub", "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitStatusPorcelain(t, workDir); strings.TrimSpace(status) == "" {
+		t.Fatal("fixture must have unstaged submodule dirt")
+	}
+	gitCmd(t, workDir, "add", "-A")
+	if staged := gitCmd(t, workDir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("fixture must have an empty staged index: %s", staged)
+	}
+	commonDir := gitCmd(t, workDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonInfo, err := os.Stat(commonDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateInfo, err := os.Stat(gateDir)
+	if err != nil || !os.SameFile(commonInfo, gateInfo) {
+		t.Fatalf("fixture does not share gate refs: common=%s gate=%s err=%v", commonDir, gateDir, err)
+	}
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, gateDir, "remote", "set-url", "origin", upstream)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, workDir, baseSHA, reviewedHead, config.Commands{})
+	sctx.GateDir = gateDir
+	sctx.Repo.UpstreamURL = upstream
+	recordReviewApproval(t, sctx, reviewedHead)
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("publish from shared detached worktree: %v", err)
+	}
+	for _, dir := range []string{gateDir, workDir} {
+		if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != descendantHead {
+			t.Fatalf("shared branch in %s = %s, want preserved descendant %s", dir, got, descendantHead)
+		}
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != reviewedHead {
+		t.Fatalf("published head = %s, want reviewed %s", got, reviewedHead)
+	}
+	if got := gitCmd(t, workDir, "rev-parse", "HEAD"); got != reviewedHead {
+		t.Fatalf("empty-index handoff created a commit: %s", got)
+	}
+	if got := gitCmd(t, gateDir, "tag", "--list", "no-mistakes-abandoned/*"); got != "" {
+		t.Fatalf("preserved descendant was archived: %s", got)
+	}
+	persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil || persisted == nil || persisted.HeadSHA != reviewedHead || persisted.LastPushedSHA == nil || *persisted.LastPushedSHA != reviewedHead {
+		t.Fatalf("publication binding = %+v, err = %v, want reviewed head %s", persisted, err, reviewedHead)
+	}
+}

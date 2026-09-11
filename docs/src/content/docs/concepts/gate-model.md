@@ -93,6 +93,38 @@ instead of relying on working-directory discovery, so hardened environments
 that set `safe.bareRepository=explicit` (common in agent harnesses and CI)
 work unchanged.
 
+### Private mirror reconciliation
+
+A rebase can leave the gate branch on an older history that rejects the next
+ordinary push. Reconciliation compares exact commit heads and per-file
+`git patch-id --stable` identities; commit messages are not evidence. Historical
+patch matches also require a clean three-way merge of the private head into the
+live head whose resulting tree equals the live tree. This prevents changes
+discarded by a merge or revert from being counted as surviving content. If that
+survival check cannot prove preservation, the private-only range is reported
+as at risk.
+
+**Accepted Decision 41-A (issue #983):** pipeline publication may replace a
+private mirror head that is **exactly equal to `Run.SubmittedHeadSHA`** without
+patch-ID or tree-survival proof. This narrow policy exception permits reviewed
+rebases and conflict resolutions to change the submitted patch. Ownership is
+not containment evidence. The exception does not extend to another recorded
+head, an abbreviated SHA, or an external, newer, or divergent private head.
+Fresh AXI submissions do not receive this exception.
+
+Before deleting a reconciled branch ref, the gate archives its exact head at
+`refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
+unproven private content refuses before upstream publication, leaves the
+private branch untouched, and names every at-risk commit. An ancestor already
+supports an ordinary fast-forward. A gate head that is a newer descendant of
+the published head stays untouched, including through the detached worktree's
+shared branch refs.
+
+Publication plans reconciliation before pushing and applies it only after
+verifying the upstream head. AXI reconciles before its ordinary submission
+push and restores an archived ref after a failed submission if no intervening
+ref has appeared. Neither path forces the private mirror.
+
 ### Daemon
 
 The daemon owns long-running work: creating worktrees, running the pipeline,
