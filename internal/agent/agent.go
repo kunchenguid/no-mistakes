@@ -588,7 +588,9 @@ type bareObject struct {
 // bareJSONObjects scans text for balanced {...} substrings outside code fences
 // that parse as JSON and validate against the schema. Only concluding objects
 // are candidates; an incidental object followed by substantive prose is not a
-// verdict.
+// verdict, and provider protocol residue after a complete object is. A single
+// answer split across adjacent objects is returned as their union when their
+// keys are disjoint and the union validates (see fuseAdjacentBareObjects).
 func bareJSONObjects(text string, schema json.RawMessage) ([]json.RawMessage, error) {
 	var valid []bareObject
 	var objects []bareObject
