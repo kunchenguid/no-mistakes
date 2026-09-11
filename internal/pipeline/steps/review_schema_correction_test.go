@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -23,8 +24,34 @@ const (
 	distinctUserIntent   = "Ship the helper only if the captain confirms it is required"
 )
 
-func schemaRejected(message string) error {
-	return rejectedStructuredOutputError{message: message}
+// schemaRejected is the shape a text-validating adapter such as Pi returns:
+// no Result, and a rejection whose error text holds only the reason while the
+// complete rejected response travels beside it.
+func schemaRejected(message, output string) error {
+	return rejectedStructuredOutputError{message: message, output: output}
+}
+
+// correctRejectedReview stands in for a correcting model. It repairs only the
+// schema slip in the rejected review handed to it through the correction
+// prompt, so every finding it returns must have reached it through that
+// prompt.
+func correctRejectedReview(prompt string) (*agent.Result, error) {
+	_, section, _ := strings.Cut(prompt, "<rejected-json>")
+	section, _, _ = strings.Cut(section, "</rejected-json>")
+	start, end := strings.Index(section, "{"), strings.LastIndex(section, "}")
+	if start < 0 || end < start {
+		return nil, errors.New("correction prompt carried no rejected review")
+	}
+	var review map[string]any
+	if err := json.Unmarshal([]byte(section[start:end+1]), &review); err != nil {
+		return nil, fmt.Errorf("correction prompt carried an incomplete rejected review: %w", err)
+	}
+	delete(review, "tested")
+	review["risk_level"] = "medium"
+	review["risk_rationale"] = "restored from the rejected review"
+	review["risk_scope"] = types.FindingsRiskScopeSourceOrExternal
+	output, err := json.Marshal(review)
+	return &agent.Result{Output: output}, err
 }
 
 // TestReviewStep_InvalidSchemaTriggersCorrectionRound is issue #1045's
@@ -36,28 +63,26 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
-		first      func() (*agent.Result, error)
+		message    string
+		rejected   string
 		wantPrompt string
 	}{
 		{
-			name: "required risk_level missing",
-			first: func() (*agent.Result, error) {
-				return nil, schemaRejected(`JSON output missing required field "risk_level"`)
-			},
+			name:       "required risk_level missing",
+			message:    `JSON output missing required field "risk_level"`,
+			rejected:   missingRiskLevelJSON,
 			wantPrompt: `JSON output missing required field "risk_level"`,
 		},
 		{
-			name: "tested set to false",
-			first: func() (*agent.Result, error) {
-				return nil, schemaRejected("JSON output tested must be array or null")
-			},
+			name:       "tested set to a boolean",
+			message:    "JSON output tested must be array or null",
+			rejected:   `{"findings":[{"severity":"warning","action":"ask-user","description":"unrequired helper","file":"a.txt","line":1,"review_scope":"source"}],"tested":true,"risk_level":"medium","risk_rationale":"one warning","risk_scope":"source-or-external"}`,
 			wantPrompt: "JSON output tested must be array or null",
 		},
 		{
-			name: "adapter parse prefix does not have to be matched",
-			first: func() (*agent.Result, error) {
-				return nil, schemaRejected(`pi output parse: JSON output missing required field "risk_level"`)
-			},
+			name:       "fenced Pi output with adapter parse prefix",
+			message:    `pi output parse: JSON output missing required field "risk_level"`,
+			rejected:   "```json\n" + missingRiskLevelJSON + "\n```",
 			wantPrompt: `JSON output missing required field "risk_level"`,
 		},
 	} {
@@ -67,12 +92,12 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			calls := 0
 			ag := &mockAgent{
 				name: "pi",
-				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 					calls++
 					if calls == 1 {
-						return tc.first()
+						return nil, schemaRejected(tc.message, tc.rejected)
 					}
-					return &agent.Result{Output: json.RawMessage(reviewFindingJSON)}, nil
+					return correctRejectedReview(opts.Prompt)
 				},
 			}
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -85,11 +110,10 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			if len(ag.calls) != 2 {
 				t.Fatalf("agent calls = %d, want 1 rejected review plus 1 correction", len(ag.calls))
 			}
-			if ag.calls[0].Purpose != "review" {
-				t.Fatalf("first purpose = %q, want review", ag.calls[0].Purpose)
-			}
-			if ag.calls[1].Purpose != "review-correction" {
-				t.Fatalf("correction purpose = %q, want review-correction so local invocation records can tell the turns apart", ag.calls[1].Purpose)
+			for i, call := range ag.calls {
+				if call.Purpose != "review" {
+					t.Fatalf("call %d purpose = %q, want review", i+1, call.Purpose)
+				}
 			}
 			if ag.calls[1].Session != nil {
 				t.Fatal("correction inherited a session")
@@ -131,6 +155,147 @@ func TestReviewStep_InvalidSchemaTriggersCorrectionRound(t *testing.T) {
 			}
 			if findings.Items[0].Description != "unrequired helper" {
 				t.Fatalf("correction dropped the rejected review's finding: %+v", findings.Items)
+			}
+		})
+	}
+}
+
+// TestReviewStep_PiRejectionHandsTheFullReviewToCorrection covers the adapter
+// shape issue #1045 hit: Pi validates its final text itself, so its rejection
+// arrives with no Result and an error text holding at most a 200-character
+// snippet. The correction must still receive the whole review, or findings
+// past the snippet silently disappear from the corrected review.
+func TestReviewStep_PiRejectionHandsTheFullReviewToCorrection(t *testing.T) {
+	t.Parallel()
+	descriptions := []string{
+		"nil dereference when the config file is empty",
+		"retry loop never backs off after a 503",
+		"cache key ignores the tenant id",
+	}
+	items := make([]string, 0, len(descriptions))
+	for i, description := range descriptions {
+		items = append(items, fmt.Sprintf(`{"severity":"error","action":"auto-fix","description":%q,"file":"a.txt","line":%d,"review_scope":"source"}`, description, i+1))
+	}
+	rejected := "```json\n{\"findings\":[" + strings.Join(items, ",") + "],\"tested\":true}\n```"
+	if len(rejected) <= 400 {
+		t.Fatalf("rejected review is %d bytes, want it well past the error snippet", len(rejected))
+	}
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{
+		name: "pi",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls == 1 {
+				return nil, schemaRejected(`pi output parse: JSON output missing required field "risk_level"`, rejected)
+			}
+			return correctRejectedReview(opts.Prompt)
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("a Pi schema slip must be corrected, not fail the step: %v", err)
+	}
+	if len(ag.calls) != 2 {
+		t.Fatalf("agent calls = %d, want 1 rejected review plus 1 correction", len(ag.calls))
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, item := range findings.Items {
+		got[item.Description] = true
+	}
+	for _, description := range descriptions {
+		if !got[description] {
+			t.Fatalf("corrected review lost %q; findings = %+v", description, findings.Items)
+		}
+	}
+	if len(findings.Items) != len(descriptions) {
+		t.Fatalf("corrected review has %d findings, want the %d the rejected review reported", len(findings.Items), len(descriptions))
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("the corrected review's blocking findings must still gate the step")
+	}
+}
+
+// TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection keeps issue
+// #703's guarantee under the correction loop. With no review content to
+// repair - no output at all, or no findings array - a correction turn could
+// only invent a clean review, so the step fails on the first turn exactly as
+// it did before corrections existed.
+func TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection(t *testing.T) {
+	t.Parallel()
+	nullFindings := `{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	for _, tc := range []struct {
+		name      string
+		result    *agent.Result
+		err       error
+		wantError string
+	}{
+		{
+			name:      "no structured output",
+			err:       schemaRejected("claude returned no structured output", ""),
+			wantError: "agent review: claude returned no structured output",
+		},
+		{
+			name:      "no text output",
+			err:       schemaRejected("pi returned no text output", ""),
+			wantError: "agent review: pi returned no text output",
+		},
+		{
+			name:      "prose instead of JSON",
+			err:       schemaRejected("pi output parse: ended its turn with prose instead of the required JSON object", "The change looks fine to me."),
+			wantError: "ended its turn with prose",
+		},
+		{
+			name:      "null findings",
+			result:    &agent.Result{Output: json.RawMessage(nullFindings)},
+			wantError: "review analyzer findings missing findings array",
+		},
+		{
+			name:      "absent findings",
+			result:    &agent.Result{Output: json.RawMessage(`{"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)},
+			wantError: "review analyzer findings missing findings array",
+		},
+		{
+			name:      "null findings in rejected Pi text",
+			err:       schemaRejected("pi output parse: JSON output findings must be array", nullFindings),
+			wantError: "findings must be array",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			calls := 0
+			ag := &mockAgent{
+				name: "pi",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					calls++
+					if calls == 1 {
+						return tc.result, tc.err
+					}
+					return &agent.Result{Output: json.RawMessage(validReviewJSON)}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err == nil {
+				t.Fatalf("an unreadable review must fail the step, got outcome %+v", outcome)
+			}
+			if outcome != nil {
+				t.Fatalf("outcome = %+v, want none", outcome)
+			}
+			if len(ag.calls) != 1 {
+				t.Fatalf("agent calls = %d, want 1: an unreadable review has nothing to correct", len(ag.calls))
+			}
+			if !strings.Contains(err.Error(), tc.wantError) || strings.Contains(err.Error(), "attempts") {
+				t.Fatalf("error = %q, want the first turn's own failure %q", err, tc.wantError)
 			}
 		})
 	}
@@ -208,7 +373,7 @@ func TestReviewStep_InvalidSchemaExhaustsCorrectionBound(t *testing.T) {
 	ag := &mockAgent{
 		name: "pi",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			return nil, schemaRejected(`JSON output missing required field "risk_level"`)
+			return nil, schemaRejected(`JSON output missing required field "risk_level"`, missingRiskLevelJSON)
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -224,7 +389,7 @@ func TestReviewStep_InvalidSchemaExhaustsCorrectionBound(t *testing.T) {
 		t.Fatalf("agent calls = %d, want %d", len(ag.calls), analyzerCorrectionMaxAttempts)
 	}
 	got := err.Error()
-	if !strings.Contains(got, "after 3 attempts") && !strings.Contains(got, "after 3 attempt") {
+	if !strings.Contains(got, fmt.Sprintf("after %d attempts", analyzerCorrectionMaxAttempts)) {
 		t.Fatalf("error = %q, want the exhausted bound named", got)
 	}
 	if !agent.IsStructuredOutputRejected(err) {
@@ -233,12 +398,9 @@ func TestReviewStep_InvalidSchemaExhaustsCorrectionBound(t *testing.T) {
 	if !strings.Contains(got, `missing required field "risk_level"`) {
 		t.Fatalf("error = %q, want the schema reason", got)
 	}
-	if ag.calls[0].Purpose != "review" {
-		t.Fatalf("first purpose = %q, want review", ag.calls[0].Purpose)
-	}
-	for i := 1; i < len(ag.calls); i++ {
-		if ag.calls[i].Purpose != "review-correction" {
-			t.Fatalf("call %d purpose = %q, want review-correction", i+1, ag.calls[i].Purpose)
+	for i, call := range ag.calls {
+		if call.Purpose != "review" {
+			t.Fatalf("call %d purpose = %q, want review", i+1, call.Purpose)
 		}
 	}
 }
@@ -315,18 +477,16 @@ func TestReviewStep_RereviewSchemaFailureUsesFreshCorrection(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
-	calls := 0
 	ag := &mockAgent{
 		name: "pi",
 		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			calls++
 			if strings.Contains(opts.Prompt, "Investigate previous review findings") {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"address review findings"}`)}, nil
 			}
 			if strings.Contains(opts.Prompt, "This is a correction-only turn") {
 				return &agent.Result{Output: json.RawMessage(validReviewJSON)}, nil
 			}
-			return nil, schemaRejected(`JSON output missing required field "risk_level"`)
+			return nil, schemaRejected(`JSON output missing required field "risk_level"`, missingRiskLevelJSON)
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
@@ -344,14 +504,13 @@ func TestReviewStep_RereviewSchemaFailureUsesFreshCorrection(t *testing.T) {
 	if len(ag.calls) != 3 {
 		t.Fatalf("agent calls = %d, want fixer + rejected rereview + correction", len(ag.calls))
 	}
-	if ag.calls[0].Purpose != "review-fix" {
-		t.Fatalf("first purpose = %q, want review-fix", ag.calls[0].Purpose)
+	for i, want := range []string{"review-fix", "review", "review"} {
+		if ag.calls[i].Purpose != want {
+			t.Fatalf("call %d purpose = %q, want %q", i+1, ag.calls[i].Purpose, want)
+		}
 	}
-	if ag.calls[1].Purpose != "review" {
-		t.Fatalf("rereview purpose = %q, want review", ag.calls[1].Purpose)
-	}
-	if ag.calls[2].Purpose != "review-correction" {
-		t.Fatalf("correction purpose = %q, want review-correction", ag.calls[2].Purpose)
+	if ag.calls[2].Session != nil {
+		t.Fatal("rereview correction inherited a session")
 	}
 	if !strings.Contains(ag.calls[1].Prompt, "Fix-round provenance") {
 		t.Fatalf("rereview prompt missing fixer provenance:\n%s", ag.calls[1].Prompt)
@@ -370,7 +529,7 @@ func TestReviewStep_RereviewSchemaFailureUsesFreshCorrection(t *testing.T) {
 	}
 }
 
-func TestReviewStep_SchemaCorrectionIsRecordedSeparately(t *testing.T) {
+func TestReviewStep_SchemaRejectionIsRecordedAsParseFailure(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	calls := 0
@@ -379,7 +538,7 @@ func TestReviewStep_SchemaCorrectionIsRecordedSeparately(t *testing.T) {
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 			calls++
 			if calls == 1 {
-				return nil, schemaRejected(`JSON output missing required field "risk_level"`)
+				return nil, schemaRejected(`JSON output missing required field "risk_level"`, missingRiskLevelJSON)
 			}
 			return &agent.Result{Output: json.RawMessage(validReviewJSON)}, nil
 		},
@@ -402,8 +561,8 @@ func TestReviewStep_SchemaCorrectionIsRecordedSeparately(t *testing.T) {
 	if first.Purpose != "review" || first.ExitStatus != "error" || first.FailureCategory != "parse" {
 		t.Fatalf("first row = purpose %q exit %q category %q, want review/error/parse", first.Purpose, first.ExitStatus, first.FailureCategory)
 	}
-	if second.Purpose != "review-correction" || second.ExitStatus != "ok" || second.FailureCategory != "" {
-		t.Fatalf("correction row = purpose %q exit %q category %q, want review-correction/ok/empty", second.Purpose, second.ExitStatus, second.FailureCategory)
+	if second.Purpose != "review" || second.ExitStatus != "ok" || second.FailureCategory != "" {
+		t.Fatalf("correction row = purpose %q exit %q category %q, want review/ok/empty", second.Purpose, second.ExitStatus, second.FailureCategory)
 	}
 	if first.SessionMode != db.InvocationModeCold || second.SessionMode != db.InvocationModeCold {
 		t.Fatalf("session modes = %q/%q, want cold/cold", first.SessionMode, second.SessionMode)
@@ -416,7 +575,7 @@ func TestReviewStep_ExhaustedSchemaFailureNeverPasses(t *testing.T) {
 	ag := &mockAgent{
 		name: "pi",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-			return nil, schemaRejected(`JSON output missing required field "risk_level"`)
+			return nil, schemaRejected(`JSON output missing required field "risk_level"`, missingRiskLevelJSON)
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})

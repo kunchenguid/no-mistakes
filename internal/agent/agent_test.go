@@ -413,6 +413,31 @@ func TestFinalizeTextResult_WithSchemaPreservesTypeErrorForValidJSON(t *testing.
 	}
 }
 
+// A caller correcting a rejected response needs all of it, while the error
+// text stays a bounded snippet for logs, step errors, and invocation records.
+func TestFinalizeTextResult_RejectionCarriesTheFullResponseOutsideTheError(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["risk_level"],"properties":{"findings":{"type":"array"},"risk_level":{"type":"string"}}}`)
+	text := "```json\n{\"findings\":[\"" + strings.Repeat("x", 500) + "\",\"tail finding\"]}\n```"
+	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if !IsStructuredOutputRejected(err) {
+		t.Fatalf("err = %v, want a structured-output rejection", err)
+	}
+	if got := string(RejectedStructuredOutput(err)); got != text {
+		t.Fatalf("rejected output = %q, want the complete response", got)
+	}
+	if strings.Contains(err.Error(), "tail finding") {
+		t.Fatalf("error text carries the full response instead of a snippet: %v", err)
+	}
+	if extracted, extractErr := StructuredTextJSON(RejectedStructuredOutput(err)); extractErr != nil || !strings.Contains(string(extracted), "tail finding") {
+		t.Fatalf("StructuredTextJSON = %s, %v; want the fenced object", extracted, extractErr)
+	}
+
+	_, err = finalizeTextResult("pi", "", schema, TokenUsage{})
+	if !IsStructuredOutputRejected(err) || len(RejectedStructuredOutput(err)) != 0 {
+		t.Fatalf("empty response: err = %v, rejected = %q; want a rejection carrying nothing", err, RejectedStructuredOutput(err))
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	text := "review complete\n\n```json\n{\"done\":true}\n```"
 	result, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})

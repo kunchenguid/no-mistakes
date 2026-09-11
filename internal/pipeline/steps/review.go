@@ -331,13 +331,12 @@ Risk assessment (after listing all findings):
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
 	findings, err := runAnalyzerWithCorrection(sctx, prompt, analyzerCorrection{
-		schema:            reviewFindingsSchema,
-		purpose:           "review",
-		correctionPurpose: "review-correction",
-		env:               sctx.Env,
-		workload:          workload,
-		logName:           "review analyzer findings",
-		exhaustedOp:       "validate review analyzer findings",
+		schema:      reviewFindingsSchema,
+		purpose:     "review",
+		env:         sctx.Env,
+		workload:    workload,
+		logName:     "review analyzer findings",
+		exhaustedOp: "validate review analyzer findings",
 		startContext: func() (context.Context, context.CancelFunc, time.Duration) {
 			return s.reviewAgentContext(sctx.Ctx, sctx.Config)
 		},
@@ -351,6 +350,7 @@ Risk assessment (after listing all findings):
 			return sctx.RunAgentSessionContext(ctx, "", opts)
 		},
 		parse:            parseReviewAnalyzerOutput,
+		correctable:      reviewPayloadHasFindings,
 		correctionPrompt: reviewAnalyzerCorrectionPrompt,
 	})
 	if err != nil {
@@ -520,6 +520,21 @@ func parseReviewAnalyzerOutput(result *agent.Result) (Findings, error) {
 		findings.Items[i].Severity = types.NormalizeFindingSeverity(findings.Items[i].Severity)
 	}
 	return findings, nil
+}
+
+// reviewPayloadHasFindings reports whether a rejected review still carries
+// its findings array, i.e. the review exists and only slipped elsewhere in
+// the schema. Without that array a correction turn has no review to repair
+// and could only invent one, so the step fails closed on it (issue #703).
+func reviewPayloadHasFindings(rejected []byte) bool {
+	output, err := agent.StructuredTextJSON(rejected)
+	if err != nil {
+		return false
+	}
+	var payload struct {
+		Findings *[]json.RawMessage `json:"findings"`
+	}
+	return json.Unmarshal(output, &payload) == nil && payload.Findings != nil
 }
 
 // The shared RunOpts contract cannot restrict tools, so this fresh turn

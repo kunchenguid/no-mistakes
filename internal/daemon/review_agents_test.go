@@ -49,7 +49,7 @@ review_agents:
 	for _, tc := range []struct{ purpose, model, effort string }{
 		{"review", "anthropic-vertex/claude-opus-4-8", "max"},
 		{"review-fix", "google-vertex/gemini-3.8-flash", "max"},
-		{"review-correction", "anthropic-vertex/claude-opus-4-8", "max"},
+		{"review", "anthropic-vertex/claude-opus-4-8", "max"},
 		{"test-evidence", "default-model", "high"},
 	} {
 		_, err := ag.Run(context.Background(), agent.RunOpts{Purpose: tc.purpose, Prompt: "hello", CWD: dir})

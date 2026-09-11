@@ -6,11 +6,10 @@ import (
 	"time"
 )
 
-// WithReviewAgents routes only review, review-correction, and review-fix
-// invocations. Nil roles keep the default agent (including its fallback
-// chain). Ownership of all supplied agents transfers to the wrapper; non-nil
-// roles must be independent instances. Only the fixer resumes sessions;
-// review and review-correction turns remain fresh.
+// WithReviewAgents routes only review and review-fix invocations. Nil roles
+// keep the default agent (including its fallback chain). Ownership of all
+// supplied agents transfers to the wrapper; non-nil roles must be independent
+// instances. Only the fixer resumes sessions; review turns remain fresh.
 func WithReviewAgents(primary, reviewer, fixer Agent) Agent {
 	if reviewer == nil && fixer == nil {
 		return primary
@@ -43,7 +42,7 @@ func (a *reviewAgents) NeutralizesGateInstructions() bool {
 func (a *reviewAgents) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	selected := a.primary
 	switch opts.Purpose {
-	case "review", "review-correction":
+	case "review":
 		if a.reviewer != nil {
 			selected = a.reviewer
 		}

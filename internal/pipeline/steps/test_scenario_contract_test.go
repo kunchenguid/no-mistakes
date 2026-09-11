@@ -389,11 +389,11 @@ func TestTestStep_MissingScenarioContractFails(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Execute() error = %v, want one naming %q", err, tc.wantErr)
 			}
-			if !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", testAnalyzerMaxAttempts)) {
+			if !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", analyzerCorrectionMaxAttempts)) {
 				t.Fatalf("Execute() error = %v, want the exhausted correction bound named", err)
 			}
-			if len(ag.calls) != testAnalyzerMaxAttempts {
-				t.Fatalf("agent calls = %d, want %d bounded correction attempts before failing", len(ag.calls), testAnalyzerMaxAttempts)
+			if len(ag.calls) != analyzerCorrectionMaxAttempts {
+				t.Fatalf("agent calls = %d, want %d bounded correction attempts before failing", len(ag.calls), analyzerCorrectionMaxAttempts)
 			}
 		})
 	}
@@ -501,10 +501,11 @@ const untestedWithoutReasonFindingsJSON = `{
   "verdict": "inconclusive"
 }`
 
-type rejectedStructuredOutputError struct{ message string }
+type rejectedStructuredOutputError struct{ message, output string }
 
 func (e rejectedStructuredOutputError) Error() string                { return e.message }
 func (rejectedStructuredOutputError) StructuredOutputRejected() bool { return true }
+func (e rejectedStructuredOutputError) RejectedOutput() []byte       { return []byte(e.output) }
 
 // TestTestStep_InvalidAnalyzerPayloadTriggersCorrectionRound is the
 // recoverability contract: a pass that was not live-validated, or an
@@ -656,7 +657,7 @@ func TestTestStep_MalformedJSONTriggersCorrectionRound(t *testing.T) {
 
 // TestTestStep_InvalidAnalyzerPayloadExhaustsCorrectionBound proves the
 // loop is bounded: a payload that stays invalid is a genuine blocking
-// failure after testAnalyzerMaxAttempts, never an infinite resubmit.
+// failure after analyzerCorrectionMaxAttempts, never an infinite resubmit.
 func TestTestStep_InvalidAnalyzerPayloadExhaustsCorrectionBound(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -675,11 +676,11 @@ func TestTestStep_InvalidAnalyzerPayloadExhaustsCorrectionBound(t *testing.T) {
 	if outcome != nil {
 		t.Fatalf("Execute() outcome = %+v, want no outcome after the bound is exhausted", outcome)
 	}
-	if len(ag.calls) != testAnalyzerMaxAttempts {
-		t.Fatalf("agent calls = %d, want %d", len(ag.calls), testAnalyzerMaxAttempts)
+	if len(ag.calls) != analyzerCorrectionMaxAttempts {
+		t.Fatalf("agent calls = %d, want %d", len(ag.calls), analyzerCorrectionMaxAttempts)
 	}
 	got := err.Error()
-	if !strings.Contains(got, fmt.Sprintf("after %d attempts", testAnalyzerMaxAttempts)) {
+	if !strings.Contains(got, fmt.Sprintf("after %d attempts", analyzerCorrectionMaxAttempts)) {
 		t.Fatalf("error = %q, want the exhausted bound named", got)
 	}
 	if !strings.Contains(got, `result "pass" but live=false`) {

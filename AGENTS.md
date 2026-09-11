@@ -60,10 +60,15 @@ Safest local verification sequence after non-trivial changes:
 
 **Review Analyzer Schema Correction (`internal/pipeline/steps/review.go`)**
 
-- Invalid review JSON is the same class of problem as invalid Test analyzer output: `runAnalyzerWithCorrection` (`analyzerCorrectionMaxAttempts`) returns the rejected payload and validation errors to a fresh, session-free, correction-only agent. Only exhausting that bound fails the step, still as a parse failure (`agent.IsStructuredOutputRejected`); an unreadable review is never a pass. The unconfigured "pass" meaning is unchanged.
-- The correction prompt must remain correction-only: no tools, no re-review of the code, no new findings. Keep the findings the rejected output reported. Never supply a missing risk assessment by default (no hard-coded `risk_level` or similar fallback). The retry does not inherit fixer rationale. The same path applies to the initial review and every post-fix rereview, and to Pi and native-schema agents whenever validation fails. Ordinary agent failures (exit, timeout, transient) are not retried here.
-- Correction invocations are recorded with purpose `review-correction` so they stay distinguishable from the review turn in local invocation records, without storing prompts or outputs.
-- Regressions: `TestReviewStep_InvalidSchemaTriggersCorrectionRound`, `TestReviewStep_RejectedPayloadKeepsReportedFindings`, `TestReviewStep_TestedBooleanPayloadTriggersCorrectionRound`, `TestReviewStep_InvalidSchemaExhaustsCorrectionBound`, `TestReviewStep_ValidFirstOutputDoesNotRetry`, `TestReviewStep_NonSchemaAgentFailureIsNotRetried`, `TestReviewStep_RereviewSchemaFailureUsesFreshCorrection`, `TestReviewStep_SchemaCorrectionIsRecordedSeparately`, `TestReviewStep_ExhaustedSchemaFailureNeverPasses` (`internal/pipeline/steps/review_schema_correction_test.go`).
+- Invalid review JSON is the same class of problem as invalid Test analyzer output: `runAnalyzerWithCorrection` (`analyzerCorrectionMaxAttempts`) returns the rejected payload and validation errors to a fresh, session-free, correction-only agent.
+Only exhausting that bound fails the step, still as a parse failure; the unconfigured "pass" meaning is unchanged.
+- Review corrects only a readable review that slipped elsewhere in the schema: `reviewPayloadHasFindings` requires the rejected payload to carry a `findings` array.
+No output, or an absent or null `findings` array (issue #703), fails on the first turn with no correction, because a correction there could only invent a clean review.
+Test still corrects every rejection.
+- Text-validating adapters (every `finalizeTextResult` caller, including Pi, plus grok) return no Result on a rejection, so the complete rejected text rides the error through `agent.RejectedStructuredOutput`.
+It is never part of the error message, which keeps only the 200-character snippet.
+- The correction prompt must remain correction-only: no tools, no re-review of the code, no new findings. Keep the findings the rejected output reported. Never supply a missing risk assessment by default (no hard-coded `risk_level` or similar fallback). The retry does not inherit fixer rationale and keeps the `review` purpose, so it routes to the configured reviewer. The same path applies to the initial review and every post-fix rereview, and to Pi and native-schema agents whenever validation fails. Ordinary agent failures (exit, timeout, transient) are not retried here.
+- Regressions: `internal/pipeline/steps/review_schema_correction_test.go` (incl. `TestReviewStep_PiRejectionHandsTheFullReviewToCorrection`, `TestReviewStep_UnreadableReviewFailsClosedWithoutCorrection`, `TestReviewStep_InvalidSchemaExhaustsCorrectionBound`, `TestReviewStep_RereviewSchemaFailureUsesFreshCorrection`), `TestFinalizeTextResult_RejectionCarriesTheFullResponseOutsideTheError`, e2e `TestAnalyzerEvidenceFailuresFailPipelineJourney`.
 
 **CI Step Findings Model**
 

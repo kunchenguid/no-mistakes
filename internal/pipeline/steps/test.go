@@ -259,11 +259,6 @@ Rules:
 	}, nil
 }
 
-// testAnalyzerMaxAttempts is the Test-step name for the shared analyzer
-// correction bound. Keep this alias so existing Test tests continue to
-// name the bound they pin.
-const testAnalyzerMaxAttempts = analyzerCorrectionMaxAttempts
-
 func runTestAnalyzer(sctx *pipeline.StepContext, prompt string) (Findings, error) {
 	return runAnalyzerWithCorrection(sctx, prompt, analyzerCorrection{
 		schema:      testFindingsSchema,

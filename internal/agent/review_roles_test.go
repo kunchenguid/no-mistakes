@@ -27,7 +27,7 @@ func TestReviewAgentsRouteAndPreserveCapabilities(t *testing.T) {
 	fixer := &roleRecorder{name: "pi", neutral: true, resumable: true}
 	ag := WithReviewAgents(primary, reviewer, fixer)
 	var attempts []string
-	for _, purpose := range []string{"review", "review-fix", "review-correction", "test-evidence", "review-fix"} {
+	for _, purpose := range []string{"review", "review-fix", "review", "test-evidence", "review-fix"} {
 		result, err := ag.Run(context.Background(), RunOpts{Purpose: purpose, Session: &SessionRef{ID: "prior", Agent: "pi"}, OnAttempt: func(a Attempt) { attempts = append(attempts, a.Agent) }})
 		if err != nil {
 			t.Fatal(err)

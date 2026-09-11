@@ -43,9 +43,8 @@ type RunOpts struct {
 	// a failed resume. Instrumentation only; adapters ignore it.
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, review-correction, test-evidence, ...). The review-role
-	// router uses review, review-correction, and review-fix to select a
-	// harness; concrete adapters ignore it.
+	// review-fix, test-evidence, ...). The review-role router uses review and
+	// review-fix to select a harness; concrete adapters ignore it.
 	Purpose string
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
@@ -73,17 +72,37 @@ func IsStructuredOutputRejected(err error) bool {
 	return errors.As(err, &rejection) && rejection.StructuredOutputRejected()
 }
 
-type structuredOutputRejection struct{ err error }
+// RejectedStructuredOutput returns the complete final response whose
+// structured output was rejected, or nothing when the invocation produced
+// none. Callers read it here rather than from the error text, which carries
+// only a bounded snippet.
+func RejectedStructuredOutput(err error) []byte {
+	var rejection interface{ RejectedOutput() []byte }
+	if errors.As(err, &rejection) {
+		return rejection.RejectedOutput()
+	}
+	return nil
+}
+
+type structuredOutputRejection struct {
+	err    error
+	output []byte
+}
 
 func (e *structuredOutputRejection) Error() string                { return e.err.Error() }
 func (e *structuredOutputRejection) Unwrap() error                { return e.err }
 func (*structuredOutputRejection) StructuredOutputRejected() bool { return true }
+func (e *structuredOutputRejection) RejectedOutput() []byte       { return e.output }
 
-func rejectStructuredOutput(err error) error {
+// rejectStructuredOutput marks err as a structured-output rejection. output is
+// the complete response that failed validation, empty when none arrived. It
+// stays out of Error() so logs, step errors, and invocation records only ever
+// see the bounded snippet an adapter puts in err.
+func rejectStructuredOutput(err error, output string) error {
 	if err == nil || IsStructuredOutputRejected(err) {
 		return err
 	}
-	return &structuredOutputRejection{err: err}
+	return &structuredOutputRejection{err: err, output: []byte(output)}
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -305,7 +324,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 	if text == "" {
 		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return nil, rejectStructuredOutput(err)
+			return nil, rejectStructuredOutput(err, "")
 		}
 		return nil, err
 	}
@@ -315,7 +334,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)), text)
 	}
 
 	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
@@ -332,6 +351,13 @@ func outputSnippet(text string) string {
 		return string(runes[:max]) + "…"
 	}
 	return trimmed
+}
+
+// StructuredTextJSON extracts the JSON value a text adapter would validate
+// from a final response - bare, fenced, or set in prose - without applying
+// any schema, so a caller can inspect what a rejected response said.
+func StructuredTextJSON(text []byte) (json.RawMessage, error) {
+	return parseStructuredTextOutput(string(text), nil, false)
 }
 
 func parseStructuredTextOutput(text string, schema json.RawMessage, preferTerminal bool) (json.RawMessage, error) {

@@ -21,18 +21,21 @@ import (
 const analyzerCorrectionMaxAttempts = 3
 
 type analyzerCorrection struct {
-	schema            json.RawMessage
-	purpose           string
-	correctionPurpose string
-	env               []string
-	workload          *agent.InvocationWorkload
-	logName           string
-	exhaustedOp       string
-	startContext      func() (context.Context, context.CancelFunc, time.Duration)
-	wrapError         func(ctx context.Context, timeout time.Duration, err error) error
-	run               func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
-	parse             func(*agent.Result) (Findings, error)
-	correctionPrompt  func(err error, rejected []byte) string
+	schema       json.RawMessage
+	purpose      string
+	env          []string
+	workload     *agent.InvocationWorkload
+	logName      string
+	exhaustedOp  string
+	startContext func() (context.Context, context.CancelFunc, time.Duration)
+	wrapError    func(ctx context.Context, timeout time.Duration, err error) error
+	run          func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error)
+	parse        func(*agent.Result) (Findings, error)
+	// correctable, when set, decides whether a rejected payload still holds
+	// the analyzer's own content; any other rejection fails immediately
+	// instead of asking a correction turn to invent that content.
+	correctable      func(rejected []byte) bool
+	correctionPrompt func(err error, rejected []byte) string
 }
 
 func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg analyzerCorrection) (Findings, error) {
@@ -49,17 +52,13 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 			))
 		}
 		ctx, cancel, timeout := cfg.startContext()
-		purpose := cfg.purpose
-		if attempt > 1 && cfg.correctionPurpose != "" {
-			purpose = cfg.correctionPurpose
-		}
 		result, err := cfg.run(ctx, agent.RunOpts{
 			Prompt:     current,
 			CWD:        sctx.WorkDir,
 			Env:        cfg.env,
 			JSONSchema: cfg.schema,
 			OnChunk:    sctx.LogChunk,
-			Purpose:    purpose,
+			Purpose:    cfg.purpose,
 			Workload:   cfg.workload,
 		})
 		runErr := cfg.wrapError(ctx, timeout, err)
@@ -82,13 +81,16 @@ func runAnalyzerWithCorrection(sctx *pipeline.StepContext, prompt string, cfg an
 				return findings, nil
 			}
 		}
+		rejected := agent.RejectedStructuredOutput(runErr)
+		if result != nil && result.Output != nil {
+			rejected = result.Output
+		}
+		if cfg.correctable != nil && !cfg.correctable(rejected) {
+			return Findings{}, valErr
+		}
 		lastErr = valErr
 		if attempt == analyzerCorrectionMaxAttempts {
 			break
-		}
-		var rejected []byte
-		if result != nil {
-			rejected = result.Output
 		}
 		current = cfg.correctionPrompt(valErr, rejected)
 	}
