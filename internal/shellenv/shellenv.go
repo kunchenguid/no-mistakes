@@ -48,7 +48,6 @@ const (
 
 var cacheMu sync.Mutex
 var cachedEnv []string
-var degraded bool
 
 func LoginShell() string {
 	if shell, ok := lookupEnv("SHELL"); ok && strings.TrimSpace(shell) != "" {
@@ -85,14 +84,11 @@ func Resolve() ([]string, error) {
 // delay startup. The retry sleeps add up to at most window.
 func ResolveWithShellRetry(window time.Duration) ([]string, error) {
 	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	return resolveWithShellRetryLocked(window)
-}
-
-func resolveWithShellRetryLocked(window time.Duration) ([]string, error) {
 	if cachedEnv != nil {
+		defer cacheMu.Unlock()
 		return append([]string(nil), cachedEnv...), nil
 	}
+	cacheMu.Unlock()
 
 	resolved, resolvedFromShell := resolveUncached(window)
 
@@ -100,22 +96,15 @@ func resolveWithShellRetryLocked(window time.Duration) ([]string, error) {
 	// probe failed or returned nothing) must never be cached: one bad daemon
 	// startup would otherwise poison every spawned agent for the daemon's whole
 	// lifetime - the failure mode behind #143. Leaving it uncached lets a later
-	// call (the daemon re-probes at run start while Degraded) recover the real
-	// login-shell PATH.
+	// call retry and recover the real login-shell PATH.
 	if resolvedFromShell {
-		cachedEnv = append([]string(nil), resolved...)
+		cacheMu.Lock()
+		if cachedEnv == nil {
+			cachedEnv = append([]string(nil), resolved...)
+		}
+		cacheMu.Unlock()
 	}
-	degraded = !resolvedFromShell
 	return append([]string(nil), resolved...), nil
-}
-
-// Degraded reports whether the most recent resolution fell back to the
-// augmented process environment instead of a successful login-shell probe. It
-// is false before any resolution and after a successful one.
-func Degraded() bool {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	return degraded
 }
 
 func ApplyToProcess() error {
@@ -129,14 +118,11 @@ func ApplyToProcessWithShellRetry(window time.Duration) error {
 }
 
 func ApplyToProcessWithShellRetryExcept(window time.Duration, excluded ...string) error {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-
 	excludedKeys := make(map[string]struct{}, len(excluded))
 	for _, key := range excluded {
 		excludedKeys[key] = struct{}{}
 	}
-	env, err := resolveWithShellRetryLocked(window)
+	env, err := ResolveWithShellRetry(window)
 	if err != nil {
 		return err
 	}
@@ -429,5 +415,4 @@ func resetForTests() {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
 	cachedEnv = nil
-	degraded = false
 }

@@ -11,8 +11,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -77,9 +75,6 @@ func TestResolveWithShellRetry_WaitsForAMissingLoginShellBinary(t *testing.T) {
 	if want := []time.Duration{time.Second, 2 * time.Second}; fmt.Sprint(probe.sleeps) != fmt.Sprint(want) {
 		t.Fatalf("retry sleeps = %v, want %v", probe.sleeps, want)
 	}
-	if Degraded() {
-		t.Fatal("a successful retry must clear the degraded state")
-	}
 	// The recovered result is the cached one: later calls must not re-probe.
 	shellCommandOutput = func(string, ...string) ([]byte, error) {
 		t.Fatal("unexpected re-probe after a successful retry")
@@ -117,9 +112,6 @@ func TestResolveWithShellRetry_BoundsWaitingForAPermanentlyMissingShell(t *testi
 	if probe.calls != 3 {
 		t.Fatalf("probe calls = %d, want 3", probe.calls)
 	}
-	if !Degraded() {
-		t.Fatal("expected the degraded state after the window is exhausted")
-	}
 	path, _ := envValue(env, "PATH")
 	if !strings.HasPrefix(path, "/usr/bin:/bin") || !strings.Contains(path, "/opt/homebrew/bin") {
 		t.Fatalf("expected the augmented process-environment fallback, got %q", path)
@@ -154,113 +146,7 @@ func TestResolveWithShellRetry_DoesNotWaitForAShellThatExistsButFails(t *testing
 			if len(probe.sleeps) != 0 || probe.calls != 1 {
 				t.Fatalf("sleeps = %v, calls = %d; a failing shell that exists must not be waited for", probe.sleeps, probe.calls)
 			}
-			if !Degraded() {
-				t.Fatal("expected the degraded state")
-			}
 		})
-	}
-}
-
-func TestConcurrentApplyToProcess_SuccessfulResolutionWins(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Resolve short-circuits to os.Environ() on Windows")
-	}
-	resetForTests()
-	t.Setenv("SHELL", "/run/current-system/sw/bin/zsh")
-	t.Setenv("HOME", "/Users/test")
-	t.Setenv("PATH", "/degraded/bin")
-
-	oldOutput := shellCommandOutput
-	firstStarted := make(chan struct{})
-	secondStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	releaseSecond := make(chan struct{})
-	var calls atomic.Int32
-	shellCommandOutput = func(shell string, _ ...string) ([]byte, error) {
-		switch calls.Add(1) {
-		case 1:
-			close(firstStarted)
-			<-releaseFirst
-			return []byte("PATH=/nix/profile/bin:/usr/bin\x00HOME=/Users/test\x00"), nil
-		case 2:
-			close(secondStarted)
-			<-releaseSecond
-			return nil, missingShellError(shell)
-		default:
-			return nil, fmt.Errorf("unexpected probe")
-		}
-	}
-	t.Cleanup(func() {
-		shellCommandOutput = oldOutput
-		resetForTests()
-	})
-
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		errs <- ApplyToProcess()
-	}()
-	<-firstStarted
-	go func() {
-		defer wg.Done()
-		errs <- ApplyToProcess()
-	}()
-
-	select {
-	case <-secondStarted:
-		close(releaseSecond)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(releaseFirst)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("login shell probes = %d, want 1 serialized successful probe", got)
-	}
-	if Degraded() {
-		t.Fatal("a competing failed refresh must not restore degraded state")
-	}
-	if got := os.Getenv("PATH"); !strings.HasPrefix(got, "/nix/profile/bin:/usr/bin") {
-		t.Fatalf("process PATH = %q, want successful login shell PATH", got)
-	}
-}
-
-func TestResolve_ReportsDegradedUntilAProbeSucceeds(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Resolve short-circuits to os.Environ() on Windows")
-	}
-	resetForTests()
-	t.Setenv("SHELL", "/run/current-system/sw/bin/zsh")
-	t.Setenv("HOME", "/Users/test")
-	probe := &retryProbe{t: t, failures: 1}
-	probe.install(t)
-
-	if Degraded() {
-		t.Fatal("nothing resolved yet, so nothing is degraded")
-	}
-	if _, err := Resolve(); err != nil {
-		t.Fatal(err)
-	}
-	if !Degraded() {
-		t.Fatal("expected Degraded after a fallback resolution")
-	}
-	env, err := Resolve()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if Degraded() {
-		t.Fatal("expected a later successful probe to clear Degraded")
-	}
-	if path, _ := envValue(env, "PATH"); !strings.HasPrefix(path, "/nix/profile/bin:") {
-		t.Fatalf("expected the recovered login shell PATH, got %q", path)
 	}
 }
 
