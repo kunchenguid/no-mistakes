@@ -113,7 +113,7 @@ This is a hard failure, not a degraded validation mode.
 
 ### Check PATH
 
-The daemon uses the same binary-discovery order described in [Choosing an Agent](/no-mistakes/guides/agents/). When it starts through a managed service, it resolves `PATH` once from your login shell on macOS and Linux and appends common install locations such as `~/.local/bin`, `~/go/bin`, `~/.cargo/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.
+The daemon uses the same binary-discovery order described in [Choosing an Agent](/no-mistakes/guides/agents/). Its effective `PATH` comes from the startup process described in [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees).
 
 If a native agent is installed in a version-manager shim directory or another nonstandard location, set an explicit override in `~/.no-mistakes/config.yaml`:
 
@@ -134,7 +134,7 @@ acp_registry_overrides:
 For Antigravity or Gemini-based driving agents, install a supported native agent CLI separately or configure a working ACP target such as `agent: acp:gemini` with `acpx` installed.
 The calling agent is the AXI driver, not an implicit pipeline-agent backend.
 
-The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. If the log contains `login shell environment resolution failed` or `login shell environment resolution returned no entries`, the daemon used a degraded fallback `PATH` that may omit version-manager directories such as nvm, fnm, or volta, so tools like `pnpm` may be missing. A `login shell binary is missing` warning means the daemon started before its login shell existed (on macOS with Nix, before `/run/current-system` was recreated after a reboot) and waited for it with bounded backoff. Restart the daemon to pick up a login shell that appeared or changed later. The `PATH` baked into the launchd plist or systemd unit is only the bootstrap value the service manager hands the daemon binary; the login-shell probe replaces it, so a reinstall does not change the effective `PATH`.
+The daemon logs its effective `PATH` at startup in `~/.no-mistakes/logs/daemon.log` with the message `daemon environment ready`. A `login shell environment resolution failed` or `login shell environment resolution returned no entries` warning means the fallback `PATH` may omit version-manager tools. A `login shell binary is missing` warning means the configured shell was absent and the daemon waited for it. Restart the daemon to pick up a shell that appeared or changed later; reinstalling the service is not a substitute. The [environment reference](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the retry, fallback, and service bootstrap details.
 
 ### Restart the daemon after installing a new agent
 
