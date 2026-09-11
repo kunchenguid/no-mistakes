@@ -677,25 +677,56 @@ func trailingNonJSONResidue(rest string) bool {
 }
 
 // isProtocolResidueToken accepts one whitespace-delimited piece of provider
-// tool-protocol residue: a markup tag such as </invoke> (optionally carrying
-// DeepSeek's full-width DSML separators), or a run of punctuation with no
-// letters or digits, such as a stray closing brace. Ordinary prose words fail
-// both tests, so a prose continuation is still rejected.
+// tool-protocol residue: markup whose text outside its tags carries no letters
+// or digits, such as a closing delimiter </invoke> or </parameter> (optionally
+// carrying DeepSeek's full-width DSML separators), or a run of punctuation with
+// no letters or digits at all, such as a stray closing brace. Markup that wraps
+// real content - <b>note</b>, 1<2>0 - and every ordinary prose word is not
+// residue, so a prose continuation is still rejected.
 func isProtocolResidueToken(token string) bool {
-	if strings.Contains(token, "<") && strings.Contains(token, ">") {
-		return true
+	rest, sawTag := stripMarkupTags(token)
+	if !sawTag {
+		return !containsAlphanumeric(token)
 	}
-	return !strings.ContainsFunc(token, func(r rune) bool {
+	return !containsAlphanumeric(rest)
+}
+
+// stripMarkupTags removes every <...> span from token and reports whether it
+// found at least one.
+func stripMarkupTags(token string) (string, bool) {
+	var rest strings.Builder
+	sawTag := false
+	for i := 0; i < len(token); {
+		if token[i] == '<' {
+			if end := strings.IndexByte(token[i:], '>'); end >= 0 {
+				sawTag = true
+				i += end + 1
+				continue
+			}
+		}
+		rest.WriteByte(token[i])
+		i++
+	}
+	return rest.String(), sawTag
+}
+
+func containsAlphanumeric(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
 		return unicode.IsLetter(r) || unicode.IsDigit(r)
 	})
 }
 
-// errSplitBareObjects marks a split answer whose adjacent objects could not be
-// merged into one schema-valid object (a repeated key, or a union that still
-// fails validation). It is deliberately distinct from a generic schema error so
-// the retry classifier can retry it: the step's real work is done and only the
+// errSplitBareObjects marks a split answer whose adjacent objects have disjoint
+// keys but still do not validate once merged (the model left the answer
+// incomplete). It is deliberately distinct from a generic schema error so the
+// retry classifier can retry it: the step's real work is done and only the
 // final text shape is wrong.
 var errSplitBareObjects = errors.New("split bare JSON objects could not be fused into one valid object")
+
+// errDuplicateBareObjectKey marks adjacent bare objects that share a top-level
+// key. That is competing values for one field rather than halves of one answer,
+// so it stays terminal and is never retried.
+var errDuplicateBareObjectKey = errors.New("adjacent bare JSON objects share a top-level key")
 
 // fuseAdjacentBareObjects merges runs of adjacent top-level objects whose keys
 // are disjoint, returning the merged object when it validates against the full
@@ -708,7 +739,8 @@ var errSplitBareObjects = errors.New("split bare JSON objects could not be fused
 // single-object path: anything other than protocol residue after the run means
 // the objects were quoted mid-answer, not answered. A concluding run that
 // cannot be fused reports errSplitBareObjects rather than the generic schema
-// error.
+// error. A run whose keys repeat is competing values, not a recoverable split,
+// and falls through to the generic schema error so it stays terminal.
 func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
 	for i := 0; i < len(objects); {
 		j := i
@@ -716,11 +748,17 @@ func fuseAdjacentBareObjects(text string, objects []bareObject, schema json.RawM
 			j++
 		}
 		if j > i && trailingNonJSONResidue(text[objects[j].endIndex:]) {
-			fused, ok := fuseBareObjects(objects[i:j+1], schema)
-			if !ok {
+			fused, err := fuseBareObjects(objects[i:j+1], schema)
+			if err == nil {
+				return fused, nil
+			}
+			if errors.Is(err, errSplitBareObjects) {
 				return nil, errSplitBareObjects
 			}
-			return fused, nil
+			// Competing values for one key, or a span that is not a JSON object
+			// at all: not a recoverable split, so fall through to the generic
+			// schema error and stay terminal.
+			return nil, nil
 		}
 		i = j + 1
 	}
@@ -735,29 +773,29 @@ func isBareObjectSeparator(gap string) bool {
 	return trimmed == "" || trimmed == ","
 }
 
-func fuseBareObjects(objects []bareObject, schema json.RawMessage) (json.RawMessage, bool) {
+func fuseBareObjects(objects []bareObject, schema json.RawMessage) (json.RawMessage, error) {
 	merged := make(map[string]json.RawMessage)
 	for _, object := range objects {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(object.raw, &fields); err != nil {
-			return nil, false
+			return nil, err
 		}
 		for key, value := range fields {
 			if _, exists := merged[key]; exists {
-				return nil, false
+				return nil, errDuplicateBareObjectKey
 			}
 			merged[key] = value
 		}
 	}
 	fused, err := json.Marshal(merged)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	out, err := parseStructuredCandidate(fused, schema)
 	if err != nil {
-		return nil, false
+		return nil, errSplitBareObjects
 	}
-	return out, true
+	return out, nil
 }
 
 func jsonEqual(a, b json.RawMessage) bool {

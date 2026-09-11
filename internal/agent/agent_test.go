@@ -645,7 +645,8 @@ func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T
 	// Fusion must never let two competing verdicts combine; a repeated key is
 	// the signal that they are alternatives, not two halves of one answer. The
 	// union here would satisfy the schema if the duplicate risk_level were
-	// merged (last wins), so accepting it is the failure this guards.
+	// merged (last wins), so accepting it is the failure this guards. Competing
+	// values stay terminal: they must not reach the retryable split error.
 	text := `{"findings":[{"id":"F1"}],"risk_level":"low"}{"risk_level":"high","risk_rationale":"r","risk_scope":"source"}`
 	schema := json.RawMessage(`{
 		"type":"object",
@@ -658,8 +659,31 @@ func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T
 		"required":["findings","risk_level","risk_rationale","risk_scope"]
 	}`)
 	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
-	if !errors.Is(err, errSplitBareObjects) {
-		t.Fatalf("expected duplicate-key objects to be rejected, got %v", err)
+	if err == nil {
+		t.Fatal("expected duplicate-key objects to be rejected")
+	}
+	if errors.Is(err, errSplitBareObjects) {
+		t.Fatalf("duplicate-key objects must not use the retryable split error, got %v", err)
+	}
+	if _, retry := classifyTransient(err); retry {
+		t.Fatalf("competing duplicate-key objects must stay terminal, got retryable: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_RejectsMarkupProseAfterBareJSON(t *testing.T) {
+	// Regression for Greptile P1: a token that merely contains both '<' and '>'
+	// is not provider residue. Markup wrapping real words is prose, so the object
+	// before it is not the conclusion of the answer and the parse must fail.
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	for _, text := range []string{
+		`{"summary":"done"}<b>note</b>`,
+		`{"summary":"done"} <b>note</b>`,
+		`{"summary":"done"} 1<2>0`,
+		`{"summary":"done"}<b>note</b></invoke>`,
+	} {
+		if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
+			t.Fatalf("expected markup prose after the object to be rejected: %q", text)
+		}
 	}
 }
 
