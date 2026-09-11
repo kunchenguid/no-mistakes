@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -67,6 +70,72 @@ func TestRefreshDegradedShellEnvironment_ReprobesOnlyWhileDegraded(t *testing.T)
 	refreshDegradedShellEnvironment()
 	if stub.refreshes != 1 {
 		t.Fatalf("refreshes = %d, want no re-probe once healthy", stub.refreshes)
+	}
+}
+
+func TestConcurrentRefreshDegradedShellEnvironment_PreservesServiceNMHome(t *testing.T) {
+	t.Setenv("NM_HOME", "/service/root")
+	oldRefresh, oldDegraded := refreshShellEnvToProcess, shellEnvDegraded
+	var degraded atomic.Bool
+	degraded.Store(true)
+	var calls atomic.Int32
+	firstApplied := make(chan struct{})
+	secondApplied := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	shellEnvDegraded = degraded.Load
+	refreshShellEnvToProcess = func() error {
+		switch calls.Add(1) {
+		case 1:
+			if err := os.Setenv("NM_HOME", "/shell/root"); err != nil {
+				return err
+			}
+			close(firstApplied)
+			<-releaseFirst
+			degraded.Store(false)
+			return nil
+		case 2:
+			close(secondApplied)
+			<-releaseSecond
+			return nil
+		default:
+			return errors.New("unexpected refresh")
+		}
+	}
+	t.Cleanup(func() {
+		refreshShellEnvToProcess, shellEnvDegraded = oldRefresh, oldDegraded
+	})
+
+	var wg sync.WaitGroup
+	firstDone := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		refreshDegradedShellEnvironment()
+		close(firstDone)
+	}()
+	<-firstApplied
+	go func() {
+		defer wg.Done()
+		refreshDegradedShellEnvironment()
+	}()
+
+	select {
+	case <-secondApplied:
+		close(releaseFirst)
+		<-firstDone
+	case <-time.After(100 * time.Millisecond):
+		close(releaseFirst)
+		<-firstDone
+	}
+	close(releaseSecond)
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refreshes = %d, want one serialized successful refresh", got)
+	}
+	if got := os.Getenv("NM_HOME"); got != "/service/root" {
+		t.Fatalf("NM_HOME = %q, want service value after concurrent refreshes", got)
 	}
 }
 

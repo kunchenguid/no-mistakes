@@ -48,6 +48,7 @@ var applyShellEnvToProcess = func() error {
 }
 var refreshShellEnvToProcess = shellenv.ApplyToProcess
 var shellEnvDegraded = shellenv.Degraded
+var refreshShellEnvMu sync.Mutex
 var createDaemonPIDTempFile = os.CreateTemp
 var renameDaemonPIDFile = os.Rename
 
@@ -157,6 +158,9 @@ func applyLoginShellEnvironment(apply func() error, nmHome string) error {
 // restart. A healthy environment costs nothing here; a still-degraded one
 // costs a single probe and keeps the run going on the fallback.
 func refreshDegradedShellEnvironment() {
+	refreshShellEnvMu.Lock()
+	defer refreshShellEnvMu.Unlock()
+
 	if !shellEnvDegraded() {
 		return
 	}
