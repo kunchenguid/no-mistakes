@@ -81,7 +81,7 @@ func TestPRTemplateRejectsUnsafePinnedFiles(t *testing.T) {
 	dir, _, head := setupGitRepo(t)
 	files := map[string][]byte{
 		"empty.md": {}, "blank.md": []byte(" \n\t"), "binary.md": {0xff, 0xfe},
-		"nul.md": []byte("a\x00b"), "large.md": []byte(strings.Repeat("x", maxPRTemplateBytes+1)),
+		"embedded-nul.md": []byte("a\x00b"), "large.md": []byte(strings.Repeat("x", maxPRTemplateBytes+1)),
 		"marker.md": []byte(pipelineAttestationCommentPrefix + `{"head_sha":"x"} -->`),
 		"owner.md":  []byte(prAppendixEnd), "link.md": []byte("outside.md"),
 		"[literal].md": []byte("## Literal path\n"),
@@ -340,5 +340,24 @@ func TestPRTemplateIncompleteGitHubReadsNeverOverwriteAuthor(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPRTemplateStructureInvalidBacktickFenceKeepsRequiredHeadings(t *testing.T) {
+	t.Parallel()
+	template := "``` `example`\n# First\n# Second\n"
+	for _, body := range []string{"# First\n# Second\n", template} {
+		if err := validateTemplateStructure(template, body); err != nil {
+			t.Fatalf("preserved headings rejected: %v", err)
+		}
+	}
+	for _, body := range []string{"# First\n", "# Second\n# First\n"} {
+		if err := validateTemplateStructure(template, body); err == nil {
+			t.Fatalf("missing or reordered required heading accepted: %q", body)
+		}
+	}
+	// Tilde fences allow backticks in their info strings.
+	if err := validateTemplateStructure("~~~ `example`\n# Example\n~~~\n# Required\n", "# Required\n"); err != nil {
+		t.Fatalf("fenced example treated as required: %v", err)
 	}
 }
