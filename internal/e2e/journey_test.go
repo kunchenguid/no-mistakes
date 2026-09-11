@@ -2351,7 +2351,15 @@ func assertRerunCompletedInDir(t *testing.T, h *Harness, dir string, previous *i
 
 func assertDaemonStatusRunning(t *testing.T, h *Harness) {
 	t.Helper()
+	// A busy CI runner can miss a single 250ms health deadline even after
+	// startup succeeded. Retry only that transient read failure; a stopped
+	// daemon or any other status error must still fail this assertion.
+	deadline := time.Now().Add(5 * time.Second)
 	out, err := h.Run("daemon", "status")
+	for err != nil && strings.Contains(out, "daemon health did not reply within") && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		out, err = h.Run("daemon", "status")
+	}
 	if err != nil {
 		t.Fatalf("nm daemon status after init: %v\n%s", err, out)
 	}
