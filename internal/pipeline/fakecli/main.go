@@ -476,6 +476,10 @@ func fakeCIGHReconcileHandler(args []string) {
 
 func fakeGHHandlePRContentCommands(args []string, joined string) {
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json title,body") {
+		if raw, ok := os.LookupEnv("FAKE_CLI_PR_CONTENT_JSON"); ok {
+			fmt.Println(raw)
+			os.Exit(0)
+		}
 		title := os.Getenv("FAKE_CLI_PR_TITLE")
 		if title == "" {
 			title = "test pr"

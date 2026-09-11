@@ -299,3 +299,46 @@ func TestPRTemplateUnsupportedProviderIsExplicit(t *testing.T) {
 		t.Fatal("unsupported template launched an agent")
 	}
 }
+
+func TestPRTemplateIncompleteGitHubReadsNeverOverwriteAuthor(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{`{}`, `null`, `{"title":"Author title"}`, `{"title":"Author title","body":null}`, `{"title":"Author title","body":42}`} {
+		for _, phase := range []string{"initial", "pre-write"} {
+			t.Run(phase+"/"+payload, func(t *testing.T) {
+				sctx, ag, _ := templateTestContext(t)
+				author := "# Human description\n\n- [x] Approved\nCloses test/repo#7\n"
+				bodyFile := filepath.Join(t.TempDir(), "body.md")
+				if err := os.WriteFile(bodyFile, []byte(author), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+				sctx.Env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile, "FAKE_CLI_PR_TITLE=Author title", "FAKE_CLI_PR_CONTENT_JSON="+payload)
+				var err error
+				if phase == "initial" {
+					_, err = (&PRStep{}).Execute(sctx)
+				} else {
+					host, reason := buildHost(sctx, scm.ProviderGitHub)
+					if host == nil {
+						t.Fatal(reason)
+					}
+					_, appendix := ownedFixture(t)
+					err = updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: author}, "", appendix, 0)
+				}
+				if err == nil {
+					t.Fatal("incomplete read permitted publication")
+				}
+				got, readErr := os.ReadFile(bodyFile)
+				if readErr != nil || string(got) != author {
+					t.Fatalf("author text changed: %q, %v", got, readErr)
+				}
+				logs, readErr := os.ReadFile(logFile)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if strings.Contains(string(logs), "pr edit") || strings.Contains(string(logs), "pr create") || len(ag.calls) != 0 {
+					t.Fatalf("incomplete read drafted or wrote content: %s; agent calls=%d", logs, len(ag.calls))
+				}
+			})
+		}
+	}
+}

@@ -380,13 +380,16 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 		return scm.PRContent{}, fmt.Errorf("gh pr view: %w", err)
 	}
 	var parsed struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title *string `json:"title"`
+		Body  *string `json:"body"`
 	}
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		return scm.PRContent{}, fmt.Errorf("parse gh pr view: %w", err)
 	}
-	return scm.PRContent{Title: parsed.Title, Body: parsed.Body}, nil
+	if parsed.Title == nil || parsed.Body == nil {
+		return scm.PRContent{}, fmt.Errorf("parse gh pr view: missing or null title/body")
+	}
+	return scm.PRContent{Title: *parsed.Title, Body: *parsed.Body}, nil
 }
 
 func (h *Host) SetPRBaseBranch(ctx context.Context, pr *scm.PR, baseBranch string) error {
