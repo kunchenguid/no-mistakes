@@ -343,8 +343,8 @@ type PRRaw struct {
 	BaseBranch string `yaml:"base_branch"`
 	// Template and PublishIntent are repository-only publication policy. Both
 	// remain trusted-only even when allow_repo_commands is enabled.
-	Template      string  `yaml:"template"`
-	PublishIntent *bool   `yaml:"publish_intent"`
+	Template      string `yaml:"template"`
+	PublishIntent *bool  `yaml:"publish_intent"`
 	// TitleFormat controls PR title rendering when set. It is a non-executing
 	// repository convention and is therefore read from the pushed branch.
 	TitleFormat *string `yaml:"title_format"`
@@ -2292,7 +2292,6 @@ func validatePRRaw(pr PRRaw) error {
 	}
 	return nil
 }
-}
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
 // the review step could not honor deterministically: a missing path or
@@ -2895,10 +2894,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:        Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:            pr,
-		ForgeProfiles: global.ForgeProfiles,
-		Providers:     providers,
+		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:             pr,
+		ForgeProfiles:  global.ForgeProfiles,
+		Providers:      providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
