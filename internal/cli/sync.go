@@ -47,11 +47,7 @@ func newSyncCmd() *cobra.Command {
 			"--bind-archive-ref records one exact existing refs/heads/archive/* commit as\n" +
 			"evidence for the narrow keep-local recovery that stays at a required head while\n" +
 			"a divergent later head remains archived; it never creates or moves a Git ref.\n" +
-			"--accept-repository-rename <previous-target> is the explicit terminal-run\n" +
-			"continuation after no-mistakes init records a renamed GitHub repository. It\n" +
-			"requires authenticated same-host immutable repository identity plus exact clean\n" +
-			"local/pushed/live heads, and changes only the old target fingerprint. The failed\n" +
-			"run remains failed; rerun starts the preserved validation again.",
+			repositoryRenameSyncGuidance,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renameRequested := cmd.Flags().Changed("accept-repository-rename")
@@ -90,7 +86,7 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
-	cmd.Flags().StringVar(&previousRenameTarget, "accept-repository-rename", "", "verify this previous target and migrate only its terminal push fingerprint to the current same-ID GitHub repository name")
+	cmd.Flags().StringVar(&previousRenameTarget, "accept-repository-rename", "", "verify this previous target and atomically migrate its terminal push binding with exact rename provenance to the current same-ID GitHub repository name")
 	return cmd
 }
 
@@ -106,15 +102,12 @@ func newAxiSyncCmd() *cobra.Command {
 			"an eligible plan without a prompt: strict fast-forward for behind branches, or an\n" +
 			"equivalent advance that anchors the old head before moving the branch to the\n" +
 			"verified pipeline head with reset semantics.\n" +
-			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
+			"--check performs the same fresh read-only plan.\n" +
 			"--recover performs the guarded custody return offered by\n" +
 			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
 			"the selected terminal run; it never creates or moves a Git ref.\n" +
-			"--accept-repository-rename <previous-target> explicitly migrates only a terminal\n" +
-			"run's old target fingerprint after authenticated same-host immutable GitHub\n" +
-			"identity and exact clean local/pushed/live head checks. It preserves the failed\n" +
-			"outcome and returns no-mistakes rerun as the continuation.",
+			repositoryRenameSyncGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -142,7 +135,7 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; anchor available preserved commits, discard genuinely missing ones, and make the gate follow the kept head")
 	cmd.Flags().StringVar(&bindArchiveRef, "bind-archive-ref", "", "bind one existing refs/heads/archive/* commit as exact keep-local recovery evidence without changing Git refs")
-	cmd.Flags().StringVar(&previousRenameTarget, "accept-repository-rename", "", "verify this previous target and migrate only its terminal push fingerprint to the current same-ID GitHub repository name")
+	cmd.Flags().StringVar(&previousRenameTarget, "accept-repository-rename", "", "verify this previous target and atomically migrate its terminal push binding with exact rename provenance to the current same-ID GitHub repository name")
 	return cmd
 }
 
@@ -285,11 +278,11 @@ func runHumanAcceptRepositoryRename(cmd *cobra.Command, previousTarget string) e
 	printHumanSyncState(cmd, state)
 	if state.State == branchsync.StateSynchronized && (state.Safety == "repository_rename_accepted" || state.Safety == "repository_rename_already_accepted") {
 		if state.Changed {
-			fmt.Fprintln(cmd.OutOrStdout(), "  Repository rename accepted; only the terminal run's target fingerprint changed.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  Repository rename accepted; the selected terminal run's fingerprint and exact rename provenance committed atomically.")
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Repository rename was already accepted; no record changed.")
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "  The historical run remains terminal. Continue its validation with `no-mistakes rerun`.")
+		fmt.Fprintln(cmd.OutOrStdout(), "  Earlier fingerprints and all validation history remain unchanged; a failed run remains failed. Start new validation with `no-mistakes rerun`.")
 		if state.Changed {
 			result = "applied"
 		} else {

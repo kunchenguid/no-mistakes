@@ -164,6 +164,64 @@ func TestBranchSyncGuidance_EmittedForBoundArchiveRecovery(t *testing.T) {
 	}
 }
 
+// Check rendered guidance, not source text: fork setup must not redirect the
+// parent remote, and accepting a rename must not read as validation approval
+// or a fingerprint-only mutation that forgets the contained rerun history.
+func TestRepositoryRenameGuidance_SkillAndLiveSurfaces(t *testing.T) {
+	newCLISyncFixture(t)
+	surfaces := map[string]string{"skill body": skill.Markdown()}
+	for _, args := range [][]string{{"axi"}, {"sync", "--help"}, {"axi", "sync", "--help"}} {
+		out, err := executeCmd(args...)
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		if len(args) == 1 && !strings.Contains(out, "branch_sync:") {
+			t.Fatalf("AXI home did not emit the branch-sync guidance surface:\n%s", out)
+		}
+		surfaces[strings.Join(args, " ")] = out
+	}
+	for name, content := range surfaces {
+		normalized := strings.ToLower(strings.Join(strings.Fields(strings.ReplaceAll(content, "`", "")), " "))
+		for _, want := range []string{
+			"old target remains configured",
+			"canonical push target",
+			"--fork-url and keep origin at the parent",
+			"--accept-repository-rename <previous-credential-free-target>",
+			"authenticated same-host",
+			"atomically migrates the selected terminal run's fingerprint",
+			"records exact rename provenance for a contained rerun lineage",
+			"earlier fingerprints and all validation history remain unchanged",
+			"a failed run remains failed",
+			"rerun_pipeline",
+			"new validation",
+			"changed: true",
+			"https://kunchenguid.github.io/no-mistakes/reference/cli/#repository-rename-continuation",
+		} {
+			if !strings.Contains(normalized, want) {
+				t.Errorf("%s missing rename guidance %q:\n%s", name, want, content)
+			}
+		}
+		if name != "axi" {
+			for _, want := range []string{"exact clean local/pushed/live heads", "unchanged target kind/ref", "no active same-branch run"} {
+				if !strings.Contains(normalized, want) {
+					t.Errorf("%s missing rename guard %q:\n%s", name, want, content)
+				}
+			}
+		}
+		for _, obsolete := range []string{
+			"after updating origin",
+			"changes only the old push fingerprint",
+			"changes only the old target fingerprint",
+			"may migrate only a terminal push fingerprint",
+			"blocked states change nothing",
+		} {
+			if strings.Contains(normalized, obsolete) {
+				t.Errorf("%s still contains obsolete rename guidance %q", name, obsolete)
+			}
+		}
+	}
+}
+
 func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
 		"skill body":   skill.Markdown(),
