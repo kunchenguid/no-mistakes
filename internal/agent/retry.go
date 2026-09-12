@@ -78,7 +78,7 @@ func runWithRetry(
 		if err == nil {
 			return result, nil
 		}
-		if IsPromptDelivered(err) {
+		if IsPromptDelivered(err) || IsSessionSetupFailed(err) {
 			return nil, err
 		}
 		label, retry := classify(err)
