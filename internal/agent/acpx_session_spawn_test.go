@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,6 +230,42 @@ func TestAcpxAgent_ExecutableEnvironmentAndRawTargetChangesRejectBeforeResume(t 
 	}
 }
 
+func TestAcpxAgent_SessionProviderUsesEffectiveLastEnvironmentEntry(t *testing.T) {
+	dir := t.TempDir()
+	a := &acpxAgent{bin: writeSessionStubAcpx(t, dir), target: "gemini"}
+	t.Setenv("NM_TEST_ACPX_LOG", filepath.Join(dir, "calls"))
+	t.Setenv("NM_TEST_ACPX_CONFIG", `{}`)
+
+	withDuplicate, err := a.resolveSessionProvider(context.Background(), RunOpts{
+		CWD: dir,
+		Env: []string{"SERVING_PROFILE=A", "SERVING_PROFILE=B"},
+	})
+	if err != nil {
+		t.Fatalf("provider with duplicate environment: %v", err)
+	}
+	withEffectiveValue, err := a.resolveSessionProvider(context.Background(), RunOpts{
+		CWD: dir,
+		Env: []string{"SERVING_PROFILE=B"},
+	})
+	if err != nil {
+		t.Fatalf("provider with effective environment: %v", err)
+	}
+	if withDuplicate != withEffectiveValue {
+		t.Fatalf("shadowed environment entry changed provider: duplicate=%q effective=%q", withDuplicate, withEffectiveValue)
+	}
+
+	withReversedPrecedence, err := a.resolveSessionProvider(context.Background(), RunOpts{
+		CWD: dir,
+		Env: []string{"SERVING_PROFILE=B", "SERVING_PROFILE=A"},
+	})
+	if err != nil {
+		t.Fatalf("provider with reversed environment: %v", err)
+	}
+	if withReversedPrecedence == withDuplicate {
+		t.Fatal("different effective environment reused the same provider identity")
+	}
+}
+
 func TestAcpxAgent_UnresolvableRawCommandIdentityIsProcessLocal(t *testing.T) {
 	dir := t.TempDir()
 	acpxPath := writeSessionStubAcpx(t, dir)
@@ -375,6 +412,10 @@ func TestAcpxAgent_RealBridgeSessionContract(t *testing.T) {
 	if err != nil {
 		t.Skip("acpx is not installed")
 	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is not installed")
+	}
 
 	for _, tc := range []struct {
 		name        string
@@ -402,13 +443,14 @@ func TestAcpxAgent_RealBridgeSessionContract(t *testing.T) {
 			t.Setenv("NM_TEST_ACP_MODE", tc.mode)
 			server := writeFakeACPServer(t, home)
 
-			a := &acpxAgent{bin: acpx, target: "probe", rawCommand: "node " + server}
+			targetCommand := fmt.Sprintf("%q %q", node, server)
+			a := &acpxAgent{bin: acpx, target: "probe", rawCommand: targetCommand}
 			if tc.named {
 				configDir := filepath.Join(home, ".acpx")
 				if err := os.MkdirAll(configDir, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				config := `{"agents":{"probe":{"command":"node ` + server + `"}},"defaultAgent":"probe"}`
+				config := fmt.Sprintf(`{"agents":{"probe":{"command":%q}},"defaultAgent":"probe"}`, targetCommand)
 				if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(config), 0o600); err != nil {
 					t.Fatal(err)
 				}

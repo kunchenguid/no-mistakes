@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -272,9 +273,22 @@ func (a *acpxAgent) resolveSessionProviderWithSalt(ctx context.Context, opts Run
 	identity := sha256.New()
 	identity.Write(acpxIdentity[:])
 	identity.Write([]byte{0})
-	sortedEnv := append([]string(nil), env...)
-	sort.Strings(sortedEnv)
-	for _, entry := range sortedEnv {
+	effectiveEnv := (&exec.Cmd{Env: env}).Environ()
+	if runtime.GOOS == "windows" {
+		for i, entry := range effectiveEnv {
+			keyEnd := strings.IndexByte(entry, '=')
+			if keyEnd == 0 {
+				if next := strings.IndexByte(entry[1:], '='); next >= 0 {
+					keyEnd = next + 1
+				}
+			}
+			if keyEnd >= 0 {
+				effectiveEnv[i] = strings.ToLower(entry[:keyEnd]) + entry[keyEnd:]
+			}
+		}
+	}
+	sort.Strings(effectiveEnv)
+	for _, entry := range effectiveEnv {
 		identity.Write([]byte(entry))
 		identity.Write([]byte{0})
 	}
