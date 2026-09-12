@@ -477,13 +477,28 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":"ok
 		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"ok\"}]}",
 	}, "\r\n"))
 
-	_, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
+	const (
+		requested = "019ff2f3-5f31-744b-90b8-679074ff7687"
+		served    = "019ff2f3-5f31-744b-90b8-679074ff7686"
+	)
+	result, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
 		Prompt:  "fix",
 		CWD:     t.TempDir(),
-		Session: &SessionRef{ID: "019ff2f3-5f31-744b-90b8-679074ff7687"},
+		Session: &SessionRef{ID: requested},
 	})
 	if err == nil || !strings.Contains(err.Error(), "did not confirm") {
 		t.Fatalf("resume mismatch error = %v", err)
+	}
+	// The replacement identity is the evidence the resume did not happen, so
+	// the refused turn must still report which session it actually ran in.
+	if result == nil {
+		t.Fatal("a refused resume must still report the session Pi served")
+	}
+	if result.SessionID != served {
+		t.Fatalf("session id = %q, want the session Pi actually served %q", result.SessionID, served)
+	}
+	if result.Resumed {
+		t.Fatal("a refused resume must not claim it resumed")
 	}
 }
 
