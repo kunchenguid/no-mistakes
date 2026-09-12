@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.75.1](https://github.com/kunchenguid/no-mistakes/compare/v1.75.0...v1.75.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **agent:** record honest token usage on failed and cancelled invocations ([#1059](https://github.com/kunchenguid/no-mistakes/issues/1059)) ([fb664f6](https://github.com/kunchenguid/no-mistakes/commit/fb664f6eb58e0b81f34bb570f95a91914fc0c9b2))
+
 ## [1.75.0](https://github.com/kunchenguid/no-mistakes/compare/v1.74.0...v1.75.0) (2026-09-12)
 
 
