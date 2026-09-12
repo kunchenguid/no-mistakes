@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.75.0](https://github.com/kunchenguid/no-mistakes/compare/v1.74.0...v1.75.0) (2026-09-12)
+
+
+### Features
+
+* **config:** add ticket-aware commit and PR titles ([#1020](https://github.com/kunchenguid/no-mistakes/issues/1020)) ([9cf26b0](https://github.com/kunchenguid/no-mistakes/commit/9cf26b0b96cd1f35dc9070c8736e7c803adb21a6))
+* **pipeline:** support repository PR templates with author-preserving updates ([#1044](https://github.com/kunchenguid/no-mistakes/issues/1044)) ([36b9e2e](https://github.com/kunchenguid/no-mistakes/commit/36b9e2e98a0fb97aa896fc9555dbffd3c389bddf))
+
+
+### Bug Fixes
+
+* **agent:** tolerate provider residue and split objects in structured output ([#1050](https://github.com/kunchenguid/no-mistakes/issues/1050)) ([a12b0d5](https://github.com/kunchenguid/no-mistakes/commit/a12b0d5283f9469789f297cb1d6acff53c469a36))
+* **pipeline:** handle empty-index repairs and reconcile stale private mirrors ([#1046](https://github.com/kunchenguid/no-mistakes/issues/1046)) ([e94c7a0](https://github.com/kunchenguid/no-mistakes/commit/e94c7a069051a2d4fad1241c341205c42963d937))
+* **pipeline:** prevent fake TUI live-validation passes ([#1057](https://github.com/kunchenguid/no-mistakes/issues/1057)) ([bff827f](https://github.com/kunchenguid/no-mistakes/commit/bff827faa6e36d084f081e482e3d0e628d6aca88))
+* **pipeline:** rerun a fresh review when the reviewer's output fails schema validation ([#1051](https://github.com/kunchenguid/no-mistakes/issues/1051)) ([1a119a3](https://github.com/kunchenguid/no-mistakes/commit/1a119a3b2747b515dfebbdc2f98a0d5a92edd727))
+* **shellenv:** reliably resolve daemon login shell environment ([#1056](https://github.com/kunchenguid/no-mistakes/issues/1056)) ([975ed5b](https://github.com/kunchenguid/no-mistakes/commit/975ed5bfcbdb99f94c73a52f489c5db6ed59c02b))
+
 ## [1.74.0](https://github.com/kunchenguid/no-mistakes/compare/v1.73.0...v1.74.0) (2026-09-10)
 
 
