@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -14,9 +15,10 @@ import (
 
 // sessionCall records one invocation the fake adapter received.
 type sessionCall struct {
-	prompt   string
-	session  *agent.SessionRef
-	fallback bool
+	prompt         string
+	session        *agent.SessionRef
+	fallback       bool
+	fallbackReason string
 }
 
 // fakeSessionAgent is a session-capable adapter that mints deterministic
@@ -24,9 +26,12 @@ type sessionCall struct {
 type fakeSessionAgent struct {
 	mu           sync.Mutex
 	name         string
+	provider     string
+	providerBase string
 	calls        []sessionCall
 	nextID       int
 	failResumes  map[string]error // session id -> error returned when resumed
+	failStarts   error            // error returned when starting a durable session
 	failNext     error            // error returned on the next call regardless
 	supportsFlag bool
 }
@@ -44,12 +49,28 @@ func (f *fakeSessionAgent) Name() string {
 
 func (f *fakeSessionAgent) SupportsSessionResume() bool { return f.supportsFlag }
 
+func (f *fakeSessionAgent) SupportsSessionProvider(provider string) bool {
+	if f.providerBase != "" {
+		return strings.HasPrefix(provider, f.providerBase)
+	}
+	want := f.provider
+	if want == "" {
+		want = f.Name()
+	}
+	return provider == want
+}
+
 func (f *fakeSessionAgent) Close() error { return nil }
 
 func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, sessionCall{prompt: opts.Prompt, session: opts.Session, fallback: opts.SessionFallback})
+	f.calls = append(f.calls, sessionCall{
+		prompt:         opts.Prompt,
+		session:        opts.Session,
+		fallback:       opts.SessionFallback,
+		fallbackReason: opts.SessionFallbackReason,
+	})
 
 	if f.failNext != nil {
 		err := f.failNext
@@ -60,14 +81,27 @@ func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Re
 	if opts.Session == nil {
 		return &agent.Result{Text: "cold"}, nil
 	}
+	if opts.Session.ID != "" && opts.Session.Agent != "" && opts.Session.Agent != f.sessionProvider() {
+		return nil, agent.SessionSetupFailed(errors.New("serving configuration changed"))
+	}
 	if opts.Session.ID != "" {
 		if err := f.failResumes[opts.Session.ID]; err != nil {
 			return nil, err
 		}
-		return &agent.Result{Text: "resumed", SessionID: opts.Session.ID, Resumed: true}, nil
+		return &agent.Result{Text: "resumed", SessionID: opts.Session.ID, Provider: f.sessionProvider(), Resumed: true}, nil
+	}
+	if f.failStarts != nil {
+		return nil, f.failStarts
 	}
 	f.nextID++
-	return &agent.Result{Text: "started", SessionID: fmt.Sprintf("sess-%d", f.nextID)}, nil
+	return &agent.Result{Text: "started", SessionID: fmt.Sprintf("sess-%d", f.nextID), Provider: f.sessionProvider()}, nil
+}
+
+func (f *fakeSessionAgent) sessionProvider() string {
+	if f.provider != "" {
+		return f.provider
+	}
+	return f.Name()
 }
 
 func sessionTestDB(t *testing.T) (*db.DB, *db.Run) {
@@ -86,6 +120,22 @@ func sessionTestDB(t *testing.T) (*db.DB, *db.Run) {
 		t.Fatalf("insert run: %v", err)
 	}
 	return d, run
+}
+func TestRunSessions_DoesNotColdFallbackAfterPromptDelivery(t *testing.T) {
+	d, run := sessionTestDB(t)
+	fake := newFakeSessionAgent()
+	rs := NewRunSessions(d, run.ID, fake, true)
+	if _, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "first"}, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	fake.failNext = agent.PromptDelivered(errors.New("prompt failed after delivery"))
+	_, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "second"}, nil)
+	if err == nil || !agent.IsPromptDelivered(err) {
+		t.Fatalf("Run error = %v, want prompt-delivered marker", err)
+	}
+	if len(fake.calls) != 2 {
+		t.Fatalf("calls = %d, want initial turn plus one failed resume without cold fallback", len(fake.calls))
+	}
 }
 
 // TestRunSessions_RoleReusesOneSession proves the RunSessions machinery keeps
@@ -220,6 +270,25 @@ func TestRunSessions_FreshSessionFailurePropagates(t *testing.T) {
 	}
 	if len(fake.calls) != 1 {
 		t.Fatalf("no fallback retry expected for fresh-session failure, got %d calls", len(fake.calls))
+	}
+}
+
+func TestRunSessions_SessionSetupFailureRunsTurnCold(t *testing.T) {
+	d, run := sessionTestDB(t)
+	fake := newFakeSessionAgent()
+	fake.failNext = agent.SessionSetupFailed(errors.New("durable sessions unavailable"))
+	rs := NewRunSessions(d, run.ID, fake, true)
+
+	result, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil)
+	if err != nil {
+		t.Fatalf("setup failure must fall back cold: %v", err)
+	}
+	if result.Text != "cold" || len(fake.calls) != 2 {
+		t.Fatalf("result/calls = %q/%d, want one failed setup plus one cold turn", result.Text, len(fake.calls))
+	}
+	last := fake.calls[1]
+	if last.session != nil || !last.fallback {
+		t.Fatalf("fallback call = %+v, want marked cold invocation", last)
 	}
 }
 
@@ -385,5 +454,40 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 	}
 	if call := fake.calls[0]; call.session == nil || call.session.ID != "" {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
+	}
+}
+
+func TestRunSessions_StoredSetupFailureRunsExactlyOneColdFallback(t *testing.T) {
+	d, run := sessionTestDB(t)
+	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "acp:gemini:old-fingerprint", "old-acp-id"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	current := newFakeSessionAgent()
+	current.name = "acp:gemini"
+	current.provider = "acp:gemini:new-fingerprint"
+	current.providerBase = "acp:gemini:"
+	current.failStarts = agent.SessionSetupFailed(errors.New("config show still fails"))
+
+	rs := NewRunSessions(d, run.ID, current, true)
+	result, err := rs.Run(context.Background(), current, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Text != "cold" || len(current.calls) != 2 {
+		t.Fatalf("result/calls = %q/%d, want failed stored setup plus one cold turn", result.Text, len(current.calls))
+	}
+	if first := current.calls[0]; first.session == nil || first.session.ID != "old-acp-id" || first.fallback {
+		t.Fatalf("stored resume call = %+v, want ordinary attempt with old identity", first)
+	}
+	if fallback := current.calls[1]; fallback.prompt != "fix" || fallback.session != nil ||
+		!fallback.fallback || fallback.fallbackReason != db.FallbackReasonOther {
+		t.Fatalf("fallback call = %+v, want same prompt and marked cold fallback", fallback)
+	}
+	stored, err := d.GetRunAgentSessions(run.ID)
+	if err != nil {
+		t.Fatalf("stored sessions: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("stale identity survived cold fallback: %+v", stored)
 	}
 }

@@ -995,10 +995,14 @@ branch_sync_remote_timeout: "60s"
 gate_reconcile_interval: "2m"
 gate_reconcile_timeout: "30s"
 
-# Reuse one durable fixer session per run across review-fix turns. Review turns
-# always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude, codex, grok, and pi; other agents run cold.
-# Set false to force every agent invocation cold.
+# Reuse one fixer session per run across review-fix turns. Review turns stay
+# session-free. For ACP, the first fixer turn remains exec --file - and captures
+# its identity without another ACP target launch. Later turns compare a local
+# serving-config fingerprint before resuming through acpx. A pre-prompt failure
+# falls back to one fresh exec; a possibly delivered prompt is never replayed.
+# ACP bridge names and provider bindings are opaque local isolation data.
+# Supported for claude, codex, grok, pi, antigravity, and ACP targets through
+# acpx; other agents run cold. Set false to force cold turns.
 session_reuse: true
 
 # Log level for daemon output

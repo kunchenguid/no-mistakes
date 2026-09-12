@@ -80,7 +80,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		Round:       a.round(),
 		Purpose:     purpose,
 		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts, result),
+		SessionMode: invocationSessionMode(opts, result, runErr),
 		SessionKey:  sessionKey,
 		StartedAt:   startedAt.Unix(),
 		CompletedAt: completedAt.Unix(),
@@ -206,11 +206,19 @@ func countOutputFindings(output json.RawMessage) (int, bool) {
 	return len(items), true
 }
 
-func invocationSessionMode(opts agent.RunOpts, result *agent.Result) string {
+func invocationSessionMode(opts agent.RunOpts, result *agent.Result, runErr error) string {
 	switch {
 	case opts.SessionFallback:
 		return db.InvocationModeFallback
 	case opts.Session == nil:
+		return db.InvocationModeCold
+	case agent.IsSessionSetupFailed(runErr):
+		// Setup failures happen before a prompt can be delivered. A failed
+		// attempt to create a durable session is still cold, while a failed
+		// attempt to restore a stored identity is a fallback, never a resume.
+		if opts.Session.ID != "" {
+			return db.InvocationModeFallback
+		}
 		return db.InvocationModeCold
 	case opts.Session.ID != "":
 		// A session was requested but the adapter reported it did not actually

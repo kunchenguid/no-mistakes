@@ -25,6 +25,54 @@ type Agent interface {
 	Close() error
 }
 
+// PromptDelivered marks an error that occurred after an agent prompt may have
+// reached the model. Replaying such a turn could duplicate tool side effects,
+// so retry and fallback layers must return it unchanged.
+func PromptDelivered(err error) error {
+	if err == nil || IsPromptDelivered(err) {
+		return err
+	}
+	return &promptDeliveredError{err: err}
+}
+
+// IsPromptDelivered reports whether retrying the failed invocation could replay
+// a prompt that was already acted on.
+func IsPromptDelivered(err error) bool {
+	var delivered *promptDeliveredError
+	return errors.As(err, &delivered)
+}
+
+type promptDeliveredError struct {
+	err error
+}
+
+func (e *promptDeliveredError) Error() string { return e.err.Error() }
+func (e *promptDeliveredError) Unwrap() error { return e.err }
+
+// SessionSetupFailed marks a durable-session failure known to have happened
+// before the prompt was delivered. Callers may safely retry that turn cold
+// when no durable identity exists yet.
+func SessionSetupFailed(err error) error {
+	if err == nil || IsSessionSetupFailed(err) {
+		return err
+	}
+	return &sessionSetupFailedError{err: err}
+}
+
+// IsSessionSetupFailed reports whether durable-session setup failed before the
+// prompt could reach the model.
+func IsSessionSetupFailed(err error) bool {
+	var setup *sessionSetupFailedError
+	return errors.As(err, &setup)
+}
+
+type sessionSetupFailedError struct {
+	err error
+}
+
+func (e *sessionSetupFailedError) Error() string { return e.err.Error() }
+func (e *sessionSetupFailedError) Unwrap() error { return e.err }
+
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt string
@@ -105,6 +153,9 @@ type SessionRef struct {
 	// new resumable session whose identity is reported via Result.SessionID.
 	ID    string
 	Agent string
+	// Scope is trusted, local session scope. Adapters may use it to isolate
+	// their own bridge records, but must not expose it to external providers.
+	Scope string
 }
 
 // SessionResumer is the optional adapter capability for durable native

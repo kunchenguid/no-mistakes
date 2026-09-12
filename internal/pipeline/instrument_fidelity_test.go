@@ -156,6 +156,77 @@ func TestPerfRecording_ReasoningDoesNotRequireActivityMetrics(t *testing.T) {
 	}
 }
 
+func TestInvocationSessionModeAccountsForSetupFailures(t *testing.T) {
+	setupErr := agent.SessionSetupFailed(errors.New("session setup failed"))
+	tests := []struct {
+		name    string
+		opts    agent.RunOpts
+		result  *agent.Result
+		err     error
+		want    string
+		wantKey bool
+	}{
+		{
+			name: "cold success",
+			want: db.InvocationModeCold,
+		},
+		{
+			name:   "durable session started",
+			opts:   agent.RunOpts{Session: &agent.SessionRef{}},
+			result: &agent.Result{SessionID: "new-session"},
+			want:   db.InvocationModeStarted,
+		},
+		{
+			name:    "stored session resumed",
+			opts:    agent.RunOpts{Session: &agent.SessionRef{ID: "stored-session"}},
+			result:  &agent.Result{SessionID: "stored-session", Resumed: true},
+			want:    db.InvocationModeResumed,
+			wantKey: true,
+		},
+		{
+			name:    "stored session replaced",
+			opts:    agent.RunOpts{Session: &agent.SessionRef{ID: "stored-session"}},
+			result:  &agent.Result{SessionID: "replacement-session"},
+			want:    db.InvocationModeFallback,
+			wantKey: true,
+		},
+		{
+			name: "explicit fallback success",
+			opts: agent.RunOpts{
+				Session:         &agent.SessionRef{},
+				SessionFallback: true,
+			},
+			result: &agent.Result{SessionID: "fallback-session"},
+			want:   db.InvocationModeFallback,
+		},
+		{
+			name: "failed setup without stored identity remains cold",
+			opts: agent.RunOpts{Session: &agent.SessionRef{}},
+			err:  setupErr,
+			want: db.InvocationModeCold,
+		},
+		{
+			name:    "failed setup with stored identity is fallback",
+			opts:    agent.RunOpts{Session: &agent.SessionRef{ID: "stored-session"}},
+			err:     setupErr,
+			want:    db.InvocationModeFallback,
+			wantKey: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := invocationSessionMode(tt.opts, tt.result, tt.err); got != tt.want {
+				t.Fatalf("invocationSessionMode() = %q, want %q", got, tt.want)
+			}
+			key := invocationSessionKey(tt.opts, tt.result)
+			if tt.wantKey && (key == "" || key == "stored-session" || key == "replacement-session") {
+				t.Fatalf("session key must fingerprint the identity, got %q", key)
+			}
+		})
+	}
+}
+
 // resumeFailingAgent starts a session cold, then fails any resume with an
 // exit-shaped error, then succeeds on the fresh fallback session.
 type resumeFailingAgent struct{ calls int }

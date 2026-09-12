@@ -493,6 +493,17 @@ func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) 
 	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
 	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 	f.sctx.Run.PRURL = &gitlabPR
+	for _, entry := range f.sctx.Env {
+		if !strings.HasPrefix(entry, "PATH=") {
+			continue
+		}
+		fakeBinDir := strings.SplitN(strings.TrimPrefix(entry, "PATH="), string(os.PathListSeparator), 2)[0]
+		linkTestBinary(t, fakeBinDir, "glab")
+		break
+	}
+	// The fixture models an unavailable GitLab host; never let an authenticated
+	// glab from the developer's inherited PATH change that premise.
+	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_AUTH_ERR=gitlab unavailable")
 	writeCIFix(f.dir)
 
 	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")

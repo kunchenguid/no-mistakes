@@ -34,10 +34,11 @@ const (
 // branches, repositories, or roles.
 //
 // Correctness always wins over reuse: adapters without session support run
-// cold, a failed resume drops the identity and re-runs the same turn in a
-// fresh same-role session, and any persistence failure degrades to cold
-// invocations. A nil *RunSessions runs everything cold, preserving the
-// pre-session behavior for steps outside the review loop and for tests.
+// cold, ordinary pre-prompt resume failures drop the identity and retry in a
+// fresh same-role session, and durable setup failures retry cold. Persistence
+// failures also degrade to cold invocations. A nil *RunSessions runs everything
+// cold, preserving the pre-session behavior for steps outside the review loop
+// and for tests.
 type RunSessions struct {
 	db      *db.DB
 	runID   string
@@ -64,7 +65,7 @@ func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, ena
 		if stored, err := database.GetRunAgentSessions(runID); err == nil {
 			for _, s := range stored {
 				if s.SessionID != "" && agent.SupportsSessionProvider(sessionAgent, s.Agent) {
-					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent}
+					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent, Scope: rs.scope(SessionRole(s.Role))}
 				}
 			}
 		}
@@ -84,6 +85,7 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	}
 
 	stored := rs.id(role)
+	stored.Scope = rs.scope(role)
 	storedID := stored.ID
 	opts.Session = &stored
 	result, err := a.Run(ctx, opts)
@@ -91,24 +93,41 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil {
+	if agent.IsPromptDelivered(err) || ctx.Err() != nil {
+		return nil, err
+	}
+	if storedID == "" && !agent.IsSessionSetupFailed(err) {
 		return nil, err
 	}
 
-	// The resume attempt failed. Never skip the turn: drop the dead identity
-	// and re-run the same turn in a fresh same-role session.
-	if logf != nil {
-		logf(fmt.Sprintf("resume of %s session failed (%v); starting a fresh %s session", role, err, role))
+	// A pre-prompt session start or resume failed. Never skip the turn. A
+	// durable setup failure must retry truly cold because another session
+	// setup would repeat the same failure; other dead identities are replaced
+	// by a fresh same-role session.
+	action := "resume of"
+	next := "starting a fresh " + string(role) + " session"
+	if storedID == "" || agent.IsSessionSetupFailed(err) {
+		if storedID == "" {
+			action = "start of"
+		} else {
+			rs.forget(role)
+		}
+		next = "running cold"
+		opts.Session = nil
+	} else {
+		rs.forget(role)
+		opts.Session = &agent.SessionRef{Scope: rs.scope(role)}
 	}
-	rs.forget(role)
-	opts.Session = &agent.SessionRef{}
+	if logf != nil {
+		logf(fmt.Sprintf("%s %s session failed (%v); %s", action, role, err, next))
+	}
 	opts.SessionFallback = true
 	opts.SessionFallbackReason = classifyFallbackReason(err)
 	if opts.OnLifecycle != nil {
 		opts.OnLifecycle(agent.LifecycleEvent{
 			Agent:   a.Name(),
 			Phase:   agent.LifecyclePhaseFallback,
-			Message: fmt.Sprintf("%s session resume failed; starting a fresh %s session", a.Name(), role),
+			Message: fmt.Sprintf("%s session %s failed; %s", a.Name(), action, next),
 		})
 	}
 	result, err = a.Run(ctx, opts)
@@ -125,6 +144,10 @@ func (rs *RunSessions) id(role SessionRole) agent.SessionRef {
 	return rs.ids[role]
 }
 
+func (rs *RunSessions) scope(role SessionRole) string {
+	return rs.runID + "\x00" + string(role)
+}
+
 // remember stores the role's latest session identity in memory and persists
 // it so the run can resume the session across daemon process boundaries.
 // Persistence failures are ignored: reuse degrades, correctness does not.
@@ -135,7 +158,7 @@ func (rs *RunSessions) remember(role SessionRole, sessionID, provider string) {
 	if provider == "" || !agent.SupportsSessionProvider(rs.agent, provider) {
 		return
 	}
-	identity := agent.SessionRef{ID: sessionID, Agent: provider}
+	identity := agent.SessionRef{ID: sessionID, Agent: provider, Scope: rs.scope(role)}
 	rs.mu.Lock()
 	changed := rs.ids[role] != identity
 	rs.ids[role] = identity
