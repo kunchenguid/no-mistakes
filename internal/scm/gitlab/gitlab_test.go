@@ -508,6 +508,10 @@ func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testi
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab mr view 123 --output json":                                {stdout: `{"head_pipeline":{"id":77}}` + "\n"},
 		"glab ci get --pipeline-id 77 --output json --with-job-details": {stdout: `{"jobs":[{"id":55,"name":"build","status":"failed"},{"id":56,"name":"lint","status":"failed"}]}` + "\n"},
+
+		// Keep this blank line: gofmt versions disagree on whether these short
+		// keys join the alignment group above, so an explicit group break is the
+		// only layout every toolchain formats identically.
 		"glab ci trace 55": {stdout: "build failed\n"},
 		"glab ci trace 56": {stderr: "expired", code: 1},
 	}), nil, "", "")
