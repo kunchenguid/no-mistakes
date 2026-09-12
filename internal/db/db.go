@@ -40,7 +40,33 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
 	}
+	if err := migratePushTargetMigrationKeys(sqlDB); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("migrate rename provenance: %w", err)
+	}
 	return &DB{sql: sqlDB}, nil
+}
+
+// Early rename-continuation databases allowed only one rename per run. Keep
+// those exact records when widening the key to permit successive renames.
+func migratePushTargetMigrationKeys(sqlDB *sql.DB) error {
+	tx, err := sqlDB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var keyColumns int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('push_target_migrations') WHERE pk > 0`).Scan(&keyColumns); err != nil {
+		return err
+	}
+	if keyColumns == 1 {
+		if _, err := tx.Exec(`ALTER TABLE push_target_migrations RENAME TO legacy_push_target_migrations;` + pushTargetMigrationsSQL + `
+			INSERT INTO push_target_migrations SELECT * FROM legacy_push_target_migrations;
+			DROP TABLE legacy_push_target_migrations;`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // OpenReadOnly opens an existing database without creating or migrating it.

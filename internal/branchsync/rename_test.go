@@ -144,7 +144,7 @@ func TestAcceptRepositoryRenameRerunRefusalsPreserveHistory(t *testing.T) {
 	for _, condition := range []string{"identity", "unrelated", "ref", "kind", "uncontained", "missing_gate", "symbolic_gate", "remote_changed", "active", "active_during_read", "gate_changed_during_read", "binding_changed_during_read", "source_changed_during_read", "target_changed_during_read", "interrupted"} {
 		t.Run(condition, func(t *testing.T) {
 			t.Parallel()
-			f, older, previous, current := prepareRenameRerunFixture(t)
+			f, older, previous, _ := prepareRenameRerunFixture(t)
 			mutate := func() {
 				switch condition {
 				case "identity":
@@ -223,7 +223,7 @@ func TestAcceptRepositoryRenameRerunRefusalsPreserveHistory(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(before, after) {
 				t.Fatalf("refusal modified history: before=%+v after=%+v, %v", before, after, err)
 			}
-			witnesses, err := f.db.GetPushTargetRenameWitnesses(f.repo.ID, f.run.Branch, TargetFingerprint(previous), TargetFingerprint(current))
+			witnesses, err := f.db.GetPushTargetRenameWitnesses(f.repo.ID, f.run.Branch, TargetFingerprint(previous))
 			if err != nil || len(witnesses) != 0 {
 				t.Fatalf("refusal left rename authority: %+v, %v", witnesses, err)
 			}
@@ -293,6 +293,117 @@ func TestRepositoryRenameProvenanceCannotOverrideChangedOrUnrelatedHistory(t *te
 			after, err := f.db.GetRunsByRepo(f.repo.ID)
 			if err != nil || !reflect.DeepEqual(before, after) {
 				t.Fatalf("inspection rewrote changed history: %+v, %v", after, err)
+			}
+		})
+	}
+}
+
+func TestAcceptRepositoryRenameSequentialRenames(t *testing.T) {
+	t.Parallel()
+	for _, separateRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("separate_run=%t", separateRun), func(t *testing.T) {
+			t.Parallel()
+			f, _, previous, current := prepareRenameRerunFixture(t)
+			if state := f.service.AcceptRepositoryRename(f.ctx, previous); state.State != StateSynchronized {
+				t.Fatalf("first rename: %#v", state)
+			}
+			selectedID := f.run.ID
+			if separateRun {
+				mustWrite(t, filepath.Join(f.local, "later.txt"), "later validation fix\n")
+				mustRun(t, f.local, "add", "later.txt")
+				mustRun(t, f.local, "commit", "-m", "later validation fix")
+				laterHead := mustRun(t, f.local, "rev-parse", "HEAD")
+				mustRun(t, f.local, "push", f.remote, "HEAD:refs/heads/feature/sync")
+				mustRun(t, f.service.GateDir, "fetch", f.local, "refs/heads/feature/sync:refs/heads/feature/sync")
+				later, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.pushed, f.base)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.db.UpdateRunHeadSHA(later.ID, laterHead); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.db.UpdateRunPushBinding(later.ID, db.PushBinding{HeadSHA: laterHead, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(current), Ref: "refs/heads/feature/sync"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.db.UpdateRunErrorStatus(later.ID, "later validation still failed", types.RunFailed); err != nil {
+					t.Fatal(err)
+				}
+				selectedID = later.ID
+			}
+			next := "https://github.com/org/next"
+			repo, err := f.db.UpdateRepoMetadata(f.repo.ID, next, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.service.Repo = repo
+			f.service.VerifyRepositoryRename = func(_ context.Context, old, target string) error {
+				if old != current || target != next {
+					return fmt.Errorf("unexpected identity read: %s -> %s", old, target)
+				}
+				return nil
+			}
+			f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+				if remote != next {
+					return "", fmt.Errorf("unexpected target %s", remote)
+				}
+				return gitpkg.LsRemote(ctx, dir, f.remote, ref)
+			}
+			f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, ref string) error {
+				if remote != next {
+					return fmt.Errorf("unexpected target %s", remote)
+				}
+				return gitpkg.FetchRemoteBranchToPrivateRef(ctx, dir, f.remote, branch, ref)
+			}
+			before, err := f.db.GetRunsByRepo(f.repo.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs := make(map[string]string)
+			for _, dir := range []string{f.local, f.remote, f.service.GateDir} {
+				refs[dir] = mustRun(t, dir, "show-ref")
+			}
+			for _, wantChanged := range []bool{true, false} {
+				state := f.service.AcceptRepositoryRename(f.ctx, current)
+				if state.State != StateSynchronized || state.Pipeline.RunID != selectedID || state.Changed != wantChanged || state.NextAction == nil || state.NextAction.Code != "rerun_pipeline" {
+					t.Fatalf("second rename: %#v", state)
+				}
+			}
+			for dir, before := range refs {
+				if after := mustRun(t, dir, "show-ref"); after != before {
+					t.Fatalf("second rename moved refs in %s: before=%s after=%s", dir, before, after)
+				}
+			}
+			after, err := f.db.GetRunsByRepo(f.repo.ID)
+			nextFingerprint := TargetFingerprint(next)
+			before[0].PushTargetFingerprint = &nextFingerprint
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("second rename changed historical runs: before=%+v after=%+v, %v", before, after, err)
+			}
+			reopened, err := db.Open(filepath.Join(filepath.Dir(f.local), "state.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			f.service.DB = reopened
+			f.service.VerifyRepositoryRename = nil
+			for _, inspect := range []func(context.Context) State{f.service.InspectCached, f.service.Refresh} {
+				if state := inspect(f.ctx); state.State != StateSynchronized || state.Pipeline.RunID != selectedID || state.Pipeline.Status != string(types.RunFailed) {
+					t.Fatalf("reopened sequential rename selection: %#v", state)
+				}
+			}
+			// In the separate-run case this invalidates the intermediate A-to-B
+			// witness while leaving the final B-to-C binding intact.
+			fingerprint := nextFingerprint
+			if separateRun {
+				fingerprint = TargetFingerprint(current)
+			}
+			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, inspect := range []func(context.Context) State{f.service.InspectCached, f.service.Refresh} {
+				if state := inspect(f.ctx); state.State == StateSynchronized || state.Changed {
+					t.Fatalf("changed intermediate witness retained continuity: %#v", state)
+				}
 			}
 		})
 	}

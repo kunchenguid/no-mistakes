@@ -1939,14 +1939,23 @@ func (s *Service) supersededUnpublishedRunWithPreviousTarget(ctx context.Context
 	if previousFingerprint != "" && ptr(older.PushTargetFingerprint) == previousFingerprint && exactPushedBinding(s.Repo, newer, branch) {
 		return true
 	}
-	witnesses, err := s.DB.GetPushTargetRenameWitnesses(older.RepoID, branch, ptr(older.PushTargetFingerprint), ptr(newer.PushTargetFingerprint))
+	return s.renameWitnessesContain(ctx, older, newer, branch)
+}
+
+// Walk successive accepted renames in run order. Each link independently
+// proves routing and ancestry; matching repository names alone cannot bridge
+// an unpublished head. Strictly increasing run order also bounds traversal.
+func (s *Service) renameWitnessesContain(ctx context.Context, older, newer *db.Run, branch string) bool {
+	witnesses, err := s.DB.GetPushTargetRenameWitnesses(older.RepoID, branch, ptr(older.PushTargetFingerprint))
 	if err != nil {
 		return false
 	}
 	for _, witness := range witnesses {
-		if runPrecedes(older, witness) && (witness.ID == newer.ID || runPrecedes(witness, newer)) && samePushTargetBinding(witness, newer) &&
-			isAncestor(ctx, s.GateDir, older.HeadSHA, witness.HeadSHA) && isAncestor(ctx, s.GateDir, witness.HeadSHA, pushed) {
-			return true
+		if runPrecedes(older, witness) && (witness.ID == newer.ID || runPrecedes(witness, newer)) && samePushRouting(witness, newer) &&
+			isAncestor(ctx, s.GateDir, older.HeadSHA, witness.HeadSHA) && isAncestor(ctx, s.GateDir, witness.HeadSHA, ptr(newer.LastPushedSHA)) {
+			if samePushTargetBinding(witness, newer) || s.renameWitnessesContain(ctx, witness, newer, branch) {
+				return true
+			}
 		}
 	}
 	return false

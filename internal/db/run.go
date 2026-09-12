@@ -571,13 +571,16 @@ func (d *DB) MigrateRunPushTarget(snapshot PushTargetMigration) (bool, error) {
 		return false, errors.New("migrate run push target: run binding or ownership changed")
 	}
 
-	proof, err := tx.Exec(`INSERT INTO push_target_migrations
-		(run_id, repo_id, branch, status, head_sha, target_kind, previous_fingerprint, current_fingerprint, push_ref, push_generation)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO NOTHING`,
-		snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status, snapshot.HeadSHA, snapshot.TargetKind,
-		snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation)
-	if err != nil {
-		return false, fmt.Errorf("migrate run push target: record provenance: %w", err)
+	// An already-current binding may only replay existing exact provenance.
+	// It must not manufacture a new incoming edge from an unrelated old name.
+	if previous == snapshot.PreviousFingerprint {
+		if _, err := tx.Exec(`INSERT INTO push_target_migrations
+			(run_id, repo_id, branch, status, head_sha, target_kind, previous_fingerprint, current_fingerprint, push_ref, push_generation)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, previous_fingerprint, current_fingerprint) DO NOTHING`,
+			snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status, snapshot.HeadSHA, snapshot.TargetKind,
+			snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation); err != nil {
+			return false, fmt.Errorf("migrate run push target: record provenance: %w", err)
+		}
 	}
 	var matching int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM push_target_migrations
@@ -587,26 +590,35 @@ func (d *DB) MigrateRunPushTarget(snapshot PushTargetMigration) (bool, error) {
 		snapshot.PreviousFingerprint, snapshot.CurrentFingerprint, snapshot.Ref, snapshot.Generation).Scan(&matching); err != nil || matching != 1 {
 		return false, errors.New("migrate run push target: conflicting rename provenance")
 	}
-	inserted, err := proof.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("migrate run push target: provenance rows affected: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("migrate run push target: commit: %w", err)
 	}
-	return previous != snapshot.CurrentFingerprint || inserted == 1, nil
+	return previous != snapshot.CurrentFingerprint, nil
 }
 
-func (d *DB) GetPushTargetRenameWitnesses(repoID, branch, previousFingerprint, currentFingerprint string) ([]*Run, error) {
-	rows, err := d.sql.Query(`SELECT `+runColumns+` FROM runs
-		WHERE repo_id = ? AND branch = ? AND status IN ('completed', 'failed', 'cancelled')
-		AND COALESCE(push_active, 0) = 0 AND submitted_head_sha IS NOT NULL
-		AND EXISTS (SELECT 1 FROM push_target_migrations m
-			WHERE m.run_id = runs.id AND m.repo_id = runs.repo_id AND m.branch = runs.branch AND m.status = runs.status
+// GetPushTargetRenameWitnesses returns runs whose current fingerprint is
+// reachable from previousFingerprint through their own exact recorded rename
+// edges. Every edge must still match the run's immutable push snapshot. UNION
+// bounds traversal even if a repository is renamed back to an earlier name.
+// The caller must prove run ordering, routing, and Git containment when using
+// these witnesses to bridge history across different runs.
+func (d *DB) GetPushTargetRenameWitnesses(repoID, branch, previousFingerprint string) ([]*Run, error) {
+	rows, err := d.sql.Query(`WITH RECURSIVE valid_migrations AS (
+		SELECT m.* FROM push_target_migrations m JOIN runs ON m.run_id = runs.id
+			WHERE runs.repo_id = ? AND runs.branch = ? AND runs.status IN ('completed', 'failed', 'cancelled')
+			AND COALESCE(runs.push_active, 0) = 0 AND runs.submitted_head_sha IS NOT NULL
+			AND m.repo_id = runs.repo_id AND m.branch = runs.branch AND m.status = runs.status
 			AND m.head_sha = runs.head_sha AND m.head_sha = runs.last_pushed_sha
 			AND m.target_kind = runs.push_target_kind AND m.push_ref = runs.push_ref AND m.push_generation = runs.push_generation
-			AND m.current_fingerprint = runs.push_target_fingerprint AND m.previous_fingerprint = ? AND m.current_fingerprint = ?)`,
-		repoID, branch, previousFingerprint, currentFingerprint)
+		), reachable(run_id, fingerprint) AS (
+			SELECT run_id, current_fingerprint FROM valid_migrations WHERE previous_fingerprint = ?
+			UNION
+			SELECT m.run_id, m.current_fingerprint FROM valid_migrations m JOIN reachable r
+				ON m.run_id = r.run_id AND m.previous_fingerprint = r.fingerprint
+		)
+		SELECT `+runColumns+` FROM runs WHERE EXISTS (
+			SELECT 1 FROM reachable r WHERE r.run_id = runs.id AND r.fingerprint = runs.push_target_fingerprint)`,
+		repoID, branch, previousFingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("read push target rename provenance: %w", err)
 	}
