@@ -232,6 +232,7 @@ func main() {
 	if err != nil || pr == nil || pr.URL != "https://github.com/org/current/pull/42" {
 		t.Fatalf("canonical existing PR discovery = (%+v, %v)", pr, err)
 	}
+	t.Logf("Fixture GitHub PR discovery: number=%s url=%s", pr.Number, pr.URL)
 
 	p, err := paths.New()
 	if err != nil {
@@ -332,18 +333,21 @@ func main() {
 	if err != nil || !strings.Contains(out, wantInitialState) {
 		t.Fatalf("rename failure not reproduced: %v\n%s", err, out)
 	}
+	t.Logf("Before rename acceptance — no-mistakes %s:\n%s", strings.Join(statusArgs, " "), out)
 	for _, mode := range []string{"offline", "different_id"} {
 		t.Setenv("FAKE_RENAME_IDENTITY", mode)
 		out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
 		if err == nil || !strings.Contains(out, "changed: false") || !strings.Contains(out, "blocked_repository_rename_identity_unverified") {
 			t.Fatalf("unverified identity %s did not refuse: %v\n%s", mode, err, out)
 		}
+		t.Logf("Identity refusal (%s) — no-mistakes axi sync --accept-repository-rename %s:\n%s", mode, previous, out)
 	}
 	t.Setenv("FAKE_RENAME_IDENTITY", "")
 	out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
 	if err != nil {
 		t.Fatalf("rename continuation: %v\n%s", err, out)
 	}
+	t.Logf("Verified acceptance — no-mistakes axi sync --accept-repository-rename %s:\n%s", previous, out)
 	for _, want := range []string{"state: synchronized", "changed: true", "safety: repository_rename_accepted", "freshness: live", "code: rerun_pipeline", "command: no-mistakes rerun"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rename continuation missing %q:\n%s", want, out)
@@ -353,14 +357,17 @@ func main() {
 	if err != nil || !strings.Contains(out, "changed: false") || !strings.Contains(out, "safety: repository_rename_already_accepted") {
 		t.Fatalf("idempotent repetition = %v\n%s", err, out)
 	}
+	t.Logf("Repeated acceptance — no-mistakes axi sync --accept-repository-rename %s:\n%s", previous, out)
 	out, err = executeCmd("axi", "status")
 	if err != nil || !strings.Contains(out, run.ID) || !strings.Contains(out, "outcome: failed") || strings.Contains(out, "branch_sync:") {
 		t.Fatalf("cached continuation did not preserve the failed outcome: %v\n%s", err, out)
 	}
+	t.Logf("Cached inspection — no-mistakes axi status:\n%s", out)
 	out, err = executeCmd("axi", "sync", "--check")
 	if err != nil || !strings.Contains(out, "state: synchronized") || !strings.Contains(out, "freshness: live") {
 		t.Fatalf("live continuation: %v\n%s", err, out)
 	}
+	t.Logf("Fresh local-remote inspection — no-mistakes axi sync --check:\n%s", out)
 	if got := cliGit(t, f.local, "rev-list", "HEAD"); got != beforeHistory {
 		t.Fatalf("continuation rewrote source history:\nbefore %s\nafter %s", beforeHistory, got)
 	}
@@ -368,6 +375,7 @@ func main() {
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
 		t.Fatalf("continuation moved HEAD = %s, want %s", got, f.pushed)
 	}
+	t.Logf("Unchanged source history — git rev-list HEAD:\n%s", beforeHistory)
 
 	database, err = db.Open(p.DB())
 	if err != nil {
@@ -391,6 +399,7 @@ func main() {
 	if err != nil || len(rounds) != 1 || rounds[0].FindingsJSON == nil || *rounds[0].FindingsJSON != findings {
 		t.Fatalf("validation rounds changed: %+v, %v", rounds, err)
 	}
+	t.Logf("Persisted selected run: status=%s error=%q head=%s pushed=%s generation=%d updated_at=%d\nPreserved PR findings: %s", after.Status, *after.Error, after.HeadSHA, *after.LastPushedSHA, *after.PushGeneration, after.UpdatedAt, *rounds[0].FindingsJSON)
 	if older != nil {
 		preserved, err := database.GetRun(older.ID)
 		if err != nil || !reflect.DeepEqual(older, preserved) {
@@ -404,6 +413,7 @@ func main() {
 		if err != nil || !reflect.DeepEqual(olderRounds, rounds) {
 			t.Fatalf("historical findings and rounds changed: %+v, %v", rounds, err)
 		}
+		t.Logf("Preserved older run: status=%s error=%q head=%s pushed=%s fingerprint=%s intent=%q\nPreserved CI findings: %s", preserved.Status, *preserved.Error, preserved.HeadSHA, *preserved.LastPushedSHA, *preserved.PushTargetFingerprint, *preserved.Intent, *rounds[0].FindingsJSON)
 	}
 }
 

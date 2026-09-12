@@ -508,9 +508,9 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 }
 
 // PushTargetMigration is the complete immutable run snapshot required to move
-// one successful-push fingerprint after a verified repository rename. Only the
-// fingerprint changes; the run outcome, heads, ref, generation, timestamps,
-// findings, rounds, and every other validation record remain untouched.
+// one successful-push fingerprint after a verified repository rename. Within
+// the run, only the fingerprint changes; its outcome, heads, ref, generation,
+// timestamps, findings, rounds, and other validation records remain untouched.
 type PushTargetMigration struct {
 	RunID, RepoID, Branch, HeadSHA     string
 	Status                             types.RunStatus
@@ -520,10 +520,12 @@ type PushTargetMigration struct {
 	Generation                         int64
 }
 
-// MigrateRunPushTarget atomically replaces only the target fingerprint when
-// every successful-push, registered-target, and branch-ownership fact still
-// matches snapshot. A concurrent active run on the same repository branch blocks the update. An
-// exact repeated migration is an idempotent no-op.
+// MigrateRunPushTarget commits the selected run's fingerprint and its exact
+// rename provenance together, so cached selection cannot observe a partially
+// migrated lineage. The caller owns authenticated identity and Git proofs;
+// this transaction rechecks successful-push, registered-target, and branch
+// ownership facts against snapshot. Conflicting provenance rolls back the
+// update; an exact repeated migration is an idempotent no-op.
 func (d *DB) MigrateRunPushTarget(snapshot PushTargetMigration) (bool, error) {
 	if snapshot.PreviousFingerprint == "" || snapshot.CurrentFingerprint == "" || snapshot.PreviousFingerprint == snapshot.CurrentFingerprint {
 		return false, errors.New("migrate run push target: distinct exact fingerprints are required")

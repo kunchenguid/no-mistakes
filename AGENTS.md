@@ -126,7 +126,7 @@ Exhausting the bound fails the step with `validate review analyzer findings afte
 
 **GitHub Repository Rename Continuation**
 
-- GitHub existing-PR discovery and branch-sync target migration share the authenticated immutable-ID proof in `internal/scm/github/identity.go`; redirects, names, and Git reachability are never identity authority. A terminal rename migration is explicit through `sync --accept-repository-rename`, updates only the old push fingerprint after every source/ownership/destination check, preserves the failed run and its history, and returns `rerun` for new validation. Semantics and refusal boundaries are owned by `docs/src/content/docs/reference/cli.md`; regressions: `TestFindPRAcceptsAuthenticatedSameRepositoryRename`, `TestAcceptRepositoryRename*`, and `TestAxiSyncRepositoryRenameContinuation`.
+- GitHub existing-PR discovery and branch-sync target migration share the authenticated immutable-ID proof in `internal/scm/github/identity.go`; redirects, names, and Git reachability are never identity authority. Continuation semantics and refusal boundaries are owned by [the CLI reference](docs/src/content/docs/reference/cli.md#repository-rename-continuation); regressions: `TestFindPRAcceptsAuthenticatedSameRepositoryRename`, `internal/branchsync/rename_test.go`, `internal/db/rename_test.go`, and `TestAxiSyncRepositoryRenameContinuation`.
 
 **AXI Run Resolution Is Branch-Scoped (`resolveRun`)**
 

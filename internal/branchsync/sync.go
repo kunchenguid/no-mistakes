@@ -524,7 +524,9 @@ func (s *Service) Apply(ctx context.Context) State {
 // can be matched to the existing binding; authenticated immutable repository
 // identity, an exact clean local/pushed/live head, unchanged target kind/ref,
 // and absence of an active same-branch run are all reverified before the
-// fingerprint-only compare-and-swap. Repeating the exact operation is a no-op.
+// atomic fingerprint/provenance update. Recorded provenance lets branch
+// selection retain a contained rerun lineage without rewriting older bindings.
+// Repeating the exact operation rechecks the guards and is then a no-op.
 func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget string) State {
 	state, run, _ := s.inspect(ctx)
 	initialLocal := state.Local
@@ -1521,6 +1523,10 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	return s.inspectWithPreviousTarget(ctx, "")
 }
 
+// inspectWithPreviousTarget accepts a nonempty previousFingerprint only after
+// the caller has authenticated its equivalence to the current repository.
+// Ordinary inspection passes none and relies on persisted migration evidence;
+// a caller-supplied locator alone must never relax branch selection.
 func (s *Service) inspectWithPreviousTarget(ctx context.Context, previousFingerprint string) (State, *db.Run, bool) {
 	state := State{Relation: RelationUnknown, Safety: "blocked_ambiguous_context", Remote: RemoteState{Freshness: "unknown"}}
 	root, err := git.FindGitRoot(s.workDir())
@@ -1905,8 +1911,10 @@ func pushedBindingForFingerprint(repo *db.Repo, run *db.Run, branch, fingerprint
 // supersededUnpublishedRun proves the narrow rerun relationship needed to
 // ignore an older terminal unpublished head during branch selection. The gate
 // is read-only evidence: its exact branch head must equal the newer push
-// binding, and Git must prove the older preserved head is its ancestor. Any
-// missing or conflicting evidence leaves the older run authoritative.
+// binding, and Git must prove the older preserved head is its ancestor. Across
+// a rename, the recorded migration push must bridge that ancestry and both
+// target bindings; repository identity alone cannot establish containment.
+// Any missing or conflicting evidence leaves the older run authoritative.
 func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) bool {
 	return s.supersededUnpublishedRunWithPreviousTarget(ctx, older, newer, branch, "")
 }
