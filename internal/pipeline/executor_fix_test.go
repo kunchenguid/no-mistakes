@@ -315,6 +315,69 @@ func TestExecutor_FixSetsPreviousFindings(t *testing.T) {
 	}
 }
 
+func TestDocumentRepair_ExecutorRoutesSelectedCodeFix(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	findings := `{"findings":[{"id":"document-1","severity":"error","description":"repair source","action":"auto-fix"},{"id":"document-2","severity":"warning","description":"leave for later","action":"ask-user"}],"summary":"document findings"}`
+	var routedFindings, deferredFindings string
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		if reviewCalls == 2 {
+			if !sctx.Fixing {
+				t.Error("routed review repair did not run in fix mode")
+			}
+			routedFindings = sctx.PreviousFindings
+			deferredFindings = sctx.DeferredFindings
+		}
+		return &StepOutcome{}, nil
+	}}
+	documentCalls := 0
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		documentCalls++
+		switch documentCalls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, Findings: findings}, nil
+		case 2:
+			if !sctx.Fixing {
+				t.Error("selected document repair did not enter fix mode")
+			}
+			return &StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
+		default:
+			if sctx.Fixing {
+				t.Error("post-restart document execution remained in fix mode")
+			}
+			return &StepOutcome{}, nil
+		}
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{review, document}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+
+	waitForStepStatus(t, database, run.ID, types.StepDocument, types.StepStatusAwaitingApproval)
+	if err := exec.RespondWithOverrides(types.StepDocument, types.ActionFix, []string{"document-1"}, map[string]string{"document-1": "preserve the public API"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+
+	routed, err := types.ParseFindingsJSON(routedFindings)
+	if err != nil {
+		t.Fatalf("parse routed findings: %v", err)
+	}
+	if len(routed.Items) != 1 || routed.Items[0].ID != "document-1" || routed.Items[0].UserInstructions != "preserve the public API" {
+		t.Fatalf("routed findings = %#v, want selected finding with user instructions", routed.Items)
+	}
+	deferred, err := types.ParseFindingsJSON(deferredFindings)
+	if err != nil {
+		t.Fatalf("parse deferred findings: %v", err)
+	}
+	if len(deferred.Items) != 1 || deferred.Items[0].ID != "document-2" {
+		t.Fatalf("deferred findings = %#v, want the unselected finding", deferred.Items)
+	}
+}
+
 func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

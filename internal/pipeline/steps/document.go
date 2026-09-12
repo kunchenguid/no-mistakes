@@ -3,7 +3,6 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -87,11 +86,11 @@ var housekeepingFindingsSchema = json.RawMessage(`{
 }`)
 
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	// A selected Document finding can name a source repair, but this step's
-	// agent is deliberately limited to documentation. Restart at Review so its
-	// established repair path owns executable changes and their revalidation.
-	if sctx.Fixing && documentFixRequiresReview(sctx.PreviousFindings) {
-		return &pipeline.StepOutcome{RestartFrom: types.StepReview}, nil
+	// Explicit Document repairs always use Review's source-repair path. The
+	// document agent is intentionally restricted to documentation, whereas the
+	// review fixer owns executable changes and the subsequent independent review.
+	if sctx.Fixing {
+		return &pipeline.StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
@@ -197,34 +196,6 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		Findings:      string(findingsJSON),
 		FixSummary:    fixResultSummary(committed),
 	}, nil
-}
-
-func documentFixRequiresReview(raw string) bool {
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return false
-	}
-	for _, finding := range findings.Items {
-		if finding.Category == types.FindingCategoryDocumentation || finding.File == "" {
-			continue
-		}
-		if !isDocumentationPath(finding.File) {
-			return true
-		}
-	}
-	return false
-}
-
-func isDocumentationPath(path string) bool {
-	if strings.HasPrefix(path, "docs/") {
-		return true
-	}
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".adoc", ".md", ".mdx", ".rst", ".txt":
-		return true
-	default:
-		return false
-	}
 }
 
 // buildPrompt assembles the document (or combined document+lint) prompt: the

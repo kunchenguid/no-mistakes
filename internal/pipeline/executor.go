@@ -223,6 +223,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	// Execute steps sequentially. A late repair may send the same run back
 	// through validation before any new head is published.
+	var routedRepair *restartRepair
 	for i := 0; i < len(e.steps); i++ {
 		step := e.steps[i]
 		if ctx.Err() != nil {
@@ -241,7 +242,11 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if err != nil {
 			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", step.Name(), err), ctx)
 		}
-		skipRemaining, restartFrom, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
+		if routedRepair != nil && routedRepair.step == step.Name() {
+			state = routedRepair.state
+			routedRepair = nil
+		}
+		skipRemaining, restartFrom, nextRepair, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -261,6 +266,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			if err != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", step.Name(), restartFrom), ctx)
 			}
+			routedRepair = nextRepair
 			i = restartIndex - 1
 		}
 	}
@@ -301,12 +307,18 @@ func (e *Executor) initializeRunScopes(runID string) {
 
 type stepExecutionState struct {
 	fixing           bool
+	startFixRound    bool
 	previousFindings string
 	deferredFindings string
 	roundNum         int
 	autoFixAttempts  int
 	executionMS      int64
 	currentRoundID   string
+}
+
+type restartRepair struct {
+	step  types.StepName
+	state stepExecutionState
 }
 
 func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionState, error) {
@@ -387,7 +399,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false, nil)
 	}
 	reconcileCtx := &StepContext{
 		Ctx:          ctx,
@@ -483,14 +495,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false, nil)
 	case types.ActionSkip:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false, nil)
 	case types.ActionAbort:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
 		if dbErr := e.db.FailStep(gate.stepResult.ID, "aborted by user", duration); dbErr != nil {
@@ -518,7 +530,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", nil)
-		skipRemaining, restartFrom, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
+		skipRemaining, restartFrom, routedRepair, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
 			fixing:           true,
 			previousFindings: merged,
 			deferredFindings: removeMatchingFindingsJSON(gate.findings, selected),
@@ -538,9 +550,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			if indexErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", gate.step.Name(), restartFrom), ctx)
 			}
-			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true)
+			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true, routedRepair)
 		}
-		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1, false, nil)
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
@@ -615,7 +627,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	return gate, nil
 }
 
-func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int, revalidating bool) error {
+func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int, revalidating bool, routedRepair *restartRepair) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err), ctx)
@@ -634,7 +646,11 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if stateErr != nil {
 			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", e.steps[index].Name(), stateErr), ctx)
 		}
-		skipRemaining, restartFrom, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
+		if routedRepair != nil && routedRepair.step == e.steps[index].Name() {
+			state = routedRepair.state
+			routedRepair = nil
+		}
+		skipRemaining, restartFrom, nextRepair, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -647,6 +663,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", e.steps[index].Name(), restartFrom), ctx)
 			}
 			revalidating = true
+			routedRepair = nextRepair
 			index = restartIndex - 1
 		}
 	}
@@ -707,15 +724,20 @@ func (e *Executor) autoFixLimit(stepName types.StepName) int {
 // executeStep runs a single step with approval coordination.
 // Returns whether to skip the remainder, an optional earlier restart step,
 // and any execution error.
-func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, types.StepName, error) {
+func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, types.StepName, *restartRepair, error) {
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 	autoFixLimit := e.autoFixLimit(stepName)
 
-	if !state.fixing {
+	if state.startFixRound {
+		if err := e.db.StartStepFixRound(sr.ID, autoFixLimit); err != nil {
+			return false, "", nil, fmt.Errorf("start routed repair for step %s: %w", stepName, err)
+		}
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", nil)
+	} else if !state.fixing {
 		if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
-			return false, "", fmt.Errorf("start step %s: %w", stepName, err)
+			return false, "", nil, fmt.Errorf("start step %s: %w", stepName, err)
 		}
 		e.emitStepEvent(ipc.EventStepStarted, run, repo, stepName, string(types.StepStatusRunning))
 	}
@@ -728,7 +750,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// Open log file for persistent step logging
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return false, "", fmt.Errorf("create step log file %s: %w", stepName, err)
+		return false, "", nil, fmt.Errorf("create step log file %s: %w", stepName, err)
 	}
 	defer logFile.Close()
 
@@ -904,9 +926,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
 	var restartFrom types.StepName
+	var nextRepair *restartRepair
 
 	// Execute with possible fix loop
 	for {
+		nextRepair = nil
 		reviewStartingHeadSHA := run.HeadSHA
 		sctx.ReviewStartingHeadSHA = reviewStartingHeadSHA
 		outcome, err := step.Execute(sctx)
@@ -935,9 +959,23 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", redactedErr, &durationMS)
-			return false, "", fmt.Errorf("step %s failed: %s", stepName, redactedErr)
+			return false, "", nil, fmt.Errorf("step %s failed: %s", stepName, redactedErr)
 		}
 		restartFrom = outcome.RestartFrom
+		if outcome.RepairStep != "" {
+			if restartFrom == "" || outcome.RepairStep != restartFrom {
+				return false, "", nil, fmt.Errorf("step %s requested invalid repair routing", stepName)
+			}
+			nextRepair = &restartRepair{
+				step: outcome.RepairStep,
+				state: stepExecutionState{
+					fixing:           true,
+					startFixRound:    true,
+					previousFindings: sctx.PreviousFindings,
+					deferredFindings: sctx.DeferredFindings,
+				},
+			}
+		}
 
 		if stepName == types.StepReview {
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
@@ -1071,13 +1109,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.waiting = false
 			e.waitingStep = ""
 			e.mu.Unlock()
-			return false, "", fmt.Errorf("persist %s approval gate: %w", stepName, dbErr)
+			return false, "", nil, fmt.Errorf("persist %s approval gate: %w", stepName, dbErr)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
 
 		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, outcome.Findings, true)
 		if errors.Is(err, ErrRunSuspended) {
-			return false, "", err
+			return false, "", nil, err
 		}
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 			slog.Warn("failed to complete awaiting-agent state in db", "step", stepName, "run", run.ID, "error", dbErr)
@@ -1087,7 +1125,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", err.Error(), &executionMS)
-			return false, "", fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
+			return false, "", nil, fmt.Errorf("step %s: waiting for approval: %w", stepName, err)
 		}
 		if reconciled {
 			phaseStart = time.Now()
@@ -1113,7 +1151,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// so the done label computes no additional elapsed.
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
 			if err := e.applyApprovalOverride(step, sctx, sr.ID); err != nil {
-				return false, "", err
+				return false, "", nil, err
 			}
 			phaseStart = time.Now()
 			goto done
@@ -1122,10 +1160,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Skip - mark step skipped and return (not an error)
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
-				return false, "", fmt.Errorf("complete step %s (skip): %w", stepName, err)
+				return false, "", nil, fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", &executionMS)
-			return false, "", nil
+			return false, "", nil, nil
 
 		case types.ActionAbort:
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
@@ -1133,7 +1171,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", "aborted by user", &executionMS)
-			return false, "", fmt.Errorf("step %s: aborted by user", stepName)
+			return false, "", nil, fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
 			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(outcome.Findings, response.findingIDs), 0))
@@ -1184,20 +1222,20 @@ done:
 	// Completion and authority replacement are one DB transaction.
 	if stepName == types.StepReview && status == types.StepStatusCompleted && reviewApprovedHeadSHA != "" {
 		if err := e.db.CompleteReviewStep(sr.ID, run.ID, reviewApprovedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
-			return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
+			return false, "", nil, fmt.Errorf("complete step %s: %w", stepName, err)
 		}
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 	} else if stepSkipped {
 		if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, durationMS, logPath, skipReason); err != nil {
-			return false, "", fmt.Errorf("complete skipped step %s: %w", stepName, err)
+			return false, "", nil, fmt.Errorf("complete skipped step %s: %w", stepName, err)
 		}
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
-		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
+		return false, "", nil, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
-	return skipRemaining, restartFrom, nil
+	return skipRemaining, restartFrom, nextRepair, nil
 }
 
 // recordDeclinedRound persists an approve, skip, or abort resolution as a real

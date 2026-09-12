@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,7 +288,7 @@ func TestDocumentStep_UserFix_PassesPreviousFindingsIntoPrompt(t *testing.T) {
 	}
 }
 
-func TestDocumentStep_UserFixRestartsFromReviewWithoutAgent(t *testing.T) {
+func TestDocumentStep_UserFixDelegatesToReviewWithoutAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -298,12 +297,12 @@ func TestDocumentStep_UserFixRestartsFromReviewWithoutAgent(t *testing.T) {
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 			called = true
-			return nil, fmt.Errorf("document agent must not repair source findings")
+			return nil, nil
 		},
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Fixing = true
-	sctx.PreviousFindings = `{"findings":[{"id":"source-repair","severity":"error","file":"internal/pipeline/executor.go","description":"fix source behavior","action":"auto-fix"}],"summary":"source repair"}`
+	sctx.PreviousFindings = `{"findings":[{"id":"documentation-repair","severity":"error","file":"docs/config.md","description":"fix documentation","action":"auto-fix"}],"summary":"documentation repair"}`
 
 	outcome, err := (&DocumentStep{}).Execute(sctx)
 	if err != nil {
@@ -314,6 +313,9 @@ func TestDocumentStep_UserFixRestartsFromReviewWithoutAgent(t *testing.T) {
 	}
 	if outcome.RestartFrom != types.StepReview {
 		t.Fatalf("RestartFrom = %q, want %q", outcome.RestartFrom, types.StepReview)
+	}
+	if outcome.RepairStep != types.StepReview {
+		t.Fatalf("RepairStep = %q, want %q", outcome.RepairStep, types.StepReview)
 	}
 }
 

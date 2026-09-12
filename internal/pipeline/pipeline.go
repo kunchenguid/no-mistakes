@@ -118,6 +118,10 @@ type StepOutcome struct {
 	// CI repairs use it when policy requires revalidation or continuity cannot be
 	// proven, sending the new local head back through review before push.
 	RestartFrom types.StepName
+	// RepairStep identifies the step that must perform this selected repair
+	// before validation restarts. The executor carries the selected and
+	// deferred findings to that step's fix round.
+	RepairStep types.StepName
 	// FixSummary, when non-empty, records the result of a fix attempt.
 	FixSummary      string
 	RepairPublished bool
