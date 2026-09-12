@@ -255,6 +255,42 @@ func TestFinalizeGrokResultRejectionReturnsUsageWithoutOutput(t *testing.T) {
 	}
 }
 
+// TestParseGrokEventsErrorResultCarriesItsUsage proves a turn that ends on
+// grok's own error result still hands back the tokens that result event
+// reported, matching claude's equivalent branch. Dropping them would record
+// the failed round as having used nothing.
+func TestParseGrokEventsErrorResultCarriesItsUsage(t *testing.T) {
+	events := `{"type":"result","subtype":"error_max_turns","is_error":true,"errors":["turn limit"],"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}` + "\n"
+	result, err := parseGrokEvents(context.Background(), strings.NewReader(events), nil)
+	if err == nil || !strings.Contains(err.Error(), "turn limit") {
+		t.Fatalf("parseGrokEvents() error = %v, want the terminal detail", err)
+	}
+	if result == nil {
+		t.Fatal("an error result that reported usage must still carry it")
+	}
+	if !result.UsageReported || result.Usage.InputTokens != 19 || result.Usage.OutputTokens != 7 ||
+		result.Usage.CacheReadTokens != 5 || result.Usage.CacheCreationTokens != 3 {
+		t.Fatalf("usage = %+v reported=%v, want the error result's tokens", result.Usage, result.UsageReported)
+	}
+}
+
+// TestParseGrokEventsErrorResultWithoutUsageStaysUnknown proves the branch
+// above never fabricates a zero: an error result carrying no usage leaves the
+// invocation's tokens unknown.
+func TestParseGrokEventsErrorResultWithoutUsageStaysUnknown(t *testing.T) {
+	events := `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["tool failed"]}` + "\n"
+	result, err := parseGrokEvents(context.Background(), strings.NewReader(events), nil)
+	if err == nil {
+		t.Fatal("expected a terminal error")
+	}
+	if result != nil && result.UsageReported {
+		t.Fatalf("unreported usage must stay unknown, got %+v", result.Usage)
+	}
+	if resultFromUsage(result.Usage) != nil {
+		t.Fatal("an error result with no usage must record unknown, not zero")
+	}
+}
+
 func TestParseGrokEventsSurfacesTerminalError(t *testing.T) {
 	events := `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["tool failed"]}` + "\n"
 	_, err := parseGrokEvents(context.Background(), strings.NewReader(events), nil)

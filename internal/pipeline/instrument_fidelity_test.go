@@ -60,6 +60,74 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 	}, nil
 }
 
+// usageGapSessionAgent models a codex thread whose middle round dies before
+// any usage event, so that round's row stores unknown token counts.
+type usageGapSessionAgent struct{ round int }
+
+func (a *usageGapSessionAgent) Name() string                { return "codex" }
+func (a *usageGapSessionAgent) Close() error                { return nil }
+func (a *usageGapSessionAgent) SupportsSessionResume() bool { return true }
+
+func (a *usageGapSessionAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+	a.round++
+	if a.round == 2 {
+		return nil, errors.New("codex exited: status 1")
+	}
+	cumulative := 1000
+	if a.round == 3 {
+		cumulative = 4000
+	}
+	return &agent.Result{
+		Output:                 json.RawMessage(`{}`),
+		SessionID:              "sess-gap",
+		Resumed:                true,
+		Usage:                  agent.TokenUsage{InputTokens: cumulative, Reported: true},
+		UsageReported:          true,
+		SessionUsageCumulative: true,
+	}, nil
+}
+
+// TestPerfRecording_UsagelessRoundDoesNotResetTheSessionPrior proves the prior
+// cumulative lookup skips rows whose usage is unknown. A failed round now
+// writes such a row; treating it as the prior would report "no prior", and the
+// next round's whole cumulative counter would be recorded as one round's
+// delta - here 4000 instead of 3000.
+func TestPerfRecording_UsagelessRoundDoesNotResetTheSessionPrior(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+
+	roundNum := 0
+	wrapped := &perfRecordingAgent{
+		inner:    &usageGapSessionAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return roundNum },
+	}
+	for r := 1; r <= 3; r++ {
+		roundNum = r
+		_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+			Purpose: "review",
+			Session: &agent.SessionRef{ID: "sess-gap"},
+		})
+	}
+
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 3 {
+		t.Fatalf("got %d rows, want 3", len(invs))
+	}
+	if invs[0].SessionKey == "" || invs[0].SessionKey != invs[1].SessionKey || invs[1].SessionKey != invs[2].SessionKey {
+		t.Fatalf("all three rounds must share one session key: %q/%q/%q", invs[0].SessionKey, invs[1].SessionKey, invs[2].SessionKey)
+	}
+	assertPtr(t, "round 1 delta input", invs[0].DeltaInputTokens, 1000)
+	if invs[1].InputTokens != nil || invs[1].DeltaInputTokens != nil {
+		t.Fatalf("the failed round must record unknown usage, got raw=%v delta=%v", invs[1].InputTokens, invs[1].DeltaInputTokens)
+	}
+	assertPtr(t, "round 3 delta input", invs[2].DeltaInputTokens, 3000)
+}
+
 // TestPerfRecording_ResumedSessionRecordsPerRoundDeltas proves a resumed
 // session's cumulative token counters are stored per round as correct deltas,
 // with fresh input, reasoning, model identity, activity metrics, workload, and

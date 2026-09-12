@@ -108,7 +108,22 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		Phase:   LifecyclePhaseFallback,
 		Message: "opencode starting a fresh prompt-only structured output session",
 	})
+	// Both turns really ran and both cost tokens, so the single row this
+	// invocation records must carry both. Each attempt is its own fresh
+	// session and opencode never reports cumulatively, so the two are
+	// independent deltas that simply add.
+	nativeUsage := TokenUsage{}
+	if result != nil {
+		nativeUsage = result.Usage
+	}
 	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false)
+	if result == nil {
+		result = resultFromUsage(nativeUsage)
+	} else {
+		result.Usage.Add(nativeUsage)
+		result.UsageReported = result.Usage.Reported
+		result.CacheCreationReported = result.Usage.CacheCreationReported
+	}
 	if fallbackErr != nil {
 		return result, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)
 	}

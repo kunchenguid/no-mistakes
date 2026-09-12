@@ -123,6 +123,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		stderrWG.Wait()
 		retErr := fmt.Errorf("grok parse events: %w", parseErr)
 		emitAgentExited(opts, "grok", pid, retErr)
+		if result != nil {
+			return resultFromUsage(result.Usage), retErr
+		}
 		return nil, retErr
 	}
 
@@ -292,20 +295,20 @@ func parseGrokEvents(ctx context.Context, r io.Reader, onChunk func(string)) (*R
 			}
 		case "result":
 			sawResult = true
-			if event.IsError || event.Subtype != "success" {
-				detail := strings.Join(event.Errors, "; ")
-				if detail == "" {
-					detail = event.Result
-				}
-				return nil, fmt.Errorf("grok error: subtype=%s: %s", event.Subtype, detail)
-			}
-			result.Text = event.Result
-			result.Output = event.StructuredOutput
 			if usage := normalizedGrokUsage(event.Usage); usage.Reported {
 				result.Usage = usage
 				result.UsageReported = true
 				result.CacheCreationReported = usage.CacheCreationReported
 			}
+			if event.IsError || event.Subtype != "success" {
+				detail := strings.Join(event.Errors, "; ")
+				if detail == "" {
+					detail = event.Result
+				}
+				return result, fmt.Errorf("grok error: subtype=%s: %s", event.Subtype, detail)
+			}
+			result.Text = event.Result
+			result.Output = event.StructuredOutput
 		case "error":
 			var message string
 			if err := json.Unmarshal(event.Message, &message); err != nil {
