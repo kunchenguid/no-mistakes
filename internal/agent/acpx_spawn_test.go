@@ -141,14 +141,19 @@ func TestAcpxAgent_Run_UnsupportedSessionRunsCold(t *testing.T) {
 	argsFile := filepath.Join(dir, "argv.txt")
 	t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
 	t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+	t.Setenv("NM_TEST_ACPX_EVENT", `{"method":"session/update","params":{"sessionId":"not-resumable","update":{"sessionUpdate":"agent_message_chunk","text":"cold reply"}}}`)
 	a := &acpxAgent{bin: writeStubAcpx(t, dir), target: "gemini"}
 
-	if _, err := a.Run(context.Background(), RunOpts{
+	result, err := a.Run(context.Background(), RunOpts{
 		Prompt:  "run cold",
 		CWD:     dir,
 		Session: &SessionRef{ID: "must-not-resume", Agent: "acp:gemini:old"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if result.SessionID != "" {
+		t.Fatalf("cold ACP result reported resumable session %q", result.SessionID)
 	}
 	argsData, err := os.ReadFile(argsFile)
 	if err != nil {

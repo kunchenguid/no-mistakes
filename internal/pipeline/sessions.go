@@ -65,7 +65,7 @@ func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, ena
 		if stored, err := database.GetRunAgentSessions(runID); err == nil {
 			for _, s := range stored {
 				if s.SessionID != "" && agent.SupportsSessionProvider(sessionAgent, s.Agent) {
-					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent, Scope: rs.scope(SessionRole(s.Role))}
+					rs.ids[SessionRole(s.Role)] = agent.SessionRef{ID: s.SessionID, Agent: s.Agent}
 				}
 			}
 		}
@@ -85,7 +85,6 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	}
 
 	stored := rs.id(role)
-	stored.Scope = rs.scope(role)
 	storedID := stored.ID
 	opts.Session = &stored
 	result, err := a.Run(ctx, opts)
@@ -103,7 +102,7 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	// A pre-prompt resume failed. Never skip the turn: discard the dead
 	// identity and establish a fresh same-role session.
 	rs.forget(role)
-	opts.Session = &agent.SessionRef{Scope: rs.scope(role)}
+	opts.Session = &agent.SessionRef{}
 	action := "resume of"
 	next := "starting a fresh " + string(role) + " session"
 	if logf != nil {
@@ -132,10 +131,6 @@ func (rs *RunSessions) id(role SessionRole) agent.SessionRef {
 	return rs.ids[role]
 }
 
-func (rs *RunSessions) scope(role SessionRole) string {
-	return rs.runID + "\x00" + string(role)
-}
-
 // remember stores the role's latest session identity in memory and persists
 // it so the run can resume the session across daemon process boundaries.
 // Persistence failures are ignored: reuse degrades, correctness does not.
@@ -146,7 +141,7 @@ func (rs *RunSessions) remember(role SessionRole, sessionID, provider string) {
 	if provider == "" || !agent.SupportsSessionProvider(rs.agent, provider) {
 		return
 	}
-	identity := agent.SessionRef{ID: sessionID, Agent: provider, Scope: rs.scope(role)}
+	identity := agent.SessionRef{ID: sessionID, Agent: provider}
 	rs.mu.Lock()
 	changed := rs.ids[role] != identity
 	rs.ids[role] = identity

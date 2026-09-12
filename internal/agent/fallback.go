@@ -90,10 +90,6 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return nil, cause
 		}
 		currentOpts := opts
-		if currentOpts.Session != nil {
-			session := *currentOpts.Session
-			currentOpts.Session = &session
-		}
 		if currentOpts.Session != nil && currentOpts.Session.ID == "" && !SupportsSessionResume(current) {
 			currentOpts.Session = nil
 			currentOpts.SessionFallback = false

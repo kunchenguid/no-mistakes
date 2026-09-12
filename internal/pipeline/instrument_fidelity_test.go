@@ -161,7 +161,6 @@ func TestInvocationSessionMode(t *testing.T) {
 		name    string
 		opts    agent.RunOpts
 		result  *agent.Result
-		err     error
 		want    string
 		wantKey bool
 	}{
@@ -202,7 +201,7 @@ func TestInvocationSessionMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := invocationSessionMode(tt.opts, tt.result, tt.err); got != tt.want {
+			if got := invocationSessionMode(tt.opts, tt.result); got != tt.want {
 				t.Fatalf("invocationSessionMode() = %q, want %q", got, tt.want)
 			}
 			key := invocationSessionKey(tt.opts, tt.result)

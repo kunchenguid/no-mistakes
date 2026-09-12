@@ -67,40 +67,6 @@ func TestFallbackAgentFallsBackOnLaunchFailure(t *testing.T) {
 	}
 }
 
-func TestFallbackAgent_IsolatesSessionStatePerCandidate(t *testing.T) {
-	session := &SessionRef{Scope: "run/fixer"}
-	first := &fallbackTestAgent{
-		name:      "acp:first",
-		resumable: true,
-		runOpts: func(opts RunOpts) (*Result, error) {
-			opts.Session.Agent = "first-provider"
-			return nil, errors.New("acp:first start: argument list too long")
-		},
-	}
-	second := &fallbackTestAgent{
-		name:      "acp:second",
-		resumable: true,
-		runOpts: func(opts RunOpts) (*Result, error) {
-			if opts.Session.Agent != "" {
-				t.Fatalf("second candidate inherited provider %q", opts.Session.Agent)
-			}
-			opts.Session.Agent = "second-provider"
-			return &Result{Text: "ok", Provider: opts.Session.Agent}, nil
-		},
-	}
-
-	result, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{Session: session})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Provider != "second-provider" {
-		t.Fatalf("provider = %q, want second-provider", result.Provider)
-	}
-	if session.Agent != "" {
-		t.Fatalf("caller session was mutated to %q", session.Agent)
-	}
-}
-
 func TestFallbackAgentDoesNotFallBackOnFindingsResult(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "codex",

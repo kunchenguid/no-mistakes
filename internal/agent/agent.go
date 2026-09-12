@@ -129,9 +129,6 @@ type SessionRef struct {
 	// new resumable session whose identity is reported via Result.SessionID.
 	ID    string
 	Agent string
-	// Scope is trusted, local session scope. Adapters may use it to isolate
-	// their own bridge records, but must not expose it to external providers.
-	Scope string
 }
 
 // SessionResumer is the optional adapter capability for durable native

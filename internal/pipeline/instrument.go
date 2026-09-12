@@ -80,7 +80,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		Round:       a.round(),
 		Purpose:     purpose,
 		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts, result, runErr),
+		SessionMode: invocationSessionMode(opts, result),
 		SessionKey:  sessionKey,
 		StartedAt:   startedAt.Unix(),
 		CompletedAt: completedAt.Unix(),
@@ -206,7 +206,7 @@ func countOutputFindings(output json.RawMessage) (int, bool) {
 	return len(items), true
 }
 
-func invocationSessionMode(opts agent.RunOpts, result *agent.Result, runErr error) string {
+func invocationSessionMode(opts agent.RunOpts, result *agent.Result) string {
 	switch {
 	case opts.SessionFallback:
 		return db.InvocationModeFallback

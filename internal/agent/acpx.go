@@ -43,11 +43,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if len(opts.JSONSchema) > 0 {
 		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
 	}
-	return a.runPrompt(ctx, opts, prompt, a.buildArgs(opts))
-}
-
-func (a *acpxAgent) runPrompt(ctx context.Context, opts RunOpts, prompt string, args []string) (*Result, error) {
-	cmd := exec.CommandContext(ctx, a.bin, args...)
+	cmd := exec.CommandContext(ctx, a.bin, a.buildArgs(opts)...)
 	cmd.Dir = opts.CWD
 	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
@@ -75,7 +71,7 @@ func (a *acpxAgent) runPrompt(ctx context.Context, opts RunOpts, prompt string, 
 	}()
 
 	var usage TokenUsage
-	text, stdoutErr, sessionID, err := parseAcpxJSONEventsWithSession(ctx, started.stdout, opts.OnChunk, &usage)
+	text, stdoutErr, err := parseAcpxJSONEvents(ctx, started.stdout, opts.OnChunk, &usage)
 	if err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
@@ -112,9 +108,6 @@ func (a *acpxAgent) runPrompt(ctx context.Context, opts RunOpts, prompt string, 
 	if err != nil {
 		err = PromptDelivered(err)
 	}
-	if res != nil {
-		res.SessionID = sessionID
-	}
 	emitAgentExited(opts, a.Name(), pid, err)
 	return res, err
 }
@@ -122,12 +115,7 @@ func (a *acpxAgent) runPrompt(ctx context.Context, opts RunOpts, prompt string, 
 func (a *acpxAgent) Close() error { return nil }
 
 func (a *acpxAgent) buildArgs(opts RunOpts) []string {
-	args := a.buildBaseArgs(opts)
-	return append(args, "exec", "--file", "-")
-}
-
-func (a *acpxAgent) buildBaseArgs(opts RunOpts) []string {
-	args := make([]string, 0, 14)
+	args := make([]string, 0, 17)
 	if a.rawCommand != "" {
 		args = append(args, "--agent", a.rawCommand)
 	}
@@ -147,7 +135,7 @@ func (a *acpxAgent) buildBaseArgs(opts RunOpts) []string {
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}
-	return args
+	return append(args, "exec", "--file", "-")
 }
 
 func acpxStdinError(err error) error {
@@ -183,8 +171,7 @@ type acpxJSONMessage struct {
 		Usage acpxUsageFields `json:"usage"`
 	} `json:"result"`
 	Params struct {
-		SessionID string            `json:"sessionId"`
-		Update    acpxSessionUpdate `json:"update"`
+		Update acpxSessionUpdate `json:"update"`
 	} `json:"params"`
 }
 
@@ -228,21 +215,15 @@ type acpxUsageFields struct {
 }
 
 func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
-	text, stdoutErr, _, err := parseAcpxJSONEventsWithSession(ctx, r, onChunk, usage)
-	return text, stdoutErr, err
-}
-
-func parseAcpxJSONEventsWithSession(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), acpxScannerMaxTokenSize)
 	var output strings.Builder
 	var stdoutErr string
-	var sessionID string
 
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return "", stdoutErr, sessionID, ctx.Err()
+			return "", stdoutErr, ctx.Err()
 		default:
 		}
 
@@ -254,9 +235,6 @@ func parseAcpxJSONEventsWithSession(ctx context.Context, r io.Reader, onChunk fu
 		var msg acpxJSONMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
-		}
-		if msg.Params.SessionID != "" {
-			sessionID = msg.Params.SessionID
 		}
 		markAcpxUsagePresence(line, &msg)
 		// acpx streams nested ACP request/response traffic alongside its own
@@ -290,9 +268,9 @@ func parseAcpxJSONEventsWithSession(ctx context.Context, r io.Reader, onChunk fu
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", stdoutErr, sessionID, err
+		return "", stdoutErr, err
 	}
-	return output.String(), stdoutErr, sessionID, nil
+	return output.String(), stdoutErr, nil
 }
 
 func acpxUpdateUsage(update acpxSessionUpdate) TokenUsage {
