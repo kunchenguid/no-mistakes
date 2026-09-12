@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	githubscm "github.com/kunchenguid/no-mistakes/internal/scm/github"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -148,11 +150,148 @@ func TestSyncHelpExposesGuardedModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
-		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves"} {
+		for _, want := range []string{"fast-forward", "equivalent", "reset semantics", "--bind-archive-ref", "never creates or moves", "--accept-repository-rename", "same-ID GitHub"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%v help missing %q:\n%s", args, want, out)
 			}
 		}
+	}
+}
+
+// TestAxiSyncRepositoryRenameContinuation uses a fake authenticated GitHub
+// response (not a live provider) but drives the real AXI command, SQLite state,
+// and local Git transitions. It reproduces the terminal failed-run sequence:
+// the canonical existing PR is discoverable, init-equivalent URL refresh makes
+// the old push fingerprint target_changed, and the explicit migration preserves
+// source/history while returning rerun as the supported continuation.
+func TestAxiSyncRepositoryRenameContinuation(t *testing.T) {
+	f := newCLISyncFixture(t)
+	if out, err := executeCmd("axi", "sync"); err != nil {
+		t.Fatalf("prepare synchronized source: %v\n%s", err, out)
+	}
+	const (
+		previous = "https://github.com/owner/previous"
+		current  = "https://github.com/org/current"
+	)
+	fakeBin := t.TempDir()
+	ghPath := filepath.Join(fakeBin, "gh")
+	ghScript := `#!/bin/sh
+case "$*" in
+  "pr list --head feature/sync --base main --repo owner/previous --state open --json number,url,baseRefName")
+    printf '%s\n' '[{"number":42,"url":"https://github.com/org/current/pull/42","baseRefName":"main"}]' ;;
+  "api --hostname github.com repos/owner/previous"|"api --hostname github.com repos/org/current")
+    printf '%s\n' '{"id":1234,"full_name":"org/current"}' ;;
+  *)
+    printf 'unexpected gh command: %s\n' "$*" >&2
+    exit 2 ;;
+esac
+`
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, name, args...)
+	}
+	host := githubscm.New(cmdFactory, func() bool { return true }, "github.com", "owner/previous")
+	pr, err := host.FindPR(context.Background(), "feature/sync", "main")
+	if err != nil || pr == nil || pr.URL != "https://github.com/org/current/pull/42" {
+		t.Fatalf("canonical existing PR discovery = (%+v, %v)", pr, err)
+	}
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.GetRun(f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(previous), Ref: "refs/heads/feature/sync"}); err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"items":[{"id":"rename-association","severity":"error","description":"canonical PR association failed"}]}`
+	if _, err := database.InsertStepRound(step.ID, 1, "execute", &findings, nil, 19); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailStep(step.ID, "canonical PR association failed", 23); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunErrorStatus(run.ID, "canonical PR association failed", types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.UpdateRepoMetadata(before.RepoID, current, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep all remote traffic local while making the registered locator exactly
+	// match the GitHub name used by the production identity verifier.
+	cliGit(t, f.local, "config", "url."+f.remote+".insteadOf", current)
+	beforeHistory := cliGit(t, f.local, "rev-list", "HEAD")
+	out, err := executeCmd("axi", "status")
+	if err != nil || !strings.Contains(out, "state: target_changed") || !strings.Contains(out, "safety: blocked_target_changed") {
+		t.Fatalf("rename failure not reproduced: %v\n%s", err, out)
+	}
+	out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
+	if err != nil {
+		t.Fatalf("rename continuation: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: synchronized", "changed: true", "safety: repository_rename_accepted", "freshness: live", "code: rerun_pipeline", "command: no-mistakes rerun"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rename continuation missing %q:\n%s", want, out)
+		}
+	}
+	out, err = executeCmd("axi", "sync", "--accept-repository-rename", previous)
+	if err != nil || !strings.Contains(out, "changed: false") || !strings.Contains(out, "safety: repository_rename_already_accepted") {
+		t.Fatalf("idempotent repetition = %v\n%s", err, out)
+	}
+	if got := cliGit(t, f.local, "rev-list", "HEAD"); got != beforeHistory {
+		t.Fatalf("continuation rewrote source history:\nbefore %s\nafter %s", beforeHistory, got)
+	}
+	cliGit(t, f.local, "merge-base", "--is-ancestor", f.old, f.pushed)
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("continuation moved HEAD = %s, want %s", got, f.pushed)
+	}
+
+	database, err = db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	after, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunFailed || after.Error == nil || *after.Error != "canonical PR association failed" || after.HeadSHA != before.HeadSHA ||
+		after.LastPushedSHA == nil || *after.LastPushedSHA != f.pushed || after.PushTargetFingerprint == nil || *after.PushTargetFingerprint != branchsync.TargetFingerprint(current) ||
+		after.PushGeneration == nil || *after.PushGeneration != *before.PushGeneration || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("failed-run evidence changed: before=%+v after=%+v", before, after)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 || steps[0].Status != types.StepStatusFailed {
+		t.Fatalf("validation steps changed: %+v, %v", steps, err)
+	}
+	rounds, err := database.GetRoundsByStep(step.ID)
+	if err != nil || len(rounds) != 1 || rounds[0].FindingsJSON == nil || *rounds[0].FindingsJSON != findings {
+		t.Fatalf("validation rounds changed: %+v, %v", rounds, err)
 	}
 }
 
@@ -1318,9 +1457,13 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--keep-local"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--recover"},
 		{"sync", "--bind-archive-ref", "refs/heads/archive/test", "--yes"},
+		{"sync", "--accept-repository-rename", "", "--yes"},
+		{"sync", "--accept-repository-rename", "https://github.com/owner/old", "--check"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
 		{"axi", "sync", "--bind-archive-ref", "refs/heads/archive/test", "--check"},
+		{"axi", "sync", "--accept-repository-rename", ""},
+		{"axi", "sync", "--accept-repository-rename", "https://github.com/owner/old", "--recover"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

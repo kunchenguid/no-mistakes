@@ -261,6 +261,7 @@ no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
 no-mistakes axi sync --bind-archive-ref refs/heads/archive/<name>
+no-mistakes axi sync --accept-repository-rename https://github.com/<previous-owner>/<repository>
 ```
 
 | Flag                 | Type     | Default | Description                                                                  |
@@ -269,6 +270,7 @@ no-mistakes axi sync --bind-archive-ref refs/heads/archive/<name>
 | `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact evidence for a keep-local recovery; never creates or moves a Git ref |
+| `--accept-repository-rename` | `string` | (none) | Supply the previous credential-free GitHub target and migrate only its verified terminal push fingerprint to the current canonical name |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -281,6 +283,10 @@ When the local gate branch is exactly at a newer same-branch pushed binding and 
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+A repository rename is the one explicit changed-target migration. If the branch is still behind, first complete the ordinary offered synchronization while the old recorded target remains configured. Then update `origin` to the canonical GitHub owner/repository, run `no-mistakes init`, and pass the credential-free previous target to `--accept-repository-rename` once the clean local, recorded, and pushed heads are exactly equal. The command requires a terminal run with unchanged target kind and branch ref, no active run on that repository branch, one unambiguous clean checkout, the supplied target's digest equal to the persisted old binding, the current remote branch still at the exact pushed SHA, and authenticated same-host API reads of both names returning the same positive immutable repository ID and the current canonical full name. It refuses missing or malformed identity, API failure, another host, a different repository or fork, changed/dirty/divergent source, and any concurrent ownership or binding change.
+
+Successful migration changes only that terminal run's target fingerprint. It does not move a file or Git ref, change any head/generation/outcome, clear the failed error, alter findings or rounds, or mark the historical run passed. It is transactionally idempotent: interruption before the compare-and-swap leaves the old binding, and repetition after success reports `repository_rename_already_accepted`. AXI returns `next_action.code: rerun_pipeline` and `no-mistakes rerun`; that starts a new validation from the preserved source and lets ordinary PR discovery, review, tests, publication, and CI produce a new result. It is not approval from existing external checks.
 
 ### Custody recovery
 
@@ -438,6 +444,7 @@ no-mistakes sync --yes
 no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
 no-mistakes sync --bind-archive-ref refs/heads/archive/<name>
+no-mistakes sync --accept-repository-rename https://github.com/<previous-owner>/<repository>
 ```
 
 | Flag                 | Type     | Default | Description                                                     |
@@ -447,8 +454,9 @@ no-mistakes sync --bind-archive-ref refs/heads/archive/<name>
 | `--recover`          | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local`       | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--bind-archive-ref` | `string` | (none)  | Bind one existing `refs/heads/archive/*` commit as exact keep-local recovery evidence without changing Git refs |
+| `--accept-repository-rename` | `string` | (none) | Supply the previous credential-free GitHub target for the same verified terminal fingerprint migration as AXI |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody. Archive binding is itself explicit, does not prompt, and cannot be combined with synchronization, recovery, or `--yes`. Repository-rename acceptance is also explicit, does not prompt, and cannot be combined with any other sync flag; on success it leaves the historical run terminal and directs the operator to `no-mistakes rerun`.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 

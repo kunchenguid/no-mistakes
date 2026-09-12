@@ -1575,6 +1575,112 @@ func TestFindPRRejectsURLForDifferentRepository(t *testing.T) {
 	}
 }
 
+func TestFindPRAcceptsAuthenticatedSameRepositoryRename(t *testing.T) {
+	t.Parallel()
+
+	const (
+		previous = "owner/previous"
+		current  = "org/current"
+	)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base main --repo " + previous + " --state open --json number,url,baseRefName": {
+			stdout: `[{"number":42,"url":"https://github.com/` + current + `/pull/42","baseRefName":"main"}]`,
+		},
+		"gh api --hostname github.com repos/" + previous: {stdout: `{"id":1234,"full_name":"` + current + `"}`},
+		"gh api --hostname github.com repos/" + current:  {stdout: `{"id":1234,"full_name":"` + current + `"}`},
+	}), nil, "github.com", previous)
+
+	pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+	if err != nil || pr == nil {
+		t.Fatalf("same-repository rename rejected: PR=%+v error=%v", pr, err)
+	}
+	if pr.Number != "42" || pr.URL != "https://github.com/"+current+"/pull/42" {
+		t.Fatalf("FindPR() = %+v", pr)
+	}
+}
+
+func TestFindPRUnchangedRepositoryDoesNotNeedIdentityAPI(t *testing.T) {
+	t.Parallel()
+
+	const repo = "owner/current"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature/refactor --base main --repo " + repo + " --state open --json number,url,baseRefName": {
+			stdout: `[{"number":42,"url":"https://github.com/` + repo + `/pull/42","baseRefName":"main"}]`,
+		},
+	}), nil, "github.com", repo)
+
+	if pr, err := host.FindPR(context.Background(), "feature/refactor", "main"); err != nil || pr == nil || pr.Number != "42" {
+		t.Fatalf("unchanged discovery = (%+v, %v)", pr, err)
+	}
+}
+
+func TestFindPRRepositoryRenameFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	const (
+		previous = "owner/previous"
+		current  = "org/current"
+		listKey  = "gh pr list --head feature/refactor --base main --repo " + previous + " --state open --json number,url,baseRefName"
+	)
+	validPrevious := githubTestResponse{stdout: `{"id":1234,"full_name":"` + current + `"}`}
+	validCurrent := githubTestResponse{stdout: `{"id":1234,"full_name":"` + current + `"}`}
+	tests := []struct {
+		name      string
+		url       string
+		previous  githubTestResponse
+		current   githubTestResponse
+		wantError string
+	}{
+		{name: "different repository or fork", url: "https://github.com/" + current + "/pull/42", previous: validPrevious, current: githubTestResponse{stdout: `{"id":5678,"full_name":"` + current + `"}`}, wantError: "identity"},
+		{name: "previous identity unavailable", url: "https://github.com/" + current + "/pull/42", previous: githubTestResponse{stderr: "private provider payload token=secret", code: 1}, current: validCurrent, wantError: "identity read failed"},
+		{name: "current identity unavailable", url: "https://github.com/" + current + "/pull/42", previous: validPrevious, current: githubTestResponse{code: 1}, wantError: "identity read failed"},
+		{name: "missing positive identity", url: "https://github.com/" + current + "/pull/42", previous: githubTestResponse{stdout: `{"id":0,"full_name":"` + current + `"}`}, current: validCurrent, wantError: "incomplete"},
+		{name: "malformed identity", url: "https://github.com/" + current + "/pull/42", previous: validPrevious, current: githubTestResponse{stdout: `{`}, wantError: "malformed"},
+		{name: "duplicate identity field", url: "https://github.com/" + current + "/pull/42", previous: validPrevious, current: githubTestResponse{stdout: `{"id":1234,"id":5678,"full_name":"` + current + `"}`}, wantError: "malformed"},
+		{name: "non-integral identity", url: "https://github.com/" + current + "/pull/42", previous: validPrevious, current: githubTestResponse{stdout: `{"id":1234.5,"full_name":"` + current + `"}`}, wantError: "malformed"},
+		{name: "contradictory canonical name", url: "https://github.com/" + current + "/pull/42", previous: githubTestResponse{stdout: `{"id":1234,"full_name":"owner/other"}`}, current: validCurrent, wantError: "identity"},
+		{name: "different host", url: "https://ghe.example.com/" + current + "/pull/42", previous: validPrevious, current: validCurrent, wantError: "host"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			responses := map[string]githubTestResponse{
+				listKey: tc.previous,
+			}
+			responses[listKey] = githubTestResponse{stdout: `[{"number":42,"url":"` + tc.url + `","baseRefName":"main"}]`}
+			responses["gh api --hostname github.com repos/"+previous] = tc.previous
+			responses["gh api --hostname github.com repos/"+current] = tc.current
+			host := New(githubTestCmdFactory(responses), nil, "github.com", previous)
+			pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+			if err == nil || pr != nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("FindPR() = (%+v, %v), want refusal containing %q", pr, err, tc.wantError)
+			}
+			if strings.Contains(err.Error(), "token=secret") {
+				t.Fatalf("provider payload leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyRepositoryRenameRejectsNonRenameLocatorChanges(t *testing.T) {
+	t.Parallel()
+
+	cmd := githubTestCmdFactory(nil)
+	for _, tc := range []struct {
+		name, previous, current, want string
+	}{
+		{"host", "https://github.com/owner/old", "https://ghe.example.com/owner/new", "crosses GitHub hosts"},
+		{"same slug", "git@github.com:owner/current.git", "https://github.com/owner/current", "do not name different"},
+		{"credential", "https://token@example.com/owner/old", "https://github.com/owner/new", "credential-bearing"},
+		{"nested path", "https://github.com/group/owner/old", "https://github.com/owner/new", "exact GitHub"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := VerifyRepositoryRename(context.Background(), cmd, tc.previous, tc.current); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("VerifyRepositoryRename() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestFindPRReturnsJSONError(t *testing.T) {
 	t.Parallel()
 

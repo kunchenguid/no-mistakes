@@ -783,6 +783,110 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	}
 }
 
+func TestMigrateRunPushTargetPreservesFailedValidationAndIsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-rename-binding", "https://github.com/org/current", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "pushed", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "previous", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"items":[{"id":"pr-rename","severity":"error","description":"association failed"}]}`
+	if _, err := d.InsertStepRound(step.ID, 1, "execute", &findings, nil, 17); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.FailStep(step.ID, "canonical PR discovery failed", 23); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunErrorStatus(run.ID, "canonical PR discovery failed", types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := PushTargetMigration{
+		RunID: run.ID, RepoID: repo.ID, Branch: "feature", Status: types.RunFailed, HeadSHA: "pushed",
+		TargetKind: "upstream", PreviousFingerprint: "previous", CurrentFingerprint: "current",
+		Ref: "refs/heads/feature", CurrentUpstreamURL: repo.UpstreamURL, CurrentForkURL: repo.ForkURL, Generation: 1,
+	}
+	for attempt, wantChanged := range []bool{true, false} {
+		changed, err := d.MigrateRunPushTarget(snapshot)
+		if err != nil || changed != wantChanged {
+			t.Fatalf("attempt %d = (%t, %v), want changed=%t", attempt+1, changed, err, wantChanged)
+		}
+	}
+	after, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunFailed || after.Error == nil || *after.Error != "canonical PR discovery failed" || after.HeadSHA != before.HeadSHA ||
+		after.LastPushedSHA == nil || *after.LastPushedSHA != "pushed" || after.PushTargetFingerprint == nil || *after.PushTargetFingerprint != "current" ||
+		after.PushGeneration == nil || *after.PushGeneration != 1 || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("migration rewrote failed run evidence: before=%+v after=%+v", before, after)
+	}
+	steps, err := d.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 || steps[0].Status != types.StepStatusFailed || steps[0].Error == nil || *steps[0].Error != "canonical PR discovery failed" {
+		t.Fatalf("step history changed: %+v, %v", steps, err)
+	}
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil || len(rounds) != 1 || rounds[0].FindingsJSON == nil || *rounds[0].FindingsJSON != findings {
+		t.Fatalf("round history changed: %+v, %v", rounds, err)
+	}
+}
+
+func TestMigrateRunPushTargetRefusesActiveRunAndChangedBinding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-rename-conflict", "https://github.com/org/current", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "pushed", "base")
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: "previous", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := PushTargetMigration{RunID: run.ID, RepoID: repo.ID, Branch: "feature", Status: types.RunFailed, HeadSHA: "pushed", TargetKind: "upstream", PreviousFingerprint: "previous", CurrentFingerprint: "current", Ref: "refs/heads/feature", CurrentUpstreamURL: repo.UpstreamURL, CurrentForkURL: repo.ForkURL, Generation: 1}
+	active, err := d.InsertRun(repo.ID, "feature", "pushed", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MigrateRunPushTarget(snapshot); err == nil {
+		t.Fatal("migration accepted an active same-branch run")
+	}
+	if err := d.UpdateRunStatus(active.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.UpdateRepoMetadata(repo.ID, "https://github.com/org/changed-again", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MigrateRunPushTarget(snapshot); err == nil {
+		t.Fatal("migration accepted a changed registered target")
+	}
+	if _, err := d.UpdateRepoMetadata(repo.ID, repo.UpstreamURL, "main"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.HeadSHA = "changed"
+	if _, err := d.MigrateRunPushTarget(snapshot); err == nil {
+		t.Fatal("migration accepted a changed push binding")
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != "previous" {
+		t.Fatalf("refusal changed fingerprint: %+v", got.PushTargetFingerprint)
+	}
+}
+
 func TestUpdateRunPublicationIsAtomic(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-publication", "https://example.com/repo.git", "main")

@@ -170,7 +170,13 @@ type Service struct {
 	lsRemote    func(context.Context, string, string, string) (string, error)
 	fetchRemote func(context.Context, string, string, string, string) error
 
+	// VerifyRepositoryRename must require authenticated, positive immutable
+	// provider identity. Branch synchronization owns every Git and persisted
+	// binding precondition; the GitHub backend owns the identity proof itself.
+	VerifyRepositoryRename func(context.Context, string, string) error
+
 	beforeApply                       func()
+	beforeTargetMigration             func()
 	beforeGateReset                   func()
 	beforeRecoverTerminalHeadPreserve func()
 	beforeRecoverWorktreeMove         func()
@@ -508,6 +514,119 @@ func (s *Service) Apply(ctx context.Context) State {
 	plan.NextAction = nil
 	plan.Error = ""
 	return plan
+}
+
+// AcceptRepositoryRename migrates one terminal successful-push fingerprint
+// after the repository's configured GitHub owner/name changed. It changes no
+// Git ref, worktree file, run result, head, generation, finding, or round. The
+// caller must supply the previous credential-free target so its one-way digest
+// can be matched to the existing binding; authenticated immutable repository
+// identity, an exact clean local/pushed/live head, unchanged target kind/ref,
+// and absence of an active same-branch run are all reverified before the
+// fingerprint-only compare-and-swap. Repeating the exact operation is a no-op.
+func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget string) State {
+	state, run, _ := s.inspect(ctx)
+	refuse := func(safety, message string) State {
+		return blockedPlan(state, StateTargetChanged, safety, message)
+	}
+	if run == nil {
+		return refuse("blocked_repository_rename_unbound", "no terminal successful-push binding is available for repository rename migration; no files, refs, or records were changed")
+	}
+	if !run.Status.Terminal() {
+		return refuse("blocked_repository_rename_active_run", "an active run owns this branch; no files, refs, or records were changed")
+	}
+	if state.PRState == "merged" || state.PRState == "closed" {
+		return refuse("blocked_repository_rename_retired", "the pull request is already retired; no files, refs, or records were changed")
+	}
+	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushTargetKind == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
+		return refuse("blocked_repository_rename_unbound", "the terminal run lacks exact successful-push provenance; no files, refs, or records were changed")
+	}
+	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || currentRepo == nil {
+		return refuse("blocked_repository_rename_registration_unreadable", "the registered repository target could not be read; no files, refs, or records were changed")
+	}
+	currentTarget := currentRepo.PushURL()
+	currentFingerprint := TargetFingerprint(currentTarget)
+	previousFingerprint := TargetFingerprint(previousTarget)
+	expectedRef := "refs/heads/" + state.Local.Branch
+	alreadyMigrated := ptr(run.PushTargetFingerprint) == currentFingerprint
+	if ptr(run.PushTargetKind) != targetKind(currentRepo) || ptr(run.PushRef) != expectedRef {
+		return refuse("blocked_repository_rename_routing_changed", "the push target kind or branch ref changed, not only the repository name; no files, refs, or records were changed")
+	}
+	if !alreadyMigrated && ptr(run.PushTargetFingerprint) != previousFingerprint {
+		return refuse("blocked_repository_rename_previous_target_mismatch", "the supplied previous target does not match the persisted successful-push binding; no files, refs, or records were changed")
+	}
+	pushed := ptr(run.LastPushedSHA)
+	if run.HeadSHA != pushed || state.Local.Head != pushed {
+		return refuse("blocked_repository_rename_head_mismatch", "the local, recorded, and successfully pushed heads are not exactly equal; no files, refs, or records were changed")
+	}
+	if !state.Local.Clean {
+		return refuse("blocked_repository_rename_dirty", "the invoking worktree is not completely clean; no network identity read or mutation was attempted")
+	}
+	if duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
+		return refuse("blocked_repository_rename_branch_ambiguous", "the checked-out branch is attached to more than one worktree; no files, refs, or records were changed")
+	}
+	if s.VerifyRepositoryRename == nil {
+		return refuse("blocked_repository_rename_identity_unavailable", "authenticated GitHub repository identity verification is unavailable; no files, refs, or records were changed")
+	}
+	if err := s.VerifyRepositoryRename(ctx, previousTarget, currentTarget); err != nil {
+		return refuse("blocked_repository_rename_identity_unverified", "the previous and current targets could not be proven to be the same GitHub repository; no files, refs, or records were changed")
+	}
+
+	if s.beforeTargetMigration != nil {
+		s.beforeTargetMigration()
+	}
+	freshRun, runErr := s.DB.GetRun(run.ID)
+	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	active, activeErr := s.DB.GetActiveRun(s.Repo.ID, state.Local.Branch)
+	freshBranch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	freshHead, headErr := git.HeadSHA(ctx, s.workDir())
+	freshClean, _ := worktreeClean(ctx, s.workDir())
+	if runErr != nil || repoErr != nil || activeErr != nil || branchErr != nil || headErr != nil || freshRun == nil || freshRepo == nil ||
+		(active != nil && active.ID != run.ID) || freshRun.Status != run.Status || !freshRun.Status.Terminal() || freshRun.PushActive ||
+		freshRepo.PushURL() != currentTarget || targetKind(freshRepo) != targetKind(currentRepo) || freshBranch != state.Local.Branch || freshHead != pushed || !freshClean ||
+		duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
+		return refuse("blocked_repository_rename_assumptions_changed", "the run, target, branch, HEAD, or worktree changed during repository identity verification; no files, refs, or records were changed")
+	}
+
+	remoteCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer cancel()
+	live, err := s.runLsRemote(remoteCtx, s.workDir(), currentTarget, expectedRef)
+	if err != nil {
+		return refuse("blocked_repository_rename_offline", "the current push target could not be read; no files, refs, or records were changed")
+	}
+	state.Remote = RemoteState{ObservedHead: live, Freshness: "live", ObservedAt: time.Now().Unix()}
+	if live != pushed {
+		return refuse("blocked_repository_rename_remote_head_mismatch", "the current push target does not contain the exact persisted pushed head; no files, refs, or records were changed")
+	}
+
+	changed, err := s.DB.MigrateRunPushTarget(db.PushTargetMigration{
+		RunID: run.ID, RepoID: run.RepoID, Branch: run.Branch, Status: run.Status, HeadSHA: pushed,
+		TargetKind: ptr(run.PushTargetKind), PreviousFingerprint: previousFingerprint,
+		CurrentFingerprint: currentFingerprint, Ref: ptr(run.PushRef), CurrentUpstreamURL: currentRepo.UpstreamURL,
+		CurrentForkURL: currentRepo.ForkURL, Generation: value(run.PushGeneration),
+	})
+	if err != nil {
+		return refuse("blocked_repository_rename_assumptions_changed", "the persisted push binding or branch ownership changed before migration; no files, refs, or records were changed")
+	}
+	postRepo, postRepoErr := s.DB.GetRepo(s.Repo.ID)
+	if postRepoErr != nil || postRepo == nil || postRepo.UpstreamURL != currentRepo.UpstreamURL || postRepo.ForkURL != currentRepo.ForkURL {
+		return refuse("blocked_repository_rename_postcondition", "the registered target changed as the fingerprint was migrated; no Git mutation was attempted and a repeated migration will re-evaluate current state")
+	}
+	s.Repo = postRepo
+	fresh := s.InspectCached(ctx)
+	if fresh.State != StateSynchronized || fresh.Local.Head != pushed || fresh.Pipeline.PushedHead != pushed {
+		return blockedPlan(fresh, StateAmbiguousContext, "blocked_repository_rename_postcondition", "the migrated binding did not produce an exact synchronized state; no Git mutation was attempted")
+	}
+	fresh.Changed = changed
+	fresh.Remote = state.Remote
+	if changed {
+		fresh.Safety = "repository_rename_accepted"
+	} else {
+		fresh.Safety = "repository_rename_already_accepted"
+	}
+	fresh.NextAction = &NextAction{Code: "rerun_pipeline", Command: "no-mistakes rerun"}
+	return fresh
 }
 
 // BindRecoveryArchive records one exact existing archive ref as recovery

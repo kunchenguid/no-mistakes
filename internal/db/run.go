@@ -507,6 +507,83 @@ func (d *DB) UpdateRunPublication(id string, binding PushBinding) error {
 	return nil
 }
 
+// PushTargetMigration is the complete immutable run snapshot required to move
+// one successful-push fingerprint after a verified repository rename. Only the
+// fingerprint changes; the run outcome, heads, ref, generation, timestamps,
+// findings, rounds, and every other validation record remain untouched.
+type PushTargetMigration struct {
+	RunID, RepoID, Branch, HeadSHA     string
+	Status                             types.RunStatus
+	TargetKind, PreviousFingerprint    string
+	CurrentFingerprint, Ref            string
+	CurrentUpstreamURL, CurrentForkURL string
+	Generation                         int64
+}
+
+// MigrateRunPushTarget atomically replaces only the target fingerprint when
+// every successful-push, registered-target, and branch-ownership fact still
+// matches snapshot. A concurrent active run on the same repository branch blocks the update. An
+// exact repeated migration is an idempotent no-op.
+func (d *DB) MigrateRunPushTarget(snapshot PushTargetMigration) (bool, error) {
+	result, err := d.sql.Exec(
+		`UPDATE runs SET push_target_fingerprint = ?
+		 WHERE id = ? AND repo_id = ? AND branch = ? AND status = ?
+		   AND status IN ('completed', 'failed', 'cancelled')
+		   AND head_sha = ? AND last_pushed_sha = ? AND push_target_kind = ?
+		   AND push_target_fingerprint = ? AND push_ref = ? AND push_generation = ?
+		   AND submitted_head_sha IS NOT NULL AND COALESCE(push_active, 0) = 0
+		   AND EXISTS (
+		     SELECT 1 FROM repos target
+		      WHERE target.id = ? AND target.upstream_url = ? AND COALESCE(target.fork_url, '') = ?
+		   )
+		   AND NOT EXISTS (
+		     SELECT 1 FROM runs active
+		      WHERE active.repo_id = ? AND active.branch = ? AND active.id <> ?
+		        AND active.status IN ('pending', 'running')
+		   )`,
+		snapshot.CurrentFingerprint,
+		snapshot.RunID, snapshot.RepoID, snapshot.Branch, snapshot.Status,
+		snapshot.HeadSHA, snapshot.HeadSHA, snapshot.TargetKind,
+		snapshot.PreviousFingerprint, snapshot.Ref, snapshot.Generation,
+		snapshot.RepoID, snapshot.CurrentUpstreamURL, snapshot.CurrentForkURL,
+		snapshot.RepoID, snapshot.Branch, snapshot.RunID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("migrate run push target: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return false, fmt.Errorf("migrate run push target rows affected: %w", err)
+	} else if affected == 1 {
+		return true, nil
+	}
+
+	run, err := d.GetRun(snapshot.RunID)
+	if err != nil {
+		return false, err
+	}
+	repo, repoErr := d.GetRepo(snapshot.RepoID)
+	if repoErr != nil {
+		return false, repoErr
+	}
+	active, activeErr := d.GetActiveRun(snapshot.RepoID, snapshot.Branch)
+	if activeErr != nil {
+		return false, activeErr
+	}
+	if active != nil && active.ID != snapshot.RunID {
+		return false, errors.New("migrate run push target: an active run owns the repository branch")
+	}
+	if repo != nil && repo.UpstreamURL == snapshot.CurrentUpstreamURL && repo.ForkURL == snapshot.CurrentForkURL &&
+		run != nil && run.RepoID == snapshot.RepoID && run.Branch == snapshot.Branch && run.Status == snapshot.Status && run.Status.Terminal() &&
+		run.HeadSHA == snapshot.HeadSHA && run.LastPushedSHA != nil && *run.LastPushedSHA == snapshot.HeadSHA &&
+		run.PushTargetKind != nil && *run.PushTargetKind == snapshot.TargetKind &&
+		run.PushTargetFingerprint != nil && *run.PushTargetFingerprint == snapshot.CurrentFingerprint &&
+		run.PushRef != nil && *run.PushRef == snapshot.Ref && run.PushGeneration != nil && *run.PushGeneration == snapshot.Generation &&
+		run.SubmittedHeadSHA != nil && !run.PushActive {
+		return false, nil
+	}
+	return false, errors.New("migrate run push target: run binding or ownership changed")
+}
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
 // idempotent: the first timestamp wins so the record keeps the original
