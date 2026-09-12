@@ -158,3 +158,44 @@ printf 'acpx: unknown option --file\n' >&2
 		t.Fatalf("Run error = %v, want child stderr in stdin write failure", err)
 	}
 }
+
+// TestAcpxAgent_Run_FailedTurnEstimatesTheOutputItStreamed proves a turn that
+// reports input-only usage, streams an answer, and then fails does not record
+// its output as a reported zero: the estimate the success path applies is
+// applied on the failed path too. acpx reports usage per event, so a failed
+// turn routinely carries a real input count with no output count, and
+// resultFromUsage would otherwise hand instrumentation Reported=true with
+// OutputTokens=0 - a fabricated zero rather than an unknown.
+func TestAcpxAgent_Run_FailedTurnEstimatesTheOutputItStreamed(t *testing.T) {
+	const streamed = "partial answer before acpx died"
+
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "acpx")
+	script := `#!/bin/sh
+cat > /dev/null
+printf '{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","input_tokens":1200}}}\n'
+printf '{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"` + streamed + `"}}}\n'
+exit 1
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := New(types.AgentCursor, stub, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := a.Run(context.Background(), RunOpts{Prompt: "review this change", CWD: dir})
+	if err == nil {
+		t.Fatal("expected the non-zero exit to fail the turn")
+	}
+	if res == nil {
+		t.Fatal("a failed turn that reported usage must still return it")
+	}
+	if !res.UsageReported || res.Usage.InputTokens != 1200 {
+		t.Fatalf("usage = %+v reported=%v, want the reported input count", res.Usage, res.UsageReported)
+	}
+	if want := estimateAcpxTokens(len(streamed)); res.Usage.OutputTokens != want {
+		t.Errorf("output tokens = %d, want the %d-token estimate of the text acpx streamed", res.Usage.OutputTokens, want)
+	}
+}

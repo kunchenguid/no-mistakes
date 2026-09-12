@@ -782,3 +782,45 @@ exit 0
 		t.Fatal("expected start and exit lifecycle events even for a silent subprocess")
 	}
 }
+
+// TestPiAgent_FailedTurnReportsTheSessionPiServed covers the case where the
+// served session is the only fact the turn produced: Pi announces a session
+// that is not the one we asked to resume and the process then dies before any
+// usage arrives. That mismatch is proof the resume was silently replaced, so
+// the Result must exist to carry it - resultFromUsage alone returns nil here,
+// and invocationSessionMode would then record the turn as a clean resume.
+func TestPiAgent_FailedTurnReportsTheSessionPiServed(t *testing.T) {
+	const (
+		requested = "019ff2f3-5f31-744b-90b8-679074ff7687"
+		served    = "019ff2f3-5f31-744b-90b8-679074ff7686"
+	)
+
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+cat > /dev/null
+printf '%s\n' '{"type":"session","id":"`+served+`"}'
+exit 1
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo {\"type\":\"session\",\"id\":\"" + served + "\"}",
+		"exit /b 1",
+	}, "\r\n"))
+
+	result, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:  "fix",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: requested},
+	})
+	if err == nil {
+		t.Fatal("expected the non-zero exit to fail the turn")
+	}
+	if result == nil {
+		t.Fatal("a failed turn must still report the session Pi served")
+	}
+	if result.SessionID != served {
+		t.Errorf("session id = %q, want the session Pi actually served %q", result.SessionID, served)
+	}
+	if result.UsageReported {
+		t.Error("Pi reported no usage; the result must not claim it did")
+	}
+}

@@ -74,6 +74,12 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 
 	var usage TokenUsage
 	text, stdoutErr, err := parseAcpxJSONEvents(ctx, started.stdout, opts.OnChunk, &usage)
+	// Estimate before any return, not just the success one: acpx can report an
+	// input-only usage event and then fail, and a reported usage with no output
+	// count would otherwise record the text it did stream as a reported zero.
+	if usage.OutputTokens == 0 {
+		usage.OutputTokens = estimateAcpxTokens(len(text))
+	}
 	if err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
@@ -96,9 +102,6 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		}
 		emitAgentExited(opts, a.Name(), pid, stdinErr)
 		return resultFromUsage(usage), stdinErr
-	}
-	if usage.OutputTokens == 0 {
-		usage.OutputTokens = estimateAcpxTokens(len(text))
 	}
 	res, err := finalizeTextResult(a.Name(), text, opts.JSONSchema, usage)
 	emitAgentExited(opts, a.Name(), pid, err)
@@ -209,6 +212,9 @@ type acpxUsageFields struct {
 	cacheCreationReported         bool
 }
 
+// parseAcpxJSONEvents streams acpx's JSON events and returns the assistant
+// text accumulated so far, on its error paths too, so a turn that fails partway
+// can still account for the output acpx already produced.
 func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), acpxScannerMaxTokenSize)
@@ -218,7 +224,7 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return "", stdoutErr, ctx.Err()
+			return output.String(), stdoutErr, ctx.Err()
 		default:
 		}
 
@@ -256,7 +262,7 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", stdoutErr, err
+		return output.String(), stdoutErr, err
 	}
 	return output.String(), stdoutErr, nil
 }

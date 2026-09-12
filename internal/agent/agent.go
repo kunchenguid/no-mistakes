@@ -321,6 +321,23 @@ func resultFromUsage(usage TokenUsage) *Result {
 	}
 }
 
+// failedResult returns the Result a failed turn should carry: the adapter's
+// parsed usage, plus the session the turn actually ran in. The served session
+// justifies a Result on its own, because one that differs from the requested
+// session is proof of a silent replacement whether or not the turn failed, and
+// resultFromUsage returns nil when the adapter reported no usage at all.
+func failedResult(usage TokenUsage, sessionID string) *Result {
+	res := resultFromUsage(usage)
+	if sessionID == "" {
+		return res
+	}
+	if res == nil {
+		res = &Result{}
+	}
+	res.SessionID = sessionID
+	return res
+}
+
 func textResult(text string, usage TokenUsage) *Result {
 	return &Result{
 		Text:                  text,
