@@ -260,7 +260,7 @@ func TestAcceptRepositoryRenameMigratesOnlyFingerprintAndIsIdempotent(t *testing
 func TestAcceptRepositoryRenameRefusesUnsafeStateWithoutChangingBinding(t *testing.T) {
 	t.Parallel()
 
-	for _, condition := range []string{"identity_failure", "wrong_remote_head", "dirty", "divergent", "active_run", "different_fork", "previous_target_mismatch", "active_run_started_during_verification", "target_changed_during_verification"} {
+	for _, condition := range []string{"identity_failure", "wrong_remote_head", "dirty", "dirty_during_remote_read", "divergent", "active_run", "different_fork", "previous_target_mismatch", "active_run_started_during_verification", "target_changed_during_verification"} {
 		condition := condition
 		t.Run(condition, func(t *testing.T) {
 			t.Parallel()
@@ -273,6 +273,12 @@ func TestAcceptRepositoryRenameRefusesUnsafeStateWithoutChangingBinding(t *testi
 				f.service.lsRemote = func(context.Context, string, string, string) (string, error) { return f.old, nil }
 			case "dirty":
 				mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+			case "dirty_during_remote_read":
+				readRemote := f.service.lsRemote
+				f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+					mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+					return readRemote(ctx, dir, remote, ref)
+				}
 			case "divergent":
 				mustRun(t, f.local, "reset", "--hard", f.base)
 				mustWrite(t, filepath.Join(f.local, "diverged.txt"), "diverged\n")
@@ -310,7 +316,58 @@ func TestAcceptRepositoryRenameRefusesUnsafeStateWithoutChangingBinding(t *testi
 			if head := mustRun(t, f.local, "rev-parse", "HEAD"); condition != "divergent" && head != f.pushed {
 				t.Fatalf("refusal moved HEAD to %s", head)
 			}
+			if condition == "dirty_during_remote_read" {
+				if state.Safety != "blocked_repository_rename_assumptions_changed" {
+					t.Fatalf("late worktree change was not refused before migration: %#v", state)
+				}
+				if data, err := os.ReadFile(filepath.Join(f.local, "dirty.txt")); err != nil || string(data) != "dirty\n" {
+					t.Fatalf("refusal changed the operator's file: %q, %v", data, err)
+				}
+			}
 		})
+	}
+}
+
+func TestAcceptRepositoryRenamePostconditionRefusalReportsMigrationChange(t *testing.T) {
+	t.Parallel()
+
+	for _, condition := range []string{"target_changed", "worktree_dirty"} {
+		for _, alreadyMigrated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/already_migrated=%t", condition, alreadyMigrated), func(t *testing.T) {
+				t.Parallel()
+				f, previous, current := prepareRepositoryRenameFixture(t)
+				if alreadyMigrated {
+					if state := f.service.AcceptRepositoryRename(f.ctx, previous); !state.Changed || state.State != StateSynchronized {
+						t.Fatalf("prepare accepted migration: %#v", state)
+					}
+				}
+				f.service.afterTargetMigration = func() {
+					switch condition {
+					case "target_changed":
+						if _, err := f.db.UpdateRepoMetadata(f.repo.ID, "https://github.com/org/changed-again", "main"); err != nil {
+							t.Fatal(err)
+						}
+					case "worktree_dirty":
+						mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+					}
+				}
+				state := f.service.AcceptRepositoryRename(f.ctx, previous)
+				if state.State == StateSynchronized || state.Safety != "blocked_repository_rename_postcondition" || state.Changed != !alreadyMigrated || state.NextAction != nil {
+					t.Fatalf("post-migration refusal lost its mutation result: %#v", state)
+				}
+				after, err := f.db.GetRun(f.run.ID)
+				if err != nil || after == nil {
+					t.Fatalf("read migrated run: %+v, %v", after, err)
+				}
+				if ptr(after.PushTargetFingerprint) != TargetFingerprint(current) || after.Status != f.run.Status || after.HeadSHA != f.run.HeadSHA ||
+					value(after.PushGeneration) != value(f.run.PushGeneration) || after.UpdatedAt != f.run.UpdatedAt {
+					t.Fatalf("post-migration refusal changed validation evidence: before=%+v after=%+v", f.run, after)
+				}
+				if head := mustRun(t, f.local, "rev-parse", "HEAD"); head != f.pushed {
+					t.Fatalf("post-migration refusal moved HEAD to %s", head)
+				}
+			})
+		}
 	}
 }
 

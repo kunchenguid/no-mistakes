@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -175,19 +176,36 @@ func TestAxiSyncRepositoryRenameContinuation(t *testing.T) {
 	)
 	fakeBin := t.TempDir()
 	ghPath := filepath.Join(fakeBin, "gh")
-	ghScript := `#!/bin/sh
-case "$*" in
-  "pr list --head feature/sync --base main --repo owner/previous --state open --json number,url,baseRefName")
-    printf '%s\n' '[{"number":42,"url":"https://github.com/org/current/pull/42","baseRefName":"main"}]' ;;
-  "api --hostname github.com repos/owner/previous"|"api --hostname github.com repos/org/current")
-    printf '%s\n' '{"id":1234,"full_name":"org/current"}' ;;
-  *)
-    printf 'unexpected gh command: %s\n' "$*" >&2
-    exit 2 ;;
-esac
+	if runtime.GOOS == "windows" {
+		ghPath += ".exe"
+	}
+	ghSource := filepath.Join(fakeBin, "gh.go")
+	ghProgram := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := strings.Join(os.Args[1:], " ")
+	switch args {
+	case "pr list --head feature/sync --base main --repo owner/previous --state open --json number,url,baseRefName":
+		fmt.Println("[{\"number\":42,\"url\":\"https://github.com/org/current/pull/42\",\"baseRefName\":\"main\"}]")
+	case "api --hostname github.com repos/owner/previous", "api --hostname github.com repos/org/current":
+		fmt.Println("{\"id\":1234,\"full_name\":\"org/current\"}")
+	default:
+		fmt.Fprintln(os.Stderr, "unexpected gh command:", args)
+		os.Exit(2)
+	}
+}
 `
-	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+	if err := os.WriteFile(ghSource, []byte(ghProgram), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if out, err := exec.Command("go", "build", "-o", ghPath, ghSource).CombinedOutput(); err != nil {
+		t.Fatalf("build fake gh: %v\n%s", err, out)
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {

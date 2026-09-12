@@ -177,6 +177,7 @@ type Service struct {
 
 	beforeApply                       func()
 	beforeTargetMigration             func()
+	afterTargetMigration              func()
 	beforeGateReset                   func()
 	beforeRecoverTerminalHeadPreserve func()
 	beforeRecoverWorktreeMove         func()
@@ -576,19 +577,6 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	if s.beforeTargetMigration != nil {
 		s.beforeTargetMigration()
 	}
-	freshRun, runErr := s.DB.GetRun(run.ID)
-	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
-	active, activeErr := s.DB.GetActiveRun(s.Repo.ID, state.Local.Branch)
-	freshBranch, branchErr := git.CurrentBranch(ctx, s.workDir())
-	freshHead, headErr := git.HeadSHA(ctx, s.workDir())
-	freshClean, _ := worktreeClean(ctx, s.workDir())
-	if runErr != nil || repoErr != nil || activeErr != nil || branchErr != nil || headErr != nil || freshRun == nil || freshRepo == nil ||
-		(active != nil && active.ID != run.ID) || freshRun.Status != run.Status || !freshRun.Status.Terminal() || freshRun.PushActive ||
-		freshRepo.PushURL() != currentTarget || targetKind(freshRepo) != targetKind(currentRepo) || freshBranch != state.Local.Branch || freshHead != pushed || !freshClean ||
-		duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
-		return refuse("blocked_repository_rename_assumptions_changed", "the run, target, branch, HEAD, or worktree changed during repository identity verification; no files, refs, or records were changed")
-	}
-
 	remoteCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer cancel()
 	live, err := s.runLsRemote(remoteCtx, s.workDir(), currentTarget, expectedRef)
@@ -600,6 +588,19 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 		return refuse("blocked_repository_rename_remote_head_mismatch", "the current push target does not contain the exact persisted pushed head; no files, refs, or records were changed")
 	}
 
+	freshRun, runErr := s.DB.GetRun(run.ID)
+	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
+	active, activeErr := s.DB.GetActiveRun(s.Repo.ID, state.Local.Branch)
+	freshBranch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	freshHead, headErr := git.HeadSHA(ctx, s.workDir())
+	freshClean, _ := worktreeClean(ctx, s.workDir())
+	if runErr != nil || repoErr != nil || activeErr != nil || branchErr != nil || headErr != nil || freshRun == nil || freshRepo == nil ||
+		(active != nil && active.ID != run.ID) || freshRun.Status != run.Status || !freshRun.Status.Terminal() || freshRun.PushActive ||
+		freshRepo.PushURL() != currentTarget || targetKind(freshRepo) != targetKind(currentRepo) || freshBranch != state.Local.Branch || freshHead != pushed || !freshClean ||
+		duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
+		return refuse("blocked_repository_rename_assumptions_changed", "the run, target, branch, HEAD, or worktree changed during repository rename verification; no files, refs, or records were changed")
+	}
+
 	changed, err := s.DB.MigrateRunPushTarget(db.PushTargetMigration{
 		RunID: run.ID, RepoID: run.RepoID, Branch: run.Branch, Status: run.Status, HeadSHA: pushed,
 		TargetKind: ptr(run.PushTargetKind), PreviousFingerprint: previousFingerprint,
@@ -609,14 +610,21 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	if err != nil {
 		return refuse("blocked_repository_rename_assumptions_changed", "the persisted push binding or branch ownership changed before migration; no files, refs, or records were changed")
 	}
+	if s.afterTargetMigration != nil {
+		s.afterTargetMigration()
+	}
 	postRepo, postRepoErr := s.DB.GetRepo(s.Repo.ID)
 	if postRepoErr != nil || postRepo == nil || postRepo.UpstreamURL != currentRepo.UpstreamURL || postRepo.ForkURL != currentRepo.ForkURL {
-		return refuse("blocked_repository_rename_postcondition", "the registered target changed as the fingerprint was migrated; no Git mutation was attempted and a repeated migration will re-evaluate current state")
+		blocked := refuse("blocked_repository_rename_postcondition", "the registered target changed as the fingerprint was migrated; no Git mutation was attempted and a repeated migration will re-evaluate current state")
+		blocked.Changed = changed
+		return blocked
 	}
 	s.Repo = postRepo
 	fresh := s.InspectCached(ctx)
 	if fresh.State != StateSynchronized || fresh.Local.Head != pushed || fresh.Pipeline.PushedHead != pushed {
-		return blockedPlan(fresh, StateAmbiguousContext, "blocked_repository_rename_postcondition", "the migrated binding did not produce an exact synchronized state; no Git mutation was attempted")
+		blocked := blockedPlan(fresh, StateAmbiguousContext, "blocked_repository_rename_postcondition", "the migrated binding did not produce an exact synchronized state; no Git mutation was attempted")
+		blocked.Changed = changed
+		return blocked
 	}
 	fresh.Changed = changed
 	fresh.Remote = state.Remote
