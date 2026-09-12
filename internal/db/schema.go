@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS push_target_migrations (
+    run_id               TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id              TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    branch               TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    head_sha             TEXT NOT NULL,
+    target_kind          TEXT NOT NULL,
+    previous_fingerprint TEXT NOT NULL,
+    current_fingerprint  TEXT NOT NULL,
+    push_ref             TEXT NOT NULL,
+    push_generation      INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

@@ -527,6 +527,7 @@ func (s *Service) Apply(ctx context.Context) State {
 // fingerprint-only compare-and-swap. Repeating the exact operation is a no-op.
 func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget string) State {
 	state, run, _ := s.inspect(ctx)
+	initialLocal := state.Local
 	refuse := func(safety, message string) State {
 		return blockedPlan(state, StateTargetChanged, safety, message)
 	}
@@ -536,11 +537,8 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	if !run.Status.Terminal() {
 		return refuse("blocked_repository_rename_active_run", "an active run owns this branch; no files, refs, or records were changed")
 	}
-	if state.PRState == "merged" || state.PRState == "closed" {
-		return refuse("blocked_repository_rename_retired", "the pull request is already retired; no files, refs, or records were changed")
-	}
-	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushTargetKind == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
-		return refuse("blocked_repository_rename_unbound", "the terminal run lacks exact successful-push provenance; no files, refs, or records were changed")
+	if !state.Local.Clean {
+		return refuse("blocked_repository_rename_dirty", "the invoking worktree is not completely clean; no network identity read or mutation was attempted")
 	}
 	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
 	if err != nil || currentRepo == nil {
@@ -549,6 +547,27 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	currentTarget := currentRepo.PushURL()
 	currentFingerprint := TargetFingerprint(currentTarget)
 	previousFingerprint := TargetFingerprint(previousTarget)
+	if s.VerifyRepositoryRename == nil {
+		return refuse("blocked_repository_rename_identity_unavailable", "authenticated GitHub repository identity verification is unavailable; no files, refs, or records were changed")
+	}
+	if err := s.VerifyRepositoryRename(ctx, previousTarget, currentTarget); err != nil {
+		return refuse("blocked_repository_rename_identity_unverified", "the previous and current targets could not be proven to be the same GitHub repository; no files, refs, or records were changed")
+	}
+	selector := *s
+	selector.Repo = currentRepo
+	state, run, _ = selector.inspectWithPreviousTarget(ctx, previousFingerprint)
+	if run == nil || state.Local != initialLocal {
+		return refuse("blocked_repository_rename_assumptions_changed", "the selected run, branch, HEAD, or worktree changed during repository identity verification; no files, refs, or records were changed")
+	}
+	if !run.Status.Terminal() || run.PushActive {
+		return refuse("blocked_repository_rename_active_run", "an active run owns this branch; no files, refs, or records were changed")
+	}
+	if state.PRState == "merged" || state.PRState == "closed" {
+		return refuse("blocked_repository_rename_retired", "the pull request is already retired; no files, refs, or records were changed")
+	}
+	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushTargetKind == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
+		return refuse("blocked_repository_rename_unbound", "the terminal run lacks exact successful-push provenance; no files, refs, or records were changed")
+	}
 	expectedRef := "refs/heads/" + state.Local.Branch
 	alreadyMigrated := ptr(run.PushTargetFingerprint) == currentFingerprint
 	if ptr(run.PushTargetKind) != targetKind(currentRepo) || ptr(run.PushRef) != expectedRef {
@@ -561,17 +580,8 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	if run.HeadSHA != pushed || state.Local.Head != pushed {
 		return refuse("blocked_repository_rename_head_mismatch", "the local, recorded, and successfully pushed heads are not exactly equal; no files, refs, or records were changed")
 	}
-	if !state.Local.Clean {
-		return refuse("blocked_repository_rename_dirty", "the invoking worktree is not completely clean; no network identity read or mutation was attempted")
-	}
 	if duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
 		return refuse("blocked_repository_rename_branch_ambiguous", "the checked-out branch is attached to more than one worktree; no files, refs, or records were changed")
-	}
-	if s.VerifyRepositoryRename == nil {
-		return refuse("blocked_repository_rename_identity_unavailable", "authenticated GitHub repository identity verification is unavailable; no files, refs, or records were changed")
-	}
-	if err := s.VerifyRepositoryRename(ctx, previousTarget, currentTarget); err != nil {
-		return refuse("blocked_repository_rename_identity_unverified", "the previous and current targets could not be proven to be the same GitHub repository; no files, refs, or records were changed")
 	}
 
 	if s.beforeTargetMigration != nil {
@@ -591,12 +601,11 @@ func (s *Service) AcceptRepositoryRename(ctx context.Context, previousTarget str
 	freshRun, runErr := s.DB.GetRun(run.ID)
 	freshRepo, repoErr := s.DB.GetRepo(s.Repo.ID)
 	active, activeErr := s.DB.GetActiveRun(s.Repo.ID, state.Local.Branch)
-	freshBranch, branchErr := git.CurrentBranch(ctx, s.workDir())
-	freshHead, headErr := git.HeadSHA(ctx, s.workDir())
-	freshClean, _ := worktreeClean(ctx, s.workDir())
-	if runErr != nil || repoErr != nil || activeErr != nil || branchErr != nil || headErr != nil || freshRun == nil || freshRepo == nil ||
+	freshState, selectedRun, _ := selector.inspectWithPreviousTarget(ctx, previousFingerprint)
+	if runErr != nil || repoErr != nil || activeErr != nil || freshRun == nil || freshRepo == nil ||
+		selectedRun == nil || selectedRun.ID != run.ID ||
 		(active != nil && active.ID != run.ID) || freshRun.Status != run.Status || !freshRun.Status.Terminal() || freshRun.PushActive ||
-		freshRepo.PushURL() != currentTarget || targetKind(freshRepo) != targetKind(currentRepo) || freshBranch != state.Local.Branch || freshHead != pushed || !freshClean ||
+		freshRepo.PushURL() != currentTarget || targetKind(freshRepo) != targetKind(currentRepo) || freshState.Local != state.Local || !freshState.Local.Clean ||
 		duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
 		return refuse("blocked_repository_rename_assumptions_changed", "the run, target, branch, HEAD, or worktree changed during repository rename verification; no files, refs, or records were changed")
 	}
@@ -1509,6 +1518,10 @@ func recoverLocalAnchorRef(runID string) string {
 }
 
 func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
+	return s.inspectWithPreviousTarget(ctx, "")
+}
+
+func (s *Service) inspectWithPreviousTarget(ctx context.Context, previousFingerprint string) (State, *db.Run, bool) {
 	state := State{Relation: RelationUnknown, Safety: "blocked_ambiguous_context", Remote: RemoteState{Freshness: "unknown"}}
 	root, err := git.FindGitRoot(s.workDir())
 	if err != nil {
@@ -1555,13 +1568,13 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 			// A terminal unpublished run can be superseded only by a newer
 			// exact binding whose pushed head is proven, in the local gate, to
 			// contain the preserved head. Active ownership remains absolute.
-			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch) {
+			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRunWithPreviousTarget(ctx, candidate, newerPushed, branch, previousFingerprint) {
 				continue
 			}
 			run = candidate
 			break
 		}
-		if newerPushed == nil && exactPushedBinding(s.Repo, candidate, branch) {
+		if newerPushed == nil && (exactPushedBinding(s.Repo, candidate, branch) || pushedBindingForFingerprint(s.Repo, candidate, branch, previousFingerprint)) {
 			newerPushed = candidate
 		}
 		// Custody-returned runs stay selectable so a recovered branch reports
@@ -1877,10 +1890,14 @@ func unpublishedPipelineHead(run *db.Run) bool {
 }
 
 func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
-	return repo != nil && run != nil && run.Branch == branch && !run.PushActive && run.HeadSHA != "" &&
+	return repo != nil && pushedBindingForFingerprint(repo, run, branch, TargetFingerprint(repo.PushURL()))
+}
+
+func pushedBindingForFingerprint(repo *db.Repo, run *db.Run, branch, fingerprint string) bool {
+	return fingerprint != "" && repo != nil && run != nil && run.RepoID == repo.ID && run.Branch == branch && !run.PushActive && run.HeadSHA != "" &&
 		run.LastPushedSHA != nil && run.HeadSHA == ptr(run.LastPushedSHA) &&
 		run.PushTargetKind != nil && ptr(run.PushTargetKind) == targetKind(repo) &&
-		run.PushTargetFingerprint != nil && ptr(run.PushTargetFingerprint) == TargetFingerprint(repo.PushURL()) &&
+		run.PushTargetFingerprint != nil && ptr(run.PushTargetFingerprint) == fingerprint &&
 		run.PushRef != nil && ptr(run.PushRef) == "refs/heads/"+branch &&
 		run.PushGeneration != nil
 }
@@ -1891,23 +1908,56 @@ func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
 // binding, and Git must prove the older preserved head is its ancestor. Any
 // missing or conflicting evidence leaves the older run authoritative.
 func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) bool {
+	return s.supersededUnpublishedRunWithPreviousTarget(ctx, older, newer, branch, "")
+}
+
+func (s *Service) supersededUnpublishedRunWithPreviousTarget(ctx context.Context, older, newer *db.Run, branch, previousFingerprint string) bool {
 	if older == nil || newer == nil || !terminalRunStatus(older.Status) || !unpublishedPipelineHead(older) ||
-		!samePushTargetBinding(older, newer) || strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
+		older.PushActive || !runPrecedes(older, newer) || !samePushRouting(older, newer) ||
+		strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
 		return false
 	}
 	pushed := ptr(newer.LastPushedSHA)
-	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-	if err != nil || gateHead != pushed {
+	gateHead, exists, err := git.DirectRefTarget(ctx, s.GateDir, "refs/heads/"+branch)
+	if err != nil || !exists || gateHead != pushed || !isAncestor(ctx, s.GateDir, older.HeadSHA, pushed) {
 		return false
 	}
-	return isAncestor(ctx, s.GateDir, older.HeadSHA, pushed)
+	if samePushTargetBinding(older, newer) {
+		return true
+	}
+	if older.LastPushedSHA == nil || older.PushGeneration == nil || ptr(older.PushTargetFingerprint) == "" {
+		return false
+	}
+	if previousFingerprint != "" && ptr(older.PushTargetFingerprint) == previousFingerprint && exactPushedBinding(s.Repo, newer, branch) {
+		return true
+	}
+	witnesses, err := s.DB.GetPushTargetRenameWitnesses(older.RepoID, branch, ptr(older.PushTargetFingerprint), ptr(newer.PushTargetFingerprint))
+	if err != nil {
+		return false
+	}
+	for _, witness := range witnesses {
+		if runPrecedes(older, witness) && (witness.ID == newer.ID || runPrecedes(witness, newer)) && samePushTargetBinding(witness, newer) &&
+			isAncestor(ctx, s.GateDir, older.HeadSHA, witness.HeadSHA) && isAncestor(ctx, s.GateDir, witness.HeadSHA, pushed) {
+			return true
+		}
+	}
+	return false
 }
 
 func samePushTargetBinding(older, newer *db.Run) bool {
+	return samePushRouting(older, newer) &&
+		older.PushTargetFingerprint != nil && newer.PushTargetFingerprint != nil && ptr(older.PushTargetFingerprint) == ptr(newer.PushTargetFingerprint)
+}
+
+func samePushRouting(older, newer *db.Run) bool {
 	return older != nil && newer != nil &&
+		older.RepoID == newer.RepoID && older.Branch == newer.Branch &&
 		older.PushTargetKind != nil && newer.PushTargetKind != nil && ptr(older.PushTargetKind) == ptr(newer.PushTargetKind) &&
-		older.PushTargetFingerprint != nil && newer.PushTargetFingerprint != nil && ptr(older.PushTargetFingerprint) == ptr(newer.PushTargetFingerprint) &&
 		older.PushRef != nil && newer.PushRef != nil && ptr(older.PushRef) == ptr(newer.PushRef)
+}
+
+func runPrecedes(older, newer *db.Run) bool {
+	return older.CreatedAt < newer.CreatedAt || older.CreatedAt == newer.CreatedAt && older.ID < newer.ID
 }
 
 func terminalRunStatus(status types.RunStatus) bool {
