@@ -49,30 +49,6 @@ type promptDeliveredError struct {
 func (e *promptDeliveredError) Error() string { return e.err.Error() }
 func (e *promptDeliveredError) Unwrap() error { return e.err }
 
-// SessionSetupFailed marks a durable-session failure known to have happened
-// before the prompt was delivered. Callers may safely retry that turn cold
-// when no durable identity exists yet.
-func SessionSetupFailed(err error) error {
-	if err == nil || IsSessionSetupFailed(err) {
-		return err
-	}
-	return &sessionSetupFailedError{err: err}
-}
-
-// IsSessionSetupFailed reports whether durable-session setup failed before the
-// prompt could reach the model.
-func IsSessionSetupFailed(err error) bool {
-	var setup *sessionSetupFailedError
-	return errors.As(err, &setup)
-}
-
-type sessionSetupFailedError struct {
-	err error
-}
-
-func (e *sessionSetupFailedError) Error() string { return e.err.Error() }
-func (e *sessionSetupFailedError) Unwrap() error { return e.err }
-
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt string

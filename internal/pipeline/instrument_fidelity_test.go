@@ -156,8 +156,7 @@ func TestPerfRecording_ReasoningDoesNotRequireActivityMetrics(t *testing.T) {
 	}
 }
 
-func TestInvocationSessionModeAccountsForSetupFailures(t *testing.T) {
-	setupErr := agent.SessionSetupFailed(errors.New("session setup failed"))
+func TestInvocationSessionMode(t *testing.T) {
 	tests := []struct {
 		name    string
 		opts    agent.RunOpts
@@ -198,19 +197,6 @@ func TestInvocationSessionModeAccountsForSetupFailures(t *testing.T) {
 			},
 			result: &agent.Result{SessionID: "fallback-session"},
 			want:   db.InvocationModeFallback,
-		},
-		{
-			name: "failed setup without stored identity remains cold",
-			opts: agent.RunOpts{Session: &agent.SessionRef{}},
-			err:  setupErr,
-			want: db.InvocationModeCold,
-		},
-		{
-			name:    "failed setup with stored identity is fallback",
-			opts:    agent.RunOpts{Session: &agent.SessionRef{ID: "stored-session"}},
-			err:     setupErr,
-			want:    db.InvocationModeFallback,
-			wantKey: true,
 		},
 	}
 

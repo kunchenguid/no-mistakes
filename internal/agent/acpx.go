@@ -3,28 +3,18 @@ package agent
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
-const (
-	acpxScannerMaxTokenSize = 256 * 1024 * 1024
-	acpxSessionCloseTimeout = 5 * time.Second
-)
+const acpxScannerMaxTokenSize = 256 * 1024 * 1024
 
 type acpxAgent struct {
 	bin        string
@@ -42,20 +32,6 @@ func (a *acpxAgent) Name() string { return "acp:" + a.target }
 
 func (a *acpxAgent) ReportsAgentAttempts() bool { return true }
 
-// SupportsSessionResume reports acpx's ACP session/load capability. The
-// bridge-owned name is only used when the caller explicitly requests durable
-// state, leaving every cold invocation unchanged.
-func (a *acpxAgent) SupportsSessionResume() bool { return true }
-
-func (a *acpxAgent) SupportsSessionProvider(provider string) bool {
-	fingerprint, ok := strings.CutPrefix(provider, a.staticSessionProvider()+":")
-	if !ok || len(fingerprint) != sha256.Size*2 {
-		return false
-	}
-	_, err := hex.DecodeString(fingerprint)
-	return err == nil
-}
-
 func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, a.Name(), opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -67,66 +43,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if len(opts.JSONSchema) > 0 {
 		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
 	}
-	if opts.Session == nil {
-		return a.runPrompt(ctx, opts, prompt, a.buildArgs(opts))
-	}
-
-	provider, err := a.resolveSessionProvider(ctx, opts)
-	if err != nil {
-		return nil, SessionSetupFailed(fmt.Errorf("acpx serving configuration: %w", err))
-	}
-	if opts.Session.Agent != "" && opts.Session.Agent != provider {
-		return nil, SessionSetupFailed(errors.New("acpx serving configuration changed before prompting"))
-	}
-	opts.Session.Agent = provider
-	requestedID := opts.Session.ID
-	if requestedID == "" {
-		result, err := a.runPrompt(ctx, opts, prompt, a.buildArgs(opts))
-		if err != nil {
-			return nil, err
-		}
-		if result.SessionID == "" {
-			return nil, PromptDelivered(errors.New("acpx exec did not report an ACP session identity"))
-		}
-		result.Provider = provider
-		return result, nil
-	}
-	setupID, err := a.runSessionCommand(ctx, opts, a.buildSessionArgs(opts, "new", requestedID))
-	if err != nil {
-		return nil, SessionSetupFailed(fmt.Errorf("acpx session setup: %w", err))
-	}
-	if setupID != requestedID {
-		return nil, SessionSetupFailed(fmt.Errorf("acpx session setup found ACP session %q, want %q", setupID, requestedID))
-	}
-	if err := a.verifySessionProvider(ctx, opts, provider); err != nil {
-		return nil, SessionSetupFailed(fmt.Errorf("acpx serving configuration changed during session setup: %w", err))
-	}
-
-	result, promptErr := a.runPrompt(ctx, opts, prompt, a.buildSessionPromptArgs(opts))
-	if err := a.verifySessionProvider(ctx, opts, provider); err != nil {
-		bindingErr := PromptDelivered(fmt.Errorf("acpx serving configuration changed during prompt: %w", err))
-		if promptErr != nil {
-			return nil, errors.Join(promptErr, bindingErr)
-		}
-		return nil, bindingErr
-	}
-	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), acpxSessionCloseTimeout)
-	closeID, closeErr := a.runSessionCommand(closeCtx, opts, a.buildSessionArgs(opts, "close", ""))
-	cancelClose()
-	if promptErr != nil {
-		return nil, promptErr
-	}
-	if closeErr != nil {
-		return nil, PromptDelivered(fmt.Errorf("acpx session close: %w", closeErr))
-	}
-	if closeID != "" {
-		result.SessionID = closeID
-	} else if result.SessionID == "" {
-		result.SessionID = setupID
-	}
-	result.Provider = provider
-	result.Resumed = result.SessionID == requestedID
-	return result, nil
+	return a.runPrompt(ctx, opts, prompt, a.buildArgs(opts))
 }
 
 func (a *acpxAgent) runPrompt(ctx context.Context, opts RunOpts, prompt string, args []string) (*Result, error) {
@@ -209,24 +126,6 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	return append(args, "exec", "--file", "-")
 }
 
-func (a *acpxAgent) buildSessionPromptArgs(opts RunOpts) []string {
-	args := a.buildBaseArgs(opts)
-	return append(args, "prompt", "--session", a.sessionName(opts.Session.Scope, opts.Session.Agent), "--file", "-")
-}
-
-func (a *acpxAgent) buildSessionArgs(opts RunOpts, action, resumeID string) []string {
-	args := a.buildBaseArgs(opts)
-	args = append(args, "sessions", action)
-	name := a.sessionName(opts.Session.Scope, opts.Session.Agent)
-	switch action {
-	case "new":
-		args = append(args, "--name", name, "--resume-session", resumeID)
-	case "close":
-		args = append(args, name)
-	}
-	return args
-}
-
 func (a *acpxAgent) buildBaseArgs(opts RunOpts) []string {
 	args := make([]string, 0, 14)
 	if a.rawCommand != "" {
@@ -249,246 +148,6 @@ func (a *acpxAgent) buildBaseArgs(opts RunOpts) []string {
 		args = append(args, a.target)
 	}
 	return args
-}
-
-func (a *acpxAgent) staticSessionProvider() string {
-	sum := sha256.Sum256([]byte(a.target + "\x00" + a.rawCommand + "\x00" + a.model))
-	return a.Name() + ":" + hex.EncodeToString(sum[:])
-}
-
-func (a *acpxAgent) resolveSessionProvider(ctx context.Context, opts RunOpts) (string, error) {
-	return a.resolveSessionProviderWithEnv(ctx, opts, a.gitSafeEnv(opts.CWD, opts.Env))
-}
-
-func (a *acpxAgent) resolveSessionProviderWithEnv(ctx context.Context, opts RunOpts, env []string) (string, error) {
-	acpxPath := a.bin
-	if resolved, err := exec.LookPath(acpxPath); err == nil {
-		acpxPath = resolved
-	}
-	acpxIdentity, err := fingerprintACPExecutable(acpxPath)
-	if err != nil {
-		return "", fmt.Errorf("fingerprint acpx executable: %w", err)
-	}
-
-	identity := sha256.New()
-	identity.Write(acpxIdentity[:])
-	identity.Write([]byte{0})
-	effectiveEnv := (&exec.Cmd{Env: env}).Environ()
-	if runtime.GOOS == "windows" {
-		for i, entry := range effectiveEnv {
-			keyEnd := strings.IndexByte(entry, '=')
-			if keyEnd == 0 {
-				if next := strings.IndexByte(entry[1:], '='); next >= 0 {
-					keyEnd = next + 1
-				}
-			}
-			if keyEnd >= 0 {
-				effectiveEnv[i] = strings.ToLower(entry[:keyEnd]) + entry[keyEnd:]
-			}
-		}
-	}
-	sort.Strings(effectiveEnv)
-	for _, entry := range effectiveEnv {
-		identity.Write([]byte(entry))
-		identity.Write([]byte{0})
-	}
-
-	if a.rawCommand != "" {
-		artifacts, err := resolveRawACPArtifacts(a.rawCommand, opts.CWD, env)
-		if err != nil {
-			return "", err
-		}
-		for _, path := range artifacts {
-			artifactIdentity, err := fingerprintACPExecutable(path)
-			if err != nil {
-				return "", fmt.Errorf("fingerprint raw ACP artifact %q: %w", path, err)
-			}
-			identity.Write(artifactIdentity[:])
-			identity.Write([]byte{0})
-		}
-		return a.staticSessionProvider() + ":" + hex.EncodeToString(identity.Sum(nil)), nil
-	}
-
-	cmd := exec.CommandContext(ctx, a.bin, "--cwd", opts.CWD, "--format", "json", "config", "show")
-	cmd.Dir = opts.CWD
-	cmd.Env = env
-	shellenv.ConfigureShellCommand(cmd)
-	output, err := shellenv.CombinedOutputShellCommand(cmd)
-	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
-	}
-	var config any
-	if err := json.Unmarshal(output, &config); err != nil {
-		return "", fmt.Errorf("invalid config JSON: %w", err)
-	}
-	canonical, err := json.Marshal(config)
-	if err != nil {
-		return "", err
-	}
-	identity.Write(canonical)
-	return a.staticSessionProvider() + ":" + hex.EncodeToString(identity.Sum(nil)), nil
-}
-
-func (a *acpxAgent) verifySessionProvider(ctx context.Context, opts RunOpts, want string) error {
-	got, err := a.resolveSessionProvider(ctx, opts)
-	if err != nil {
-		return err
-	}
-	if got != want {
-		return errors.New("provider identity no longer matches")
-	}
-	return nil
-}
-
-func fingerprintACPExecutable(path string) ([32]byte, error) {
-	var zero [32]byte
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return zero, err
-	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return zero, err
-	}
-	// File metadata cannot prove that executable contents are unchanged:
-	// deployment tools can preserve the inode, size, mode, and timestamps.
-	// Rehash before every resume so a foreign implementation never receives
-	// a persisted ACP session identity.
-	file, err := os.Open(resolved)
-	if err != nil {
-		return zero, err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return zero, err
-	}
-	var sum [32]byte
-	copy(sum[:], hash.Sum(nil))
-	return sum, nil
-}
-
-func resolveRawACPArtifacts(command, cwd string, env []string) ([]string, error) {
-	fields := strings.Fields(command)
-	if len(fields) == 0 || strings.ContainsAny(command, `"'\\`) {
-		return nil, errors.New("raw ACP command cannot be fingerprinted exactly")
-	}
-	executable, ok := resolveRawACPExecutable(fields[0], cwd, env)
-	if !ok {
-		return nil, fmt.Errorf("resolve raw ACP executable %q", fields[0])
-	}
-	artifacts := []string{executable}
-	hasProgramArtifact := false
-	inlineProgram := false
-	for _, arg := range fields[1:] {
-		switch arg {
-		case "-c", "-e", "--eval", "--execute":
-			inlineProgram = true
-		}
-		path := arg
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(cwd, path)
-		}
-		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
-			artifacts = append(artifacts, path)
-			hasProgramArtifact = true
-		}
-	}
-	if rawACPInterpreter(filepath.Base(executable)) && !hasProgramArtifact && !inlineProgram {
-		return nil, errors.New("raw ACP interpreter command has no fingerprintable program artifact")
-	}
-	return artifacts, nil
-}
-
-func rawACPInterpreter(name string) bool {
-	name = strings.TrimSuffix(strings.ToLower(name), ".exe")
-	return name == "node" || name == "deno" || name == "bun" ||
-		name == "sh" || name == "bash" || name == "zsh" ||
-		name == "python" || strings.HasPrefix(name, "python3") ||
-		name == "ruby" || name == "perl"
-}
-
-func resolveRawACPExecutable(name, cwd string, env []string) (string, bool) {
-	if filepath.IsAbs(name) {
-		return name, true
-	}
-	if filepath.Base(name) != name {
-		return "", false
-	}
-	pathValue := ""
-	for _, entry := range env {
-		if key, value, ok := strings.Cut(entry, "="); ok && sameEnvironmentKey(key, "PATH") {
-			pathValue = value
-		}
-	}
-	for _, dir := range filepath.SplitList(pathValue) {
-		if dir == "" {
-			dir = cwd
-		}
-		candidate := filepath.Join(dir, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-func sameEnvironmentKey(left, right string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(left, right)
-	}
-	return left == right
-}
-
-func (a *acpxAgent) sessionName(scope, provider string) string {
-	sum := sha256.Sum256([]byte(scope + "\x00" + provider))
-	return "nm-" + hex.EncodeToString(sum[:16])
-}
-
-func (a *acpxAgent) runSessionCommand(ctx context.Context, opts RunOpts, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, a.bin, args...)
-	cmd.Dir = opts.CWD
-	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
-	shellenv.ConfigureShellCommand(cmd)
-	output, runErr := shellenv.CombinedOutputShellCommand(cmd)
-	sessionID, jsonErr := parseAcpxSessionCommand(output)
-	if jsonErr != nil {
-		return "", jsonErr
-	}
-	if runErr != nil {
-		return "", fmt.Errorf("%w: %s", runErr, strings.TrimSpace(string(output)))
-	}
-	return sessionID, nil
-}
-
-func parseAcpxSessionCommand(output []byte) (string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	var sessionID string
-	var parsed bool
-	for scanner.Scan() {
-		var event struct {
-			Error         *acpxJSONError `json:"error"`
-			AcpxSessionID string         `json:"acpxSessionId"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			continue
-		}
-		parsed = true
-		if event.Error != nil && event.Error.Message != "" {
-			return "", errors.New(event.Error.Message)
-		}
-		if event.AcpxSessionID != "" {
-			sessionID = event.AcpxSessionID
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", err
-	}
-	if !parsed {
-		return "", fmt.Errorf("acpx returned no JSON session result: %s", strings.TrimSpace(string(output)))
-	}
-	return sessionID, nil
 }
 
 func acpxStdinError(err error) error {

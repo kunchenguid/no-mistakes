@@ -356,27 +356,18 @@ func TestRunWithRetry_ExhaustsRetries(t *testing.T) {
 	}
 }
 
-func TestRunWithRetry_SessionBoundaryErrorsFailImmediately(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-	}{
-		{name: "prompt delivered", err: PromptDelivered(errors.New("503 service unavailable"))},
-		{name: "session setup failed", err: SessionSetupFailed(errors.New("503 service unavailable"))},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			_, err := runWithRetry(context.Background(), "acp:gemini", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
-				calls++
-				return nil, tc.err
-			})
-			if !errors.Is(err, tc.err) {
-				t.Fatalf("error = %v, want original boundary error %v", err, tc.err)
-			}
-			if calls != 1 {
-				t.Fatalf("calls = %d, want no adapter-level retry", calls)
-			}
-		})
+func TestRunWithRetry_PromptDeliveredFailsImmediately(t *testing.T) {
+	delivered := PromptDelivered(errors.New("503 service unavailable"))
+	calls := 0
+	_, err := runWithRetry(context.Background(), "acp:gemini", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		return nil, delivered
+	})
+	if !errors.Is(err, delivered) {
+		t.Fatalf("error = %v, want original boundary error %v", err, delivered)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want no adapter-level retry", calls)
 	}
 }
 

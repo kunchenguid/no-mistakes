@@ -7,9 +7,8 @@ import (
 )
 
 // TestSupportsSessionResume_PerAdapter pins which adapters advertise durable
-// session resume. Claude, Codex, Grok, Pi, Antigravity, and ACP through acpx
-// have native resume; every other adapter must run cold so the pipeline does
-// not assume reuse.
+// session resume. ACP targets run cold because acpx cannot atomically bind the
+// complete provider implementation to a resumed session.
 func TestSupportsSessionResume_PerAdapter(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -24,7 +23,7 @@ func TestSupportsSessionResume_PerAdapter(t *testing.T) {
 		{"opencode", &opencodeAgent{bin: "opencode"}, false},
 		{"pi", &piAgent{bin: "pi"}, true},
 		{"copilot", &copilotAgent{bin: "copilot"}, false},
-		{"acpx", &acpxAgent{bin: "acpx", target: "gemini"}, true},
+		{"acpx", &acpxAgent{bin: "acpx", target: "gemini"}, false},
 		{"noop", NewNoop(), false},
 	}
 	for _, tc := range cases {

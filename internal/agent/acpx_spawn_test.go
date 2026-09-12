@@ -136,6 +136,62 @@ func TestAcpxAgent_Run_SendsLargePromptOnlyOnStdin(t *testing.T) {
 	}
 }
 
+func TestAcpxAgent_Run_UnsupportedSessionRunsCold(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "argv.txt")
+	t.Setenv("NM_TEST_ACPX_ARGS_FILE", argsFile)
+	t.Setenv("NM_TEST_ACPX_STDIN_FILE", filepath.Join(dir, "stdin.txt"))
+	a := &acpxAgent{bin: writeStubAcpx(t, dir), target: "gemini"}
+
+	if _, err := a.Run(context.Background(), RunOpts{
+		Prompt:  "run cold",
+		CWD:     dir,
+		Session: &SessionRef{ID: "must-not-resume", Agent: "acp:gemini:old"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	argsData, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Split(strings.TrimRight(string(argsData), "\n"), "\n")
+	if strings.Contains(strings.Join(argv, "\x00"), "must-not-resume") ||
+		strings.Join(argv[len(argv)-3:], "\x00") != "exec\x00--file\x00-" {
+		t.Fatalf("unsupported session was not run cold: %q", argv)
+	}
+}
+
+func TestAcpxAgent_Run_TerminalErrorIsNotRetriedOrFallback(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "acpx")
+	script := `#!/bin/sh
+printf x >> "$NM_TEST_ACPX_COUNT"
+cat >/dev/null
+printf '{"error":{"message":"503 unavailable"}}\n'
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	countPath := filepath.Join(dir, "count")
+	t.Setenv("NM_TEST_ACPX_COUNT", countPath)
+	first := &acpxAgent{bin: stub, target: "gemini"}
+	second := &fallbackTestAgent{name: "codex", run: func() (*Result, error) {
+		return &Result{Text: "wrong fallback"}, nil
+	}}
+
+	_, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{Prompt: "once", CWD: dir})
+	if err == nil || !IsPromptDelivered(err) {
+		t.Fatalf("Run error = %v, want prompt-delivered failure", err)
+	}
+	count, readErr := os.ReadFile(countPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(count) != "x" || second.calls != 0 {
+		t.Fatalf("terminal failure attempts/fallback = %q/%d, want one/zero", count, second.calls)
+	}
+}
+
 func TestAcpxAgent_Run_SurfacesStdinWriteFailure(t *testing.T) {
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "acpx")

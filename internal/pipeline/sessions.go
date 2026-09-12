@@ -34,9 +34,9 @@ const (
 // branches, repositories, or roles.
 //
 // Correctness always wins over reuse: adapters without session support run
-// cold, ordinary pre-prompt resume failures drop the identity and retry in a
-// fresh same-role session, and durable setup failures retry cold. Persistence
-// failures also degrade to cold invocations. A nil *RunSessions runs everything
+// cold, and ordinary pre-prompt resume failures drop the identity and retry in
+// a fresh same-role session. Persistence failures also degrade to cold
+// invocations. A nil *RunSessions runs everything
 // cold, preserving the pre-session behavior for steps outside the review loop
 // and for tests.
 type RunSessions struct {
@@ -96,28 +96,16 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	if agent.IsPromptDelivered(err) || ctx.Err() != nil {
 		return nil, err
 	}
-	if storedID == "" && !agent.IsSessionSetupFailed(err) {
+	if storedID == "" {
 		return nil, err
 	}
 
-	// A pre-prompt session start or resume failed. Never skip the turn. A
-	// durable setup failure must retry truly cold because another session
-	// setup would repeat the same failure; other dead identities are replaced
-	// by a fresh same-role session.
+	// A pre-prompt resume failed. Never skip the turn: discard the dead
+	// identity and establish a fresh same-role session.
+	rs.forget(role)
+	opts.Session = &agent.SessionRef{Scope: rs.scope(role)}
 	action := "resume of"
 	next := "starting a fresh " + string(role) + " session"
-	if storedID == "" || agent.IsSessionSetupFailed(err) {
-		if storedID == "" {
-			action = "start of"
-		} else {
-			rs.forget(role)
-		}
-		next = "running cold"
-		opts.Session = nil
-	} else {
-		rs.forget(role)
-		opts.Session = &agent.SessionRef{Scope: rs.scope(role)}
-	}
 	if logf != nil {
 		logf(fmt.Sprintf("%s %s session failed (%v); %s", action, role, err, next))
 	}

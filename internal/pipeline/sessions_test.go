@@ -82,7 +82,7 @@ func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Re
 		return &agent.Result{Text: "cold"}, nil
 	}
 	if opts.Session.ID != "" && opts.Session.Agent != "" && opts.Session.Agent != f.sessionProvider() {
-		return nil, agent.SessionSetupFailed(errors.New("serving configuration changed"))
+		return nil, errors.New("serving configuration changed")
 	}
 	if opts.Session.ID != "" {
 		if err := f.failResumes[opts.Session.ID]; err != nil {
@@ -273,25 +273,6 @@ func TestRunSessions_FreshSessionFailurePropagates(t *testing.T) {
 	}
 }
 
-func TestRunSessions_SessionSetupFailureRunsTurnCold(t *testing.T) {
-	d, run := sessionTestDB(t)
-	fake := newFakeSessionAgent()
-	fake.failNext = agent.SessionSetupFailed(errors.New("durable sessions unavailable"))
-	rs := NewRunSessions(d, run.ID, fake, true)
-
-	result, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil)
-	if err != nil {
-		t.Fatalf("setup failure must fall back cold: %v", err)
-	}
-	if result.Text != "cold" || len(fake.calls) != 2 {
-		t.Fatalf("result/calls = %q/%d, want one failed setup plus one cold turn", result.Text, len(fake.calls))
-	}
-	last := fake.calls[1]
-	if last.session != nil || !last.fallback {
-		t.Fatalf("fallback call = %+v, want marked cold invocation", last)
-	}
-}
-
 // TestRunSessions_CancelledContextDoesNotRetry proves cancellation is not
 // treated as a resume failure worth a fallback invocation.
 func TestRunSessions_CancelledContextDoesNotRetry(t *testing.T) {
@@ -454,40 +435,5 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 	}
 	if call := fake.calls[0]; call.session == nil || call.session.ID != "" {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
-	}
-}
-
-func TestRunSessions_StoredSetupFailureRunsExactlyOneColdFallback(t *testing.T) {
-	d, run := sessionTestDB(t)
-	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "acp:gemini:old-fingerprint", "old-acp-id"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	current := newFakeSessionAgent()
-	current.name = "acp:gemini"
-	current.provider = "acp:gemini:new-fingerprint"
-	current.providerBase = "acp:gemini:"
-	current.failStarts = agent.SessionSetupFailed(errors.New("config show still fails"))
-
-	rs := NewRunSessions(d, run.ID, current, true)
-	result, err := rs.Run(context.Background(), current, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Text != "cold" || len(current.calls) != 2 {
-		t.Fatalf("result/calls = %q/%d, want failed stored setup plus one cold turn", result.Text, len(current.calls))
-	}
-	if first := current.calls[0]; first.session == nil || first.session.ID != "old-acp-id" || first.fallback {
-		t.Fatalf("stored resume call = %+v, want ordinary attempt with old identity", first)
-	}
-	if fallback := current.calls[1]; fallback.prompt != "fix" || fallback.session != nil ||
-		!fallback.fallback || fallback.fallbackReason != db.FallbackReasonOther {
-		t.Fatalf("fallback call = %+v, want same prompt and marked cold fallback", fallback)
-	}
-	stored, err := d.GetRunAgentSessions(run.ID)
-	if err != nil {
-		t.Fatalf("stored sessions: %v", err)
-	}
-	if len(stored) != 0 {
-		t.Fatalf("stale identity survived cold fallback: %+v", stored)
 	}
 }
