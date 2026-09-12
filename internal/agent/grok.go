@@ -135,8 +135,8 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 			retErr = fmt.Errorf("grok exited: %w: %s", waitErr, detail)
 		}
 		emitAgentExited(opts, "grok", pid, retErr)
-		if result != nil && result.UsageReported {
-			return result, retErr
+		if result != nil {
+			return resultFromUsage(result.Usage), retErr
 		}
 		return nil, retErr
 	}
@@ -357,11 +357,11 @@ func finalizeGrokResult(result *Result, schema json.RawMessage) (*Result, error)
 		return nil, fmt.Errorf("grok returned no result event")
 	}
 	if len(schema) > 0 && (len(result.Output) == 0 || string(result.Output) == "null") {
-		return result, rejectStructuredOutput(errGrokNoStructuredOutput)
+		return resultFromUsage(result.Usage), rejectStructuredOutput(errGrokNoStructuredOutput)
 	}
 	if len(schema) > 0 {
 		if err := validateStructuredOutput(result.Output, schema); err != nil {
-			return result, rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
+			return resultFromUsage(result.Usage), rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
 		}
 	}
 	return result, nil

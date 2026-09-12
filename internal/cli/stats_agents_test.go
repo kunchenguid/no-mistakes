@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -135,7 +136,12 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 	}
 }
 
-func TestStatsRunRendersUnknownRawTokensAsDashNotZero(t *testing.T) {
+// TestStatsDistinguishesUnreportedTokensFromReportedZero proves the rendered
+// report tells a round whose usage was never recorded apart from a round that
+// genuinely used no tokens: the first shows "-" in the token cells, the second
+// shows "0". Both rows are seeded in one run so a renderer that collapses the
+// two cases fails whichever way it collapses them.
+func TestStatsDistinguishesUnreportedTokensFromReportedZero(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
 	p := paths.WithRoot(nmHome)
@@ -152,58 +158,103 @@ func TestStatsRunRendersUnknownRawTokensAsDashNotZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unknown := db.AgentInvocation{
-		RunID: run.ID, StepName: "test", Round: 1, Purpose: "test-evidence", Agent: "pi",
+	// Neither purpose may contain the "-" being asserted, or a stray label
+	// match would stand in for the cell under test.
+	for _, inv := range []db.AgentInvocation{{
+		RunID: run.ID, StepName: "test", Round: 1, Purpose: "unreported", Agent: "pi", Model: "pi-1",
 		SessionMode: db.InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 45 * 60_000,
 		ExitStatus: "error", FailureCategory: "parse",
-	}
-	zero := db.AgentInvocation{
-		RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "pi",
+	}, {
+		RunID: run.ID, StepName: "review", Round: 1, Purpose: "zero", Agent: "pi", Model: "pi-1",
 		SessionMode: db.InvocationModeCold, StartedAt: 3, CompletedAt: 4, DurationMS: 1_000,
 		ExitStatus: "ok", InputTokens: statsIntPtr(0), OutputTokens: statsIntPtr(0), CacheReadTokens: statsIntPtr(0),
-	}
-	for _, inv := range []db.AgentInvocation{unknown, zero} {
+	}} {
 		if _, err := d.InsertAgentInvocation(inv); err != nil {
 			t.Fatal(err)
 		}
 	}
 	d.Close()
 
-	out, err := executeCmd("stats", "--run", run.ID)
+	perRun, err := executeCmd("stats", "--run", run.ID)
 	if err != nil {
-		t.Fatalf("stats --run: %v\n%s", err, out)
+		t.Fatalf("stats --run: %v\n%s", err, perRun)
 	}
-	if !strings.Contains(out, "-") {
-		t.Fatalf("unknown raw token counts must render as \"-\", not crash:\n%s", out)
-	}
+	runRows := statsTableRows(t, perRun, "IN (raw)")
+	assertStatsCells(t, runRows, "unreported", map[string]string{
+		"IN (raw)": "-", "OUT (raw)": "-", "CACHE RD (raw)": "-",
+	})
+	assertStatsCells(t, runRows, "zero", map[string]string{
+		"IN (raw)": "0", "OUT (raw)": "0", "CACHE RD (raw)": "0",
+	})
 
 	aggregates, err := executeCmd("stats", "--agents")
 	if err != nil {
 		t.Fatalf("stats --agents: %v\n%s", err, aggregates)
 	}
-	if !strings.Contains(aggregates, "test-evidence") {
-		t.Fatalf("stats --agents missing purpose:\n%s", aggregates)
+	aggRows := statsTableRows(t, aggregates, "IN TOK")
+	assertStatsCells(t, aggRows, "unreported", map[string]string{
+		"IN TOK": "-", "OUT TOK": "-", "CACHE READ TOK": "-", "USAGE": "0/1",
+	})
+	assertStatsCells(t, aggRows, "zero", map[string]string{
+		"IN TOK": "0", "OUT TOK": "0", "CACHE READ TOK": "0", "USAGE": "1/1",
+	})
+}
+
+// statsTableRows parses one rendered table keyed by column title. The table is
+// the one whose header carries headerCell; the tabwriter pads every cell by at
+// least two spaces, so a run of two or more spaces separates cells while the
+// single spaces inside a title like "IN (raw)" survive.
+func statsTableRows(t *testing.T, out, headerCell string) []map[string]string {
+	t.Helper()
+	gap := regexp.MustCompile(`\s{2,}`)
+	lines := strings.Split(out, "\n")
+	header := -1
+	for i, line := range lines {
+		if strings.Contains(line, headerCell) {
+			header = i
+			break
+		}
 	}
-	// A purpose whose only row has unknown tokens must not be presented as 0.
-	for _, line := range strings.Split(aggregates, "\n") {
-		if !strings.Contains(line, "test-evidence") {
+	if header < 0 {
+		t.Fatalf("no table with column %q in:\n%s", headerCell, out)
+	}
+	titles := gap.Split(strings.TrimSpace(lines[header]), -1)
+	var rows []map[string]string
+	for _, line := range lines[header+1:] {
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		cells := gap.Split(strings.TrimSpace(line), -1)
+		if len(cells) != len(titles) {
+			t.Fatalf("row %q split into %d cells, want %d for %v", line, len(cells), len(titles), titles)
+		}
+		row := make(map[string]string, len(titles))
+		for i, title := range titles {
+			row[title] = cells[i]
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func assertStatsCells(t *testing.T, rows []map[string]string, purpose string, want map[string]string) {
+	t.Helper()
+	for _, row := range rows {
+		if row["PURPOSE"] != purpose {
 			continue
 		}
-		if strings.Contains(line, "\t0\t0\t0\t") || strings.HasSuffix(strings.TrimSpace(line), "0") {
-			// The unknown marker is required in the token columns.
-			if !strings.Contains(line, "-") {
-				t.Fatalf("unknown aggregate tokens presented as 0:\n%s", line)
+		for column, value := range want {
+			got, ok := row[column]
+			if !ok {
+				t.Fatalf("purpose %q has no column %q (row %v)", purpose, column, row)
+			}
+			if got != value {
+				t.Errorf("purpose %q column %q = %q, want %q", purpose, column, got, value)
 			}
 		}
-		if !strings.Contains(line, "-") {
-			t.Fatalf("unknown aggregate tokens must render as \"-\":\n%s", line)
-		}
+		return
 	}
-
-	// A reported zero must still render as 0, so "-" is not used for every count.
-	if !strings.Contains(out, "0") {
-		t.Fatalf("reported zero tokens must still render as 0:\n%s", out)
-	}
+	t.Fatalf("no row for purpose %q in %v", purpose, rows)
 }
 
 func strPtrCLI(s string) *string { return &s }

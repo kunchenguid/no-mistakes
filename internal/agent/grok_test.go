@@ -225,6 +225,36 @@ func TestFinalizeGrokResultValidatesStructuredOutputAgainstSchema(t *testing.T) 
 	}
 }
 
+// TestFinalizeGrokResultRejectionReturnsUsageWithoutOutput proves a rejected
+// turn hands back only what telemetry needs. Returning the rejected Output
+// would have the recorder count findings for an invocation whose output the
+// pipeline discarded and then reran.
+func TestFinalizeGrokResultRejectionReturnsUsageWithoutOutput(t *testing.T) {
+	usage := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5, Reported: true}
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+
+	for name, result := range map[string]*Result{
+		"invalid against schema": {Output: json.RawMessage(`{"summary":42}`), Text: "raw model prose", Usage: usage, UsageReported: true},
+		"no structured output":   {Text: "raw model prose", Usage: usage, UsageReported: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := finalizeGrokResult(result, schema)
+			if err == nil || !IsStructuredOutputRejected(err) {
+				t.Fatalf("finalizeGrokResult() error = %v, want a structured-output rejection", err)
+			}
+			if got == nil {
+				t.Fatal("a rejected turn that reported usage must still return it")
+			}
+			if got.Usage != usage || !got.UsageReported {
+				t.Fatalf("usage = %+v reported=%v, want %+v", got.Usage, got.UsageReported, usage)
+			}
+			if got.Output != nil || got.Text != "" {
+				t.Fatalf("rejected output must not ride along: output=%s text=%q", got.Output, got.Text)
+			}
+		})
+	}
+}
+
 func TestParseGrokEventsSurfacesTerminalError(t *testing.T) {
 	events := `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["tool failed"]}` + "\n"
 	_, err := parseGrokEvents(context.Background(), strings.NewReader(events), nil)

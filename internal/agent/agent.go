@@ -338,11 +338,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		res := resultFromUsage(usage)
-		if res != nil {
-			res.Text = text
-		}
-		return res, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return resultFromUsage(usage), rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
 	res := textResult(text, usage)
