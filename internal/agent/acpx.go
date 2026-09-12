@@ -3,7 +3,6 @@ package agent
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,14 +25,6 @@ const (
 	acpxScannerMaxTokenSize = 256 * 1024 * 1024
 	acpxSessionCloseTimeout = 5 * time.Second
 )
-
-var acpxProcessSalt = func() [32]byte {
-	var salt [32]byte
-	if _, err := rand.Read(salt[:]); err != nil {
-		panic(fmt.Sprintf("initialize ACP process identity: %v", err))
-	}
-	return salt
-}()
 
 type acpxAgent struct {
 	bin        string
@@ -107,8 +98,18 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	if setupID != requestedID {
 		return nil, SessionSetupFailed(fmt.Errorf("acpx session setup found ACP session %q, want %q", setupID, requestedID))
 	}
+	if err := a.verifySessionProvider(ctx, opts, provider); err != nil {
+		return nil, SessionSetupFailed(fmt.Errorf("acpx serving configuration changed during session setup: %w", err))
+	}
 
 	result, promptErr := a.runPrompt(ctx, opts, prompt, a.buildSessionPromptArgs(opts))
+	if err := a.verifySessionProvider(ctx, opts, provider); err != nil {
+		bindingErr := PromptDelivered(fmt.Errorf("acpx serving configuration changed during prompt: %w", err))
+		if promptErr != nil {
+			return nil, errors.Join(promptErr, bindingErr)
+		}
+		return nil, bindingErr
+	}
 	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), acpxSessionCloseTimeout)
 	closeID, closeErr := a.runSessionCommand(closeCtx, opts, a.buildSessionArgs(opts, "close", ""))
 	cancelClose()
@@ -256,11 +257,10 @@ func (a *acpxAgent) staticSessionProvider() string {
 }
 
 func (a *acpxAgent) resolveSessionProvider(ctx context.Context, opts RunOpts) (string, error) {
-	return a.resolveSessionProviderWithSalt(ctx, opts, acpxProcessSalt)
+	return a.resolveSessionProviderWithEnv(ctx, opts, a.gitSafeEnv(opts.CWD, opts.Env))
 }
 
-func (a *acpxAgent) resolveSessionProviderWithSalt(ctx context.Context, opts RunOpts, processSalt [32]byte) (string, error) {
-	env := a.gitSafeEnv(opts.CWD, opts.Env)
+func (a *acpxAgent) resolveSessionProviderWithEnv(ctx context.Context, opts RunOpts, env []string) (string, error) {
 	acpxPath := a.bin
 	if resolved, err := exec.LookPath(acpxPath); err == nil {
 		acpxPath = resolved
@@ -294,17 +294,17 @@ func (a *acpxAgent) resolveSessionProviderWithSalt(ctx context.Context, opts Run
 	}
 
 	if a.rawCommand != "" {
-		if rawPath, ok := resolveRawACPExecutable(a.rawCommand, opts.CWD, env); ok {
-			rawIdentity, fingerprintErr := fingerprintACPExecutable(rawPath)
-			if fingerprintErr == nil {
-				identity.Write(rawIdentity[:])
-			} else {
-				identity.Write(processSalt[:])
+		artifacts, err := resolveRawACPArtifacts(a.rawCommand, opts.CWD, env)
+		if err != nil {
+			return "", err
+		}
+		for _, path := range artifacts {
+			artifactIdentity, err := fingerprintACPExecutable(path)
+			if err != nil {
+				return "", fmt.Errorf("fingerprint raw ACP artifact %q: %w", path, err)
 			}
-		} else {
-			// A process-local binding allows safe reuse while this daemon still
-			// owns the observation, but never guesses across reconstruction.
-			identity.Write(processSalt[:])
+			identity.Write(artifactIdentity[:])
+			identity.Write([]byte{0})
 		}
 		return a.staticSessionProvider() + ":" + hex.EncodeToString(identity.Sum(nil)), nil
 	}
@@ -327,6 +327,17 @@ func (a *acpxAgent) resolveSessionProviderWithSalt(ctx context.Context, opts Run
 	}
 	identity.Write(canonical)
 	return a.staticSessionProvider() + ":" + hex.EncodeToString(identity.Sum(nil)), nil
+}
+
+func (a *acpxAgent) verifySessionProvider(ctx context.Context, opts RunOpts, want string) error {
+	got, err := a.resolveSessionProvider(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return errors.New("provider identity no longer matches")
+	}
+	return nil
 }
 
 func fingerprintACPExecutable(path string) ([32]byte, error) {
@@ -357,12 +368,48 @@ func fingerprintACPExecutable(path string) ([32]byte, error) {
 	return sum, nil
 }
 
-func resolveRawACPExecutable(command, cwd string, env []string) (string, bool) {
+func resolveRawACPArtifacts(command, cwd string, env []string) ([]string, error) {
 	fields := strings.Fields(command)
-	if len(fields) == 0 || strings.ContainsAny(fields[0], `"'\\`) {
-		return "", false
+	if len(fields) == 0 || strings.ContainsAny(command, `"'\\`) {
+		return nil, errors.New("raw ACP command cannot be fingerprinted exactly")
 	}
-	name := fields[0]
+	executable, ok := resolveRawACPExecutable(fields[0], cwd, env)
+	if !ok {
+		return nil, fmt.Errorf("resolve raw ACP executable %q", fields[0])
+	}
+	artifacts := []string{executable}
+	hasProgramArtifact := false
+	inlineProgram := false
+	for _, arg := range fields[1:] {
+		switch arg {
+		case "-c", "-e", "--eval", "--execute":
+			inlineProgram = true
+		}
+		path := arg
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			artifacts = append(artifacts, path)
+			hasProgramArtifact = true
+		}
+	}
+	if rawACPInterpreter(filepath.Base(executable)) && !hasProgramArtifact && !inlineProgram {
+		return nil, errors.New("raw ACP interpreter command has no fingerprintable program artifact")
+	}
+	return artifacts, nil
+}
+
+func rawACPInterpreter(name string) bool {
+	name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	return name == "node" || name == "deno" || name == "bun" ||
+		name == "sh" || name == "bash" || name == "zsh" ||
+		name == "python" || strings.HasPrefix(name, "python3") ||
+		name == "ruby" || name == "perl"
+}
+
+func resolveRawACPExecutable(name, cwd string, env []string) (string, bool) {
 	if filepath.IsAbs(name) {
 		return name, true
 	}

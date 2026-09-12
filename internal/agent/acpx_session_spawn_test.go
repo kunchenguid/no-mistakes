@@ -22,7 +22,9 @@ func writeSessionStubAcpx(t *testing.T, dir string) string {
 printf 'ARGV:%s\n' "$*" >> "$NM_TEST_ACPX_LOG"
 case " $* " in
   *" config show "*)
-    if [ -n "$NM_TEST_ACPX_CONFIG" ]; then
+    if [ -n "$NM_TEST_ACPX_CONFIG_FILE" ]; then
+      cat "$NM_TEST_ACPX_CONFIG_FILE"
+    elif [ -n "$NM_TEST_ACPX_CONFIG" ]; then
       printf '%s\n' "$NM_TEST_ACPX_CONFIG"
     else
       printf '{}\n'
@@ -34,6 +36,9 @@ case " $* " in
     else
       printf '{"action":"session_ensured","created":true,"acpxRecordId":"%s","acpxSessionId":"%s"}\n' "$NM_TEST_ACPX_SETUP_ID" "$NM_TEST_ACPX_SETUP_ID"
     fi
+    if [ -n "$NM_TEST_ACPX_CONFIG_AFTER_SETUP" ]; then
+      printf '%s\n' "$NM_TEST_ACPX_CONFIG_AFTER_SETUP" > "$NM_TEST_ACPX_CONFIG_FILE"
+    fi
     ;;
   *" exec "*|*" prompt "*)
     cat > "$NM_TEST_ACPX_STDIN"
@@ -42,6 +47,9 @@ case " $* " in
       printf '{"error":{"message":"%s"}}\n' "$NM_TEST_ACPX_PROMPT_ERROR"
     else
       printf '{"method":"session/update","params":{"sessionId":"%s","update":{"sessionUpdate":"agent_message_chunk","text":"done"}}}\n' "$NM_TEST_ACPX_PROMPT_ID"
+    if [ -n "$NM_TEST_ACPX_CONFIG_AFTER_PROMPT" ]; then
+      printf '%s\n' "$NM_TEST_ACPX_CONFIG_AFTER_PROMPT" > "$NM_TEST_ACPX_CONFIG_FILE"
+    fi
     fi
     ;;
   *" sessions close "*)
@@ -63,7 +71,7 @@ func TestAcpxAgent_DurableSessionCommandsAndIdentity(t *testing.T) {
 	}{
 		{name: "fresh named target"},
 		{name: "named target resume", requested: "existing-acp"},
-		{name: "raw target resume", raw: "node /opt/acp.mjs", requested: "existing-acp"},
+		{name: "raw target resume", raw: "fixture", requested: "existing-acp"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -73,6 +81,13 @@ func TestAcpxAgent_DurableSessionCommandsAndIdentity(t *testing.T) {
 			id := tc.requested
 			if id == "" {
 				id = "fresh-acp"
+			}
+			if tc.raw != "" {
+				rawArtifact := filepath.Join(dir, "raw-agent.sh")
+				if err := os.WriteFile(rawArtifact, []byte("#!/bin/sh\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				tc.raw = "/bin/sh " + rawArtifact
 			}
 			t.Setenv("NM_TEST_ACPX_SETUP_ID", id)
 			t.Setenv("NM_TEST_ACPX_PROMPT_ID", id)
@@ -159,6 +174,80 @@ func TestAcpxAgent_NamedConfigChangeRejectsStoredIdentityBeforePrompt(t *testing
 	logBytes, _ := os.ReadFile(logPath)
 	if strings.Count(string(logBytes), "PROMPT\n") != 1 {
 		t.Fatalf("config mismatch reached a second target prompt:\n%s", logBytes)
+	}
+}
+func TestAcpxAgent_ConfigChangeDuringSetupStopsBeforePrompt(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"agents":{"gemini":{"command":"one"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NM_TEST_ACPX_LOG", logPath)
+	t.Setenv("NM_TEST_ACPX_STDIN", filepath.Join(dir, "stdin"))
+	t.Setenv("NM_TEST_ACPX_CONFIG_FILE", configPath)
+	t.Setenv("NM_TEST_ACPX_CONFIG_AFTER_SETUP", `{"agents":{"gemini":{"command":"two"}}}`)
+	t.Setenv("NM_TEST_ACPX_SETUP_ID", "stored-session")
+	a := &acpxAgent{bin: writeSessionStubAcpx(t, dir), target: "gemini"}
+	provider, err := a.resolveSessionProvider(context.Background(), RunOpts{CWD: dir})
+	if err != nil {
+		t.Fatalf("initial provider: %v", err)
+	}
+
+	_, err = a.Run(context.Background(), RunOpts{
+		Prompt: "must not be delivered",
+		CWD:    dir,
+		Session: &SessionRef{
+			ID:    "stored-session",
+			Agent: provider,
+			Scope: "run/fixer",
+		},
+	})
+	if err == nil || !IsSessionSetupFailed(err) {
+		t.Fatalf("changed identity error = %v, want session setup failure", err)
+	}
+	logBytes, _ := os.ReadFile(logPath)
+	log := string(logBytes)
+	if strings.Count(log, " sessions new ") != 1 || strings.Contains(log, "PROMPT\n") {
+		t.Fatalf("configuration change was not contained at setup:\n%s", log)
+	}
+}
+
+func TestAcpxAgent_ConfigChangeDuringPromptStopsBeforeClose(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"agents":{"gemini":{"command":"one"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NM_TEST_ACPX_LOG", logPath)
+	t.Setenv("NM_TEST_ACPX_STDIN", filepath.Join(dir, "stdin"))
+	t.Setenv("NM_TEST_ACPX_CONFIG_FILE", configPath)
+	t.Setenv("NM_TEST_ACPX_CONFIG_AFTER_PROMPT", `{"agents":{"gemini":{"command":"two"}}}`)
+	t.Setenv("NM_TEST_ACPX_SETUP_ID", "stored-session")
+	t.Setenv("NM_TEST_ACPX_PROMPT_ID", "stored-session")
+	a := &acpxAgent{bin: writeSessionStubAcpx(t, dir), target: "gemini"}
+	provider, err := a.resolveSessionProvider(context.Background(), RunOpts{CWD: dir})
+	if err != nil {
+		t.Fatalf("initial provider: %v", err)
+	}
+
+	_, err = a.Run(context.Background(), RunOpts{
+		Prompt: "delivered once",
+		CWD:    dir,
+		Session: &SessionRef{
+			ID:    "stored-session",
+			Agent: provider,
+			Scope: "run/fixer",
+		},
+	})
+	if err == nil || !IsPromptDelivered(err) {
+		t.Fatalf("changed identity error = %v, want prompt-delivered failure", err)
+	}
+	logBytes, _ := os.ReadFile(logPath)
+	log := string(logBytes)
+	if strings.Count(log, "PROMPT\n") != 1 || strings.Contains(log, " sessions close ") {
+		t.Fatalf("configuration change after prompt reached close or replayed:\n%s", log)
 	}
 }
 
@@ -308,34 +397,41 @@ func TestAcpxAgent_RawExecutableLookupUsesUnixPATHKeySemantics(t *testing.T) {
 	}
 }
 
-func TestAcpxAgent_UnresolvableRawCommandIdentityIsProcessLocal(t *testing.T) {
+func TestAcpxAgent_UnresolvableRawCommandIdentityFailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	acpxPath := writeSessionStubAcpx(t, dir)
-	t.Setenv("NM_TEST_ACPX_LOG", filepath.Join(dir, "calls"))
-	t.Setenv("NM_TEST_ACPX_STDIN", filepath.Join(dir, "stdin"))
-	a := &acpxAgent{bin: acpxPath, target: "custom", rawCommand: `"unresolvable agent" --serve`}
-	opts := RunOpts{CWD: dir}
+	a := &acpxAgent{
+		bin:        writeSessionStubAcpx(t, dir),
+		target:     "custom",
+		rawCommand: `"unresolvable agent" --serve`,
+	}
+	_, err := a.resolveSessionProvider(context.Background(), RunOpts{CWD: dir})
+	if err == nil || !strings.Contains(err.Error(), "cannot be fingerprinted exactly") {
+		t.Fatalf("provider error = %v, want exact-fingerprint refusal", err)
+	}
+}
 
-	first, err := a.resolveSessionProvider(context.Background(), opts)
+func TestAcpxAgent_RawCommandFileArtifactChangesProviderIdentity(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "provider.mjs")
+	if err := os.WriteFile(script, []byte("// fingerprint-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &acpxAgent{
+		bin:        writeSessionStubAcpx(t, dir),
+		target:     "custom",
+		rawCommand: "/bin/sh " + script,
+	}
+	before, err := a.resolveSessionProvider(context.Background(), RunOpts{CWD: dir})
 	if err != nil {
-		t.Fatalf("first provider: %v", err)
+		t.Fatalf("initial provider: %v", err)
 	}
-	second, err := (&acpxAgent{bin: acpxPath, target: "custom", rawCommand: a.rawCommand}).resolveSessionProvider(context.Background(), opts)
+	replaceExecutableAtSamePath(t, script)
+	after, err := a.resolveSessionProvider(context.Background(), RunOpts{CWD: dir})
 	if err != nil {
-		t.Fatalf("same-process provider: %v", err)
+		t.Fatalf("changed provider: %v", err)
 	}
-	if first != second {
-		t.Fatalf("same-process reconstruction changed provider: %q != %q", first, second)
-	}
-
-	restartedSalt := acpxProcessSalt
-	restartedSalt[0] ^= 0xff
-	restarted, err := a.resolveSessionProviderWithSalt(context.Background(), opts, restartedSalt)
-	if err != nil {
-		t.Fatalf("restarted provider: %v", err)
-	}
-	if restarted == first || SupportsSessionProvider(a, restarted) == false {
-		t.Fatalf("process-local identity did not fail closed across restart: before=%q after=%q", first, restarted)
+	if before == after {
+		t.Fatal("replacing a raw command file artifact preserved provider identity")
 	}
 }
 
@@ -485,7 +581,7 @@ func TestAcpxAgent_RealBridgeSessionContract(t *testing.T) {
 			t.Setenv("NM_TEST_ACP_MODE", tc.mode)
 			server := writeFakeACPServer(t, home)
 
-			targetCommand := fmt.Sprintf("%q %q", node, server)
+			targetCommand := node + " " + server
 			a := &acpxAgent{bin: acpx, target: "probe", rawCommand: targetCommand}
 			if tc.named {
 				configDir := filepath.Join(home, ".acpx")
