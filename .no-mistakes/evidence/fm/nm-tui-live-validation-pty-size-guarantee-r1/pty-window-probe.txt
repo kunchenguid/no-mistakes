@@ -1,0 +1,4 @@
+bare pty.fork observed grid=0x0
+bare child exit=0; master drained=yes
+sized pty observed grid=120x40
+sized child exit=0; master drained=yes

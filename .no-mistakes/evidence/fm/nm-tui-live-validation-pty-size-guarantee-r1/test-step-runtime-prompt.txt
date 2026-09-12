@@ -1,0 +1,13 @@
+Live Test-step prompt receipt
+
+This artifact records the relevant instruction delivered to the evidence agent in the active no-mistakes Test phase for target commit 7fbf6c0fd953316fbe471bb128c4b889720091f1.
+
+Execution context observed by the agent:
+- stdin: non-tty
+- stdout: non-tty
+
+Delivered runtime instruction:
+"When a live scenario drives a TUI through a pseudo-terminal, give the pty a non-zero window size (TIOCSWINSZ) before the TUI reads its grid, and drain the master. A 0x0 grid makes the TUI exit immediately with a symptom such as \"terminal reported a zero-sized grid\" and never register, so a live UI check silently becomes a fake. Bare script(1) and pty.fork() from a non-tty parent typically yield that 0x0 grid."
+
+Observable result:
+The instruction is present in the actual Test-step evidence-agent prompt, identifies the silent fake-pass failure mode, and gives both required operational mitigations without claiming runtime enforcement.
