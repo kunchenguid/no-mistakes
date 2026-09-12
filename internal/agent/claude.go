@@ -168,7 +168,11 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // (from agent_args_override in the global config) are inserted ahead of the
 // managed flags, so user choices win over no-mistakes' defaults. If the user
 // supplied their own permission mode, the default --dangerously-skip-permissions
-// is not added. A non-empty resumeID continues that session via --resume
+// is not added. Likewise, --strict-mcp-config is added by default (dropping
+// the operator's personal MCP servers, which the agent has no need of and
+// which can crash the process on enterprise-blocked connectors) unless the
+// user already passed it themselves; a user-supplied --mcp-config is kept
+// alongside it. A non-empty resumeID continues that session via --resume
 // (never --fork-session: the session identity must stay stable so later
 // turns keep resuming the same conversation).
 func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []string {
@@ -201,7 +205,37 @@ func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []strin
 	if !claudeUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	// A review agent has no need of the operator's personal MCP servers (e.g.
+	// Gmail/Calendar connectors an enterprise policy blocks, which crashes the
+	// process before it does any work). --strict-mcp-config with no
+	// --mcp-config yields zero MCP servers. An operator who pins their own
+	// --mcp-config keeps those servers; an operator who already passes
+	// --strict-mcp-config themselves does not get it twice.
+	// Unlike --setting-sources above, this is unconditional rather than gated
+	// behind an opt-in: --strict-mcp-config has shipped since Claude Code's
+	// earliest public releases (added in v0.2.75, already relied upon in bug
+	// reports against v1.0.73), so any Claude Code CLI new enough to still be
+	// receiving updates supports it. No local version-check or capability-probe
+	// facility exists for any agent CLI in this repo (see doctorAgentChecks in
+	// internal/cli/doctor.go, which only checks binary presence via PATH), and
+	// adding a runtime probe here would trade the crash this flag removes for a
+	// new subprocess-call failure mode - a worse deal than documenting the
+	// minimum version operators are expected to run.
+	if !claudeUserSetStrictMCPConfig(a.extraArgs) {
+		args = append(args, "--strict-mcp-config")
+	}
 	return args
+}
+
+// claudeUserSetStrictMCPConfig reports whether extraArgs already pass
+// --strict-mcp-config, in which case buildArgs skips its default.
+func claudeUserSetStrictMCPConfig(extraArgs []string) bool {
+	for _, arg := range extraArgs {
+		if arg == "--strict-mcp-config" {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeUserSetSettingSources reports whether extraArgs pin --setting-sources at

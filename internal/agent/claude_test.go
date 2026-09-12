@@ -31,6 +31,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 		"--output-format", "stream-json",
 		"--json-schema", `{"type":"object"}`,
 		"--dangerously-skip-permissions",
+		"--strict-mcp-config",
 	}
 
 	if len(args) != len(expected) {
@@ -69,6 +70,7 @@ func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
+		"--strict-mcp-config",
 	}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
@@ -103,6 +105,65 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 		} else if dangerCount != 0 {
 			t.Errorf("extra=%v expected no default --dangerously-skip-permissions, got: %v", extra, args)
 		}
+	}
+}
+
+func TestClaudeAgent_BuildArgs_StrictMCPConfigDefault(t *testing.T) {
+	ca := &claudeAgent{bin: "claude"}
+	args := ca.buildArgs(nil, "")
+
+	count := 0
+	hasMCPConfig := false
+	for _, a := range args {
+		if a == "--strict-mcp-config" {
+			count++
+		}
+		if a == "--mcp-config" {
+			hasMCPConfig = true
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one --strict-mcp-config, got %d: %v", count, args)
+	}
+	if hasMCPConfig {
+		t.Errorf("expected no --mcp-config by default, got: %v", args)
+	}
+}
+
+func TestClaudeAgent_BuildArgs_UserMCPConfigSurvivesWithStrictFlag(t *testing.T) {
+	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--mcp-config", "my-config.json"}}
+	args := ca.buildArgs(nil, "")
+
+	hasMCPConfig := false
+	hasStrict := false
+	for i, a := range args {
+		if a == "--mcp-config" && i+1 < len(args) && args[i+1] == "my-config.json" {
+			hasMCPConfig = true
+		}
+		if a == "--strict-mcp-config" {
+			hasStrict = true
+		}
+	}
+	if !hasMCPConfig {
+		t.Errorf("expected operator-supplied --mcp-config to survive, got: %v", args)
+	}
+	if !hasStrict {
+		t.Errorf("expected --strict-mcp-config alongside operator's --mcp-config, got: %v", args)
+	}
+}
+
+func TestClaudeAgent_BuildArgs_UserStrictMCPConfigNotDuplicated(t *testing.T) {
+	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--strict-mcp-config"}}
+	args := ca.buildArgs(nil, "")
+
+	count := 0
+	for _, a := range args {
+		if a == "--strict-mcp-config" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one --strict-mcp-config when operator already passed it, got %d: %v", count, args)
 	}
 }
 

@@ -257,7 +257,7 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 
 ## Claude
 
-Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
+Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. It also adds `--strict-mcp-config` by default, which drops any MCP servers inherited from your user or project Claude settings (e.g. Gmail or Calendar connectors) so an unrelated, possibly enterprise-blocked connector cannot fail an agent invocation that never needed it; pass your own `--mcp-config` through `agent_args_override` to give the agent a specific set of MCP servers instead. `--strict-mcp-config` has shipped since Claude Code's earliest public releases (v0.2.75), so any Claude Code CLI still receiving updates supports it. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
 For review-fixer reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
 ## Codex
