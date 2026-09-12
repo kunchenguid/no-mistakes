@@ -18,6 +18,12 @@ import (
 )
 
 // Agent is the interface for running AI agent tasks.
+//
+// Run may return a non-nil Result together with an error: a failed or
+// cancelled invocation still carries the usage the adapter parsed, so
+// instrumentation records honest token counts instead of a fabricated zero.
+// A non-nil Result is therefore not a success signal; callers must check the
+// error.
 type Agent interface {
 	Name() string
 	Run(ctx context.Context, opts RunOpts) (*Result, error)

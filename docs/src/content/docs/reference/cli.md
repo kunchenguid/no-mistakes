@@ -501,6 +501,7 @@ Use `--agents` for local, per-purpose agent performance aggregates: duration and
 Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the raw counters (cumulative across a resumed session for codex; per-invocation for pi), tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
 The combined Document/Lint invocation is labeled `housekeeping (document+lint)` and attributed to `document+lint`, making its shared duration and tokens explicit without adding a second agent call.
 Nullable fields an adapter did not report, including raw input, output, and cache-read token counts, render as `-` (unknown), which is distinct from a recorded `0`.
+A `--agents` token total is all-or-nothing: it reads `-` for the whole purpose unless every invocation in it reported that field, so one failed round that reported no usage leaves the group's total unknown instead of silently under-counted.
 
 ```sh
 no-mistakes stats --agents
