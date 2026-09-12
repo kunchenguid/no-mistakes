@@ -96,7 +96,7 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// classifyOpencodeTransient, and the same fail-closed answer: report the
 	// conflict and let the operator decide.
 	if opencodeReplayUnsafe(err) {
-		return nil, err
+		return result, err
 	}
 
 	// OpenCode implements json_schema output as a required StructuredOutput
@@ -108,9 +108,24 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		Phase:   LifecyclePhaseFallback,
 		Message: "opencode starting a fresh prompt-only structured output session",
 	})
+	// Both turns really ran and both cost tokens, so the single row this
+	// invocation records must carry both. Each attempt is its own fresh
+	// session and opencode never reports cumulatively, so the two are
+	// independent deltas that simply add.
+	nativeUsage := TokenUsage{}
+	if result != nil {
+		nativeUsage = result.Usage
+	}
 	result, fallbackErr := a.runOnceWithFormat(ctx, opts, false)
+	if result == nil {
+		result = resultFromUsage(nativeUsage)
+	} else {
+		result.Usage.Add(nativeUsage)
+		result.UsageReported = result.Usage.Reported
+		result.CacheCreationReported = result.Usage.CacheCreationReported
+	}
 	if fallbackErr != nil {
-		return nil, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)
+		return result, fmt.Errorf("opencode prompt-only structured output fallback: %w", fallbackErr)
 	}
 	return result, nil
 }
@@ -190,17 +205,17 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		evidence := resolveOpencodeToolEvidence(state, mr, false)
 		if mr.settled && mr.err != nil {
 			if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-				return nil, thinkingConflict(evidence, mr.err)
+				return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
 			}
-			return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
+			return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 		}
 		if !aborted {
 			a.abortSession(baseURL, sessionID)
 		}
 		if nativeFormat && errors.Is(err, errOpencodeThinkingToolChoiceConflict) {
-			return nil, thinkingConflict(evidence, nil)
+			return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
 		}
-		return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode events: %w", err))
+		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode events: %w", err))
 	}
 
 	// Wait for message response. The stream ran to session.idle, so every
@@ -210,9 +225,9 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	evidence := resolveOpencodeToolEvidence(state, mr, true)
 	if mr.err != nil {
 		if nativeFormat && isThinkingToolChoiceConflictText(mr.err.Error()) {
-			return nil, thinkingConflict(evidence, mr.err)
+			return resultFromUsage(state.usage), thinkingConflict(evidence, mr.err)
 		}
-		return nil, opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
+		return resultFromUsage(state.usage), opencodeTurnFailure(evidence, fmt.Errorf("opencode message: %w", mr.err))
 	}
 
 	// Update usage and text from message response
@@ -283,7 +298,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	// prompt-only fallback in runOnce, so it must be recognised before the
 	// general failure below claims it.
 	if nativeFormat && mr.resp != nil && mr.resp.Info != nil && isThinkingToolChoiceConflict(mr.resp.Info.Error) {
-		return nil, thinkingConflict(evidence, nil)
+		return resultFromUsage(state.usage), thinkingConflict(evidence, nil)
 	}
 
 	// A turn that failed reports its cause on info.error rather than on the
@@ -298,7 +313,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 	// case with the same wording and decodes the nested error payload the
 	// flat fields never carried.
 	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error != nil {
-		return nil, newOpencodeMessageFailure(mr.resp.Info.Error, evidence == opencodeToolsRan)
+		return resultFromUsage(state.usage), newOpencodeMessageFailure(mr.resp.Info.Error, evidence == opencodeToolsRan)
 	}
 
 	// Fall back to parsing JSON from text
@@ -311,7 +326,7 @@ func (a *opencodeAgent) runOnceWithFormat(ctx context.Context, opts RunOpts, nat
 		// A parse failure quotes the model's own output, so whether it looks
 		// transient to the shared classifier is decided by text the model
 		// wrote. It takes the same gate as the rest.
-		return nil, opencodeTurnFailure(evidence, err)
+		return result, opencodeTurnFailure(evidence, err)
 	}
 	return result, nil
 }

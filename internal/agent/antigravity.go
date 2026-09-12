@@ -137,7 +137,7 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 		stderrWG.Wait()
 		retErr := fmt.Errorf("antigravity parse events: %w", err)
 		emitAgentExited(opts, "antigravity", pid, retErr)
-		return nil, retErr
+		return failedResult(pp.usage, pp.sessionID), retErr
 	}
 
 	waitErr := started.wait()
@@ -147,17 +147,17 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 		if stderr != "" {
 			retErr := fmt.Errorf("antigravity exited: %w: %s", waitErr, stderr)
 			emitAgentExited(opts, "antigravity", pid, retErr)
-			return nil, retErr
+			return failedResult(pp.usage, pp.sessionID), retErr
 		}
 		retErr := fmt.Errorf("antigravity exited: %w", waitErr)
 		emitAgentExited(opts, "antigravity", pid, retErr)
-		return nil, retErr
+		return failedResult(pp.usage, pp.sessionID), retErr
 	}
 
 	if pp.errorMessage != "" {
 		retErr := fmt.Errorf("antigravity reported error: %s", pp.errorMessage)
 		emitAgentExited(opts, "antigravity", pid, retErr)
-		return nil, retErr
+		return failedResult(pp.usage, pp.sessionID), retErr
 	}
 
 	text := pp.finalText()

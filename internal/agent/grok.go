@@ -123,6 +123,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		stderrWG.Wait()
 		retErr := fmt.Errorf("grok parse events: %w", parseErr)
 		emitAgentExited(opts, "grok", pid, retErr)
+		if result != nil {
+			return resultFromUsage(result.Usage), retErr
+		}
 		return nil, retErr
 	}
 
@@ -135,6 +138,9 @@ func (a *grokAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 			retErr = fmt.Errorf("grok exited: %w: %s", waitErr, detail)
 		}
 		emitAgentExited(opts, "grok", pid, retErr)
+		if result != nil {
+			return resultFromUsage(result.Usage), retErr
+		}
 		return nil, retErr
 	}
 
@@ -289,20 +295,20 @@ func parseGrokEvents(ctx context.Context, r io.Reader, onChunk func(string)) (*R
 			}
 		case "result":
 			sawResult = true
-			if event.IsError || event.Subtype != "success" {
-				detail := strings.Join(event.Errors, "; ")
-				if detail == "" {
-					detail = event.Result
-				}
-				return nil, fmt.Errorf("grok error: subtype=%s: %s", event.Subtype, detail)
-			}
-			result.Text = event.Result
-			result.Output = event.StructuredOutput
 			if usage := normalizedGrokUsage(event.Usage); usage.Reported {
 				result.Usage = usage
 				result.UsageReported = true
 				result.CacheCreationReported = usage.CacheCreationReported
 			}
+			if event.IsError || event.Subtype != "success" {
+				detail := strings.Join(event.Errors, "; ")
+				if detail == "" {
+					detail = event.Result
+				}
+				return result, fmt.Errorf("grok error: subtype=%s: %s", event.Subtype, detail)
+			}
+			result.Text = event.Result
+			result.Output = event.StructuredOutput
 		case "error":
 			var message string
 			if err := json.Unmarshal(event.Message, &message); err != nil {
@@ -354,11 +360,11 @@ func finalizeGrokResult(result *Result, schema json.RawMessage) (*Result, error)
 		return nil, fmt.Errorf("grok returned no result event")
 	}
 	if len(schema) > 0 && (len(result.Output) == 0 || string(result.Output) == "null") {
-		return nil, rejectStructuredOutput(errGrokNoStructuredOutput)
+		return resultFromUsage(result.Usage), rejectStructuredOutput(errGrokNoStructuredOutput)
 	}
 	if len(schema) > 0 {
 		if err := validateStructuredOutput(result.Output, schema); err != nil {
-			return nil, rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
+			return resultFromUsage(result.Usage), rejectStructuredOutput(fmt.Errorf("grok structured output: %w", err))
 		}
 	}
 	return result, nil

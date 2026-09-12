@@ -506,9 +506,6 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got result %+v", result)
 	}
-	if result != nil {
-		t.Fatalf("expected nil result on error, got %+v", result)
-	}
 	msg := err.Error()
 	if !strings.Contains(msg, "structured output failed") {
 		t.Errorf("expected error to mention structured output failure, got %q", msg)
@@ -633,6 +630,59 @@ func TestOpencodeAgent_ThinkingToolChoiceConflictFallsBackToValidatedText(t *tes
 	t.Logf("native nested format=%v; native root format=%v; model/variant/retryCount preserved=%v; fallback format=%v; validated output=%s", nativeNestedFormatSeen.Load(), nativeRootFormatSeen.Load(), nativeProfileAndRetriesSeen.Load(), fallbackFormatSeen.Load(), result.Output)
 }
 
+// TestOpencodeAgent_ThinkingToolChoiceFallbackSumsBothTurnsUsage proves the
+// one row this invocation records carries both model turns. The native attempt
+// burns its input before the conflict and the prompt-only fallback burns its
+// own; reporting only the fallback would under-count the invocation by roughly
+// half. Each attempt is a fresh session and opencode never reports
+// cumulatively, so the two are independent deltas that add.
+func TestOpencodeAgent_ThinkingToolChoiceFallbackSumsBothTurnsUsage(t *testing.T) {
+	var sessions atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprintf(w, `{"id":"s%d"}`, sessions.Add(1))
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg1","role":"assistant","tokens":{"input":100,"output":10,"cache":{"read":5,"write":2}},"error":{"name":"APIError","data":{"message":"Provider returned error","responseBody":"Thinking may not be enabled when tool_choice forces tool use."}}}}`)
+
+		case r.URL.Path == "/session/s2/message" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"info":{"id":"msg2","role":"assistant","tokens":{"input":200,"output":20,"cache":{"read":7,"write":3}}},"parts":[{"type":"text","text":"{\"summary\":\"all good\"}"}]}`)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{bin: "opencode", server: &managedServer{port: mustParsePort(server.URL)}}
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "review the changes",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := sessions.Load(); got != 2 {
+		t.Fatalf("sessions = %d, want the native attempt plus the fallback", got)
+	}
+	want := TokenUsage{
+		InputTokens: 300, OutputTokens: 30, CacheReadTokens: 12, CacheCreationTokens: 5,
+		Reported: true, CacheCreationReported: true,
+	}
+	if result.Usage != want {
+		t.Fatalf("usage = %+v, want both turns summed %+v", result.Usage, want)
+	}
+	if !result.UsageReported || !result.CacheCreationReported {
+		t.Fatalf("reported flags = %v/%v, want both true", result.UsageReported, result.CacheCreationReported)
+	}
+}
+
 func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testing.T) {
 	var sessions atomic.Int32
 
@@ -666,9 +716,6 @@ func TestOpencodeAgent_ThinkingToolChoiceFallbackRejectsSchemaViolation(t *testi
 	})
 	if err == nil {
 		t.Fatalf("Run unexpectedly succeeded with result %+v", result)
-	}
-	if result != nil {
-		t.Fatalf("result = %+v, want nil", result)
 	}
 	if !strings.Contains(err.Error(), "summary must be string") {
 		t.Fatalf("error = %q, want original schema's string constraint", err)

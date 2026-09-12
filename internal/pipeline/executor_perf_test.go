@@ -23,9 +23,10 @@ func (u *usageAgent) SupportsSessionResume() bool { return u.resumable }
 
 func (u *usageAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	result := &agent.Result{
-		Output: json.RawMessage(`{}`),
-		Model:  "test-model-1",
-		Usage:  agent.TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60},
+		Output:        json.RawMessage(`{}`),
+		Model:         "test-model-1",
+		Usage:         agent.TokenUsage{InputTokens: 100, OutputTokens: 20, CacheReadTokens: 60, Reported: true},
+		UsageReported: true,
 	}
 	if opts.Session != nil {
 		if opts.Session.ID != "" {
@@ -100,7 +101,9 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	if review.Agent != "usage-agent" || review.Model != "test-model-1" {
 		t.Fatalf("agent/model = %q/%q", review.Agent, review.Model)
 	}
-	if review.InputTokens != 100 || review.OutputTokens != 20 || review.CacheReadTokens != 60 {
+	if review.InputTokens == nil || *review.InputTokens != 100 ||
+		review.OutputTokens == nil || *review.OutputTokens != 20 ||
+		review.CacheReadTokens == nil || *review.CacheReadTokens != 60 {
 		t.Fatalf("token usage not recorded: %+v", review)
 	}
 	if review.ExitStatus != "ok" || review.StartedAt == 0 || review.CompletedAt == 0 {

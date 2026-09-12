@@ -19,6 +19,12 @@ import (
 )
 
 // Agent is the interface for running AI agent tasks.
+//
+// Run may return a non-nil Result together with an error: a failed or
+// cancelled invocation still carries the usage the adapter parsed, so
+// instrumentation records honest token counts instead of a fabricated zero.
+// A non-nil Result is therefore not a success signal; callers must check the
+// error.
 type Agent interface {
 	Name() string
 	Run(ctx context.Context, opts RunOpts) (*Result, error)
@@ -301,24 +307,67 @@ type Options struct {
 	Profile agentcfg.Profile
 }
 
+// resultFromUsage returns a Result carrying the adapter's parsed usage so a
+// failed or cancelled invocation can still record honest token counts. Nil
+// when the adapter did not report usage, which recording stores as unknown
+// rather than a fabricated zero.
+func resultFromUsage(usage TokenUsage) *Result {
+	if !usage.Reported && !usage.CacheCreationReported {
+		return nil
+	}
+	return &Result{
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
+	}
+}
+
+// failedResult returns the Result a failed turn should carry: the adapter's
+// parsed usage, plus the session the turn actually ran in. The served session
+// justifies a Result on its own, because one that differs from the requested
+// session is proof of a silent replacement whether or not the turn failed, and
+// resultFromUsage returns nil when the adapter reported no usage at all.
+func failedResult(usage TokenUsage, sessionID string) *Result {
+	res := resultFromUsage(usage)
+	if sessionID == "" {
+		return res
+	}
+	if res == nil {
+		res = &Result{}
+	}
+	res.SessionID = sessionID
+	return res
+}
+
+func textResult(text string, usage TokenUsage) *Result {
+	return &Result{
+		Text:                  text,
+		Usage:                 usage,
+		UsageReported:         usage.Reported,
+		CacheCreationReported: usage.CacheCreationReported,
+	}
+}
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
 		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return nil, rejectStructuredOutput(err)
+			return resultFromUsage(usage), rejectStructuredOutput(err)
 		}
-		return nil, err
+		return resultFromUsage(usage), err
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+		return textResult(text, usage), nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema, strings.HasPrefix(agentName, "acp:"))
 	if err != nil {
-		return nil, rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
+		return resultFromUsage(usage), rejectStructuredOutput(fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text)))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
+	res := textResult(text, usage)
+	res.Output = output
+	return res, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for

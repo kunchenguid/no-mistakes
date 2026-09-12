@@ -60,6 +60,74 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 	}, nil
 }
 
+// usageGapSessionAgent models a codex thread whose middle round dies before
+// any usage event, so that round's row stores unknown token counts.
+type usageGapSessionAgent struct{ round int }
+
+func (a *usageGapSessionAgent) Name() string                { return "codex" }
+func (a *usageGapSessionAgent) Close() error                { return nil }
+func (a *usageGapSessionAgent) SupportsSessionResume() bool { return true }
+
+func (a *usageGapSessionAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+	a.round++
+	if a.round == 2 {
+		return nil, errors.New("codex exited: status 1")
+	}
+	cumulative := 1000
+	if a.round == 3 {
+		cumulative = 4000
+	}
+	return &agent.Result{
+		Output:                 json.RawMessage(`{}`),
+		SessionID:              "sess-gap",
+		Resumed:                true,
+		Usage:                  agent.TokenUsage{InputTokens: cumulative, Reported: true},
+		UsageReported:          true,
+		SessionUsageCumulative: true,
+	}, nil
+}
+
+// TestPerfRecording_UsagelessRoundDoesNotResetTheSessionPrior proves the prior
+// cumulative lookup skips rows whose usage is unknown. A failed round now
+// writes such a row; treating it as the prior would report "no prior", and the
+// next round's whole cumulative counter would be recorded as one round's
+// delta - here 4000 instead of 3000.
+func TestPerfRecording_UsagelessRoundDoesNotResetTheSessionPrior(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+
+	roundNum := 0
+	wrapped := &perfRecordingAgent{
+		inner:    &usageGapSessionAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return roundNum },
+	}
+	for r := 1; r <= 3; r++ {
+		roundNum = r
+		_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+			Purpose: "review",
+			Session: &agent.SessionRef{ID: "sess-gap"},
+		})
+	}
+
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 3 {
+		t.Fatalf("got %d rows, want 3", len(invs))
+	}
+	if invs[0].SessionKey == "" || invs[0].SessionKey != invs[1].SessionKey || invs[1].SessionKey != invs[2].SessionKey {
+		t.Fatalf("all three rounds must share one session key: %q/%q/%q", invs[0].SessionKey, invs[1].SessionKey, invs[2].SessionKey)
+	}
+	assertPtr(t, "round 1 delta input", invs[0].DeltaInputTokens, 1000)
+	if invs[1].InputTokens != nil || invs[1].DeltaInputTokens != nil {
+		t.Fatalf("the failed round must record unknown usage, got raw=%v delta=%v", invs[1].InputTokens, invs[1].DeltaInputTokens)
+	}
+	assertPtr(t, "round 3 delta input", invs[2].DeltaInputTokens, 3000)
+}
+
 // TestPerfRecording_ResumedSessionRecordsPerRoundDeltas proves a resumed
 // session's cumulative token counters are stored per round as correct deltas,
 // with fresh input, reasoning, model identity, activity metrics, workload, and
@@ -106,9 +174,8 @@ func TestPerfRecording_ResumedSessionRecordsPerRoundDeltas(t *testing.T) {
 	}
 
 	// Raw counters are cumulative.
-	if r1.InputTokens != 1000 || r2.InputTokens != 2500 {
-		t.Fatalf("raw input = %d/%d, want 1000/2500", r1.InputTokens, r2.InputTokens)
-	}
+	assertPtr(t, "r1 raw input", r1.InputTokens, 1000)
+	assertPtr(t, "r2 raw input", r2.InputTokens, 2500)
 	// Deltas are the per-round additions.
 	assertPtr(t, "r1 delta input", r1.DeltaInputTokens, 1000)
 	assertPtr(t, "r2 delta input", r2.DeltaInputTokens, 1500)
@@ -244,6 +311,9 @@ func TestPerfRecording_MissingProviderUsageIsUnknown(t *testing.T) {
 	}
 	inv := invs[0]
 	for name, p := range map[string]*int{
+		"input_tokens":     inv.InputTokens,
+		"output_tokens":    inv.OutputTokens,
+		"cache_read":       inv.CacheReadTokens,
 		"model_roundtrips": inv.ModelRoundtrips,
 		"tool_calls":       inv.ToolCalls,
 		"cache_creation":   inv.CacheCreationTokens,
@@ -270,6 +340,188 @@ func (noUsageAgent) Name() string { return "noop-agent" }
 func (noUsageAgent) Close() error { return nil }
 func (noUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
 	return &agent.Result{}, nil
+}
+
+type schemaRejectedUsageAgent struct{}
+
+func (schemaRejectedUsageAgent) Name() string { return "pi" }
+func (schemaRejectedUsageAgent) Close() error { return nil }
+func (schemaRejectedUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{
+		Usage: agent.TokenUsage{
+			InputTokens:     553_000,
+			OutputTokens:    12_000,
+			CacheReadTokens: 400_000,
+			Reported:        true,
+		},
+		UsageReported: true,
+	}, errors.New("pi output parse: JSON output must be object")
+}
+
+type failedNoUsageAgent struct{ err error }
+
+func (failedNoUsageAgent) Name() string { return "pi" }
+func (failedNoUsageAgent) Close() error { return nil }
+func (a failedNoUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return nil, a.err
+}
+
+func TestPerfRecording_SchemaRejectedInvocationRecordsReportedUsage(t *testing.T) {
+	inv := recordOneInvocation(t, &schemaRejectedUsageAgent{}, context.Background())
+	if inv.ExitStatus != "error" || inv.FailureCategory != "parse" {
+		t.Fatalf("exit = %s/%s, want error/parse", inv.ExitStatus, inv.FailureCategory)
+	}
+	assertPtr(t, "input", inv.InputTokens, 553_000)
+	assertPtr(t, "output", inv.OutputTokens, 12_000)
+	assertPtr(t, "cache read", inv.CacheReadTokens, 400_000)
+	assertPtr(t, "fresh input", inv.FreshInputTokens, 153_000)
+}
+
+// TestPerfRecording_FailedResumedInvocationStaysResumed proves a resumed turn
+// that reports usage and then fails is still recorded as a resume. Adapters set
+// Resumed only after finalizing, so a failed result's Resumed=false is no
+// evidence the session was silently replaced - recording it as a fallback would
+// invent a fallback with no reason and skew the resume-health counts.
+func TestPerfRecording_FailedResumedInvocationStaysResumed(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    &schemaRejectedUsageAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 2 },
+	}
+	_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review-fix",
+		Session: &agent.SessionRef{ID: "sess-xyz"},
+	})
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	if invs[0].SessionMode != db.InvocationModeResumed {
+		t.Fatalf("session mode = %q, want %q", invs[0].SessionMode, db.InvocationModeResumed)
+	}
+	if invs[0].FallbackReason != nil {
+		t.Fatalf("failed resume must not invent a fallback reason: %v", *invs[0].FallbackReason)
+	}
+}
+
+type replacedSessionAgent struct{}
+
+func (replacedSessionAgent) Name() string                { return "antigravity" }
+func (replacedSessionAgent) Close() error                { return nil }
+func (replacedSessionAgent) SupportsSessionResume() bool { return true }
+func (replacedSessionAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{
+		SessionID:     "conversation-B",
+		Usage:         agent.TokenUsage{InputTokens: 900, Reported: true},
+		UsageReported: true,
+	}, errors.New("antigravity output parse: JSON output must be object")
+}
+
+// TestPerfRecording_FailedTurnInADifferentSessionRecordsFallback proves the
+// silent-replacement signal survives a failed turn. The adapter named a
+// session other than the one requested, which is evidence the resume never
+// happened rather than an unset field - recording it as a resume would hide
+// the stale-session path the fallback bucket exists to expose.
+func TestPerfRecording_FailedTurnInADifferentSessionRecordsFallback(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    replacedSessionAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 2 },
+	}
+	_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review",
+		Session: &agent.SessionRef{ID: "conversation-A"},
+	})
+
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	if invs[0].SessionMode != db.InvocationModeFallback {
+		t.Fatalf("session mode = %q, want %q", invs[0].SessionMode, db.InvocationModeFallback)
+	}
+	assertPtr(t, "input", invs[0].InputTokens, 900)
+}
+
+func TestPerfRecording_FailedInvocationWithoutUsageIsUnknown(t *testing.T) {
+	inv := recordOneInvocation(t, failedNoUsageAgent{err: errors.New("pi exited: status 1")}, context.Background())
+	if inv.ExitStatus != "error" {
+		t.Fatalf("exit = %s, want error", inv.ExitStatus)
+	}
+	assertUnknownRawTokens(t, inv)
+}
+
+func TestPerfRecording_CancelledInvocationWithoutUsageIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	inv := recordOneInvocation(t, failedNoUsageAgent{err: context.Canceled}, ctx)
+	if inv.ExitStatus != "cancelled" {
+		t.Fatalf("exit = %s, want cancelled", inv.ExitStatus)
+	}
+	assertUnknownRawTokens(t, inv)
+}
+
+func TestPerfRecording_ReportedZeroTokensAreZeroNotUnknown(t *testing.T) {
+	inv := recordOneInvocation(t, &zeroUsageAgent{}, context.Background())
+	if inv.ExitStatus != "ok" {
+		t.Fatalf("exit = %s, want ok", inv.ExitStatus)
+	}
+	assertPtr(t, "input", inv.InputTokens, 0)
+	assertPtr(t, "output", inv.OutputTokens, 0)
+	assertPtr(t, "cache read", inv.CacheReadTokens, 0)
+}
+
+type zeroUsageAgent struct{}
+
+func (zeroUsageAgent) Name() string { return "pi" }
+func (zeroUsageAgent) Close() error { return nil }
+func (zeroUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{
+		Usage:         agent.TokenUsage{Reported: true},
+		UsageReported: true,
+	}, nil
+}
+
+func recordOneInvocation(t *testing.T, inner agent.Agent, ctx context.Context) db.AgentInvocation {
+	t.Helper()
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    inner,
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+	_, _ = wrapped.Run(ctx, agent.RunOpts{Purpose: "review"})
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	return invs[0]
+}
+
+func assertUnknownRawTokens(t *testing.T, inv db.AgentInvocation) {
+	t.Helper()
+	if inv.InputTokens != nil || inv.OutputTokens != nil || inv.CacheReadTokens != nil ||
+		inv.FreshInputTokens != nil || inv.DeltaInputTokens != nil {
+		t.Fatalf("unreported usage must be unknown, got input=%v output=%v cache=%v fresh=%v delta=%v",
+			inv.InputTokens, inv.OutputTokens, inv.CacheReadTokens, inv.FreshInputTokens, inv.DeltaInputTokens)
+	}
 }
 
 func assertPtr(t *testing.T, name string, got *int, want int) {

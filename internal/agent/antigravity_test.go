@@ -732,3 +732,37 @@ func TestAntigravityAgent_RunCarriesUsageAndResponsePrecedence(t *testing.T) {
 		t.Errorf("chunks = %q, want streamed deltas still delivered", chunks)
 	}
 }
+
+// TestAntigravityAgent_FailedTurnReportsTheConversationAgyServed covers the
+// case where the served conversation is the only fact the turn produced: agy
+// silently replaces the stale conversation and then exits non-zero before any
+// usage arrives. The replacement identity is the evidence the resume did not
+// happen, so the Result must exist to carry it - resultFromUsage alone returns
+// nil here, and the invocation would be recorded as a clean resume.
+func TestAntigravityAgent_FailedTurnReportsTheConversationAgyServed(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeAgy(t, dir, []string{
+		`{"event": "init", "conversation_id": "conv-new-9"}`,
+	}, 1)
+
+	result, err := (&antigravityAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:  "continue",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: "conv-pruned", Agent: "antigravity"},
+	})
+	if err == nil {
+		t.Fatal("expected the non-zero exit to fail the turn")
+	}
+	if result == nil {
+		t.Fatal("a failed turn must still report the conversation agy served")
+	}
+	if result.SessionID != "conv-new-9" {
+		t.Errorf("session id = %q, want the conversation agy actually served conv-new-9", result.SessionID)
+	}
+	if result.Resumed {
+		t.Error("Resumed = true, want false when agy silently started a fresh conversation")
+	}
+	if result.UsageReported {
+		t.Error("agy reported no usage; the result must not claim it did")
+	}
+}

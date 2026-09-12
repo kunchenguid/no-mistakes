@@ -92,9 +92,6 @@ func TestOpencodeAgent_FailedTurnSurfacesProviderErrorInsteadOfEmptyOutput(t *te
 	if err == nil {
 		t.Fatalf("expected error, got result %+v", result)
 	}
-	if result != nil {
-		t.Fatalf("expected nil result on error, got %+v", result)
-	}
 	msg := err.Error()
 	if strings.Contains(msg, "no text output") {
 		t.Errorf("failed turn must not be reported as empty output, got %q", msg)
