@@ -14,14 +14,18 @@ type fallbackTestAgent struct {
 	runCtx    func(context.Context) (*Result, error)
 	calls     int
 	resumable bool
+	runOpts   func(RunOpts) (*Result, error)
 }
 
 func (a *fallbackTestAgent) Name() string { return a.name }
 
-func (a *fallbackTestAgent) Run(ctx context.Context, _ RunOpts) (*Result, error) {
+func (a *fallbackTestAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	a.calls++
 	if a.runCtx != nil {
 		return a.runCtx(ctx)
+	}
+	if a.runOpts != nil {
+		return a.runOpts(opts)
 	}
 	return a.run()
 }
@@ -60,6 +64,40 @@ func TestFallbackAgentFallsBackOnLaunchFailure(t *testing.T) {
 	joined := strings.Join(chunks, "\n")
 	if !strings.Contains(joined, "agent codex failed") || !strings.Contains(joined, "falling back to claude") {
 		t.Fatalf("fallback log missing, got %q", joined)
+	}
+}
+
+func TestFallbackAgent_IsolatesSessionStatePerCandidate(t *testing.T) {
+	session := &SessionRef{Scope: "run/fixer"}
+	first := &fallbackTestAgent{
+		name:      "acp:first",
+		resumable: true,
+		runOpts: func(opts RunOpts) (*Result, error) {
+			opts.Session.Agent = "first-provider"
+			return nil, errors.New("acp:first start: argument list too long")
+		},
+	}
+	second := &fallbackTestAgent{
+		name:      "acp:second",
+		resumable: true,
+		runOpts: func(opts RunOpts) (*Result, error) {
+			if opts.Session.Agent != "" {
+				t.Fatalf("second candidate inherited provider %q", opts.Session.Agent)
+			}
+			opts.Session.Agent = "second-provider"
+			return &Result{Text: "ok", Provider: opts.Session.Agent}, nil
+		},
+	}
+
+	result, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{Session: session})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Provider != "second-provider" {
+		t.Fatalf("provider = %q, want second-provider", result.Provider)
+	}
+	if session.Agent != "" {
+		t.Fatalf("caller session was mutated to %q", session.Agent)
 	}
 }
 

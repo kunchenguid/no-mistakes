@@ -371,7 +371,7 @@ func resolveRawACPExecutable(command, cwd string, env []string) (string, bool) {
 	}
 	pathValue := ""
 	for _, entry := range env {
-		if key, value, ok := strings.Cut(entry, "="); ok && strings.EqualFold(key, "PATH") {
+		if key, value, ok := strings.Cut(entry, "="); ok && sameEnvironmentKey(key, "PATH") {
 			pathValue = value
 		}
 	}
@@ -385,6 +385,13 @@ func resolveRawACPExecutable(command, cwd string, env []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func sameEnvironmentKey(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func (a *acpxAgent) sessionName(scope, provider string) string {

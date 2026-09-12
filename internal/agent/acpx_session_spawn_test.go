@@ -266,6 +266,48 @@ func TestAcpxAgent_SessionProviderUsesEffectiveLastEnvironmentEntry(t *testing.T
 	}
 }
 
+func TestAcpxAgent_RawExecutableLookupUsesUnixPATHKeySemantics(t *testing.T) {
+	dir := t.TempDir()
+	trustedDir := filepath.Join(dir, "trusted")
+	decoyDir := filepath.Join(dir, "decoy")
+	if err := os.MkdirAll(trustedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(decoyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	trustedPath := filepath.Join(trustedDir, "raw-agent")
+	decoyPath := filepath.Join(decoyDir, "raw-agent")
+	if err := os.WriteFile(trustedPath, []byte("#!/bin/sh\n# fingerprint-a\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decoyPath, []byte("#!/bin/sh\n# decoy\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &acpxAgent{
+		bin:        writeSessionStubAcpx(t, dir),
+		target:     "custom",
+		rawCommand: "raw-agent serve",
+	}
+	opts := RunOpts{
+		CWD: dir,
+		Env: []string{"PATH=" + trustedDir, "Path=" + decoyDir},
+	}
+	before, err := a.resolveSessionProvider(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("initial provider: %v", err)
+	}
+	replaceExecutableAtSamePath(t, trustedPath)
+	after, err := a.resolveSessionProvider(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("provider after target replacement: %v", err)
+	}
+	if before == after {
+		t.Fatal("replacing the executable selected by PATH did not change provider identity")
+	}
+}
+
 func TestAcpxAgent_UnresolvableRawCommandIdentityIsProcessLocal(t *testing.T) {
 	dir := t.TempDir()
 	acpxPath := writeSessionStubAcpx(t, dir)
