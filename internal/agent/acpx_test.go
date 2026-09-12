@@ -636,8 +636,8 @@ func TestParseAcpxJSONEvents_MultipleChunksAccumulate(t *testing.T) {
 func TestParseAcpxJSONEvents_CapturesFirstError(t *testing.T) {
 	// Only the first non-empty error.message is surfaced as stdoutErr.
 	events := strings.Join([]string{
-		`{"method":"session/update","error":{"message":"first failure"}}`,
-		`{"method":"session/update","error":{"message":"second failure"}}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"first failure","data":{"acpxCode":"RUNTIME"}}}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"second failure","data":{"acpxCode":"RUNTIME"}}}`,
 		"",
 	}, "\n")
 
@@ -651,6 +651,27 @@ func TestParseAcpxJSONEvents_CapturesFirstError(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("output = %q, want empty", out)
+	}
+}
+
+func TestParseAcpxJSONEvents_IgnoresHandledOperationError(t *testing.T) {
+	events := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":17,"error":{"code":-32603,"message":"Internal error","data":{"details":"Path is outside allowed cwd subtree"}}}`,
+		`{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"completed"}}}`,
+		`{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}`,
+		"",
+	}, "\n")
+
+	var usage TokenUsage
+	out, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stdoutErr != "" {
+		t.Fatalf("handled operation error surfaced as prompt failure: %q", stdoutErr)
+	}
+	if out != "completed" {
+		t.Fatalf("output = %q, want completed", out)
 	}
 }
 

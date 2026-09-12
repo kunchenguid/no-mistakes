@@ -470,8 +470,9 @@ func buildACPStructuredPrompt(prompt string, schema json.RawMessage) string {
 }
 
 type acpxJSONMessage struct {
-	Method string         `json:"method"`
-	Error  *acpxJSONError `json:"error"`
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Error  *acpxJSONError  `json:"error"`
 	Result struct {
 		Usage acpxUsageFields `json:"usage"`
 	} `json:"result"`
@@ -552,8 +553,15 @@ func parseAcpxJSONEventsWithSession(ctx context.Context, r io.Reader, onChunk fu
 			sessionID = msg.Params.SessionID
 		}
 		markAcpxUsagePresence(line, &msg)
+		// acpx streams nested ACP request/response traffic alongside its own
+		// result. A non-null ID belongs to an operation the agent can handle
+		// itself (for example, falling back after an fs read refusal); only
+		// acpx's id:null command error makes this invocation fail.
 		if msg.Error != nil && msg.Error.Message != "" && stdoutErr == "" {
-			stdoutErr = msg.Error.Message
+			id := strings.TrimSpace(string(msg.ID))
+			if id == "" || id == "null" {
+				stdoutErr = msg.Error.Message
+			}
 		}
 		*usage = acpxMaxUsage(*usage, acpxUsageFieldsToTokenUsage(msg.Result.Usage))
 		if msg.Method != "session/update" {

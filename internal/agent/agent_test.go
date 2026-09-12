@@ -166,7 +166,7 @@ func TestACPAgentRunReportsJSONRPCErrorMessage(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "acpx")
 	contents := `#!/bin/sh
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"not authenticated"}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"not authenticated","data":{"acpxCode":"RUNTIME"}}}'
 exit 1
 `
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
@@ -183,6 +183,35 @@ exit 1
 	}
 	if !strings.Contains(err.Error(), "not authenticated") {
 		t.Fatalf("error = %v, want JSON-RPC error message", err)
+	}
+}
+
+func TestACPAgentRunIgnoresHandledJSONRPCOperationError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "acpx")
+	contents := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"jsonrpc":"2.0","id":17,"error":{"code":-32603,"message":"Internal error","data":{"details":"Path is outside allowed cwd subtree"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"done"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}'
+`
+	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a, err := New("acp:gemini", script, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result, err := a.Run(context.Background(), RunOpts{Prompt: "do work", CWD: dir})
+	if err != nil {
+		t.Fatalf("handled ACP operation error failed prompt: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("result text = %q, want done", result.Text)
 	}
 }
 
