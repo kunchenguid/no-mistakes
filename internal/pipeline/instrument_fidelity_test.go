@@ -410,6 +410,51 @@ func TestPerfRecording_FailedResumedInvocationStaysResumed(t *testing.T) {
 	}
 }
 
+type replacedSessionAgent struct{}
+
+func (replacedSessionAgent) Name() string                { return "antigravity" }
+func (replacedSessionAgent) Close() error                { return nil }
+func (replacedSessionAgent) SupportsSessionResume() bool { return true }
+func (replacedSessionAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{
+		SessionID:     "conversation-B",
+		Usage:         agent.TokenUsage{InputTokens: 900, Reported: true},
+		UsageReported: true,
+	}, errors.New("antigravity output parse: JSON output must be object")
+}
+
+// TestPerfRecording_FailedTurnInADifferentSessionRecordsFallback proves the
+// silent-replacement signal survives a failed turn. The adapter named a
+// session other than the one requested, which is evidence the resume never
+// happened rather than an unset field - recording it as a resume would hide
+// the stale-session path the fallback bucket exists to expose.
+func TestPerfRecording_FailedTurnInADifferentSessionRecordsFallback(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    replacedSessionAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 2 },
+	}
+	_, _ = wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review",
+		Session: &agent.SessionRef{ID: "conversation-A"},
+	})
+
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	if invs[0].SessionMode != db.InvocationModeFallback {
+		t.Fatalf("session mode = %q, want %q", invs[0].SessionMode, db.InvocationModeFallback)
+	}
+	assertPtr(t, "input", invs[0].InputTokens, 900)
+}
+
 func TestPerfRecording_FailedInvocationWithoutUsageIsUnknown(t *testing.T) {
 	inv := recordOneInvocation(t, failedNoUsageAgent{err: errors.New("pi exited: status 1")}, context.Background())
 	if inv.ExitStatus != "error" {

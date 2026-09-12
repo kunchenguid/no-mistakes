@@ -3,12 +3,14 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -115,5 +117,100 @@ func TestReplayTokensCoverEveryReviewAttempt(t *testing.T) {
 					tc.wantReported, tc.wantInput, tc.wantOutput, tc.wantFresh)
 			}
 		})
+	}
+}
+
+// retryingAgent models an adapter whose internal retry loop reports each
+// attempt through OnAttempt and hands back only the last one, as runWithRetry
+// does.
+type retryingAgent struct {
+	attempts []*agent.Result
+	err      error
+}
+
+func (*retryingAgent) Name() string { return "claude" }
+func (*retryingAgent) Close() error { return nil }
+func (a *retryingAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	for _, attempt := range a.attempts {
+		if opts.OnAttempt != nil {
+			opts.OnAttempt(agent.Attempt{Agent: "claude", Result: attempt, Err: a.err})
+		}
+	}
+	return a.attempts[len(a.attempts)-1], a.err
+}
+
+type fixedResultAgent struct {
+	result *agent.Result
+	err    error
+}
+
+func (*fixedResultAgent) Name() string { return "pi" }
+func (*fixedResultAgent) Close() error { return nil }
+func (a *fixedResultAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return a.result, a.err
+}
+
+func reportedUsage(input, output, cacheRead int) *agent.Result {
+	return &agent.Result{
+		Usage:         agent.TokenUsage{InputTokens: input, OutputTokens: output, CacheReadTokens: cacheRead, Reported: true},
+		UsageReported: true,
+	}
+}
+
+// TestObservedAgentCountsEveryAdapterAttempt proves a retry-exhausted review
+// is charged for every attempt it burned. The adapter retries below this seam
+// and returns only its last attempt, so reading the returned result alone
+// would charge four attempts as one and make the candidate read as cheaper
+// than one that passed on its first try.
+func TestObservedAgentCountsEveryAdapterAttempt(t *testing.T) {
+	observed := &observedAgent{inner: &retryingAgent{
+		attempts: []*agent.Result{
+			reportedUsage(50_000, 100, 5_000),
+			reportedUsage(50_000, 100, 5_000),
+			reportedUsage(50_000, 100, 5_000),
+			reportedUsage(50_000, 100, 5_000),
+		},
+		err: errors.New("claude structured output rejected"),
+	}}
+	if _, err := observed.Run(context.Background(), agent.RunOpts{}); err == nil {
+		t.Fatal("expected the exhausted turn's error to surface")
+	}
+	if observed.usageMissing {
+		t.Fatal("every attempt reported usage, so the sum is complete")
+	}
+	if observed.usage.InputTokens != 200_000 || observed.usage.OutputTokens != 400 ||
+		observed.usage.CacheReadTokens != 20_000 || observed.freshInputTokens != 180_000 {
+		t.Fatalf("usage = %+v fresh = %d, want all four attempts summed", observed.usage, observed.freshInputTokens)
+	}
+}
+
+// TestObservedAgentMarksUsageIncompleteWhenAnAttemptLacksIt keeps the rule the
+// captured baseline uses: one attempt with no reported usage makes the whole
+// sum unknown rather than a smaller cost.
+func TestObservedAgentMarksUsageIncompleteWhenAnAttemptLacksIt(t *testing.T) {
+	observed := &observedAgent{inner: &retryingAgent{
+		attempts: []*agent.Result{reportedUsage(50_000, 100, 5_000), nil},
+		err:      errors.New("claude exited: status 1"),
+	}}
+	if _, err := observed.Run(context.Background(), agent.RunOpts{}); err == nil {
+		t.Fatal("expected the failed turn's error to surface")
+	}
+	if !observed.usageMissing {
+		t.Fatal("an attempt with no reported usage must make the sum incomplete")
+	}
+}
+
+// TestObservedAgentSumsASucceedingTurnsUsage covers the adapter that reports
+// no attempts at all, where the returned result is the whole turn.
+func TestObservedAgentSumsASucceedingTurnsUsage(t *testing.T) {
+	observed := &observedAgent{inner: &fixedResultAgent{result: reportedUsage(100, 20, 30)}}
+	if _, err := observed.Run(context.Background(), agent.RunOpts{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observed.usageMissing {
+		t.Fatal("a succeeding turn's reported usage must count")
+	}
+	if observed.usage.InputTokens != 100 || observed.freshInputTokens != 70 {
+		t.Fatalf("usage = %+v fresh = %d, want 100 input and 70 fresh", observed.usage, observed.freshInputTokens)
 	}
 }

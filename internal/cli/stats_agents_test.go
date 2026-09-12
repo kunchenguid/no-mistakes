@@ -193,10 +193,10 @@ func TestStatsDistinguishesUnreportedTokensFromReportedZero(t *testing.T) {
 	}
 	aggRows := statsTableRows(t, aggregates, "IN TOK")
 	assertStatsCells(t, aggRows, "unreported", map[string]string{
-		"IN TOK": "-", "OUT TOK": "-", "CACHE READ TOK": "-", "USAGE": "0/1",
+		"IN TOK": "-", "OUT TOK": "-", "CACHE READ TOK": "-",
 	})
 	assertStatsCells(t, aggRows, "zero", map[string]string{
-		"IN TOK": "0", "OUT TOK": "0", "CACHE READ TOK": "0", "USAGE": "1/1",
+		"IN TOK": "0", "OUT TOK": "0", "CACHE READ TOK": "0",
 	})
 }
 

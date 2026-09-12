@@ -254,7 +254,7 @@ func (d *DB) LatestSessionCumulative(runID, sessionKey string) (input, output, c
 
 // AgentInvocationAggregate summarizes invocations for one purpose, powering
 // the read-only performance report. Nullable sums preserve unknown when no row
-// reported that metric. MetricsRows and UsageRows report coverage.
+// reported that metric. MetricsRows reports activity-metric coverage.
 type AgentInvocationAggregate struct {
 	Purpose             string
 	Count               int
@@ -283,11 +283,6 @@ type AgentInvocationAggregate struct {
 	// MetricsRows counts invocations in the group whose adapter reported
 	// activity metrics (model_roundtrips is non-NULL).
 	MetricsRows int
-	// UsageRows counts invocations in the group whose adapter reported raw
-	// token usage (input_tokens is non-NULL). The token sums cover exactly
-	// those rows, so a partial group reads as partial rather than as a silent
-	// under-count.
-	UsageRows int
 }
 
 // AgentInvocationAggregates returns per-purpose aggregates across all runs,
@@ -303,9 +298,9 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       COALESCE(SUM(CASE WHEN session_mode = 'resumed' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN session_mode = 'fallback' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN exit_status != 'ok' THEN 1 ELSE 0 END), 0),
-		       SUM(input_tokens),
-		       SUM(output_tokens),
-		       SUM(cache_read_tokens),
+		       CASE WHEN COUNT(input_tokens) = COUNT(*) THEN SUM(input_tokens) END,
+		       CASE WHEN COUNT(output_tokens) = COUNT(*) THEN SUM(output_tokens) END,
+		       CASE WHEN COUNT(cache_read_tokens) = COUNT(*) THEN SUM(cache_read_tokens) END,
 		       CASE WHEN COUNT(cache_creation_tokens) = COUNT(*) THEN SUM(cache_creation_tokens) END,
 		       CASE WHEN COUNT(fresh_input_tokens) = COUNT(*) THEN SUM(fresh_input_tokens) END,
 		       CASE WHEN COUNT(reasoning_tokens) = COUNT(*) THEN SUM(reasoning_tokens) END,
@@ -317,8 +312,7 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       CASE WHEN COUNT(tool_read_calls) = COUNT(*) THEN SUM(tool_read_calls) END,
 		       CASE WHEN COUNT(tool_git_calls) = COUNT(*) THEN SUM(tool_git_calls) END,
 		       CASE WHEN COUNT(tool_other_calls) = COUNT(*) THEN SUM(tool_other_calls) END,
-		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL THEN 1 ELSE 0 END), 0)
+		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0)
 		FROM agent_invocations
 		GROUP BY purpose
 		ORDER BY SUM(duration_ms) DESC`)
@@ -336,7 +330,7 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheCreationTokens,
 			&a.FreshInputTokens, &a.ReasoningTokens, &a.ModelRoundtrips, &a.ToolCalls,
 			&a.ToolWaitCalls, &a.ToolTestLintCalls, &a.ToolEditCalls, &a.ToolReadCalls, &a.ToolGitCalls, &a.ToolOtherCalls,
-			&a.MetricsRows, &a.UsageRows,
+			&a.MetricsRows,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent invocation aggregate: %w", err)
 		}

@@ -486,9 +486,10 @@ type observedAgent struct {
 	ownership  *e2edaemon.Ownership
 	result     *agent.Result
 	durationMS int64
-	// A review can rerun, so usage sums every call, fresh input per call as
-	// the captured baseline does. usageMissing marks a call with no reported
-	// usage, which makes the sum incomplete rather than a smaller cost.
+	// A review can rerun, so usage sums every attempt, fresh input per attempt
+	// as the captured baseline does. usageMissing marks an attempt with no
+	// reported usage, which makes the sum incomplete rather than a smaller
+	// cost.
 	usage            agent.TokenUsage
 	freshInputTokens int
 	usageMissing     bool
@@ -514,17 +515,24 @@ func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Res
 			previousLifecycle(event)
 		}
 	}
+	// The adapter retries below this seam and hands back only its last
+	// attempt, so count each attempt as the recorder does. Without this a turn
+	// that burned four attempts would be charged for one and read as cheaper.
+	attempts := 0
+	previousAttempt := opts.OnAttempt
+	opts.OnAttempt = func(attempt agent.Attempt) {
+		if previousAttempt != nil {
+			previousAttempt(attempt)
+		}
+		attempts++
+		a.observeUsage(attempt.Result)
+	}
 	started := time.Now()
 	result, err := a.inner.Run(ctx, opts)
 	a.durationMS += time.Since(started).Milliseconds()
 	a.result = result
-	if result == nil || !result.UsageReported {
-		a.usageMissing = true
-	} else {
-		a.usage.InputTokens += result.Usage.InputTokens
-		a.usage.OutputTokens += result.Usage.OutputTokens
-		a.usage.CacheReadTokens += result.Usage.CacheReadTokens
-		a.freshInputTokens += agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
+	if attempts == 0 {
+		a.observeUsage(result)
 	}
 	a.mu.Lock()
 	ownershipErr := a.ownershipErr
@@ -533,6 +541,17 @@ func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Res
 		return result, ownershipErr
 	}
 	return result, err
+}
+
+func (a *observedAgent) observeUsage(result *agent.Result) {
+	if result == nil || !result.UsageReported {
+		a.usageMissing = true
+		return
+	}
+	a.usage.InputTokens += result.Usage.InputTokens
+	a.usage.OutputTokens += result.Usage.OutputTokens
+	a.usage.CacheReadTokens += result.Usage.CacheReadTokens
+	a.freshInputTokens += agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
 }
 
 func findingCount(raw string) int {

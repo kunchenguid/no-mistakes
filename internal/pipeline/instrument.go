@@ -215,13 +215,15 @@ func invocationSessionMode(opts agent.RunOpts, result *agent.Result, runErr erro
 	case opts.Session == nil:
 		return db.InvocationModeCold
 	case opts.Session.ID != "":
-		// A session was requested and the invocation succeeded, but the adapter
-		// reported it did not actually resume (e.g. agy silently replaced a
-		// stale conversation with a fresh one). Record as fallback so the
-		// stale-session path is not mistaken for a successful resume. A failed
-		// invocation proves nothing either way - adapters set Resumed only
-		// after finalizing - so it stays a resume.
-		if runErr == nil && result != nil && !result.Resumed {
+		// A session was requested but the adapter did not report resuming it
+		// (e.g. agy silently replaced a stale conversation with a fresh one).
+		// Record as fallback so the stale-session path is not mistaken for a
+		// successful resume. That absence is only evidence when the turn
+		// succeeded, because most adapters set Resumed after finalizing and a
+		// failed turn never gets there - unless the adapter positively named a
+		// different session, which is evidence whether or not the turn failed.
+		if result != nil && !result.Resumed &&
+			(runErr == nil || (result.SessionID != "" && result.SessionID != opts.Session.ID)) {
 			return db.InvocationModeFallback
 		}
 		return db.InvocationModeResumed

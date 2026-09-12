@@ -244,9 +244,6 @@ func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
 		a.ModelRoundtrips != nil || a.ToolCalls != nil {
 		t.Fatalf("unknown aggregate metrics became recorded values: %+v", a)
 	}
-	if a.UsageRows != 0 {
-		t.Fatalf("usage coverage = %d, want 0", a.UsageRows)
-	}
 }
 
 func TestAgentInvocations_ZeroRawTokensAreDistinctFromUnknown(t *testing.T) {
@@ -284,10 +281,11 @@ func TestAgentInvocations_ZeroRawTokensAreDistinctFromUnknown(t *testing.T) {
 	}
 }
 
-// TestAgentInvocationAggregatesSumKnownRawTokensWithCoverage proves a group
-// containing one usage-less invocation still reports the totals of the rows
-// that did report, and states how many rows those totals cover.
-func TestAgentInvocationAggregatesSumKnownRawTokensWithCoverage(t *testing.T) {
+// TestAgentInvocationAggregatesHidePartialRawTokens proves the raw token sums
+// follow the same all-or-nothing rule as every other nullable column here: a
+// group containing one usage-less invocation reads as unknown rather than
+// presenting a total that silently covers only some of its rows.
+func TestAgentInvocationAggregatesHidePartialRawTokens(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 	for _, inv := range []AgentInvocation{
 		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeCold, StartedAt: 1, CompletedAt: 2, DurationMS: 10, ExitStatus: "ok", InputTokens: intPtr(10), OutputTokens: intPtr(2), CacheReadTokens: intPtr(1)},
@@ -302,13 +300,11 @@ func TestAgentInvocationAggregatesSumKnownRawTokensWithCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := aggregates[0]
-	if a.InputTokens == nil || *a.InputTokens != 10 ||
-		a.OutputTokens == nil || *a.OutputTokens != 2 ||
-		a.CacheReadTokens == nil || *a.CacheReadTokens != 1 {
-		t.Fatalf("known raw tokens = %+v, want 10/2/1", a)
+	if a.Count != 2 {
+		t.Fatalf("count = %d, want both rows in the group", a.Count)
 	}
-	if a.UsageRows != 1 || a.Count != 2 {
-		t.Fatalf("usage coverage = %d/%d, want 1/2", a.UsageRows, a.Count)
+	if a.InputTokens != nil || a.OutputTokens != nil || a.CacheReadTokens != nil {
+		t.Fatalf("partial raw tokens = %+v, want unknown", a)
 	}
 }
 
