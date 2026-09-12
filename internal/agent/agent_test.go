@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -523,6 +524,179 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousBareJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "multiple bare JSON objects") {
 		t.Fatalf("expected multiple bare JSON objects error, got %v", err)
+	}
+}
+
+// reviewOutputTestSchema mirrors the review step's structured-output contract
+// (internal/pipeline/steps/common.go reviewFindingsSchema) for the fields the
+// parse-failure regressions below exercise.
+func reviewOutputTestSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"severity":{"type":"string","enum":["error","warning","info"]},
+					"file":{"type":"string"},
+					"line":{"type":"integer"},
+					"description":{"type":"string"},
+					"action":{"type":"string","enum":["no-op","auto-fix","ask-user"]},
+					"review_scope":{"type":"string","enum":["source","pipeline-owned-delivery","external-delivery"]}
+				},
+				"required":["severity","description","action","review_scope"]
+			}},
+			"risk_level":{"type":"string","enum":["low","medium","high"]},
+			"risk_rationale":{"type":"string"},
+			"risk_scope":{"type":"string","enum":["source-or-external","pipeline-owned-delivery"]}
+		},
+		"required":["findings","risk_level","risk_rationale","risk_scope"]
+	}`)
+}
+
+func readAgentTestdata(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read testdata %s: %v", name, err)
+	}
+	return string(data)
+}
+
+func TestFinalizeTextResult_ToleratesTrailingProviderResidue(t *testing.T) {
+	// Regression: run 01M25W667HT9M14CBN0S05K8PC (review-fix). The model emitted a
+	// complete, schema-valid object and then stray closing DeepSeek tool-call
+	// delimiters that never open a call, so the residue landed in the assistant
+	// content text. The whole step used to fail as
+	// "invalid character '<' after top-level value".
+	text := readAgentTestdata(t, "structured_output_trailing_residue.txt")
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	result, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "fix open badge contrast and merge_method type guard" {
+		t.Errorf("expected summary preserved, got %v", output["summary"])
+	}
+}
+
+func TestFinalizeTextResult_FusesAdjacentSplitObjects(t *testing.T) {
+	// Regression: run 01M25WKCT6QYCFCJCNQ0M7ZS1G (review round 3). The model split
+	// one structured answer across two adjacent top-level objects, so each half
+	// failed validation alone ("missing required field \"risk_level\"") while the
+	// union satisfies the schema.
+	text := readAgentTestdata(t, "structured_output_split_objects.txt")
+	result, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["risk_level"] != "low" {
+		t.Errorf("expected risk_level=low, got %v", output["risk_level"])
+	}
+	findings, ok := output["findings"].([]any)
+	if !ok || len(findings) != 1 {
+		t.Fatalf("expected one finding, got %v", output["findings"])
+	}
+}
+
+func TestFinalizeTextResult_FusesCommaSeparatedSplitObjects(t *testing.T) {
+	// The split can arrive with a comma between the halves rather than only
+	// whitespace; it is still one answer, not two statements, so the halves must
+	// fuse into the schema-valid union.
+	text := `{"findings":[]},
+{"risk_level":"low","risk_rationale":"r","risk_scope":"source-or-external"}`
+	result, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["risk_level"] != "low" {
+		t.Errorf("expected risk_level=low, got %v", output["risk_level"])
+	}
+}
+
+func TestFinalizeTextResult_UnfusedSplitObjectsReturnDedicatedRetryableError(t *testing.T) {
+	// A concluding split pair whose union is still not schema-valid must fail
+	// with its own dedicated error instead of the generic schema error, so the
+	// retry classifier gives the step a fresh turn rather than killing the run.
+	text := `{"findings":[]},{"risk_level":"low"}`
+	_, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{})
+	if !errors.Is(err, errSplitBareObjects) {
+		t.Fatalf("expected errSplitBareObjects, got %v", err)
+	}
+	if _, retry := classifyTransient(err); !retry {
+		t.Fatalf("expected the unfused split error to be retryable, got %v", err)
+	}
+}
+
+func TestFinalizeTextResult_RejectsAdjacentObjectsWithDuplicateKeys(t *testing.T) {
+	// Fusion must never let two competing verdicts combine; a repeated key is
+	// the signal that they are alternatives, not two halves of one answer. The
+	// union here would satisfy the schema if the duplicate risk_level were
+	// merged (last wins), so accepting it is the failure this guards. Competing
+	// values stay terminal: they must not reach the retryable split error.
+	text := `{"findings":[{"id":"F1"}],"risk_level":"low"}{"risk_level":"high","risk_rationale":"r","risk_scope":"source"}`
+	schema := json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"findings":{"type":"array"},
+			"risk_level":{"type":"string"},
+			"risk_rationale":{"type":"string"},
+			"risk_scope":{"type":"string"}
+		},
+		"required":["findings","risk_level","risk_rationale","risk_scope"]
+	}`)
+	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected duplicate-key objects to be rejected")
+	}
+	if errors.Is(err, errSplitBareObjects) {
+		t.Fatalf("duplicate-key objects must not use the retryable split error, got %v", err)
+	}
+	if _, retry := classifyTransient(err); retry {
+		t.Fatalf("competing duplicate-key objects must stay terminal, got retryable: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_RejectsMarkupProseAfterBareJSON(t *testing.T) {
+	// Regression for Greptile P1: a token that merely contains both '<' and '>'
+	// is not provider residue. Markup wrapping real words is prose, so the object
+	// before it is not the conclusion of the answer and the parse must fail.
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	for _, text := range []string{
+		`{"summary":"done"}<b>note</b>`,
+		`{"summary":"done"} <b>note</b>`,
+		`{"summary":"done"} 1<2>0`,
+		`{"summary":"done"}<b>note</b></invoke>`,
+	} {
+		if _, err := finalizeTextResult("pi", text, schema, TokenUsage{}); err == nil {
+			t.Fatalf("expected markup prose after the object to be rejected: %q", text)
+		}
+	}
+}
+
+func TestFinalizeTextResult_RejectsFusableObjectsFollowedByProse(t *testing.T) {
+	// Only a concluding run of objects is a verdict: a fusable pair quoted
+	// mid-output and followed by substantive prose must not be returned as the
+	// answer while the prose after it is ignored.
+	text := `I will answer with:
+{"findings":[]}
+{"risk_level":"low","risk_rationale":"r","risk_scope":"source-or-external"}
+Now let me actually read the diff:`
+	if _, err := finalizeTextResult("pi", text, reviewOutputTestSchema(), TokenUsage{}); err == nil {
+		t.Fatal("expected objects followed by substantive prose to be rejected")
 	}
 }
 
