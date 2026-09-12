@@ -190,6 +190,128 @@ func TestExecutor_RestartsValidationFromRequestedStep(t *testing.T) {
 	}
 }
 
+func TestExecutor_OrdinaryRestartPreservesSkippedDestination(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+
+	testCalls := 0
+	testStep := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		testCalls++
+		return &StepOutcome{}, nil
+	}}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(*StepContext) (*StepOutcome, error) {
+		ciCalls++
+		if ciCalls == 1 {
+			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{
+		newPassStep(types.StepReview),
+		testStep,
+		ci,
+	}, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepReview})
+
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if testCalls != 2 || ciCalls != 2 {
+		t.Fatalf("ordinary revalidation calls: test=%d ci=%d, want 2 each", testCalls, ciCalls)
+	}
+}
+
+func TestExecutor_ResumeOrdinaryRestartPreservesSkippedDestination(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	reviewResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(reviewResult.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	testResult, err := database.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(testResult.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	ciResult, err := database.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(ciResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"ci-1","severity":"error","description":"repair","action":"auto-fix"}],"summary":"CI finding"}`
+	if err := database.SetStepFindings(ciResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepRound(ciResult.ID, 1, "initial", &findings, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(ciResult.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testCalls := 0
+	testStep := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		testCalls++
+		return &StepOutcome{}, nil
+	}}
+	ciCalls := 0
+	ci := &adaptiveCallStep{name: types.StepCI, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		ciCalls++
+		if ciCalls == 1 {
+			if !sctx.Fixing {
+				t.Error("selected CI repair did not run in fix mode")
+			}
+			return &StepOutcome{RestartFrom: types.StepReview}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{
+		newPassStep(types.StepReview),
+		testStep,
+		ci,
+	}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepCI, types.ActionFix, []string{"ci-1"}); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("recovered CI gate never accepted a fix: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+	if testCalls != 1 || ciCalls != 2 {
+		t.Fatalf("resumed ordinary revalidation calls: test=%d ci=%d, want 1 and 2", testCalls, ciCalls)
+	}
+	result, err := database.GetStepResult(reviewResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != types.StepStatusSkipped {
+		t.Fatalf("review status = %s, want %s", result.Status, types.StepStatusSkipped)
+	}
+}
+
 func TestExecutor_RevalidationGateRemainsRecoverable(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

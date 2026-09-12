@@ -262,7 +262,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			break
 		}
 		if restartFrom != "" {
-			restartIndex, err := e.prepareRestart(run.ID, restartFrom, i)
+			restartIndex, err := e.prepareRestart(run.ID, restartFrom, i, nextRepair != nil)
 			if err != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", step.Name(), restartFrom, err), ctx)
 			}
@@ -288,20 +288,22 @@ func (e *Executor) stepIndex(name types.StepName) (int, error) {
 	return 0, fmt.Errorf("step %s is not in the pipeline", name)
 }
 
-func (e *Executor) prepareRestart(runID string, name types.StepName, currentIndex int) (int, error) {
+func (e *Executor) prepareRestart(runID string, name types.StepName, currentIndex int, routedRepair bool) (int, error) {
 	index, err := e.stepIndex(name)
 	if err != nil || index >= currentIndex {
 		return 0, fmt.Errorf("invalid restart boundary")
 	}
-	if e.skips[name] {
-		return 0, fmt.Errorf("restart destination %s is skipped", name)
-	}
-	results, err := e.db.GetStepsByRun(runID)
-	if err != nil {
-		return 0, fmt.Errorf("load restart destination: %w", err)
-	}
-	if index >= len(results) || results[index].StepName != name || results[index].Status == types.StepStatusSkipped {
-		return 0, fmt.Errorf("restart destination %s is skipped or unavailable", name)
+	if routedRepair {
+		if e.skips[name] {
+			return 0, fmt.Errorf("restart destination %s is skipped", name)
+		}
+		results, err := e.db.GetStepsByRun(runID)
+		if err != nil {
+			return 0, fmt.Errorf("load restart destination: %w", err)
+		}
+		if index >= len(results) || results[index].StepName != name || results[index].Status == types.StepStatusSkipped {
+			return 0, fmt.Errorf("restart destination %s is skipped or unavailable", name)
+		}
 	}
 	if err := e.db.ResetStepsFrom(runID, e.steps[index].Name().Order()); err != nil {
 		return 0, err
@@ -571,7 +573,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.skipRecoveredRemainder(run, repo, gate.index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
+			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index, routedRepair != nil)
 			if indexErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", gate.step.Name(), restartFrom, indexErr), ctx)
 			}
@@ -683,7 +685,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.skipRecoveredRemainder(run, repo, index+1)
 		}
 		if restartFrom != "" {
-			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
+			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index, nextRepair != nil)
 			if indexErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", e.steps[index].Name(), restartFrom, indexErr), ctx)
 			}
