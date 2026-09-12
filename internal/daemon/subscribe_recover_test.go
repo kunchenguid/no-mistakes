@@ -255,20 +255,29 @@ func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for the run to complete by polling get_run.
-	deadline := time.After(10 * time.Second)
-	for {
-		var result ipc.GetRunResult
-		if err := client.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: pushResult.RunID}, &result); err != nil {
-			t.Fatal(err)
-		}
-		if result.Run != nil && (result.Run.Status == types.RunCompleted || result.Run.Status == types.RunFailed || result.Run.Status == types.RunCancelled) {
-			break
-		}
+	// Wait until the run is completed *for subscription purposes*, which is
+	// what this test's precondition needs. get_run cannot answer that: the
+	// executor writes the terminal status, and only afterwards does the run
+	// goroutine finish its post-run housekeeping and close the run's
+	// subscribers. Subscribing inside that window still registers a live
+	// mailbox, so the stream stays open until housekeeping ends - on Windows,
+	// longer than the close budget below.
+	//
+	// A subscription's own close is the daemon's signal for exactly this, so
+	// drain one to the end first. Both orderings are safe: if the run is
+	// already done, this subscription yields its gap and closes immediately.
+	warmup, cancelWarmup, err := ipc.Subscribe(p.Socket(), &ipc.SubscribeParams{RunID: pushResult.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelWarmup()
+	deadline := time.After(60 * time.Second)
+	for draining := true; draining; {
 		select {
+		case _, ok := <-warmup:
+			draining = ok
 		case <-deadline:
 			t.Fatal("run did not complete in time")
-		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
