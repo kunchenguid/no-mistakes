@@ -143,7 +143,7 @@ agent: [codex, grok]
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
 After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
-If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
+If a pipeline invocation fails before the selected adapter reports that its prompt may have been delivered, no-mistakes may retry it with the next available fallback. Once an adapter reports possible prompt delivery, the error is terminal at the adapter retry and fallback layers; in particular, acpx command or process failures after startup never move to another configured agent.
 Fallback candidates share the invocation's existing bounded context and use only its remaining time; once that context expires or is cancelled, no further candidate is announced or started.
 Structured findings and schema/output validation problems do not trigger fallback.
 
