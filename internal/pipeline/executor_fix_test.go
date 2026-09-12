@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -375,6 +376,283 @@ func TestDocumentRepair_ExecutorRoutesSelectedCodeFix(t *testing.T) {
 	}
 	if len(deferred.Items) != 1 || deferred.Items[0].ID != "document-2" {
 		t.Fatalf("deferred findings = %#v, want the unselected finding", deferred.Items)
+	}
+}
+
+func TestDocumentRepair_RoutedReviewPreservesAutoFixBudget(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	findings := `{"findings":[{"id":"document-1","severity":"error","description":"repair source","action":"auto-fix"}],"summary":"document finding"}`
+	autoFix := `{"findings":[{"id":"review-1","severity":"error","description":"repair","action":"auto-fix"}],"summary":"review finding"}`
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		switch reviewCalls {
+		case 1:
+			return &StepOutcome{AutoFixable: true, Findings: autoFix}, nil
+		case 2:
+			if !sctx.Fixing {
+				t.Error("initial review auto-fix did not run in fix mode")
+			}
+			return &StepOutcome{}, nil
+		case 3:
+			if !sctx.Fixing {
+				t.Error("routed review repair did not run in fix mode")
+			}
+			return &StepOutcome{AutoFixable: true, Findings: autoFix}, nil
+		default:
+			t.Errorf("review ran %d times; routed repair must not exceed its prior auto-fix budget", reviewCalls)
+			return &StepOutcome{}, nil
+		}
+	}}
+	documentCalls := 0
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		documentCalls++
+		switch documentCalls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, Findings: findings}, nil
+		case 2:
+			if !sctx.Fixing {
+				t.Error("selected document repair did not run in fix mode")
+			}
+			return &StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
+		default:
+			return &StepOutcome{}, nil
+		}
+	}}
+
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 1}}, nil, []Step{review, document}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+
+	waitForStepStatus(t, database, run.ID, types.StepDocument, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepDocument, types.ActionFix, []string{"document-1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+
+	if reviewCalls != 3 {
+		t.Fatalf("review calls = %d, want 3", reviewCalls)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := database.GetRoundsByStep(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 3 || rounds[0].Round != 1 || rounds[1].Round != 2 || rounds[2].Round != 3 {
+		t.Fatalf("review rounds = %#v, want sequential rounds 1, 2, 3", rounds)
+	}
+}
+
+func TestDocumentRepair_RoutedReviewGateCanResume(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	documentFindings := `{"findings":[{"id":"document-1","severity":"error","description":"repair source","action":"auto-fix"}],"summary":"document finding"}`
+	reviewFindings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs approval","action":"ask-user"}],"summary":"review finding"}`
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		switch reviewCalls {
+		case 1:
+			return &StepOutcome{ReviewApprovedHeadSHA: "1111111111111111111111111111111111111111"}, nil
+		case 2:
+			if !sctx.Fixing {
+				t.Error("routed review repair did not run in fix mode")
+			}
+			return &StepOutcome{NeedsApproval: true, Findings: reviewFindings, ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
+		default:
+			t.Errorf("review reran after its parked repair gate: call %d", reviewCalls)
+			return &StepOutcome{}, nil
+		}
+	}}
+	documentCalls := 0
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		documentCalls++
+		switch documentCalls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, Findings: documentFindings}, nil
+		case 2:
+			return &StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
+		default:
+			return &StepOutcome{}, nil
+		}
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{review, document}, nil)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(ctx, run, repo, workDir) }()
+
+	waitForStepStatus(t, database, run.ID, types.StepDocument, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepDocument, types.ActionFix, []string{"document-1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].StartedAt == nil {
+		t.Fatal("routed review gate has no started_at timestamp")
+	}
+	cancel(ErrDaemonShutdown)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRunSuspended) {
+			t.Fatalf("Execute() error = %v, want suspended run", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor did not suspend parked routed review")
+	}
+
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec = NewExecutor(database, p, nil, nil, []Step{review, document}, nil)
+	done = make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, workDir) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("resumed routed review never accepted approval: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+}
+
+func TestDocumentRepair_RejectsSkippedReviewDestination(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	findings := `{"findings":[{"id":"document-1","severity":"error","description":"repair source","action":"auto-fix"}],"summary":"document finding"}`
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		return &StepOutcome{}, nil
+	}}
+	documentCalls := 0
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(*StepContext) (*StepOutcome, error) {
+		documentCalls++
+		switch documentCalls {
+		case 1:
+			return &StepOutcome{NeedsApproval: true, Findings: findings}, nil
+		case 2:
+			return &StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
+		default:
+			return &StepOutcome{}, nil
+		}
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{review, document}, nil)
+	exec.SetSkippedSteps([]types.StepName{types.StepReview})
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+
+	waitForStepStatus(t, database, run.ID, types.StepDocument, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepDocument, types.ActionFix, []string{"document-1"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "restart destination review is skipped") {
+			t.Fatalf("Execute() error = %v, want skipped review destination refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor did not reject a skipped review destination")
+	}
+	if reviewCalls != 0 {
+		t.Fatalf("skipped review executed %d times", reviewCalls)
+	}
+	if documentCalls != 2 {
+		t.Fatalf("document calls = %d, want no re-entry after refused route", documentCalls)
+	}
+}
+
+func TestDocumentRepair_ResumeRejectsDurablySkippedReviewDestination(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	reviewResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(reviewResult.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	documentResult, err := database.InsertStepResult(run.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(documentResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"document-1","severity":"error","description":"repair source","action":"auto-fix"}],"summary":"document finding"}`
+	if err := database.SetStepFindings(documentResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepRound(documentResult.ID, 1, "initial", &findings, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(documentResult.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reviewCalls := 0
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		reviewCalls++
+		return &StepOutcome{}, nil
+	}}
+	documentCalls := 0
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		documentCalls++
+		if !sctx.Fixing {
+			t.Error("durably skipped route re-entered document instead of refusing")
+		}
+		return &StepOutcome{RestartFrom: types.StepReview, RepairStep: types.StepReview}, nil
+	}}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{review, document}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, t.TempDir()) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepDocument, types.ActionFix, []string{"document-1"}); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("recovered document gate never accepted a fix: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "restart destination review is skipped or unavailable") {
+			t.Fatalf("Resume() error = %v, want durable skipped review destination refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor did not reject a durably skipped review destination")
+	}
+	if reviewCalls != 0 {
+		t.Fatalf("durably skipped review executed %d times", reviewCalls)
+	}
+	if documentCalls != 1 {
+		t.Fatalf("document calls = %d, want only the selected repair", documentCalls)
 	}
 }
 

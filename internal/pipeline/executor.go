@@ -243,7 +243,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", step.Name(), err), ctx)
 		}
 		if routedRepair != nil && routedRepair.step == step.Name() {
-			state = routedRepair.state
+			state = mergeRoutedRepairState(state, routedRepair)
 			routedRepair = nil
 		}
 		skipRemaining, restartFrom, nextRepair, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, state)
@@ -264,7 +264,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		if restartFrom != "" {
 			restartIndex, err := e.prepareRestart(run.ID, restartFrom, i)
 			if err != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", step.Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", step.Name(), restartFrom, err), ctx)
 			}
 			routedRepair = nextRepair
 			i = restartIndex - 1
@@ -293,6 +293,16 @@ func (e *Executor) prepareRestart(runID string, name types.StepName, currentInde
 	if err != nil || index >= currentIndex {
 		return 0, fmt.Errorf("invalid restart boundary")
 	}
+	if e.skips[name] {
+		return 0, fmt.Errorf("restart destination %s is skipped", name)
+	}
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return 0, fmt.Errorf("load restart destination: %w", err)
+	}
+	if index >= len(results) || results[index].StepName != name || results[index].Status == types.StepStatusSkipped {
+		return 0, fmt.Errorf("restart destination %s is skipped or unavailable", name)
+	}
 	if err := e.db.ResetStepsFrom(runID, e.steps[index].Name().Order()); err != nil {
 		return 0, err
 	}
@@ -319,6 +329,21 @@ type stepExecutionState struct {
 type restartRepair struct {
 	step  types.StepName
 	state stepExecutionState
+}
+
+// mergeRoutedRepairState carries the source gate's selected repair into the
+// target step without replacing the target's durable round history. The
+// target's round number and auto-fix count limit future work; the routed
+// fields only describe the repair that must run now.
+func mergeRoutedRepairState(target stepExecutionState, repair *restartRepair) stepExecutionState {
+	if repair == nil {
+		return target
+	}
+	target.fixing = repair.state.fixing
+	target.startFixRound = repair.state.startFixRound
+	target.previousFindings = repair.state.previousFindings
+	target.deferredFindings = repair.state.deferredFindings
+	return target
 }
 
 func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionState, error) {
@@ -548,7 +573,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, gate.index)
 			if indexErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", gate.step.Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", gate.step.Name(), restartFrom, indexErr), ctx)
 			}
 			return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, restartIndex, true, routedRepair)
 		}
@@ -647,7 +672,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 			return e.failRun(run, repo, fmt.Errorf("restore step %s execution state: %w", e.steps[index].Name(), stateErr), ctx)
 		}
 		if routedRepair != nil && routedRepair.step == e.steps[index].Name() {
-			state = routedRepair.state
+			state = mergeRoutedRepairState(state, routedRepair)
 			routedRepair = nil
 		}
 		skipRemaining, restartFrom, nextRepair, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, state)
@@ -660,7 +685,7 @@ func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, r
 		if restartFrom != "" {
 			restartIndex, indexErr := e.prepareRestart(run.ID, restartFrom, index)
 			if indexErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s", e.steps[index].Name(), restartFrom), ctx)
+				return e.failRun(run, repo, fmt.Errorf("step %s requested invalid restart from %s: %w", e.steps[index].Name(), restartFrom, indexErr), ctx)
 			}
 			revalidating = true
 			routedRepair = nextRepair
