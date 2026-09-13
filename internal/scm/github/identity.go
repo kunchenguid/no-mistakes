@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // parseDiscoveredPRURL keeps the strict URL parser as the ordinary path and
@@ -139,7 +140,11 @@ func readRepositoryIdentity(ctx context.Context, cmd CmdFactory, host, slug stri
 		return repositoryIdentity{}, errors.New("invalid GitHub repository identity selector")
 	}
 	endpoint := "repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
-	out, err := cmd(ctx, "gh", "api", "--hostname", host, endpoint).Output()
+	command := cmd(ctx, "gh", "api", "--hostname", host, endpoint)
+	// Keep setup and execution together: Windows children start suspended
+	// until the shell-command runner assigns their job and resumes them.
+	shellenv.ConfigureShellCommand(command)
+	out, err := shellenv.OutputShellCommand(command)
 	if err != nil {
 		// Provider output is deliberately omitted: authentication errors can
 		// contain private response data or credential-adjacent diagnostics.

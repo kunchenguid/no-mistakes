@@ -240,9 +240,11 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 			t.Logf("CLI output: %sIPC request: %v", out.String(), params)
 			if !dirty {
 				// Exercise AXI's real no-op Git push and rerun fallback too.
+				// Omit incidental push options: Git's no-op receive-pack can
+				// exit before the options flush, racing into SIGPIPE. Intent
+				// forwarding is asserted above; this path checks caller heads.
 				gateDir := p.RepoDir(repo.ID)
 				cliGit(t, dir, "clone", "--bare", dir, gateDir)
-				cliGit(t, gateDir, "config", "receive.advertisePushOptions", "true")
 				cliGit(t, dir, "remote", "add", gate.RemoteName, gateDir)
 				client, err := ipc.Dial(p.Socket())
 				if err != nil {
@@ -252,7 +254,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 				env := &axiEnv{p: p, d: d, repo: repo, cfg: config.DefaultGlobalConfig(), client: client}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				runID, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", "")
+				runID, err := triggerRun(ctx, env, "main", nil, "", "")
 				if err != nil || runID != "rerun-1" {
 					t.Fatalf("no-op push fallback: run=%s err=%v", runID, err)
 				}
@@ -273,7 +275,7 @@ func TestRerunSendsOnlyCleanCallerHead(t *testing.T) {
 						}
 						ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 						defer cancel()
-						if _, err := triggerRun(ctx, env, "main", nil, "keep the caller's changes", ""); err != nil {
+						if _, err := triggerRun(ctx, env, "main", nil, "", ""); err != nil {
 							t.Fatal(err)
 						}
 						params := <-requests

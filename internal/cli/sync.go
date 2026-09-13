@@ -16,7 +16,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
@@ -181,7 +180,6 @@ func repositoryRenameVerifier(cfg *config.GlobalConfig, repo *db.Repo, workDir s
 			if forgeCtx != nil {
 				cmd.Env = forgeCtx.Environment.Apply(nil)
 			}
-			shellenv.ConfigureShellCommand(cmd)
 			return cmd
 		}
 		return github.VerifyRepositoryRename(ctx, cmdFactory, previousTarget, currentTarget)
