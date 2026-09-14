@@ -97,18 +97,18 @@ func TestTestStep_VerifyApprovalOverride_PassingCommandLeavesNoMark(t *testing.T
 	}
 }
 
-func TestTestStep_VerifyApprovalOverride_NoConfiguredCommand(t *testing.T) {
+func TestTestStep_VerifyApprovalOverride_ConfigRemovedAfterFailureStillMarksOverride(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	persistTestStepFindings(t, sctx, 0, `{"findings":[{"severity":"error","description":"scenario failed"}]}`)
+	persistTestStepFindings(t, sctx, 7, `{"findings":[{"severity":"error","category":"test-command","description":"configured test command failed with exit code 7"}]}`)
 
 	unresolved, err := (&TestStep{}).VerifyApprovalOverride(sctx)
 	if err != nil {
 		t.Fatalf("VerifyApprovalOverride() error = %v", err)
 	}
-	if unresolved != "" {
-		t.Fatalf("unresolved = %q, want \"\" when no commands.test is configured", unresolved)
+	if unresolved != "configured test command failed with exit code 7" {
+		t.Fatalf("unresolved = %q, want persisted configured-command failure", unresolved)
 	}
 }
 

@@ -530,8 +530,8 @@ func testAgentError(ctx context.Context, timeout time.Duration, prefix string, e
 // configured command, or whose command passed and parked for another reason,
 // returns "" so the executor records an ordinary completion.
 func (s *TestStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
-	if sctx == nil || sctx.Config == nil || strings.TrimSpace(sctx.Config.Commands.Test) == "" {
-		return "", nil
+	if sctx == nil {
+		return "could not verify configured test command: step context is not available", nil
 	}
 	if err := sctx.Ctx.Err(); err != nil {
 		return "", err
