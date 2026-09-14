@@ -176,8 +176,12 @@ func TestExecutor_ApprovalOverride_RecoveredPathStillFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	step := newOverrideVerifyingApprovalStep(types.StepCI, findings, func(*StepContext) (string, error) {
-		return "live checks for https://example/pr/1 still failing: required-check", nil
+	wantReason := "live checks for https://example/pr/1 still failing: required-check"
+	step := newOverrideVerifyingApprovalStep(types.StepCI, findings, func(sctx *StepContext) (string, error) {
+		if sctx.StepResultID != stepResult.ID {
+			return "wrong recovered step result: " + sctx.StepResultID, nil
+		}
+		return wantReason, nil
 	})
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
 
@@ -226,8 +230,11 @@ func TestExecutor_ApprovalOverride_RecoveredPathStillFailing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reread.OverrideReason == nil || *reread.OverrideReason == "" {
+	if reread.OverrideReason == nil {
 		t.Fatal("recovered-path OverrideReason = nil, want the still-unresolved reason recorded and durable")
+	}
+	if *reread.OverrideReason != wantReason {
+		t.Fatalf("recovered-path OverrideReason = %q, want %q", *reread.OverrideReason, wantReason)
 	}
 }
 

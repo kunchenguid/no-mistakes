@@ -66,10 +66,9 @@ type pipelineAttestation struct {
 type pipelineAttestationStep struct {
 	Step   types.StepName   `json:"step"`
 	Status types.StepStatus `json:"status"`
-	// OverrideReason is the durable marker that this step was approved over
-	// an unresolved condition (CI's still-failing checks, or Test's failing
-	// configured commands.test). Omitted for ordinary completions and for
-	// attestations that predate the field.
+	// OverrideReason is the durable marker that the Test step was approved over
+	// a failing configured commands.test. Omitted for every other step, ordinary
+	// Test completions, and attestations that predate the field.
 	OverrideReason string `json:"override_reason,omitempty"`
 }
 
@@ -204,7 +203,7 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 			Step:   sr.StepName,
 			Status: sr.Status,
 		}
-		if sr.OverrideReason != nil {
+		if sr.StepName == types.StepTest && sr.OverrideReason != nil {
 			item.OverrideReason = strings.TrimSpace(*sr.OverrideReason)
 		}
 		attestation.Steps = append(attestation.Steps, item)
@@ -307,8 +306,10 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 		steps = make([]*db.StepResult, 0, len(attestation.Steps))
 		for _, s := range attestation.Steps {
 			sr := &db.StepResult{StepName: s.Step, Status: s.Status}
-			if reason := strings.TrimSpace(s.OverrideReason); reason != "" {
-				sr.OverrideReason = &reason
+			if s.Step == types.StepTest {
+				if reason := strings.TrimSpace(s.OverrideReason); reason != "" {
+					sr.OverrideReason = &reason
+				}
 			}
 			steps = append(steps, sr)
 		}

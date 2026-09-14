@@ -68,7 +68,7 @@ func TestTestStep_VerifyApprovalOverride_PassingCommandLeavesNoMark(t *testing.T
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 		return &agent.Result{Output: json.RawMessage(`{
-  "findings": [{"severity":"error","description":"scenario failed","action":"ask-user"}],
+  "findings": [{"severity":"error","description":"configured test command failed with exit code 9","action":"ask-user"}],
   "summary": "live scenario failed",
   "tested": ["npm run e2e -- checkout"],
   "testing_summary": "drove checkout",

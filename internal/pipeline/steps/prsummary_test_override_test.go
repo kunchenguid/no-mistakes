@@ -13,11 +13,13 @@ import (
 func TestBuildPipelineAttestation_CarriesTestCommandOverride(t *testing.T) {
 	t.Parallel()
 	reason := "configured test command failed with exit code 7"
+	ciReason := "live checks still failing"
 	allow := "legacy suite is red on purpose"
 	steps := []*db.StepResult{
 		{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{ID: "test", StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: &reason},
 		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusCompleted},
+		{ID: "ci", StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: &ciReason},
 	}
 
 	md, _ := buildPipelineSummaryFor(steps, nil, testPipelineHeadSHA, scm.ProviderUnknown, pipelineAttestationPolicy{
@@ -29,7 +31,9 @@ func TestBuildPipelineAttestation_CarriesTestCommandOverride(t *testing.T) {
 	for _, item := range attestation.Steps {
 		if item.Step == types.StepTest {
 			testStep = item
-			break
+		}
+		if item.Step == types.StepCI && item.OverrideReason != "" {
+			t.Fatalf("CI override_reason must not be attested: %+v", item)
 		}
 	}
 	if testStep.Status != types.StepStatusCompleted {

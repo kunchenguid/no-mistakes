@@ -398,6 +398,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		Config:       e.config,
 		ForgeContext: e.forge,
 		DB:           e.db,
+		StepResultID: gate.stepResult.ID,
 		Agent:        e.agent,
 		Sessions:     e.sessions,
 		Shared:       e.shared,

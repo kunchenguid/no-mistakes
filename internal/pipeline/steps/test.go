@@ -565,10 +565,6 @@ func configuredTestCommandOverrideReason(findings types.Findings) string {
 			}
 			return "configured test command failed"
 		}
-		desc := strings.TrimSpace(item.Description)
-		if strings.HasPrefix(desc, "configured test command failed") || strings.HasPrefix(desc, "tests failed with exit code") {
-			return desc
-		}
 	}
 	return ""
 }
