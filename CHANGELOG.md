@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.75.3](https://github.com/kunchenguid/no-mistakes/compare/v1.75.2...v1.75.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* **deps:** bump golang.org/x/text to v0.41.0 for CVE-2026-56852 ([#1073](https://github.com/kunchenguid/no-mistakes/issues/1073)) ([5173f42](https://github.com/kunchenguid/no-mistakes/commit/5173f42a9ef958f44476f7d7aac1d95815681fc5)), closes [#903](https://github.com/kunchenguid/no-mistakes/issues/903)
+* discover existing Azure DevOps PRs without repository webUrl ([#1076](https://github.com/kunchenguid/no-mistakes/issues/1076)) ([0eb367c](https://github.com/kunchenguid/no-mistakes/commit/0eb367ce8ec1b6f9f23bf5a42f5b7a23d8339c31)), closes [#1042](https://github.com/kunchenguid/no-mistakes/issues/1042)
+
 ## [1.75.2](https://github.com/kunchenguid/no-mistakes/compare/v1.75.1...v1.75.2) (2026-09-14)
 
 
