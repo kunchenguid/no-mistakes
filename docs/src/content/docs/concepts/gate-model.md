@@ -110,15 +110,22 @@ patch-ID or tree-survival proof. This narrow policy exception permits reviewed
 rebases and conflict resolutions to change the submitted patch. Ownership is
 not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
-Fresh AXI submissions do not receive this exception.
+
+A separate custody-return exception keeps branch-sync guidance executable. Once
+recovery has preserved a terminal run's verified unpublished head and durably
+returned custody, the next fresh AXI submission may archive that exact
+`Run.HeadSHA` if it still occupies the gate branch. This does not authorize an
+unstamped run, another recorded head, or a gate ref that changed after recovery;
+those cases still require content-preservation proof or refuse. Both ordinary
+and nonce-bound AXI launches use this reconciliation path.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
-unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit. An ancestor already
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside the two exact-head
+exceptions above, unproven private content refuses before upstream publication,
+leaves the private branch untouched, and names every at-risk commit. An ancestor already
 supports an ordinary fast-forward. A gate head that is a newer descendant of
 the published head stays untouched, including through the detached worktree's
 shared branch refs.
@@ -132,9 +139,10 @@ separate ref storage retain their local branch bookkeeping.
 Publication plans reconciliation before pushing and applies it only after
 verifying the upstream head. If mirror settlement then fails or is cancelled,
 it restores the archived branch when no intervening ref has appeared, so a
-retry can still resolve the branch. AXI reconciles before its ordinary submission
-push and restores an archived ref after a failed submission if no intervening
-ref has appeared. Neither path forces the private mirror.
+retry can still resolve the branch. AXI reconciles before ordinary and
+nonce-bound submission pushes and restores an archived ref after a failed
+submission if no intervening ref has appeared. Neither path forces the private
+mirror.
 
 ### Daemon
 
