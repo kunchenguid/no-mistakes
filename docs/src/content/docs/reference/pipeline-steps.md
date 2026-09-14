@@ -180,6 +180,7 @@ Updates matching documentation for code changes and reports only unresolved gaps
 - Returns findings only for unresolved documentation gaps or human judgment calls
 - Requires approval whenever any unresolved documentation finding is returned, including `info` findings
 - Bounds the documentation (and combined housekeeping) agent with [`agent_timeout`](/no-mistakes/reference/global-config/#agent_timeout): an expired budget cancels the agent and fails the step with a timeout diagnostic rather than leaving the run active indefinitely
+- Reruns the pass with the validation error appended when the agent's final JSON fails the schema, up to three attempts, so a formatting slip does not fail a run whose answer was otherwise readable; findings come only from the attempt that validates, and the agent's edits are committed once the attempts settle
 
 **Auto-fix:** documentation fixes happen during the initial document pass. Unresolved findings pause for approval instead of starting another automatic document/fix loop. If you manually trigger a fix from the TUI or AXI interface, the agent receives the selected previous findings plus any per-finding user notes, any selected user-authored findings, and the shared [finding decision history](#finding-decision-history).
 

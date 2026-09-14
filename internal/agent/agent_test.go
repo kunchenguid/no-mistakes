@@ -1277,3 +1277,41 @@ func TestFinalizeTextResult_ProseWithNonJSONFenceReturnsEndedWithProseError(t *t
 		t.Fatalf("expected ended with prose error, got: %v", err)
 	}
 }
+
+// TestFinalizeTextResult_TopLevelFindingsArrayReportsItsShape pins the
+// diagnosis for a model that answers the findings contract with the findings
+// list alone. The whole output is one JSON array, so the array's own type
+// error is authoritative; an element object scraped out of it must not
+// replace that with "missing required field findings".
+func TestFinalizeTextResult_TopLevelFindingsArrayReportsItsShape(t *testing.T) {
+	schema := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"findings": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {"severity": {"type": "string"}},
+					"required": ["severity"]
+				}
+			},
+			"summary": {"type": "string"}
+		},
+		"required": ["findings", "summary"]
+	}`)
+	text := `[{"severity":"info"},{"severity":"warning"}]`
+
+	_, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected schema validation error")
+	}
+	if !strings.Contains(err.Error(), "JSON output must be object (received array)") {
+		t.Fatalf("expected a shape error naming the received type, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "missing required field") {
+		t.Fatalf("a nested element object masked the whole-output shape error: %v", err)
+	}
+	if !IsStructuredOutputRejected(err) {
+		t.Fatalf("schema-invalid finalizer output was not classified as correctable: %v", err)
+	}
+}

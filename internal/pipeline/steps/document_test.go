@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -424,5 +425,113 @@ func TestDocumentStep_SuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
+	}
+}
+
+// TestDocumentStep_SchemaRejectionRerunsAndTakesTheValidAnswer is the
+// document half of the analyzer-retry contract the Review and Test steps
+// already carry: an answer whose final JSON fails validation is a formatting
+// slip, so the pass is rerun session-free against the same prompt plus the
+// validation error, and findings come only from the attempt that validates.
+func TestDocumentStep_SchemaRejectionRerunsAndTakesTheValidAnswer(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	const validation = `pi output parse: JSON output must be object (received array)`
+	calls := 0
+	ag := &mockAgent{
+		name: "pi",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			calls++
+			if calls == 1 {
+				return nil, rejectedStructuredOutputError{message: validation}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("a schema slip must rerun the document pass, not fail the step: %v", err)
+	}
+	if len(ag.calls) != 2 {
+		t.Fatalf("agent calls = %d, want the rejected pass plus one rerun", len(ag.calls))
+	}
+	if _, ok := strings.CutPrefix(ag.calls[1].Prompt, ag.calls[0].Prompt); !ok {
+		t.Fatalf("rerun prompt is not the original prompt plus a retry note:\n%s", ag.calls[1].Prompt)
+	}
+	if !strings.Contains(ag.calls[1].Prompt, validation) {
+		t.Fatalf("rerun prompt does not quote the validation error:\n%s", ag.calls[1].Prompt)
+	}
+	if outcome == nil || outcome.NeedsApproval {
+		t.Fatalf("outcome = %+v, want a clean documented outcome", outcome)
+	}
+	if got := lastCommitMessage(t, dir); !strings.Contains(got, "update README") {
+		t.Fatalf("last commit message = %q, want the validated summary", got)
+	}
+	if len(logs) == 0 || !strings.Contains(strings.Join(logs, "\n"), "rerunning") {
+		t.Fatalf("retry was not logged: %v", logs)
+	}
+}
+
+// TestDocumentStep_SchemaRejectionExhaustsAttemptsAndFailsClosed proves the
+// retry is bounded and that an unreadable answer still never passes.
+func TestDocumentStep_SchemaRejectionExhaustsAttemptsAndFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	const validation = `pi output parse: JSON output must be object (received array)`
+	calls := 0
+	ag := &mockAgent{
+		name: "pi",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			calls++
+			return nil, rejectedStructuredOutputError{message: validation}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), validation) {
+		t.Fatalf("Execute() error = %v, want the analyzer validation error", err)
+	}
+	if outcome != nil {
+		t.Fatalf("Execute() outcome = %+v, want no outcome", outcome)
+	}
+	if calls != documentAnalyzerMaxAttempts {
+		t.Fatalf("agent calls = %d, want %d", calls, documentAnalyzerMaxAttempts)
+	}
+}
+
+// TestDocumentStep_NonRejectionAgentErrorIsNotRetried keeps the retry scoped
+// to correctable schema slips: a hard agent failure returns at once.
+func TestDocumentStep_NonRejectionAgentErrorIsNotRetried(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "pi",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			calls++
+			return nil, errors.New("pi exited: signal: killed")
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "pi exited") {
+		t.Fatalf("Execute() error = %v, want the agent failure", err)
+	}
+	if calls != 1 {
+		t.Fatalf("agent calls = %d, want a hard agent failure to return at once", calls)
 	}
 }

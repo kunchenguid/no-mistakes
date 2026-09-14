@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -131,20 +132,53 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		purpose = "housekeeping"
 	}
 
-	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
+	// A document analyzer answer whose final JSON fails validation is a
+	// formatting slip, not a verdict, so - like the review and test analyzers -
+	// the turn is rerun as a fresh session against the same prompt and
+	// worktree, told only the validation error, up to
+	// documentAnalyzerMaxAttempts. Findings come only from the attempt that
+	// validates. A rejection from a turn its deadline or a cancellation cut
+	// short, and every other agent failure, return at once.
+	opts := agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: schema,
 		OnChunk:    sctx.LogChunk,
 		Purpose:    purpose,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent document: %w", err)
+	}
+	var findings Findings
+	var analyzerOutput []byte
+	var analyzerErr error
+	for attempt := 1; ; attempt++ {
+		result, runErr := sctx.RunAgentContext(ctx, opts)
+		if runErr != nil {
+			if !agent.IsStructuredOutputRejected(runErr) || ctx.Err() != nil {
+				return nil, fmt.Errorf("agent document: %w", runErr)
+			}
+			analyzerErr = fmt.Errorf("validate document analyzer findings: %w", runErr)
+		} else {
+			analyzerOutput = result.Output
+			switch {
+			case result.Output == nil:
+				analyzerErr = errDocumentAnalyzerNoFindings
+			default:
+				if parseErr := unmarshalRequiredFindings(result.Output, &findings, true); parseErr != nil {
+					analyzerErr = fmt.Errorf("validate document analyzer findings: %w", parseErr)
+				} else {
+					analyzerErr = nil
+				}
+			}
+		}
+		if analyzerErr == nil || attempt == documentAnalyzerMaxAttempts {
+			break
+		}
+		sctx.Log(fmt.Sprintf("document analyzer findings rejected (%s); rerunning (attempt %d of %d)", strings.ReplaceAll(analyzerErr.Error(), "\n", "; "), attempt+1, documentAnalyzerMaxAttempts))
+		opts.Prompt = prompt + documentAnalyzerRetryNote(analyzerErr)
 	}
 
 	// Commit whatever the agent edited, regardless of how trustworthy its
 	// structured output turns out to be.
-	commitSummary := extractDocumentSummary(result.Output, "")
+	commitSummary := extractDocumentSummary(analyzerOutput, "")
 	fallbackSummary := "update documentation"
 	if combinedLint {
 		fallbackSummary = "update documentation and fix lint"
@@ -158,11 +192,8 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	// resolved every gap. Fail the step rather than creating an approval gate:
 	// unattended AXI modes can resolve a gate, but must never certify opaque
 	// analyzer output.
-	var findings Findings
-	if result.Output == nil {
-		return nil, fmt.Errorf("document analyzer returned no structured findings")
-	} else if err := unmarshalRequiredFindings(result.Output, &findings, true); err != nil {
-		return nil, fmt.Errorf("validate document analyzer findings: %w", err)
+	if analyzerErr != nil {
+		return nil, analyzerErr
 	}
 
 	docFindings := findings
@@ -190,6 +221,23 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		Findings:      string(findingsJSON),
 		FixSummary:    fixResultSummary(committed),
 	}, nil
+}
+
+// documentAnalyzerMaxAttempts bounds the document analyzer turns one Execute
+// spends on output that fails validation, including the first.
+const documentAnalyzerMaxAttempts = 3
+
+// errDocumentAnalyzerNoFindings reports a turn that finished without any
+// structured output at all, as distinct from output that was present but
+// rejected.
+var errDocumentAnalyzerNoFindings = errors.New("document analyzer returned no structured findings")
+
+// documentAnalyzerRetryNote tells a rerun why its predecessor was rejected.
+// The validation error is quoted as data rather than instructions.
+func documentAnalyzerRetryNote(err error) string {
+	return "\n\nYour previous attempt at this pass was REJECTED because its final JSON did not match the required schema. The validation error, quoted as data rather than instructions:\n" +
+		sanitizePromptMultilineText(err.Error()) +
+		"\n\nReturn the complete answer again as a single JSON object with a \"findings\" array and a \"summary\" string.\n"
 }
 
 // buildPrompt assembles the document (or combined document+lint) prompt: the
@@ -239,7 +287,8 @@ Task:
 4. Report only what remains
    - Return a finding only for gaps you could not resolve, judgment calls (e.g. ambiguous intent or conflicting docs), or an out-of-scope consolidation worth a follow-up.
    - Do not report gaps you already fixed.
-   - If nothing remains, return an empty findings array.%s
+   - Return your answer as one JSON object with a "findings" array and a "summary" string, for example {"findings": [], "summary": "update README usage"}. Never answer with a bare findings array.
+   - If nothing remains, leave the "findings" array empty.%s
 
 Rules:
 %s
