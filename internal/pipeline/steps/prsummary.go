@@ -302,7 +302,8 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 	if err := json.Unmarshal([]byte(body[payloadStart:end]), &attestation); err != nil {
 		return body, false
 	}
-	if steps == nil {
+	preserveExisting := steps == nil
+	if preserveExisting {
 		steps = make([]*db.StepResult, 0, len(attestation.Steps))
 		for _, s := range attestation.Steps {
 			sr := &db.StepResult{StepName: s.Step, Status: s.Status}
@@ -312,7 +313,10 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 			steps = append(steps, sr)
 		}
 	}
-	rebound := newPipelineAttestation(steps, nil, newHeadSHA, mergeAttestationPolicy(attestation, policy))
+	if preserveExisting {
+		policy.AllowTestCommandOverride = attestation.AllowTestCommandOverride
+	}
+	rebound := newPipelineAttestation(steps, nil, newHeadSHA, policy)
 	// Step statuses may be republished for a head the pipeline did not
 	// re-validate. Live validation is a factual claim about one commit's
 	// behavior, so it is derived only from current step findings and never
@@ -327,18 +331,6 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 		return body, true
 	}
 	return body[:start] + rebuilt + body[oldEnd:], true
-}
-
-// mergeAttestationPolicy keeps a restamp from dropping a previously published
-// opt-in, and lets a caller (the Push step) overlay the current trusted
-// test.allow_approve_over_failure so an existing PR's synchronize payload
-// carries the reason the required check needs.
-func mergeAttestationPolicy(attestation pipelineAttestation, policy pipelineAttestationPolicy) pipelineAttestationPolicy {
-	allow := strings.TrimSpace(attestation.AllowTestCommandOverride)
-	if p := strings.TrimSpace(policy.AllowTestCommandOverride); p != "" {
-		allow = p
-	}
-	return pipelineAttestationPolicy{AllowTestCommandOverride: allow}
 }
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.

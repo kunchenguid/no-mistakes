@@ -320,6 +320,9 @@ func TestResetStepsFromPreservesSkippedSteps(t *testing.T) {
 	if err := d.CompleteStepWithStatus(review.ID, types.StepStatusCompleted, 0, 10, ""); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.SetStepOverrideReason(review.ID, "approved over failure"); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.CompleteStepWithStatus(push.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +337,9 @@ func TestResetStepsFromPreservesSkippedSteps(t *testing.T) {
 	}
 	if gotReview.Status != types.StepStatusPending {
 		t.Fatalf("review status = %s, want %s", gotReview.Status, types.StepStatusPending)
+	}
+	if gotReview.OverrideReason != nil {
+		t.Fatalf("review override reason = %q, want nil", *gotReview.OverrideReason)
 	}
 	gotPush, err := d.GetStepResult(push.ID)
 	if err != nil {

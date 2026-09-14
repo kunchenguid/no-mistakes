@@ -120,6 +120,27 @@ func TestRebindPipelineAttestation_PreservesTestCommandOverride(t *testing.T) {
 	}
 }
 
+func TestRebindPipelineAttestation_ClearsRemovedAllowOptIn(t *testing.T) {
+	t.Parallel()
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted},
+		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
+	}
+	original := buildPipelineAttestationWithPolicy(steps, nil, testPipelineHeadSHA, pipelineAttestationPolicy{
+		AllowTestCommandOverride: "legacy suite is red on purpose",
+	})
+
+	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("cd", 20), steps, pipelineAttestationPolicy{})
+	if !ok {
+		t.Fatal("expected attestation to rebind")
+	}
+	got := parsePipelineAttestationForTest(t, rebound)
+	if got.AllowTestCommandOverride != "" {
+		t.Fatalf("rebind retained removed opt-in: %+v", got)
+	}
+}
+
 func TestRebindPipelineAttestation_OverlaysCurrentAllowOptIn(t *testing.T) {
 	t.Parallel()
 	reason := "configured test command failed with exit code 7"
