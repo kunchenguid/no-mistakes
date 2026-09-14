@@ -34,12 +34,13 @@ func TestEffectiveRepoConfig_AllowApproveOverFailureTrustedOnly(t *testing.T) {
 }
 
 func TestLoadRepo_AllowApproveOverFailure(t *testing.T) {
-	cfg, err := LoadRepoFromBytes([]byte("test:\n  allow_approve_over_failure: |\n    legacy suite is red on purpose\n"))
+	reason := strings.Repeat("legacy-reason-", 64)
+	cfg, err := LoadRepoFromBytes([]byte("test:\n  allow_approve_over_failure: " + reason + "\n"))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if !strings.Contains(cfg.Test.AllowApproveOverFailure, "legacy suite is red on purpose") {
-		t.Fatalf("AllowApproveOverFailure = %q", cfg.Test.AllowApproveOverFailure)
+	if cfg.Test.AllowApproveOverFailure != reason {
+		t.Fatalf("AllowApproveOverFailure = %q, want %q", cfg.Test.AllowApproveOverFailure, reason)
 	}
 }
 
@@ -56,12 +57,5 @@ func TestMerge_GlobalAllowApproveOverFailureIsNotUsed(t *testing.T) {
 	got := Merge(global, &RepoConfig{})
 	if got.Test.AllowApproveOverFailure != "" {
 		t.Fatalf("global waiver leaked into the resolved config: %q", got.Test.AllowApproveOverFailure)
-	}
-}
-
-func TestLoadRepo_AllowApproveOverFailureRejectsOversizedReason(t *testing.T) {
-	body := "test:\n  allow_approve_over_failure: " + strings.Repeat("x", maxAllowApproveOverFailureBytes+1) + "\n"
-	if _, err := LoadRepoFromBytes([]byte(body)); err == nil {
-		t.Fatal("LoadRepoFromBytes accepted an oversized allow_approve_over_failure")
 	}
 }

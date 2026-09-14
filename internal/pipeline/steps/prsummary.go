@@ -191,9 +191,8 @@ func buildPipelineAttestationWithPolicy(steps []*db.StepResult, rounds map[strin
 
 func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, policy pipelineAttestationPolicy) pipelineAttestation {
 	attestation := pipelineAttestation{
-		HeadSHA:                  headSHA,
-		Steps:                    make([]pipelineAttestationStep, 0, len(steps)),
-		AllowTestCommandOverride: strings.TrimSpace(policy.AllowTestCommandOverride),
+		HeadSHA: headSHA,
+		Steps:   make([]pipelineAttestationStep, 0, len(steps)),
 	}
 	for _, sr := range steps {
 		if sr == nil {
@@ -205,6 +204,9 @@ func newPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.Step
 		}
 		if sr.StepName == types.StepTest && sr.OverrideReason != nil {
 			item.OverrideReason = strings.TrimSpace(*sr.OverrideReason)
+			if item.OverrideReason != "" {
+				attestation.AllowTestCommandOverride = strings.TrimSpace(policy.AllowTestCommandOverride)
+			}
 		}
 		attestation.Steps = append(attestation.Steps, item)
 	}

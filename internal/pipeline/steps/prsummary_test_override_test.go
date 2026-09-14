@@ -65,7 +65,9 @@ func TestBuildPipelineAttestation_OmitsOverrideWhenAbsent(t *testing.T) {
 		{StepName: types.StepTest, Status: types.StepStatusCompleted},
 		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
 	}
-	raw := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
+	raw := buildPipelineAttestationWithPolicy(steps, nil, testPipelineHeadSHA, pipelineAttestationPolicy{
+		AllowTestCommandOverride: "legacy suite is red on purpose",
+	})
 	if strings.Contains(raw, "override_reason") {
 		t.Fatalf("ordinary completion must omit override_reason: %s", raw)
 	}

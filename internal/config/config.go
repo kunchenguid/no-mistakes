@@ -2714,16 +2714,8 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
 		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
-	if n := len(strings.TrimSpace(test.AllowApproveOverFailure)); n > maxAllowApproveOverFailureBytes {
-		return fmt.Errorf("test.allow_approve_over_failure must be %d bytes or fewer, got %d", maxAllowApproveOverFailureBytes, n)
-	}
 	return nil
 }
-
-// maxAllowApproveOverFailureBytes bounds the recorded waiver reason that is
-// copied into the PR attestation. The field is a human-readable opt-in, not
-// a prompt, so a modest cap keeps the published comment bounded.
-const maxAllowApproveOverFailureBytes = 512
 
 // applyProvidersOverrides applies non-nil raw values onto resolved defaults.
 func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
