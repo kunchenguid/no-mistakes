@@ -274,11 +274,12 @@ func rebindPipelineAttestationHead(body, newHeadSHA string) (string, bool) {
 }
 
 // rebindPipelineAttestationWithSteps rewrites the first live v1 attestation
-// comment to bind newHeadSHA. When steps is nil it behaves exactly like
-// rebindPipelineAttestationHead, keeping whatever step statuses the existing
-// attestation already carried. When steps is non-nil, it replaces the
-// attestation's step list outright with the caller's own statuses instead of
-// reusing the old ones - for a caller (the Push step) that attests a head it
+// comment to bind newHeadSHA. When steps is nil it keeps whatever step statuses
+// the existing attestation already carried, including a Test override_reason.
+// allow_test_command_override still comes from the caller's current trusted
+// policy, not the previous attestation. When steps is non-nil, it replaces
+// the attestation's step list outright with the caller's own statuses instead
+// of reusing the old ones - for a caller (the Push step) that attests a head it
 // is about to push using this run's own current step statuses, rather than
 // borrowing whatever an older, possibly different, attestation claimed. It
 // still returns the original body and false when no live attestation is
@@ -303,8 +304,11 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 	if err := json.Unmarshal([]byte(body[payloadStart:end]), &attestation); err != nil {
 		return body, false
 	}
-	preserveExisting := steps == nil
-	if preserveExisting {
+	if steps == nil {
+		// A CI repair that did not re-run Test keeps the prior Test result,
+		// including an approved-over-failure override_reason. The caller's
+		// current trusted policy still owns allow_test_command_override, so a
+		// restamp cannot retain a removed waiver or omit a newly added one.
 		steps = make([]*db.StepResult, 0, len(attestation.Steps))
 		for _, s := range attestation.Steps {
 			sr := &db.StepResult{StepName: s.Step, Status: s.Status}
@@ -315,9 +319,6 @@ func rebindPipelineAttestationWithSteps(body, newHeadSHA string, steps []*db.Ste
 			}
 			steps = append(steps, sr)
 		}
-	}
-	if preserveExisting {
-		policy.AllowTestCommandOverride = attestation.AllowTestCommandOverride
 	}
 	rebound := newPipelineAttestation(steps, nil, newHeadSHA, policy)
 	// Step statuses may be republished for a head the pipeline did not

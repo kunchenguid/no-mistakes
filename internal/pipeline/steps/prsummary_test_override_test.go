@@ -98,6 +98,34 @@ func TestBuildPipelineSummary_RendersConfiguredTestCommandFailure(t *testing.T) 
 func TestRebindPipelineAttestation_PreservesTestCommandOverride(t *testing.T) {
 	t.Parallel()
 	reason := "configured test command failed with exit code 7"
+	allow := "legacy suite is red on purpose"
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: &reason},
+		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
+	}
+	original := buildPipelineAttestationWithPolicy(steps, nil, testPipelineHeadSHA, pipelineAttestationPolicy{
+		AllowTestCommandOverride: allow,
+	})
+
+	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("cd", 20), nil, pipelineAttestationPolicy{
+		AllowTestCommandOverride: allow,
+	})
+	if !ok {
+		t.Fatal("expected attestation to rebind")
+	}
+	got := parsePipelineAttestationForTest(t, rebound)
+	if got.AllowTestCommandOverride != allow {
+		t.Fatalf("rebound dropped allow_test_command_override: %+v", got)
+	}
+	if attestedTestOverrideReason(got) != reason {
+		t.Fatalf("rebound dropped test override_reason: %+v", got)
+	}
+}
+
+func TestRebindPipelineAttestation_NilStepsClearsRemovedAllowOptIn(t *testing.T) {
+	t.Parallel()
+	reason := "configured test command failed with exit code 7"
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: &reason},
@@ -106,23 +134,49 @@ func TestRebindPipelineAttestation_PreservesTestCommandOverride(t *testing.T) {
 	original := buildPipelineAttestationWithPolicy(steps, nil, testPipelineHeadSHA, pipelineAttestationPolicy{
 		AllowTestCommandOverride: "legacy suite is red on purpose",
 	})
+	if parsePipelineAttestationForTest(t, original).AllowTestCommandOverride == "" {
+		t.Fatal("fixture must start with an opt-in")
+	}
 
-	rebound, ok := rebindPipelineAttestationHead(original, strings.Repeat("cd", 20))
+	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("cd", 20), nil, pipelineAttestationPolicy{})
 	if !ok {
 		t.Fatal("expected attestation to rebind")
 	}
 	got := parsePipelineAttestationForTest(t, rebound)
-	if got.AllowTestCommandOverride != "legacy suite is red on purpose" {
-		t.Fatalf("rebound dropped allow_test_command_override: %+v", got)
+	if got.AllowTestCommandOverride != "" {
+		t.Fatalf("nil-steps restamp retained a removed waiver: %+v", got)
 	}
-	var testReason string
-	for _, item := range got.Steps {
-		if item.Step == types.StepTest {
-			testReason = item.OverrideReason
-		}
+	if attestedTestOverrideReason(got) != reason {
+		t.Fatalf("nil-steps restamp dropped the prior Test override: %+v", got)
 	}
-	if testReason != reason {
-		t.Fatalf("rebound dropped test override_reason: %+v", got)
+}
+
+func TestRebindPipelineAttestation_NilStepsOverlaysCurrentAllowOptIn(t *testing.T) {
+	t.Parallel()
+	reason := "configured test command failed with exit code 7"
+	allow := "legacy suite is red on purpose"
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: &reason},
+		{StepName: types.StepDocument, Status: types.StepStatusCompleted},
+	}
+	original := buildPipelineAttestation(steps, nil, testPipelineHeadSHA)
+	if parsePipelineAttestationForTest(t, original).AllowTestCommandOverride != "" {
+		t.Fatal("fixture must start without an opt-in")
+	}
+
+	rebound, ok := rebindPipelineAttestationWithSteps(original, strings.Repeat("cd", 20), nil, pipelineAttestationPolicy{
+		AllowTestCommandOverride: allow,
+	})
+	if !ok {
+		t.Fatal("expected attestation to rebind")
+	}
+	got := parsePipelineAttestationForTest(t, rebound)
+	if got.AllowTestCommandOverride != allow {
+		t.Fatalf("nil-steps restamp omitted a newly added waiver: %+v", got)
+	}
+	if attestedTestOverrideReason(got) != reason {
+		t.Fatalf("nil-steps restamp dropped the prior Test override: %+v", got)
 	}
 }
 
@@ -170,4 +224,13 @@ func TestRebindPipelineAttestation_OverlaysCurrentAllowOptIn(t *testing.T) {
 	if got.AllowTestCommandOverride != "legacy suite is red on purpose" {
 		t.Fatalf("rebind did not overlay current opt-in: %+v", got)
 	}
+}
+
+func attestedTestOverrideReason(att pipelineAttestation) string {
+	for _, item := range att.Steps {
+		if item.Step == types.StepTest {
+			return item.OverrideReason
+		}
+	}
+	return ""
 }

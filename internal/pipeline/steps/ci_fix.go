@@ -810,10 +810,11 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 }
 
 // restampPRAttestationWithSteps is restampPRAttestation with an explicit step
-// list. A nil steps keeps whatever statuses the existing attestation already
-// carried (rebindPipelineAttestationWithSteps' nil behavior); a non-nil steps
-// replaces them outright. See attestHeadBeforePush for why a caller picks
-// one over the other.
+// list and the current trusted attestation policy. A nil steps keeps whatever
+// statuses the existing attestation already carried; a non-nil steps replaces
+// them outright. allow_test_command_override always comes from policy, never
+// from the previous attestation. See attestHeadBeforePush for why a caller
+// picks one steps argument over the other.
 func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
