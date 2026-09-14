@@ -32,7 +32,7 @@ type StaleBranchPlan struct {
 
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
 // reconciliation. It removes the branch only after Git proves the live head
-// contains all of its content, or under the exact submitted-head exception
+// contains all of its content, or under one of the exact-head authorizations
 // described in docs/src/content/docs/concepts/gate-model.md.
 func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
 	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
@@ -49,9 +49,11 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 //
 // Rewritten histories require both stable per-file patch identities and final
 // tree survival. runOwnedHead is a policy exception, not containment evidence:
-// publication callers must supply only Run.SubmittedHeadSHA, and fresh
-// submissions must leave it empty. The contract and rationale are owned by
-// docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
+// publication callers may supply only Run.SubmittedHeadSHA; a fresh submission
+// may supply only the exact verified terminal head of the selected run after
+// custody has been returned. Other fresh submissions must leave it empty. The
+// contract and rationale are owned by docs/src/content/docs/concepts/gate-model.md
+// (Private mirror reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
 	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, false)
 }
