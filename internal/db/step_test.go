@@ -284,6 +284,9 @@ func TestCompleteStepWithStatus(t *testing.T) {
 	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
 	step, _ := d.InsertStepResult(run.ID, types.StepReview)
 
+	if err := d.SetStepOverrideReason(step.ID, "approved over failure"); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.CompleteStepWithStatus(step.ID, types.StepStatusSkipped, 0, 1500, "/logs/run-1/review.log"); err != nil {
 		t.Fatalf("complete step with status: %v", err)
 	}
@@ -302,6 +305,9 @@ func TestCompleteStepWithStatus(t *testing.T) {
 	}
 	if got.CompletedAt == nil {
 		t.Error("expected non-nil completed_at")
+	}
+	if got.OverrideReason != nil {
+		t.Errorf("override reason = %q, want nil", *got.OverrideReason)
 	}
 }
 
