@@ -385,7 +385,7 @@ func TestParkStepForApproval_FindingsFailureRollsBackGate(t *testing.T) {
 	}
 	findings := `{"items":[{"id":"review-1"}]}`
 
-	if err := d.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 100, &findings); err == nil {
+	if err := d.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 7, 100, &findings); err == nil {
 		t.Fatal("expected findings persistence failure")
 	}
 	gotStep, err := d.GetStepResult(step.ID)

@@ -206,7 +206,7 @@ func TestProtectedPathRefusalSurvivesFailedTrustedRecovery(t *testing.T) {
 			if _, err := database.InsertStepRound(sr.ID, 1, "initial", &outcome.Findings, nil, 1); err != nil {
 				t.Fatal(err)
 			}
-			if err := database.ParkStepForApproval(run.ID, sr.ID, types.StepStatusAwaitingApproval, 1, &outcome.Findings); err != nil {
+			if err := database.ParkStepForApproval(run.ID, sr.ID, types.StepStatusAwaitingApproval, outcome.ExitCode, 1, &outcome.Findings); err != nil {
 				t.Fatal(err)
 			}
 			gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable.git"))

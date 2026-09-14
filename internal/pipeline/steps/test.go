@@ -536,25 +536,35 @@ func (s *TestStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, e
 	if err := sctx.Ctx.Err(); err != nil {
 		return "", err
 	}
-	findings, err := parkedTestStepFindings(sctx)
+	findings, exitCode, err := parkedTestStepState(sctx)
 	if err != nil {
 		return fmt.Sprintf("could not verify configured test command: %v", err), nil
+	}
+	if exitCode == nil {
+		return "could not verify configured test command: test step exit code is not available", nil
+	}
+	if *exitCode == 0 {
+		return "", nil
 	}
 	return configuredTestCommandOverrideReason(findings), nil
 }
 
-func parkedTestStepFindings(sctx *pipeline.StepContext) (types.Findings, error) {
+func parkedTestStepState(sctx *pipeline.StepContext) (types.Findings, *int, error) {
 	if sctx.DB == nil || sctx.StepResultID == "" {
-		return types.Findings{}, fmt.Errorf("test step result is not available")
+		return types.Findings{}, nil, fmt.Errorf("test step result is not available")
 	}
 	sr, err := sctx.DB.GetStepResult(sctx.StepResultID)
 	if err != nil {
-		return types.Findings{}, err
+		return types.Findings{}, nil, err
 	}
-	if sr == nil || sr.FindingsJSON == nil || strings.TrimSpace(*sr.FindingsJSON) == "" {
-		return types.Findings{}, nil
+	if sr == nil {
+		return types.Findings{}, nil, fmt.Errorf("test step result is not available")
 	}
-	return types.ParseFindingsJSON(*sr.FindingsJSON)
+	if sr.FindingsJSON == nil || strings.TrimSpace(*sr.FindingsJSON) == "" {
+		return types.Findings{}, sr.ExitCode, nil
+	}
+	findings, err := types.ParseFindingsJSON(*sr.FindingsJSON)
+	return findings, sr.ExitCode, err
 }
 
 func configuredTestCommandOverrideReason(findings types.Findings) string {

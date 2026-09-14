@@ -119,7 +119,7 @@ func parkRunAtReviewGate(t *testing.T, d *db.DB, runID string, sequence []pipeli
 			if err := d.StartStep(result.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := d.ParkStepForApproval(runID, result.ID, types.StepStatusAwaitingApproval, 5, &findings); err != nil {
+			if err := d.ParkStepForApproval(runID, result.ID, types.StepStatusAwaitingApproval, 0, 5, &findings); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := d.InsertStepRound(result.ID, 1, "initial", &findings, nil, 5); err != nil {

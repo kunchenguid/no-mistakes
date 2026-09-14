@@ -235,7 +235,7 @@ func persistCIRefusal(t *testing.T, f *ciRepairFixture, outcome *pipeline.StepOu
 	if _, err := f.sctx.DB.InsertStepRound(f.sctx.StepResultID, len(rounds)+1, "initial", &outcome.Findings, nil, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, f.sctx.StepResultID, types.StepStatusAwaitingApproval, 1, &outcome.Findings); err != nil {
+	if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, f.sctx.StepResultID, types.StepStatusAwaitingApproval, outcome.ExitCode, 1, &outcome.Findings); err != nil {
 		t.Fatal(err)
 	}
 }
