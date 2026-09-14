@@ -590,6 +590,12 @@ func buildNoMistakesBinary(t *testing.T) string {
 		builtBin = filepath.Join(dir, name)
 		cmd := exec.Command("go", "build", "-o", builtBin, "github.com/kunchenguid/no-mistakes/cmd/no-mistakes")
 		cmd.Dir = repoRootFromThisFile()
+		if hostHome != "" {
+			// Build with the host HOME so the go command reuses its module and
+			// build caches instead of downloading every dependency (TestMain
+			// repointed HOME at an empty temp dir for isolation).
+			cmd.Env = append(os.Environ(), "HOME="+hostHome)
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			builtBinErr = errors.New(string(out) + ": " + err.Error())
