@@ -183,6 +183,9 @@ func TestStartStepFixRoundResetsRoundClockAndUpdatesLimit(t *testing.T) {
 	if _, err := d.sql.Exec(`UPDATE step_results SET started_at = ?, round_started_at = ?, auto_fix_limit = ? WHERE id = ?`, stepStarted, stepStarted, priorAutoFixLimit, step.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.SetStepOverrideReason(step.ID, "approved over failure"); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.StartStepFixRound(step.ID, 2); err != nil {
 		t.Fatalf("start fix round: %v", err)
 	}
@@ -201,6 +204,9 @@ func TestStartStepFixRoundResetsRoundClockAndUpdatesLimit(t *testing.T) {
 	}
 	if got.AutoFixLimit == nil || *got.AutoFixLimit != 2 {
 		t.Errorf("auto-fix limit = %v, want newly configured 2 instead of prior %d", got.AutoFixLimit, priorAutoFixLimit)
+	}
+	if got.OverrideReason != nil {
+		t.Errorf("override reason = %q, want nil", *got.OverrideReason)
 	}
 }
 
