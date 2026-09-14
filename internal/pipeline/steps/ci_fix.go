@@ -785,10 +785,18 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if pr == nil {
 		return nil
 	}
-	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log); err != nil {
+	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
 	return nil
+}
+
+func attestationPolicyFrom(sctx *pipeline.StepContext) pipelineAttestationPolicy {
+	policy := pipelineAttestationPolicy{}
+	if sctx != nil && sctx.Config != nil {
+		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
+	}
+	return policy
 }
 
 // restampPRAttestation re-reads the current PR body, rewrites only the live
@@ -798,7 +806,7 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 // failed: missing-reader is not a settlement miss. All currently supported
 // providers have readers; this keeps the optional-interface fallback intact.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
-	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn)
+	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn, pipelineAttestationPolicy{})
 }
 
 // restampPRAttestationWithSteps is restampPRAttestation with an explicit step
@@ -806,7 +814,7 @@ func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHea
 // carried (rebindPipelineAttestationWithSteps' nil behavior); a non-nil steps
 // replaces them outright. See attestHeadBeforePush for why a caller picks
 // one over the other.
-func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string)) error {
+func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
 		if logfn != nil && !ok {
@@ -819,7 +827,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps)
+			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps, policy)
 			if rebindErr != nil {
 				return fmt.Errorf("rebind PR appendix: %w", rebindErr)
 			}

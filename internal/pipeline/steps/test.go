@@ -16,8 +16,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// TestStep runs baseline tests, gathers evidence for user intent, and optionally asks the agent to fix failures.
+// TestStep runs the configured test command (when set), gathers evidence for
+// user intent, and optionally asks the agent to fix failures.
 type TestStep struct{}
+
+var _ pipeline.ApprovalOverrideVerifier = (*TestStep)(nil)
 
 func (s *TestStep) Name() types.StepName { return types.StepTest }
 
@@ -119,7 +122,8 @@ Previous test findings to address:
 		if exitCode != 0 {
 			baselineFindings = []Finding{{
 				Severity:    "error",
-				Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+				Category:    types.FindingCategoryTestCommand,
+				Description: fmt.Sprintf("configured test command failed with exit code %d", exitCode),
 			}}
 			baselineSummary = projectedOutput
 			baselineExitCode = exitCode
@@ -136,7 +140,7 @@ Previous test findings to address:
 	if testCmd == "" {
 		sctx.Log("no test command configured, asking agent to run tests...")
 	} else if baselineExitCode != 0 {
-		sctx.Log("baseline tests failed, asking agent to gather live evidence...")
+		sctx.Log("configured test command failed, asking agent to gather live evidence...")
 	} else {
 		sctx.Log("baseline tests passed, asking agent to gather live evidence...")
 	}
@@ -150,7 +154,7 @@ Previous test findings to address:
 		if baselineExitCode == 0 {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)
 		} else {
-			configuredTestCommand = fmt.Sprintf("\nConfigured test command ran as baseline and failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
+			configuredTestCommand = fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
 		}
 	}
 	trustedRunbook := trustedTestInstructionsSection(sctx)
@@ -515,4 +519,56 @@ func testAgentError(ctx context.Context, timeout time.Duration, prefix string, e
 		return fmt.Errorf("%s: %w", prefix, err)
 	}
 	return nil
+}
+
+// VerifyApprovalOverride implements pipeline.ApprovalOverrideVerifier. It
+// records an explicit override when a human answers ActionApprove on a Test
+// gate that is parked because the configured commands.test exited non-zero,
+// so that completion cannot read as a silent green pass the way a genuinely
+// passing command does. The condition is the parked findings of this step
+// (the command result from this execution), not a re-run. A step with no
+// configured command, or whose command passed and parked for another reason,
+// returns "" so the executor records an ordinary completion.
+func (s *TestStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
+	if sctx == nil || sctx.Config == nil || strings.TrimSpace(sctx.Config.Commands.Test) == "" {
+		return "", nil
+	}
+	if err := sctx.Ctx.Err(); err != nil {
+		return "", err
+	}
+	findings, err := parkedTestStepFindings(sctx)
+	if err != nil {
+		return fmt.Sprintf("could not verify configured test command: %v", err), nil
+	}
+	return configuredTestCommandOverrideReason(findings), nil
+}
+
+func parkedTestStepFindings(sctx *pipeline.StepContext) (types.Findings, error) {
+	if sctx.DB == nil || sctx.StepResultID == "" {
+		return types.Findings{}, fmt.Errorf("test step result is not available")
+	}
+	sr, err := sctx.DB.GetStepResult(sctx.StepResultID)
+	if err != nil {
+		return types.Findings{}, err
+	}
+	if sr == nil || sr.FindingsJSON == nil || strings.TrimSpace(*sr.FindingsJSON) == "" {
+		return types.Findings{}, nil
+	}
+	return types.ParseFindingsJSON(*sr.FindingsJSON)
+}
+
+func configuredTestCommandOverrideReason(findings types.Findings) string {
+	for _, item := range findings.Items {
+		if item.Category == types.FindingCategoryTestCommand {
+			if desc := strings.TrimSpace(item.Description); desc != "" {
+				return desc
+			}
+			return "configured test command failed"
+		}
+		desc := strings.TrimSpace(item.Description)
+		if strings.HasPrefix(desc, "configured test command failed") || strings.HasPrefix(desc, "tests failed with exit code") {
+			return desc
+		}
+	}
+	return ""
 }

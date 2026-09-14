@@ -126,7 +126,7 @@ func TestBuildPipelineSummary_OmitsLiveValidationAfterHeadChanges(t *testing.T) 
 	}, types.TestVerdictGo)
 	steps, rounds := testStepWithFindings(t, findingsJSON)
 
-	attestation := newPipelineAttestation(steps, rounds, strings.Repeat("ab", 20))
+	attestation := newPipelineAttestation(steps, rounds, strings.Repeat("ab", 20), pipelineAttestationPolicy{})
 	if attestation.LiveValidation != nil {
 		t.Fatalf("later head carried stale live validation: %+v", attestation.LiveValidation)
 	}

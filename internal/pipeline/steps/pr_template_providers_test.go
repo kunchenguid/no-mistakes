@@ -84,7 +84,7 @@ func TestPRTemplateAzureRestampRefusesOverflowBeforeWrite(t *testing.T) {
 	for _, name := range []types.StepName{types.StepReview, types.StepTest, types.StepDocument, types.StepLint, types.StepPush, types.StepPR} {
 		steps = append(steps, &db.StepResult{StepName: name, Status: types.StepStatusCompleted})
 	}
-	if err := restampPRAttestationWithSteps(context.Background(), host, &scm.PR{Number: "42"}, strings.Repeat("ab", 20), steps, nil); err == nil || !strings.Contains(err.Error(), "budget") {
+	if err := restampPRAttestationWithSteps(context.Background(), host, &scm.PR{Number: "42"}, strings.Repeat("ab", 20), steps, nil, pipelineAttestationPolicy{}); err == nil || !strings.Contains(err.Error(), "budget") {
 		t.Fatalf("overflow not refused: %v", err)
 	}
 	if host.updates != 0 || host.body != content.Body {

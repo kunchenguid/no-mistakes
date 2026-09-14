@@ -195,16 +195,16 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 // Restamping is also an owner-authorized appendix edit. Recompute its integrity
 // guard without touching author text, while refusing evidence edited by anyone
 // else. Legacy unmarked bodies retain the existing restamp contract.
-func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult) (string, bool, error) {
+func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult, policy pipelineAttestationPolicy) (string, bool, error) {
 	if !hasPRAppendixMarkers(body) {
-		updated, rebound := rebindPipelineAttestationWithSteps(body, head, steps)
+		updated, rebound := rebindPipelineAttestationWithSteps(body, head, steps, policy)
 		return updated, rebound, nil
 	}
 	parts, err := parsePROwnedBody(body)
 	if err != nil {
 		return "", false, err
 	}
-	appendix, rebound := rebindPipelineAttestationWithSteps(parts.appendix, head, steps)
+	appendix, rebound := rebindPipelineAttestationWithSteps(parts.appendix, head, steps, policy)
 	if !rebound {
 		return "", false, fmt.Errorf("cannot rebind the owned PR attestation")
 	}

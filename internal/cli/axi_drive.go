@@ -979,7 +979,7 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		fields = appendFixesField(fields, fixes)
 		var help []string
 		if rv.CIOverrideReason != "" {
-			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+			help = append(help, fmt.Sprintf("A human approved past an unresolved gate: %s", rv.CIOverrideReason))
 		}
 		if len(rv.automaticSkips()) > 0 {
 			help = append(help, "Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.")

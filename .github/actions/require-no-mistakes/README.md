@@ -14,6 +14,12 @@ It verifies, in order:
    pass on an older attestation;
 4. `review`, `test`, and `document` each recorded `status == "completed"`.
    Quota skips and agent skips are not compliant.
+5. a `test` step whose attestation carries a non-empty `override_reason` is
+   treated as approved over a failing configured `commands.test`. That is
+   non-compliant unless the attestation also carries a non-empty
+   `allow_test_command_override` reason (copied from trusted
+   `test.allow_approve_over_failure`). Older attestations without
+   `override_reason` are unchanged: they are not approved-over-failure.
 
 Missing or unparseable attestation reports the no-mistakes `>= 1.46.0` floor;
 a missing signature reports the not-raised-via-no-mistakes guidance.

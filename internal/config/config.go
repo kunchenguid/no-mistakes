@@ -739,6 +739,15 @@ type TestRaw struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// rewrite the runbook the agent that validates it follows.
 	Instructions string `yaml:"instructions"`
+	// AllowApproveOverFailure is the recorded reason that opts this
+	// repository into letting require-no-mistakes accept a Test step that
+	// was approved over a failing configured commands.test. Empty (the default)
+	// is off: an approved-over-failure test step is non-compliant. A non-empty
+	// value is the opt-in and the reason the required check can see. It is
+	// honored ONLY from the trusted default-branch copy of .no-mistakes.yaml
+	// (see EffectiveRepoConfig): a contributor's pushed branch must not be able
+	// to waive the configured-test gate that validates it.
+	AllowApproveOverFailure string `yaml:"allow_approve_over_failure"`
 }
 
 // EvidenceRaw is the YAML representation of test-evidence settings.
@@ -774,11 +783,13 @@ type EvidenceRaw struct {
 	MaxRuns   *int    `yaml:"max_runs"`
 }
 
-// Test is the resolved test-step config. Instructions comes from the trusted
-// default-branch repo config only (see TestRaw).
+// Test is the resolved test-step config. Instructions and
+// AllowApproveOverFailure come from the trusted default-branch repo config
+// only (see TestRaw).
 type Test struct {
-	Evidence     Evidence
-	Instructions string
+	Evidence                Evidence
+	Instructions            string
+	AllowApproveOverFailure string
 }
 
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
@@ -2390,8 +2401,9 @@ func validatePathInstructionGlob(pattern string) error {
 // since they cannot run arbitrary shell, select a process, or spend the
 // maintainer's CI minutes.
 // The exceptions inside test are evidence.branch, which names a git ref the
-// daemon pushes to, and instructions, which steers the gate that validates the
-// pushed branch. Both are trusted-only.
+// daemon pushes to, instructions, which steers the gate that validates the
+// pushed branch, and allow_approve_over_failure, which waives the required
+// check for an approved-over-failure commands.test. All three are trusted-only.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -2448,6 +2460,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// must not be able to rewrite or weaken the guidance that steers the
 		// gate validating their own branch.
 		effective.Test.Instructions = trusted.Test.Instructions
+		// test.allow_approve_over_failure opts the required check into
+		// accepting a Test step approved over a failing commands.test. It is
+		// trusted-only for the same reason no_ci is: a pushed branch must not
+		// waive the gate that certifies it.
+		effective.Test.AllowApproveOverFailure = trusted.Test.AllowApproveOverFailure
 		// pr.base_branch controls where the contributor's PR lands, so it is
 		// trusted-only unless the repository explicitly opts into pushed
 		// settings alongside commands and agent selection. TitleFormat is a
@@ -2469,6 +2486,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.CI = CIRaw{}
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
+		effective.Test.AllowApproveOverFailure = ""
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = ""
 		}
@@ -2696,8 +2714,16 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
 		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
+	if n := len(strings.TrimSpace(test.AllowApproveOverFailure)); n > maxAllowApproveOverFailureBytes {
+		return fmt.Errorf("test.allow_approve_over_failure must be %d bytes or fewer, got %d", maxAllowApproveOverFailureBytes, n)
+	}
 	return nil
 }
+
+// maxAllowApproveOverFailureBytes bounds the recorded waiver reason that is
+// copied into the PR attestation. The field is a human-readable opt-in, not
+// a prompt, so a modest cap keeps the published comment bounded.
+const maxAllowApproveOverFailureBytes = 512
 
 // applyProvidersOverrides applies non-nil raw values onto resolved defaults.
 func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
@@ -2834,6 +2860,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	// to describe. repo here is the EffectiveRepoConfig result, so this value
 	// is already trusted-only.
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
+	test.AllowApproveOverFailure = strings.TrimSpace(repo.Test.AllowApproveOverFailure)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {

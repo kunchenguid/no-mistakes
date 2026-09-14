@@ -153,8 +153,9 @@ type ApprovalGateReconciler interface {
 }
 
 // ApprovalOverrideVerifier is implemented by a step whose approval gate exists
-// because of a live, re-checkable external condition (currently: the CI
-// step's failing checks). The executor calls it once, synchronously, at the
+// because of a live, re-checkable condition (currently: the CI step's failing
+// checks, and the Test step's failing configured commands.test). The executor
+// calls it once, synchronously, at the
 // moment a human answers ActionApprove - never for Skip, Abort, or Fix, which
 // do not claim the step passed. A human's approval always proceeds (this
 // never blocks a deliberate operator decision), but when the condition is
@@ -163,7 +164,9 @@ type ApprovalGateReconciler interface {
 // of silently reporting the same "outcome=passed" a genuinely green run
 // produces. See docs/... incident: an operator approved a CI gate while a
 // stale, already-superseded check-run replay still showed a live failure, and
-// the run reported outcome=passed with no trace of the override.
+// the run reported outcome=passed with no trace of the override. The Test
+// step uses the same recording so an approved-over-failure commands.test
+// cannot certify as a bare completed test step.
 //
 // unresolved is a short human-readable reason (e.g. naming the still-failing
 // check) when the condition has not cleared, and "" when it has (the executor

@@ -103,6 +103,12 @@ const (
 	FindingCategoryCIReviewBot     = "ci-review-bot"
 )
 
+// FindingCategoryTestCommand marks the deterministic finding produced when a
+// configured commands.test exits non-zero. The Test step's
+// ApprovalOverrideVerifier keys on it so an approval over that failure is
+// recorded as an override rather than a silent green completion.
+const FindingCategoryTestCommand = "test-command"
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //

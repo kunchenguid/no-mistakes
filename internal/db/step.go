@@ -27,8 +27,9 @@ type StepResult struct {
 	AgentPID       *int
 	AutoFixLimit   *int
 	// OverrideReason is non-nil exactly when a human answered ActionApprove on
-	// this step's gate despite an unresolved external condition (currently:
-	// the CI step's live checks were still failing). See
+	// this step's gate despite an unresolved condition (currently: the CI
+	// step's live checks were still failing, or the Test step's configured
+	// commands.test exited non-zero). See
 	// pipeline.ApprovalOverrideVerifier and Executor's two ActionApprove sites.
 	OverrideReason *string
 	// SkipReason records an automatic PR/CI skip, distinct from an explicit

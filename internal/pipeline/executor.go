@@ -1215,8 +1215,8 @@ done:
 // instead of a silent plain pass - see ApprovalOverrideVerifier's doc for the
 // incident this exists to make impossible. It never blocks or changes the
 // approval itself: a human's ActionApprove always proceeds, and a step that
-// does not implement the interface (every step but CI today) is completely
-// unaffected. A verification error fails closed - it is recorded as an
+// does not implement the interface (today: every step but CI and Test) is
+// completely unaffected. A verification error fails closed - it is recorded as an
 // unresolved condition, not silently treated as clear - but still never stops
 // the approval, only what it gets recorded as.
 //

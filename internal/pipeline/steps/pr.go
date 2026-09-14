@@ -584,12 +584,16 @@ func (s *PRStep) buildPipelineSectionFor(sctx *pipeline.StepContext, provider sc
 		rounds[sr.ID] = r
 	}
 
-	pipelineMD, riskLine = BuildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider)
+	policy := pipelineAttestationPolicy{}
+	if sctx.Config != nil {
+		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
+	}
+	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
 	// Ordinary Bitbucket descriptions keep their existing Markdown-only skin.
 	// Owned templates additionally carry the exact existing declaration as
 	// visible text; the raw consumer/restamper uses the same marker and schema.
 	if owned && provider == scm.ProviderBitbucket && pipelineMD != "" {
-		pipelineMD += "\n\n```text\n" + buildPipelineAttestation(steps, rounds, sctx.Run.HeadSHA) + "\n```"
+		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
 	testingMD = buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), publishRunEvidence(sctx), provider, s.attachRunEvidenceMedia(sctx, provider, steps, rounds))
 	return pipelineMD, riskLine, testingMD

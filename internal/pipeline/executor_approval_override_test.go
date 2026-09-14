@@ -129,8 +129,8 @@ func TestExecutor_ApprovalOverride_VerificationErrorFailsClosed(t *testing.T) {
 }
 
 // TestExecutor_ApprovalOverride_OrdinaryStepUnaffected pins that a step which
-// does not implement ApprovalOverrideVerifier (every step but CI today, e.g.
-// review/test/document) behaves exactly as before ActionApprove is answered:
+// does not implement ApprovalOverrideVerifier (today: every step but CI and
+// Test, e.g. review/document) behaves exactly as before ActionApprove is answered:
 // no override column is ever touched, and the plain completion path used for
 // every existing approval test is unchanged.
 func TestExecutor_ApprovalOverride_OrdinaryStepUnaffected(t *testing.T) {

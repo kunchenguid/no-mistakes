@@ -13,8 +13,14 @@ The verdict is a pure function of the pull request body plus the PR head SHA:
   2. the body carries a parseable v1 pipeline-step attestation comment;
   3. the attestation's head_sha equals the current PR head SHA, so a later push
      cannot pass on an older attestation;
-  4. review, test, and document each recorded status == "completed". Skips
+	4. review, test, and document each recorded status == "completed". Skips
      (quota or agent) and failures are not compliant.
+  5. a test step whose attestation carries a non-empty override_reason is
+     treated as approved over a failing configured commands.test. That is
+     non-compliant unless the attestation also carries a non-empty
+     allow_test_command_override reason (the repo-config opt-in). Older
+     attestations without override_reason are unchanged: they are not
+     approved-over-failure.
 
 Nothing here reads the repository contents, so a fork's code is never executed.
 
@@ -334,6 +340,44 @@ def check_required_steps(facts: Facts, steps: list) -> None:
     )
 
 
+def check_test_command_override(facts: Facts, payload: dict) -> None:
+    """Refuse a test step approved over a failing configured command unless opted in.
+
+    override_reason on the last-wins test record is the durable marker that
+    the step was approved while commands.test was still red. An older
+    attestation that omits the field is not that pattern. The opt-in is a
+    recorded reason on allow_test_command_override, copied from trusted repo
+    config; empty or absent is off.
+    """
+    override_reason = ""
+    for item in payload.get("steps") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("step") != "test":
+            continue
+        reason = item.get("override_reason")
+        if isinstance(reason, str) and reason.strip():
+            override_reason = reason.strip()
+        else:
+            override_reason = ""
+    if not override_reason:
+        return
+    allowed = payload.get("allow_test_command_override")
+    if isinstance(allowed, str) and allowed.strip():
+        return
+    fail(
+        "::error::Test step was approved over a failing configured test command "
+        "without a recorded repository opt-in.\n\n"
+        f"attestation test.override_reason: {override_reason}\n\n"
+        "Set test.allow_approve_over_failure in the trusted default-branch "
+        ".no-mistakes.yaml to a non-empty reason if this repository intentionally "
+        "allows merging after that approval. The required check stays red "
+        "until that opt-in is recorded.\n\n"
+        "See CONTRIBUTING.md for setup and the full workflow.\n\n"
+        f"PR author: {facts.author}\n"
+    )
+
+
 def main() -> int:
     facts = Facts()
 
@@ -385,6 +429,7 @@ def main() -> int:
     payload = parse_attestation(facts)
     check_head_bind(facts, payload["head_sha"])
     check_required_steps(facts, payload["steps"])
+    check_test_command_override(facts, payload)
 
     print("Found structurally compliant pipeline step attestation.")
     print(

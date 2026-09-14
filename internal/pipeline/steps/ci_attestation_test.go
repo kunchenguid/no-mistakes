@@ -168,7 +168,7 @@ func TestRebindPipelineAttestationWithSteps_UsesCurrentLiveValidation(t *testing
 		FindingsJSON: &currentFindings,
 	}}
 
-	rebound, ok := rebindPipelineAttestationWithSteps(original, newHead, currentSteps)
+	rebound, ok := rebindPipelineAttestationWithSteps(original, newHead, currentSteps, pipelineAttestationPolicy{})
 	if !ok {
 		t.Fatal("expected attestation to rebind")
 	}
