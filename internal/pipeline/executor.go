@@ -1209,16 +1209,16 @@ done:
 // failed write degrades to today's behavior and must never fail the run.
 // applyApprovalOverride is the single place both ActionApprove sites (the
 // live wait in executeStep and the daemon-restart recovery path in Resume)
-// route through before completing a step on approval. If step raised its gate
-// over a live, re-checkable condition (ApprovalOverrideVerifier), this
-// re-checks it once and, only when it is still unresolved, records the
-// upcoming completion as an explicit override (db.SetStepOverrideReason)
-// instead of a silent plain pass - see ApprovalOverrideVerifier's doc for the
-// incident this exists to make impossible. It never blocks or changes the
-// approval itself: a human's ActionApprove always proceeds, and a step that
-// does not implement the interface (today: every step but CI and Test) is
-// completely unaffected. A verification error fails closed - it is recorded as an
-// unresolved condition, not silently treated as clear - but still never stops
+// route through before completing a step on approval. For a step implementing
+// ApprovalOverrideVerifier, this asks whether the completion needs an explicit
+// override (db.SetStepOverrideReason) instead of a silent plain pass. CI
+// re-checks its live condition; Test inspects the configured-command result
+// persisted when its gate parked. See ApprovalOverrideVerifier's doc for the
+// full contract. It never blocks or changes the approval itself: a human's
+// ActionApprove always proceeds, and a step that does not implement the
+// interface (today: every step but CI and Test) is completely unaffected. A
+// verification error fails closed - it is recorded as an unresolved condition,
+// not silently treated as clear - but still never stops
 // the approval, only what it gets recorded as.
 //
 // Persisting that override marker is itself fail-closed: downstream consumers

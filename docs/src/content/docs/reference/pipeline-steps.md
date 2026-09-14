@@ -282,7 +282,7 @@ Immediately after the existing `Updates from [git push no-mistakes](https://gith
 The `v1` payload is compact JSON with these required fields:
 
 - `head_sha`: the exact git commit SHA recorded for the run when no-mistakes writes the PR body
-- `steps`: the ordered pipeline step snapshot; every item has exactly the fields below
+- `steps`: the ordered pipeline step snapshot; every item has the required fields below and may carry the optional Test override field described afterward
 
 - `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`; a repository-declared [gate](/no-mistakes/reference/repo-config/#gates) appears as `gate.<anchor>.<name>`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
@@ -292,7 +292,7 @@ When the Test step validated the same `head_sha`, the payload also includes `liv
 Two additional fields are additive and omitted when empty, so older attestations remain valid:
 
 - `steps[].override_reason`: present on a Test step that was approved over a failing configured `commands.test`. Absent on an ordinary green completion and on pre-field attestations, which must be read as not approved over failure.
-- `allow_test_command_override`: the trusted [`test.allow_approve_over_failure`](/no-mistakes/reference/repo-config/#testallow_approve_over_failure) reason copied at PR-write time. The required check refuses a Test `override_reason` unless this field is a non-empty recorded reason.
+- `allow_test_command_override`: the trusted [`test.allow_approve_over_failure`](/no-mistakes/reference/repo-config/#testallow_approve_over_failure) reason copied at PR-write time only when the Test step carries `override_reason`. The required check refuses a Test `override_reason` unless this field is a non-empty recorded reason.
 
 A CI step approved over still-failing checks also stores `override_reason` on the step result (and surfaces as `passed-with-override` in AXI), but that CI mark is not copied onto the attestation.
 

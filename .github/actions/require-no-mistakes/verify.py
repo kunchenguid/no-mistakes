@@ -13,7 +13,7 @@ The verdict is a pure function of the pull request body plus the PR head SHA:
   2. the body carries a parseable v1 pipeline-step attestation comment;
   3. the attestation's head_sha equals the current PR head SHA, so a later push
      cannot pass on an older attestation;
-	4. review, test, and document each recorded status == "completed". Skips
+  4. review, test, and document each recorded status == "completed". Skips
      (quota or agent) and failures are not compliant.
   5. a test step whose attestation carries a non-empty override_reason is
      treated as approved over a failing configured commands.test. That is
