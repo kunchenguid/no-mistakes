@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -539,9 +540,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 			priorRunIDs = nil
 		}
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := prepareFreshRunGateBranch(ctx, env, branch, submissionHead)
 	if err != nil {
-		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+		return "", err
 	}
 	// A reconciled branch is re-created by this push, so the hook reports no
 	// previous head. Carry the archived pre-reconciliation head so the run's
@@ -614,8 +615,21 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return nil, &branchOwnershipError{state: *state}
 	}
+	reconciliation, err := prepareFreshRunGateBranch(ctx, env, branch, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
 	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+		cancel()
+		if restoreErr != nil {
+			return nil, fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 			return nil, &branchOwnershipError{state: *state}
 		}
@@ -634,6 +648,70 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 		return nil, fmt.Errorf("start fresh run: %w", err)
 	}
 	return &result.Receipt, nil
+}
+
+// prepareFreshRunGateBranch settles an old private branch before an ordinary
+// fresh-run push. A custody-returned run is the narrow case where a deliberate
+// rebase may no longer have a provably equivalent patch: recovery already made
+// its exact terminal head immutable evidence in both repositories, so that
+// exact gate head can be archived without treating ownership as containment.
+func prepareFreshRunGateBranch(ctx context.Context, env *axiEnv, branch, liveHead string) (gate.StaleBranchReconciliation, error) {
+	state := inspectAxiBranchSync(ctx, env)
+	if (state.State == branchsync.StatePipelineOwned && !branchsync.RunHeadUnmoved(state)) || state.State == branchsync.StatePushInProgress {
+		return gate.StaleBranchReconciliation{}, &branchOwnershipError{state: state}
+	}
+
+	policyReplacementHead := ""
+	if state.State == branchsync.StateCustodyReturned {
+		if state.Local.Branch != branch || state.Local.Head != liveHead {
+			return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: the custody-returned branch changed before submission; no refs were changed", branch)
+		}
+		if !state.Local.Clean {
+			return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: the custody-returned worktree is not clean; no refs were changed", branch)
+		}
+		run, err := env.d.GetRun(state.Pipeline.RunID)
+		if err != nil {
+			return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: load custody-returned run: %w", branch, err)
+		}
+		if run == nil || run.RepoID != env.repo.ID || run.Branch != branch || !run.Status.Terminal() || run.TerminalHeadVerifiedAt == nil || run.CustodyReturnedAt == nil || run.HeadSHA == "" || run.HeadSHA != state.Pipeline.CurrentHead {
+			return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: custody-return evidence no longer matches the terminal run; no refs were changed", branch)
+		}
+		anchor := custody.RecoveryRef(run.ID)
+		for _, repository := range []struct {
+			name string
+			dir  string
+		}{
+			{name: "invoking worktree", dir: "."},
+			{name: "local gate", dir: env.p.RepoDir(env.repo.ID)},
+		} {
+			target, exists, err := git.DirectRefTarget(ctx, repository.dir, anchor)
+			if err != nil {
+				return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: inspect %s recovery anchor %s: %w; no refs were changed", branch, repository.name, anchor, err)
+			}
+			if !exists || target != run.HeadSHA {
+				return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: %s recovery anchor %s does not preserve returned head %s; no refs were changed", branch, repository.name, anchor, run.HeadSHA)
+			}
+			objectType, err := git.Run(ctx, repository.dir, "cat-file", "-t", target)
+			if err != nil || objectType != "commit" {
+				return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: %s recovery anchor %s is not a commit; no refs were changed", branch, repository.name, anchor)
+			}
+		}
+
+		branchRef := "refs/heads/" + branch
+		gateHead, exists, err := git.DirectRefTarget(ctx, env.p.RepoDir(env.repo.ID), branchRef)
+		if err != nil {
+			return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: inspect returned-custody gate ref %s: %w", branch, branchRef, err)
+		}
+		if exists && gateHead == run.HeadSHA {
+			policyReplacementHead = run.HeadSHA
+		}
+	}
+
+	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, liveHead, policyReplacementHead)
+	if err != nil {
+		return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	return reconciliation, nil
 }
 
 func waitForLaunchReceipt(ctx context.Context, client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intent, baseBranch string, timeout time.Duration) (*ipc.LaunchReceipt, error) {
