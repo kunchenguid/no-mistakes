@@ -1221,13 +1221,12 @@ done:
 // unresolved condition, not silently treated as clear - but still never stops
 // the approval, only what it gets recorded as.
 //
-// Persisting that override marker is itself fail-closed: every downstream
-// surface (outcomeForRun, the run_completed CIOverrideReason delta, the TUI
-// banner) derives override status solely from step_results.override_reason, so
-// a swallowed write failure would complete the step as an ordinary clean pass -
-// the exact false-green this feature exists to prevent. When the marker cannot
-// be written this returns the error so the caller fails the run closed instead
-// of recording that plain pass.
+// Persisting that override marker is itself fail-closed: downstream consumers
+// derive each step's override status solely from step_results.override_reason,
+// so a swallowed write failure would complete the step as an ordinary clean
+// pass - the exact false-green this feature exists to prevent. When the marker
+// cannot be written this returns the error so the caller fails the run closed
+// instead of recording that plain pass.
 func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID string) error {
 	verifier, ok := step.(ApprovalOverrideVerifier)
 	if !ok {
@@ -1607,22 +1606,22 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 	// Gated on the terminal status, not the event type: errorRun emits the same
 	// event for failed/cancelled runs, whose banner never reads it.
 	if run.Status == types.RunCompleted {
-		if reason := e.runOverrideReason(run.ID); reason != "" {
+		if reason := e.ciOverrideReason(run.ID); reason != "" {
 			event.CIOverrideReason = &reason
 		}
 	}
 	e.onEvent(event)
 }
 
-// runOverrideReason returns the first step OverrideReason recorded for the run,
+// ciOverrideReason returns the CI step's override reason for the run,
 // deriving the run-level CI override reason the same way daemon.runToInfo does.
-func (e *Executor) runOverrideReason(runID string) string {
+func (e *Executor) ciOverrideReason(runID string) string {
 	steps, err := e.db.GetStepsByRun(runID)
 	if err != nil {
 		return ""
 	}
 	for _, s := range steps {
-		if s.OverrideReason != nil && *s.OverrideReason != "" {
+		if s.StepName == types.StepCI && s.OverrideReason != nil && *s.OverrideReason != "" {
 			return *s.OverrideReason
 		}
 	}

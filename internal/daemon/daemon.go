@@ -1437,7 +1437,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		for _, s := range steps {
 			stepInfo := stepToInfo(d, s)
 			info.Steps = append(info.Steps, stepInfo)
-			if info.CIOverrideReason == "" && stepInfo.OverrideReason != "" {
+			if s.StepName == types.StepCI && info.CIOverrideReason == "" && stepInfo.OverrideReason != "" {
 				info.CIOverrideReason = stepInfo.OverrideReason
 			}
 		}

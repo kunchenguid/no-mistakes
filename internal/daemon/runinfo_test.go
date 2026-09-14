@@ -57,6 +57,27 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 }
 
+func TestRunToInfoKeepsCIOverrideReasonCISpecific(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	run := &db.Run{ID: "run-1", Status: types.RunCompleted}
+	testReason := "configured test command failed"
+	ciReason := "live checks still failing: required-check"
+	steps := []*db.StepResult{
+		{ID: "test", RunID: run.ID, StepName: types.StepTest, OverrideReason: &testReason},
+		{ID: "ci", RunID: run.ID, StepName: types.StepCI, OverrideReason: &ciReason},
+	}
+
+	info := runToInfo(d, run, steps)
+	if info.CIOverrideReason != ciReason {
+		t.Fatalf("CIOverrideReason = %q, want %q", info.CIOverrideReason, ciReason)
+	}
+}
+
 func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

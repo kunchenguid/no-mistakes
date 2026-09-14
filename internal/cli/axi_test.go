@@ -58,6 +58,7 @@ func TestRunViewFromDBCarriesCIOverrideReason(t *testing.T) {
 	run := &db.Run{ID: "r1", Branch: "feature/x", HeadSHA: "abcdef1234567890", Status: types.RunCompleted}
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusCompleted, OverrideReason: strptr("configured test command failed")},
 		{StepName: types.StepCI, Status: types.StepStatusCompleted, OverrideReason: strptr("live checks still failing: required-check")},
 	}
 	rv := runViewFromDB(run, steps, nil)

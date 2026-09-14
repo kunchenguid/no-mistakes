@@ -330,13 +330,10 @@ type RunInfo struct {
 	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
 	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
 	Steps              []StepResultInfo `json:"steps,omitempty"`
-	// CIOverrideReason is non-empty when at least one step in Steps carries an
+	// CIOverrideReason is non-empty when the CI step in Steps carries an
 	// OverrideReason (see StepResultInfo.OverrideReason). It is derived from
 	// Steps rather than a separate DB column, so a run-level consumer such as
-	// axi's outcome wording does not need to inspect every step itself. Named
-	// for the one implementer today (the CI step) rather than generically,
-	// because that is the only override an operator-facing outcome word needs
-	// to distinguish; see pipeline.ApprovalOverrideVerifier.
+	// axi's outcome wording does not need to inspect every step itself.
 	CIOverrideReason string `json:"ci_override_reason,omitempty"`
 	// StateRev is the monotonic run-state revision this snapshot is at least
 	// as new as. It is sampled before the database read, so every event at or
@@ -437,8 +434,8 @@ type Event struct {
 	CIReadyNoCI *bool `json:"ci_ready_no_ci,omitempty"`
 	// CIOverrideReason rides run_completed so the live TUI banner can show a
 	// passed-with-override run without a snapshot read. It is derived from the
-	// run's step OverrideReason the same way RunInfo.CIOverrideReason is, and
-	// is set only on completion (the only event whose banner reads it).
+	// CI step's OverrideReason the same way RunInfo.CIOverrideReason is, and is
+	// set only on completion (the only event whose banner reads it).
 	CIOverrideReason *string `json:"ci_override_reason,omitempty"`
 }
 
