@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.0](https://github.com/kunchenguid/no-mistakes/compare/v1.75.3...v1.76.0) (2026-09-15)
+
+
+### Features
+
+* **config:** add branch capture replacements ([#1077](https://github.com/kunchenguid/no-mistakes/issues/1077)) ([2707071](https://github.com/kunchenguid/no-mistakes/commit/270707132de94f2dcffb9faab54ad1d197538234))
+
 ## [1.75.3](https://github.com/kunchenguid/no-mistakes/compare/v1.75.2...v1.75.3) (2026-09-14)
 
 
