@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gatepkg "github.com/kunchenguid/no-mistakes/internal/gate"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	pipelinepkg "github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -242,6 +243,14 @@ func assertKeepLocalRecoveryOffer(t *testing.T, state State) {
 	t.Helper()
 	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
 		t.Fatalf("want keep-local recover_custody, got %#v", state.NextAction)
+	}
+}
+
+func assertRecoverOffer(t *testing.T, state State) {
+	t.Helper()
+	if state.Safety != "blocked_pipeline_owned_recoverable" || state.NextAction == nil ||
+		state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover" {
+		t.Fatalf("want lossless recover_custody action, got %#v", state)
 	}
 }
 
@@ -507,11 +516,13 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 	}
 }
 
-// TestRecoverDivergedRefusesButKeepLocalReturnsCustody covers the diverged
-// cells: the default refuses with the anchor named, and --keep-local performs
-// the explicit choice - custody at the local head, gate reset to it atomically,
-// preserved commits still reachable through the anchor ref.
-func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
+// TestRecoverDivergedJoinsBothHistories covers the transition that used to
+// strand a clean local commit beside a terminal reviewed commit. The old
+// manual-reconciliation refusal masked that Git could merge the smallest
+// counterexample exactly: independent files. Recovery must produce one merge
+// commit, make both exact heads ancestors, archive the old private mirror, and
+// advance that mirror to the recovered head before returning custody.
+func TestRecoverDivergedJoinsBothHistories(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
@@ -519,43 +530,124 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
-	divergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	localHead := mustRun(t, f.local, "rev-parse", "HEAD")
 	inspected := f.service.InspectCached(f.ctx)
-	assertManualReconciliationOffer(t, inspected)
+	assertRecoverOffer(t, inspected)
 
-	refused := f.service.Recover(f.ctx, false)
-	if refused.Recovered || refused.Safety != "blocked_recover_diverged" || refused.Relation != RelationDiverged {
-		t.Fatalf("recover diverged = %#v", refused)
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || !recovered.Changed {
+		t.Fatalf("recover diverged = %#v", recovered)
 	}
-	if !strings.Contains(refused.Error, f.anchorRef()) || !strings.Contains(refused.Error, "--keep-local") {
-		t.Fatalf("diverged refusal not actionable: %q", refused.Error)
+	mergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	if mergedHead == localHead || mergedHead == f.preserved {
+		t.Fatalf("recovery selected one history instead of joining both: %s", mergedHead)
 	}
-	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
-		t.Fatalf("diverged refusal did not anchor preserved commits: %s", got)
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^1"); got != localHead {
+		t.Fatalf("first parent = %s, want exact local head %s", got, localHead)
 	}
-	if f.custodyReturned() {
-		t.Fatal("diverged refusal stamped custody")
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^2"); got != f.preserved {
+		t.Fatalf("second parent = %s, want exact preserved head %s", got, f.preserved)
 	}
-
-	kept := f.service.Recover(f.ctx, true)
-	if !kept.Recovered || kept.Changed {
-		t.Fatalf("keep-local recover = %#v", kept)
+	for _, head := range []string{localHead, f.preserved} {
+		mustRun(t, f.local, "merge-base", "--is-ancestor", head, mergedHead)
 	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != divergedHead {
-		t.Fatal("keep-local moved the worktree")
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mergedHead {
+		t.Fatalf("authoritative private mirror = %s, want recovered merge %s", got, mergedHead)
 	}
-	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != divergedHead {
-		t.Fatalf("gate branch = %s, want local head %s", got, divergedHead)
+	archiveTag := "refs/tags/no-mistakes-abandoned/feature/recover/" + f.preserved
+	if got := mustRun(t, f.gate, "rev-parse", archiveTag); got != f.preserved {
+		t.Fatalf("private mirror archive %s = %s, want %s", archiveTag, got, f.preserved)
 	}
-	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
-		t.Fatal("keep-local lost the preserved anchor")
+	if got := mustRun(t, f.local, "show", "HEAD:rescope.txt"); got != "rescope" {
+		t.Fatalf("merged tree lost local content: %q", got)
 	}
 	if !f.custodyReturned() {
-		t.Fatal("keep-local did not stamp custody")
+		t.Fatal("lossless merge did not stamp custody")
 	}
 }
 
-func TestBoundArchiveOffersOnlyKeepLocalRecoveryForDivergentLaterHead(t *testing.T) {
+func TestRecoverDivergedRefusesConcurrentCommitWithoutLosingEitherHistory(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	mustWrite(t, filepath.Join(f.local, "local.txt"), "local\n")
+	mustRun(t, f.local, "add", "local.txt")
+	mustRun(t, f.local, "commit", "-m", "local divergent work")
+	localHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	var concurrentHead string
+	f.service.beforeRecoverBranchMove = func() {
+		mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "concurrent\n")
+		mustRun(t, f.local, "add", "concurrent.txt")
+		mustRun(t, f.local, "commit", "-m", "concurrent operator work")
+		concurrentHead = mustRun(t, f.local, "rev-parse", "HEAD")
+	}
+
+	blocked := f.service.Recover(f.ctx, false)
+	if blocked.Recovered || blocked.Changed || blocked.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("concurrent recovery = %#v", blocked)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != concurrentHead {
+		t.Fatalf("concurrent commit was lost: HEAD=%s want=%s", got, concurrentHead)
+	}
+	mustRun(t, f.local, "merge-base", "--is-ancestor", localHead, concurrentHead)
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved history lost: %s", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", custody.RecoveryLocalRef(f.run.ID)); got != localHead {
+		t.Fatalf("pre-recovery local history lost: %s", got)
+	}
+}
+
+func TestRecoverDivergedContentConflictStopsForOneManualMergeDecision(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	mustRun(t, f.gate, "update-ref", f.anchorRef(), f.preserved)
+	mustWrite(t, filepath.Join(f.local, "fix.txt"), "operator meaning\n")
+	mustRun(t, f.local, "add", "fix.txt")
+	mustRun(t, f.local, "commit", "-m", "operator version of fix")
+	localHead := mustRun(t, f.local, "rev-parse", "HEAD")
+
+	blocked := f.service.Recover(f.ctx, false)
+	if blocked.Recovered || blocked.Changed || blocked.Safety != "blocked_recover_content_conflict" {
+		t.Fatalf("conflicting recovery = %#v", blocked)
+	}
+	if blocked.NextAction == nil || blocked.NextAction.Code != "merge_preserved_histories" ||
+		blocked.NextAction.Command != "git merge --no-ff "+f.anchorRef() {
+		t.Fatalf("conflict next action = %#v", blocked.NextAction)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != localHead {
+		t.Fatalf("conflict refusal moved branch from %s to %s", localHead, got)
+	}
+	if got := mustRun(t, f.local, "status", "--porcelain=v1"); got != "" {
+		t.Fatalf("conflict refusal dirtied worktree: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("preserved anchor = %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", custody.RecoveryLocalRef(f.run.ID)); got != localHead {
+		t.Fatalf("local anchor = %s, want %s", got, localHead)
+	}
+
+	if _, err := gitpkg.Run(f.ctx, f.local, "merge", "--no-ff", f.anchorRef()); err == nil {
+		t.Fatal("counterexample unexpectedly merged without the required semantic decision")
+	}
+	mustWrite(t, filepath.Join(f.local, "fix.txt"), "combined operator and pipeline meaning\n")
+	mustRun(t, f.local, "add", "fix.txt")
+	mustRun(t, f.local, "commit", "--no-edit")
+	resolvedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	for _, head := range []string{localHead, f.preserved} {
+		mustRun(t, f.local, "merge-base", "--is-ancestor", head, resolvedHead)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || recovered.Changed {
+		t.Fatalf("recovery after one manual merge decision = %#v", recovered)
+	}
+}
+
+func TestBoundArchiveRecoversByJoiningBothExactHistories(t *testing.T) {
 	t.Parallel()
 
 	f, archiveRef := newDivergentArchiveRecoverFixture(t)
@@ -565,10 +657,10 @@ func TestBoundArchiveOffersOnlyKeepLocalRecoveryForDivergentLaterHead(t *testing
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" || state.Relation != RelationDiverged {
 		t.Fatalf("archive-backed state = %#v", state)
 	}
-	if state.Recovery == nil || state.Recovery.Proof != "verified" || !state.Recovery.KeepLocal || state.Recovery.RequiredHead != f.submitted || state.Recovery.PreservedHead != f.preserved || state.Recovery.ArchiveRef != archiveRef {
+	if state.Recovery == nil || state.Recovery.Proof != "verified" || state.Recovery.Integration != "merge_histories" || state.Recovery.KeepLocal || state.Recovery.RequiredHead != f.submitted || state.Recovery.PreservedHead != f.preserved || state.Recovery.ArchiveRef != archiveRef {
 		t.Fatalf("archive recovery evidence = %#v", state.Recovery)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" || state.NextAction.Command != "no-mistakes axi sync --recover" {
 		t.Fatalf("archive next action = %#v", state.NextAction)
 	}
 	if got := mustRun(t, f.local, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"); got != beforeLocalRefs {
@@ -578,29 +670,29 @@ func TestBoundArchiveOffersOnlyKeepLocalRecoveryForDivergentLaterHead(t *testing
 		t.Fatal("archive detection changed gate refs")
 	}
 
-	refused := f.service.Recover(f.ctx, false)
-	if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_archive_requires_keep_local" || refused.NextAction == nil || refused.NextAction.Command != "no-mistakes axi sync --recover --keep-local" {
-		t.Fatalf("default archive recovery = %#v", refused)
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || !recovered.Changed {
+		t.Fatalf("default archive recovery = %#v", recovered)
 	}
-	if got := mustRun(t, f.local, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"); got != beforeLocalRefs {
-		t.Fatal("default archive refusal changed local refs")
+	mergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^1"); got != f.submitted {
+		t.Fatalf("merge first parent = %s, want required head %s", got, f.submitted)
 	}
-	if got := mustRun(t, f.gate, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"); got != beforeGateRefs {
-		t.Fatal("default archive refusal changed gate refs")
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^2"); got != f.preserved {
+		t.Fatalf("merge second parent = %s, want preserved head %s", got, f.preserved)
 	}
-
-	recovered := f.service.Recover(f.ctx, true)
-	if !recovered.Recovered || recovered.Changed {
-		t.Fatalf("keep-local archive recovery = %#v", recovered)
-	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
-		t.Fatalf("archive recovery selected %s, want required %s", got, f.submitted)
+	for _, head := range []string{f.submitted, f.preserved} {
+		mustRun(t, f.local, "merge-base", "--is-ancestor", head, mergedHead)
 	}
 	if got := mustRun(t, f.local, "rev-parse", archiveRef); got != f.preserved {
 		t.Fatalf("archive ref = %s, want preserved %s", got, f.preserved)
 	}
-	if got := mustRun(t, f.gate, "rev-parse", f.anchorRef()); got != f.preserved {
-		t.Fatalf("gate recovery ref = %s, want preserved %s", got, f.preserved)
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mergedHead {
+		t.Fatalf("authoritative private mirror = %s, want recovered merge %s", got, mergedHead)
+	}
+	archiveTag := "refs/tags/no-mistakes-abandoned/feature/recover/" + f.preserved
+	if got := mustRun(t, f.gate, "rev-parse", archiveTag); got != f.preserved {
+		t.Fatalf("private mirror archive %s = %s, want %s", archiveTag, got, f.preserved)
 	}
 }
 
@@ -794,9 +886,9 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 	}
 }
 
-// TestRecoverGateDivergenceAndUnavailabilityFailClosed: an independently moved
-// gate no longer hides a separately anchored preserved head, while deleted or
-// unavailable preservation still refuses.
+// TestRecoverGateDivergenceAndUnavailabilityFailClosed proves that recovery
+// never overwrites an independently moved gate branch. A missing gate or branch
+// has no stale mirror to settle; unavailable preservation still refuses.
 func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	t.Parallel()
 
@@ -812,14 +904,17 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 		mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
 		movedGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
 		state := f.service.Recover(f.ctx, false)
-		if !state.Recovered || !state.Changed {
+		if state.Recovered || !state.Changed || state.Safety != "blocked_recover_mirror_update_failed" {
 			t.Fatalf("recover with moved gate = %#v", state)
 		}
 		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
-			t.Fatalf("moved-gate recovery HEAD = %s, want %s", got, f.preserved)
+			t.Fatalf("safely recovered local HEAD = %s, want %s", got, f.preserved)
 		}
 		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != movedGate {
 			t.Fatalf("recovery rewrote independent gate head = %s, want %s", got, movedGate)
+		}
+		if f.custodyReturned() {
+			t.Fatal("moved-gate refusal stamped custody")
 		}
 	})
 	t.Run("gate branch deleted with recovery ref", func(t *testing.T) {
@@ -2441,12 +2536,11 @@ func TestRecoverTerminalUnverifiedRewriteNegativeControls(t *testing.T) {
 	})
 }
 
-// TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating is the regression for
-// the over-escalating custody return: a cancelled validation whose preserved
-// pipeline head is the operator's own work rebased onto a newer base loses
-// nothing by adopting it, so recovery must succeed instead of refusing as
-// diverged. The relationship is invisible to equality and ancestry alone, which
-// is exactly what made the old decision escalate.
+// TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating covers both the
+// original rebase recovery and the installed-upgrade counterexample: a run may
+// already have its custody-return stamp while the authoritative private mirror
+// still holds the divergent submitted history. Repeated recovery must repair
+// that stale mirror before it can report idempotent success.
 func TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating(t *testing.T) {
 	t.Parallel()
 
@@ -2456,6 +2550,10 @@ func TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating(t *testing.T) {
 	}
 	// The bug's masking condition: neither head is an ancestor of the other.
 	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:refs/no-mistakes/test/preserved")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("canary private mirror = %s, want submitted head %s", got, f.submitted)
+	}
 	if isAncestor(f.ctx, f.local, f.submitted, f.preserved) || isAncestor(f.ctx, f.local, f.preserved, f.submitted) {
 		t.Fatal("fixture is not a rebase divergence: one head is an ancestor of the other")
 	}
@@ -2487,16 +2585,45 @@ func TestRecoverRebasedPreservedHeadAdoptsWithoutEscalating(t *testing.T) {
 	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
 		t.Fatalf("pre-recovery local head was not anchored: %s, want %s", got, f.submitted)
 	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("successful recovery left private mirror at %s, want recovered head %s", got, f.preserved)
+	}
+	archiveTag := "refs/tags/no-mistakes-abandoned/feature/recover/" + f.submitted
+	if got := mustRun(t, f.gate, "rev-parse", archiveTag); got != f.submitted {
+		t.Fatalf("private mirror archive %s = %s, want %s", archiveTag, got, f.submitted)
+	}
 	if !f.custodyReturned() {
 		t.Fatal("custody not stamped")
 	}
+
+	// Recreate the second canary exactly: an older successful recovery stamped
+	// custody but left the divergent submitted history authoritative and
+	// created no archive.
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+	mustRun(t, f.gate, "update-ref", "-d", archiveTag)
+	if !f.custodyReturned() {
+		t.Fatal("fixture lost the already-returned custody stamp")
+	}
+	second := f.service.Recover(f.ctx, false)
+	if !second.Recovered || second.Changed || second.State != StateCustodyReturned {
+		t.Fatalf("already-returned recovery did not settle stale mirror: %#v", second)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("already-returned recovery left private mirror at %s, want %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", archiveTag); got != f.submitted {
+		t.Fatalf("already-returned recovery archive %s = %s, want %s", archiveTag, got, f.submitted)
+	}
+	plan, err := gatepkg.PlanStaleBranchReconciliation(f.ctx, f.gate, f.local, "feature/recover", f.preserved, "")
+	if err != nil || plan.Reconcile {
+		t.Fatalf("immediate submission still fails admission: plan=%+v err=%v", plan, err)
+	}
 }
 
-// TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork is the
-// disconfirming counterfactual: one genuinely unique local commit whose content
-// the preserved head does not carry must keep escalating, because adopting the
-// preserved head would silently discard unlanded work.
-func TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork(t *testing.T) {
+// TestRecoverRebasedPreservedHeadJoinsUniqueLocalWork proves that a genuinely
+// unique local commit is retained as an exact parent instead of being discarded
+// by adoption or stranded by the former generic refusal.
+func TestRecoverRebasedPreservedHeadJoinsUniqueLocalWork(t *testing.T) {
 	t.Parallel()
 
 	f := newRebasedRecoverFixture(t, types.RunCancelled)
@@ -2506,31 +2633,29 @@ func TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork(t *testing.
 	uniqueHead := mustRun(t, f.local, "rev-parse", "HEAD")
 
 	state := f.service.Recover(f.ctx, false)
-	if state.Recovered || state.Changed {
-		t.Fatalf("unique local work was auto-recovered: %#v", state)
+	if !state.Recovered || !state.Changed {
+		t.Fatalf("unique local work was not recovered: %#v", state)
 	}
-	if state.Safety != "blocked_recover_diverged" || state.Relation != RelationDiverged {
-		t.Fatalf("recover with unique local work = %s/%s", state.Safety, state.Relation)
+	merged := mustRun(t, f.local, "rev-parse", "HEAD")
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^1"); got != uniqueHead {
+		t.Fatalf("merge first parent = %s, want unique local head %s", got, uniqueHead)
 	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != uniqueHead {
-		t.Fatalf("HEAD moved to %s despite unique local work", got)
+	if got := mustRun(t, f.local, "rev-parse", "HEAD^2"); got != f.preserved {
+		t.Fatalf("merge second parent = %s, want preserved head %s", got, f.preserved)
+	}
+	for _, head := range []string{uniqueHead, f.preserved} {
+		mustRun(t, f.local, "merge-base", "--is-ancestor", head, merged)
 	}
 	if got := readOptional(t, filepath.Join(f.local, "unlanded.txt")); got != "unlanded work\n" {
 		t.Fatalf("unlanded work lost: %q", got)
 	}
-	if f.custodyReturned() {
-		t.Fatal("escalation stamped custody")
-	}
 }
 
-// TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines
-// pins the deliberate boundary of the narrowed contract. When the pipeline both
-// rebased the branch and superseded the operator's own lines, the operator's
-// content is genuinely absent from the preserved head and nothing available to
-// recovery distinguishes a deliberate fix from a dropped change. No-data-loss
-// wins: the ambiguous case escalates for an operator decision rather than being
-// adopted on a patch-identity guess.
-func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t *testing.T) {
+// TestRecoverRebasedPreservedHeadAsksForOneDecisionWhenFixRoundsRewroteOperatorLines
+// pins the semantic-conflict boundary. Recovery preserves both exact heads,
+// leaves the branch and worktree untouched, and reports one merge command
+// rather than choosing whether the pipeline rewrite or operator text wins.
+func TestRecoverRebasedPreservedHeadAsksForOneDecisionWhenFixRoundsRewroteOperatorLines(t *testing.T) {
 	t.Parallel()
 
 	f := newRebasedRecoverFixtureWithPipelineWork(t, types.RunCancelled, func(t *testing.T, pipelineDir string) {
@@ -2542,8 +2667,9 @@ func TestRecoverRebasedPreservedHeadEscalatesWhenFixRoundsRewroteOperatorLines(t
 	if state.Recovered || state.Changed {
 		t.Fatalf("ambiguous rewritten-lines rebase was auto-recovered: %#v", state)
 	}
-	if state.Safety != "blocked_recover_diverged" {
-		t.Fatalf("recover with rewritten operator lines = %s", state.Safety)
+	if state.Safety != "blocked_recover_content_conflict" || state.NextAction == nil ||
+		state.NextAction.Code != "merge_preserved_histories" {
+		t.Fatalf("recover with rewritten operator lines = %#v", state)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
 		t.Fatalf("HEAD moved to %s despite an unprovable containment claim", got)
@@ -2799,11 +2925,11 @@ func TestRecoverSquashedEquivalentPreservedHeadAdopts(t *testing.T) {
 	}
 }
 
-// TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork is the
-// counterfactual for that proof: when the squash DROPS one of the operator's
-// changes, the preserved head no longer contains it and recovery must escalate
-// rather than silently discard it.
-func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testing.T) {
+// TestRecoverSquashedPreservedHeadAsksForOneDecisionForDroppedLocalWork is the
+// counterfactual for the containment proof: when the squash drops operator
+// content, the clean lossless merge conflicts and recovery asks for one exact
+// merge decision without moving the branch or touching the worktree.
+func TestRecoverSquashedPreservedHeadAsksForOneDecisionForDroppedLocalWork(t *testing.T) {
 	t.Parallel()
 
 	f := newRebasedRecoverFixture(t, types.RunCancelled)
@@ -2826,8 +2952,9 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 	}
 
 	state := f.service.Recover(f.ctx, false)
-	if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" {
-		t.Fatalf("dropped local work was auto-recovered: %#v", state)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_content_conflict" ||
+		state.NextAction == nil || state.NextAction.Code != "merge_preserved_histories" {
+		t.Fatalf("dropped local work recovery = %#v", state)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
 		t.Fatalf("HEAD moved to %s despite dropped local work", got)

@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -221,6 +222,96 @@ func RestoreReconciledBranch(ctx context.Context, gateDir, branch string, result
 		return fmt.Errorf("restore private mirror %s: %w", ref, err)
 	}
 	return nil
+}
+
+// AdvancePrivateMirrorForRecovery archives the exact current private branch
+// head and advances the branch to a recovered worktree head without firing the
+// receive hook. Recovery callers must supply the complete set of run-proven
+// heads the private branch is allowed to hold. Any other or concurrently moved
+// head refuses before the branch changes. An absent gate or branch is already
+// free of stale private-mirror state and is therefore a no-op.
+//
+// Unlike publication reconciliation, this operation does not require the old
+// private content to survive in liveHead: the immutable archive tag is the
+// preservation boundary. The branch update is compare-and-swap guarded, and a
+// failed update leaves the archive plus the original branch intact.
+func AdvancePrivateMirrorForRecovery(ctx context.Context, gateDir, workDir, branch, liveHead string, allowedPrivateHeads ...string) (StaleBranchReconciliation, error) {
+	var result StaleBranchReconciliation
+	branch = strings.TrimSpace(branch)
+	liveHead = strings.TrimSpace(liveHead)
+	if branch == "" || liveHead == "" {
+		return result, fmt.Errorf("advance recovered private mirror: branch and live head are required")
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, fmt.Errorf("inspect recovered private mirror: %w", err)
+	}
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return result, fmt.Errorf("advance recovered private mirror: %w", err)
+	}
+	if _, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch); err != nil {
+		return result, fmt.Errorf("advance recovered private mirror branch %q: invalid branch name: %w", branch, err)
+	}
+	resolvedLive, err := git.Run(ctx, workDir, "rev-parse", "--verify", liveHead+"^{commit}")
+	if err != nil || resolvedLive != liveHead {
+		return result, fmt.Errorf("advance recovered private mirror branch %s: live head %s is not an exact commit", branch, liveHead)
+	}
+	branchRef := "refs/heads/" + branch
+	privateHead, exists, err := git.DirectRefTarget(ctx, gateDir, branchRef)
+	if err != nil {
+		return result, fmt.Errorf("inspect recovered private mirror ref %s: %w", branchRef, err)
+	}
+	if !exists || privateHead == liveHead {
+		return result, nil
+	}
+	allowed := false
+	for _, head := range allowedPrivateHeads {
+		if privateHead == strings.TrimSpace(head) && privateHead != "" {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return result, fmt.Errorf("recovered private mirror ref %s is at unproven head %s", branchRef, privateHead)
+	}
+	workDir, err = filepath.Abs(workDir)
+	if err != nil {
+		return result, fmt.Errorf("advance recovered private mirror branch %s: resolve worktree path: %w", branch, err)
+	}
+	if err := git.FetchRemoteRef(ctx, gateDir, workDir, liveHead, liveHead); err != nil {
+		return result, fmt.Errorf("stage recovered head for private mirror: %w", err)
+	}
+	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", privateHead); err != nil || objectType != "commit" {
+		return result, fmt.Errorf("recovered private mirror ref %s does not point at a commit", branchRef)
+	}
+
+	archiveTag := "refs/tags/no-mistakes-abandoned/" + branch + "/" + privateHead
+	archivedHead, archived, err := git.DirectRefTarget(ctx, gateDir, archiveTag)
+	if err != nil {
+		return result, fmt.Errorf("inspect recovered private mirror archive tag %s: %w", archiveTag, err)
+	}
+	if archived && archivedHead != privateHead {
+		return result, fmt.Errorf("recovered private mirror archive tag %s already points at %s, not %s", archiveTag, archivedHead, privateHead)
+	}
+	if !archived {
+		if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", archiveTag, privateHead, strings.Repeat("0", len(privateHead))); err != nil {
+			return result, fmt.Errorf("archive recovered private mirror head %s at %s: %w", privateHead, archiveTag, err)
+		}
+	}
+	if _, err := git.Run(ctx, gateDir, "update-ref", "--no-deref", branchRef, liveHead, privateHead); err != nil {
+		return result, fmt.Errorf("advance recovered private mirror ref %s from %s to %s: %w", branchRef, privateHead, liveHead, err)
+	}
+	publishedHead, published, err := git.DirectRefTarget(ctx, gateDir, branchRef)
+	if err != nil || !published || publishedHead != liveHead {
+		return result, fmt.Errorf("verify recovered private mirror ref %s at %s: head=%s exists=%t err=%v", branchRef, liveHead, publishedHead, published, err)
+	}
+	archivedHead, archived, err = git.DirectRefTarget(ctx, gateDir, archiveTag)
+	if err != nil || !archived || archivedHead != privateHead {
+		return result, fmt.Errorf("verify recovered private mirror archive tag %s at %s: head=%s exists=%t err=%v", archiveTag, privateHead, archivedHead, archived, err)
+	}
+	return StaleBranchReconciliation{Reconciled: true, PreviousHead: privateHead, ArchivedTag: archiveTag}, nil
 }
 
 // ArchivedHeadRecorded reports whether head is the exact commit archived for

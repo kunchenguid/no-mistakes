@@ -611,7 +611,8 @@ The key is matched against the checkout path recorded at `init`. After moving a 
 
 ### auto_fix
 
-Maximum follow-up auto-fix attempts per step. Set a step to `0` to disable the follow-up auto-fix loop, so findings require manual approval.
+Maximum automatic follow-up fix attempts per step. Set a step to `0` to park before any automatic follow-up.
+Review is deliberately narrower: one total fixer execution per run, whether automatic or user-triggered. `auto_fix.review: 0` leaves that execution available for an explicit Fix response; any positive value spends it automatically on eligible findings. Higher values do not authorize further Review fixer rounds.
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
 For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings then pause for approval instead of starting another automatic fix loop.
 
@@ -622,7 +623,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | Field               | Type  | Default | Description                                                                                 |
 | ------------------- | ----- | ------- | ------------------------------------------------------------------------------------------- |
 | `auto_fix.rebase`   | `int` | `3`     | Rebase conflict auto-fix attempts                                                           |
-| `auto_fix.review`   | `int` | `0`     | Review finding auto-fix attempts                                                            |
+| `auto_fix.review`   | `int` | `0`     | Automatic use of Review's one total fixer execution (`0` parks first; positive spends it)                    |
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |

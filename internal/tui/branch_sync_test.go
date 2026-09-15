@@ -247,7 +247,7 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	}
 }
 
-func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T) {
+func TestArchiveRecoveryConfirmationJoinsBothExactHistories(t *testing.T) {
 	run := &ipc.RunInfo{ID: "run-archive", Branch: "feature", Status: types.RunCancelled}
 	m := NewModel("socket", nil, run)
 	stranded := branchsync.State{
@@ -257,27 +257,27 @@ func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T)
 		Recovery: &branchsync.RecoveryEvidence{
 			Source: "bound_archive", RepositoryID: "repo-1", RunID: run.ID, Branch: "feature",
 			RequiredHead: strings.Repeat("a", 40), PreservedHead: strings.Repeat("c", 40),
-			ArchiveRef: "refs/heads/archive/run-archive", KeepLocal: true, Proof: "verified",
+			ArchiveRef: "refs/heads/archive/run-archive", Integration: "merge_histories", Proof: "verified",
 		},
-		NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"},
+		NextAction: &branchsync.NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"},
 	}
 	m.branchSync = &stranded
 	called := false
 	m.syncRecover = func(keepLocal bool) branchsync.State {
 		called = true
-		if !keepLocal {
-			t.Fatal("archive recovery did not use keep-local")
+		if keepLocal {
+			t.Fatal("archive recovery silently chose keep-local instead of joining both histories")
 		}
 		recovered := stranded
-		recovered.State = branchsync.StateSynchronized
-		recovered.Safety = "already_synchronized"
+		recovered.State = branchsync.StateLocalAhead
+		recovered.Safety = "local_ahead"
 		recovered.Recovered = true
-		recovered.Changed = false
+		recovered.Changed = true
 		return recovered
 	}
 
 	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
-	for _, want := range []string{"verified archive", "exact required local head", "u recover custody"} {
+	for _, want := range []string{"verified archive", "joining both exact histories", "u recover custody"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("archive status missing %q:\n%s", want, view)
 		}
@@ -288,7 +288,7 @@ func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T)
 		t.Fatal("archive recovery did not open confirmation")
 	}
 	confirmation := stripANSI(m.View())
-	for _, want := range []string{"never selects or replays the archive", stranded.Recovery.ArchiveRef, stranded.Recovery.RequiredHead} {
+	for _, want := range []string{"ordinary merge commit", "Neither history is selected", stranded.Recovery.ArchiveRef, stranded.Recovery.RequiredHead} {
 		if !strings.Contains(confirmation, want) {
 			t.Errorf("archive confirmation missing %q:\n%s", want, confirmation)
 		}
@@ -300,7 +300,7 @@ func TestArchiveRecoveryConfirmationUsesOnlyGuardedKeepLocalAction(t *testing.T)
 	}
 	next, _ = m.Update(cmd())
 	m = next.(Model)
-	if !called || !m.branchSync.Recovered || m.branchSync.Changed {
+	if !called || !m.branchSync.Recovered || !m.branchSync.Changed {
 		t.Fatalf("archive recovery result = %#v", m.branchSync)
 	}
 }

@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,51 @@ func TestReconcileStaleBranchArchivesPatchEquivalentHeadBeforeNonForcePush(t *te
 	t.Logf("Persisted refs: %s", reconcileGit(t, gateDir, "for-each-ref", "--format=%(refname) %(objectname) %(symref)"))
 	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/reconcile"); got != liveHead {
 		t.Fatalf("non-force push reached %s, want %s", got, liveHead)
+	}
+}
+
+func TestAdvancePrivateMirrorForRecoveryArchivesExactOldHeadAndPublishesRecoveredHead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	work := initReconcileRepo(t)
+	base := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	for i := 1; i <= 3; i++ {
+		name := fmt.Sprintf("private-%d.txt", i)
+		writeReconcileFile(t, work, name, fmt.Sprintf("private mirror history %d\n", i))
+		reconcileGit(t, work, "add", name)
+		reconcileGit(t, work, "commit", "-m", fmt.Sprintf("private mirror head %d", i))
+	}
+	privateHead := reconcileGit(t, work, "rev-parse", "HEAD")
+	reconcileGit(t, work, "reset", "--hard", base)
+	writeReconcileFile(t, work, "recovered.txt", "recovered history\n")
+	reconcileGit(t, work, "add", "recovered.txt")
+	reconcileGit(t, work, "commit", "-m", "recovered head")
+	recoveredHead := reconcileGit(t, work, "rev-parse", "HEAD")
+
+	gateDir := filepath.Join(t.TempDir(), "gate.git")
+	reconcileGit(t, "", "init", "--bare", gateDir)
+	reconcileGit(t, gateDir, "fetch", work, privateHead+":refs/heads/feature/recover")
+
+	if _, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/recover", recoveredHead, ""); err == nil || !strings.Contains(err.Error(), "3 at-risk commit(s)") {
+		t.Fatalf("fixture did not reproduce the canary admission refusal: %v", err)
+	}
+	result, err := AdvancePrivateMirrorForRecovery(ctx, gateDir, work, "feature/recover", recoveredHead, privateHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reconciled || result.PreviousHead != privateHead {
+		t.Fatalf("advance result = %+v", result)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", "refs/heads/feature/recover"); got != recoveredHead {
+		t.Fatalf("private mirror = %s, want recovered head %s", got, recoveredHead)
+	}
+	if got := reconcileGit(t, gateDir, "rev-parse", result.ArchivedTag); got != privateHead {
+		t.Fatalf("archive = %s, want private head %s", got, privateHead)
+	}
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, work, "feature/recover", recoveredHead, "")
+	if err != nil || plan.Reconcile {
+		t.Fatalf("settled mirror still refused the recovered head: plan=%+v err=%v", plan, err)
 	}
 }
 

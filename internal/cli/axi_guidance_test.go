@@ -154,9 +154,10 @@ func TestBranchSyncGuidance_EmittedForBoundArchiveRecovery(t *testing.T) {
 	for _, want := range []string{
 		"branch_sync:",
 		"code: recover_custody",
-		"command: no-mistakes axi sync --recover --keep-local",
+		"command: no-mistakes axi sync --recover",
+		"integration: merge_histories",
 		"bound archive preserves a divergent later head",
-		"custody returns at the reported required head",
+		"ordinary merge commit",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("axi home missing recovery guidance %q:\n%s", want, out)

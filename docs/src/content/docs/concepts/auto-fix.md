@@ -55,7 +55,7 @@ Nothing that survives a rerun falls into the agent loop either. A check the prov
 ## Configuration
 
 Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
-Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
+Setting a step to `0` disables automatic spending, so the pipeline pauses for human input when that step finds issues. Review has a separate total cycle cap: one initial review, at most one bundled fixer execution, one full rereview, then one explicit approve or skip decision if blocking findings remain. `auto_fix.review: 0` parks before spending that fixer execution; any positive value spends it automatically on eligible `auto-fix` findings. Higher values do not create more Review fixer rounds.
 Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
 ## Finding actions
@@ -91,7 +91,7 @@ When the pipeline pauses for approval, you can manually trigger a fix from the T
 The agent receives the merged fix payload for that round: the selected agent findings, any per-finding user notes, any selected user-authored findings added from the TUI or AXI interface, and the shared [finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history).
 The current step's part of that history also includes one-line summaries from earlier fix commits.
 
-After a user-triggered fix, the step re-runs. It completes if the check passes, or pauses again with the new results in `fix_review` status. You can then approve, fix again, skip, or abort, subject to the [`protected_paths` refusal rules](/no-mistakes/reference/repo-config/#protected_paths).
+After a user-triggered fix, the step re-runs. It completes if the check passes, or pauses again with the new results in `fix_review` status. Review then allows only approve or skip because its one total fixer execution is spent; other steps retain their configured fix behavior. Protected-path refusals keep their stricter rules.
 
 ## Fix commits
 
@@ -109,10 +109,11 @@ Repositories can opt into [`protected_paths`](/no-mistakes/reference/repo-config
 
 ## Step rounds
 
-Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database.
+Each execution of a step (initial run or follow-up fix run) is recorded as a "round" in the database.
 A round stores its findings, duration, any selected finding IDs and whether that selection came from the user or auto-fix filtering, the merged finding payload actually sent to the fix agent for that round, and any one-line fix summary from that execution.
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
-AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
+Review schema/output retries happen inside one review execution and do not create or spend fixer rounds.
+AXI status uses the same durable history after daemon restart. A Review gate includes `review_round`, fixer runs used, limit, remaining, and the exact allowed next actions; other steps retain summaries such as `auto-fix 1/3` or `fix 2`.
 The step log records a marker when each automatic or user-triggered fix round starts.
 The generated PR surfaces this recorded evidence in deterministic Risk Assessment, Testing, and Pipeline sections. The [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body composition and size-limit contract.
 The full round history remains available in the run log.

@@ -104,6 +104,7 @@ type stepView struct {
 	RoundCount       int
 	FixRoundCount    int
 	AutoFixLimit     int
+	FixRoundLimit    int
 	PendingFixSource string
 	QuietWarning     time.Duration
 	SkipReason       string
@@ -157,6 +158,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 			RoundCount:       s.RoundCount,
 			FixRoundCount:    s.FixRoundCount,
 			AutoFixLimit:     s.AutoFixLimit,
+			FixRoundLimit:    s.FixRoundLimit,
 			PendingFixSource: s.PendingFixSource,
 			WorkScope:        s.WorkScope,
 			SkipReason:       s.SkipReason,
@@ -198,6 +200,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		}
 		if s.AutoFixLimit != nil {
 			sv.AutoFixLimit = *s.AutoFixLimit
+		}
+		if s.StepName == types.StepReview {
+			sv.FixRoundLimit = pipeline.ReviewFixRoundLimit
 		}
 		if s.SkipReason != nil {
 			sv.SkipReason = *s.SkipReason
@@ -399,6 +404,9 @@ func (s stepView) roundSummary() string {
 		if s.PendingFixSource != "" {
 			attempt++
 		}
+		if s.FixRoundLimit > 0 {
+			return fmt.Sprintf("fix %d/%d", attempt, s.FixRoundLimit)
+		}
 		if s.PendingFixSource == db.RoundSelectionSourceAutoFix {
 			if s.AutoFixLimit > 0 {
 				return fmt.Sprintf("auto-fix %d/%d", attempt, s.AutoFixLimit)
@@ -506,12 +514,44 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 	return rows
 }
 
+func (s stepView) effectiveFixRoundLimit() int {
+	if s.Name == string(types.StepReview) {
+		return pipeline.ReviewFixRoundLimit
+	}
+	return s.FixRoundLimit
+}
+
+func reviewCycleField(gate stepView) toon.Field {
+	used := gate.FixRoundCount
+	if gate.PendingFixSource != "" {
+		used++
+	}
+	limit := gate.effectiveFixRoundLimit()
+	remaining := max(limit-used, 0)
+	actions := []string{"approve", "skip"}
+	nextAction := "approve_or_skip"
+	if remaining > 0 {
+		actions = append([]string{"fix"}, actions...)
+		nextAction = "fix_or_decide"
+	}
+	return toon.Field{Key: "review_cycle", Value: toon.NewObject(
+		toon.Field{Key: "review_round", Value: gate.RoundCount},
+		toon.Field{Key: "fixer_runs_used", Value: used},
+		toon.Field{Key: "fixer_runs_limit", Value: limit},
+		toon.Field{Key: "fixer_runs_remaining", Value: remaining},
+		toon.Field{Key: "next_action", Value: nextAction},
+		toon.Field{Key: "allowed_actions", Value: actions},
+	)}
+}
+
 // gateFields renders the active approval gate: the awaiting step, its findings
 // table, and the next-step commands an agent can run to clear it.
 func gateFields(gate stepView) []toon.Field {
 	help := []string{
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
-		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
+	}
+	if gate.Name != string(types.StepReview) || gate.FixRoundCount < gate.effectiveFixRoundLimit() {
+		help = append(help, "Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)")
 	}
 	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{
@@ -540,17 +580,21 @@ func gateFieldsWithHelp(gate stepView, help []string) []toon.Field {
 		{Key: "step", Value: gate.Name},
 		{Key: "status", Value: gate.Status},
 	}
+	if gate.Name == string(types.StepReview) {
+		gfields = append(gfields, reviewCycleField(gate))
+	}
 	if parsed.Summary != "" {
 		gfields = append(gfields, toon.Field{Key: "summary", Value: truncate(parsed.Summary, maxGateSummary)})
 	}
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
 	}
-	// Point-of-use reminder at the review gate: review auto-fix defaults to
-	// disabled, so agents should expect blocking and ask-user findings to park
-	// unless config explicitly opts back in.
+	// Point-of-use review contract: auto_fix.review controls whether the one
+	// shared fixer execution starts automatically. Ask-user findings always
+	// remain explicit decisions, and a completed fixer leaves only a terminal
+	// approve-or-skip decision.
 	if gate.Name == string(types.StepReview) {
-		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+		gfields = append(gfields, toon.Field{Key: "note", Value: "Review allows one total fixer execution. `auto_fix.review: 0` parks before spending it; `auto_fix.review > 0` automatically spends it on auto-fix findings. Ask-user findings always require an explicit decision."})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

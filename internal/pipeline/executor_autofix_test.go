@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,8 +17,8 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
-	// Config with auto-fix enabled for review (max 3 attempts)
-	cfg := &config.Config{AutoFix: config.AutoFix{Review: 3}}
+	// auto_fix.review=1 automatically spends Review's one fixer execution.
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 1}}
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -56,6 +57,45 @@ func TestExecutor_AutoFixTriggersWithoutApproval(t *testing.T) {
 	updated, _ := database.GetRun(run.ID)
 	if updated.Status != types.RunCompleted {
 		t.Errorf("expected run status %q, got %q", types.RunCompleted, updated.Status)
+	}
+}
+
+func TestExecutor_ReviewStopsAfterSingleAutomaticFix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		budget int
+	}{
+		{name: "intended_auto_fix_review_one", budget: 1},
+		{name: "larger_config_does_not_expand_cap", budget: 9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			workDir := t.TempDir()
+			var calls atomic.Int32
+			step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+				calls.Add(1)
+				return &StepOutcome{
+					NeedsApproval: true,
+					AutoFixable:   true,
+					Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"persists","action":"auto-fix"}],"summary":"one issue"}`,
+				}, nil
+			}}
+
+			exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: tc.budget}}, nil, []Step{step}, nil)
+			done, cancel := startExecutor(t, exec, run, repo, workDir)
+			defer cancel()
+			waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("Review executions = %d, want initial review plus one fixer/rereview", got)
+			}
+			if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err == nil {
+				t.Fatal("spent Review cycle accepted another ordinary Fix response")
+			}
+			if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+				t.Fatalf("approve terminal review decision: %v", err)
+			}
+			waitExecutorDone(t, done)
+		})
 	}
 }
 
@@ -190,6 +230,69 @@ func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
 	waitExecutorDone(t, done)
+}
+
+// TestExecutor_ReviewFixBudgetBoundsManualResponses reproduces the operational
+// loop where auto_fix.review=0 parked every finding but each ordinary Fix
+// response bought another fixer plus rereview. The initial review and the one
+// authorized fixer/rereview are the complete review cycle; a second Fix must be
+// rejected while the terminal decision gate stays usable.
+func TestExecutor_ReviewFixBudgetBoundsManualResponses(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	var calls atomic.Int32
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			calls.Add(1)
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"id":"review-1","severity":"warning","description":"still reported","action":"auto-fix"}],"summary":"one issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 0}}, nil, []Step{step}, nil)
+	done, cancel := startExecutor(t, exec, run, repo, workDir)
+	defer cancel()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatalf("first Fix response: %v", err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("review executions after one fix = %d, want initial plus one fixer/rereview", got)
+	}
+
+	secondFixErr := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"})
+	if secondFixErr == nil {
+		waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixing)
+		waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve terminal review decision: %v", err)
+	}
+	waitExecutorDone(t, done)
+
+	if secondFixErr == nil {
+		t.Fatal("second Fix response started an unbounded review correction loop")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("review executions = %d, want exactly initial plus one fixer/rereview", got)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("load completed review step: steps=%d err=%v", len(steps), err)
+	}
+	stats, err := database.StepRoundStats(steps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalRounds != 2 || stats.FixRounds != 1 {
+		t.Fatalf("durable review rounds = total %d fix %d, want 2 and 1", stats.TotalRounds, stats.FixRounds)
+	}
 }
 
 func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {

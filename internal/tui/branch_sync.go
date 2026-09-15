@@ -21,8 +21,8 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		switch state.State {
 		case branchsync.StatePipelineOwned:
 			if recoverableBranchSync(state) {
-				if archiveKeepLocalRecovery(state) {
-					message = "Later pipeline work is preserved by a verified archive. Recover custody while keeping the exact required local head."
+				if archiveMergeRecovery(state) {
+					message = "Later pipeline work is preserved by a verified archive. Recover custody by joining both exact histories."
 				} else {
 					message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
 				}
@@ -112,8 +112,9 @@ func recoverableBranchSync(state *branchsync.State) bool {
 	return state != nil && state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable"
 }
 
-func archiveKeepLocalRecovery(state *branchsync.State) bool {
-	return state != nil && state.Recovery != nil && state.Recovery.Source == "bound_archive" && state.Recovery.KeepLocal && state.Recovery.Proof == "verified"
+func archiveMergeRecovery(state *branchsync.State) bool {
+	return state != nil && state.Recovery != nil && state.Recovery.Source == "bound_archive" &&
+		state.Recovery.Integration == "merge_histories" && state.Recovery.Proof == "verified"
 }
 
 func renderRecoverConfirmation(state branchsync.State, width int) string {
@@ -122,24 +123,24 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits.\n", state.Pipeline.Status)
-	if archiveKeepLocalRecovery(&state) {
-		fmt.Fprintf(&b, "A verified archive preserves the divergent later head. Recovery keeps the\n")
-		fmt.Fprintf(&b, "working branch at the exact required head and returns custody through the\n")
-		fmt.Fprintf(&b, "guarded keep-local path. It never selects or replays the archive.\n\n")
+	if archiveMergeRecovery(&state) {
+		fmt.Fprintf(&b, "A verified archive preserves the divergent later head. Recovery creates one\n")
+		fmt.Fprintf(&b, "ordinary merge commit with the exact local and preserved heads as parents.\n")
+		fmt.Fprintf(&b, "Neither history is selected, reset, deleted, or force-pushed.\n\n")
 	} else {
-		fmt.Fprintf(&b, "Recovery returns custody by fast-forwarding a clean behind worktree, or by\n")
-		fmt.Fprintf(&b, "adopting a diverged preserved head only when it is proven to carry every\n")
-		fmt.Fprintf(&b, "local change.\n\n")
+		fmt.Fprintf(&b, "Recovery returns custody by fast-forwarding a clean behind worktree, adopting\n")
+		fmt.Fprintf(&b, "a preserved head proven to carry every local change, or joining both clean\n")
+		fmt.Fprintf(&b, "histories with one ordinary merge commit.\n\n")
 	}
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n", state.Pipeline.CurrentHead)
-	if archiveKeepLocalRecovery(&state) {
+	if archiveMergeRecovery(&state) {
 		fmt.Fprintf(&b, "Archive ref:    %s\n", state.Recovery.ArchiveRef)
 		fmt.Fprintf(&b, "Required HEAD:  %s\n\n", state.Recovery.RequiredHead)
-		b.WriteString("Any changed archive, head, branch, run, repository, or gate evidence makes recovery refuse without selecting the divergent head.")
+		b.WriteString("Any changed archive, head, branch, run, repository, or gate evidence makes recovery refuse. A content conflict stops before branch mutation and reports one exact manual merge action.")
 	} else {
-		b.WriteString("\nDirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead.")
+		b.WriteString("\nDirty worktrees refuse. A content conflict stops before branch mutation and reports one exact manual merge action; `no-mistakes sync --recover --keep-local` explicitly keeps only the current head instead.")
 	}
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }

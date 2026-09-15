@@ -197,9 +197,9 @@ func TestReviewStep_WallClockTimeoutPreservesTheAgentReport(t *testing.T) {
 }
 
 // TestReviewStep_EachAgentInvocationGetsItsOwnBudget pins the
-// review_agent_timeout ownership contract across two complete auto-fix cycles.
-// Each successful fixer consumes 29 of its 30 fake minutes; both independent
-// rereviewers must still start with a fresh full 30-minute allowance.
+// review_agent_timeout ownership contract across the complete bounded cycle.
+// The fixer consumes 29 of its 30 fake minutes; the independent rereviewer
+// must still start with a fresh full 30-minute allowance.
 func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -232,9 +232,9 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"fixed it"}`)}, nil
 			}
 			fakeNow = fakeNow.Add(reviewWork)
-			// Initial review and the first rereview each request another fix;
-			// the second independent rereview certifies the result.
-			if len(calls) == 1 || len(calls) == 3 {
+			// The initial review requests the one fix. Its independent
+			// rereviewer certifies the result.
+			if len(calls) == 1 {
 				return &agent.Result{Output: json.RawMessage(findings)}, nil
 			}
 			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
@@ -243,7 +243,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.ReviewAgentTimeout = timeout
-	sctx.Config.AutoFix.Review = 2
+	sctx.Config.AutoFix.Review = 1
 
 	step := &ReviewStep{now: func() time.Time { return fakeNow }}
 	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{step}, nil)
@@ -251,14 +251,14 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	// round 1: review; rounds 2 and 3: fixer + independent rereviewer.
-	if len(calls) != 5 {
-		t.Fatalf("agent calls = %d, want 5 (review, fix, rereview, fix, rereview); got %+v", len(calls), calls)
+	// round 1: review; round 2: fixer + independent rereviewer.
+	if len(calls) != 3 {
+		t.Fatalf("agent calls = %d, want 3 (review, fix, rereview); got %+v", len(calls), calls)
 	}
-	wantFix := []bool{false, true, false, true, false}
+	wantFix := []bool{false, true, false}
 	for i := range calls {
 		if calls[i].fixTurn != wantFix[i] {
-			t.Fatalf("turn order = %+v, want review, fix, rereview, fix, rereview", calls)
+			t.Fatalf("turn order = %+v, want review, fix, rereview", calls)
 		}
 		remaining := calls[i].deadline.Sub(calls[i].started)
 		if remaining != timeout {
@@ -267,9 +267,6 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	}
 	if extension := calls[2].deadline.Sub(calls[1].deadline); extension != fixerWork {
 		t.Errorf("long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
-	}
-	if extension := calls[4].deadline.Sub(calls[3].deadline); extension != fixerWork {
-		t.Errorf("second long fixer extended rereviewer deadline by %v, want %v; fixer consumed rereviewer budget", extension, fixerWork)
 	}
 	for i := 1; i < len(calls); i++ {
 		if !calls[i].deadline.After(calls[i-1].deadline) {

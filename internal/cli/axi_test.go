@@ -266,7 +266,7 @@ func TestRunObjectRendersLegacyActiveStepWithoutRoundClock(t *testing.T) {
 	}
 }
 
-func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
+func TestStatusRendersCurrentReviewFixAgainstDurableTotalLimit(t *testing.T) {
 	database := openTestDB(t)
 	repo, err := database.InsertRepo(t.TempDir(), "origin", "main")
 	if err != nil {
@@ -313,11 +313,11 @@ func TestStatusRendersCurrentAutoFixAttemptWithPersistedLimit(t *testing.T) {
 		},
 	}, &rv)
 	out := axiDoc(runObjectField(rv))
-	if !strings.Contains(out, `review,fixing`) || !strings.Contains(out, `auto-fix 1/2`) {
-		t.Fatalf("status should render the in-flight first auto-fix attempt with persisted limit, got:\n%s", out)
+	if !strings.Contains(out, `review,fixing`) || !strings.Contains(out, `fix 1/1`) {
+		t.Fatalf("status should render the in-flight fixer against Review's durable total limit, got:\n%s", out)
 	}
-	if strings.Contains(out, `auto-fix 1/9`) {
-		t.Fatalf("status should not use the current global config limit, got:\n%s", out)
+	if strings.Contains(out, `fix 1/9`) || strings.Contains(out, `fix 1/2`) {
+		t.Fatalf("status should not mistake the automatic budget for the total fixer limit, got:\n%s", out)
 	}
 }
 
@@ -348,8 +348,9 @@ func TestFormatParkedFor(t *testing.T) {
 
 func TestWriteGateShape(t *testing.T) {
 	gate := stepView{
-		Name:   "review",
-		Status: "awaiting_approval",
+		Name:       "review",
+		Status:     "awaiting_approval",
+		RoundCount: 1,
 		FindingsJSON: findingsJSON(t, []types.Finding{
 			{ID: "review-1", Severity: "warning", File: "main.go", Line: 4, Action: types.ActionAskUser, Description: "calls os.Exit, leaks fd"},
 		}, "1 blocking issue"),
@@ -360,15 +361,21 @@ func TestWriteGateShape(t *testing.T) {
 		"gate:\n",
 		"  step: review\n",
 		"  status: awaiting_approval\n",
+		"  review_cycle:\n",
+		"    review_round: 1\n",
+		"    fixer_runs_used: 0\n",
+		"    fixer_runs_limit: 1\n",
+		"    fixer_runs_remaining: 1\n",
+		"    next_action: fix_or_decide\n",
+		`    allowed_actions[3]: fix,approve,skip`,
 		"  summary: 1 blocking issue\n",
 		"  findings[1]{id,severity,file,action,description}:\n",
 		`    review-1,warning,main.go,ask-user,"calls os.Exit, leaks fd"`,
 		"no-mistakes axi respond --action approve",
 		"to have the pipeline fix the selected findings (do not edit files yourself)",
-		// Review gate carries the auto-fix-disabled note and the keep-driving
-		// reminder so an agent reads them at the point of use.
-		"Review auto-fix is disabled by default",
-		"auto_fix.review > 0",
+		"Review allows one total fixer execution",
+		"auto_fix.review: 0",
+		"Ask-user findings always require an explicit decision",
 		"the run never advances past a gate on its own",
 	} {
 		if !strings.Contains(out, want) {
@@ -491,11 +498,11 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 
 	review := mk("review")
-	if !strings.Contains(review, "Review auto-fix is disabled by default") {
-		t.Errorf("review gate missing the auto-fix-disabled note in:\n%s", review)
+	if !strings.Contains(review, "Review allows one total fixer execution") {
+		t.Errorf("review gate missing the bounded review-cycle note in:\n%s", review)
 	}
-	if !strings.Contains(review, "auto_fix.review > 0") {
-		t.Errorf("review gate missing the auto-fix override note in:\n%s", review)
+	if !strings.Contains(review, "auto_fix.review: 0") {
+		t.Errorf("review gate missing the automatic-spend semantics in:\n%s", review)
 	}
 
 	lint := mk("lint")
@@ -504,6 +511,34 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 	if !strings.Contains(lint, "the run never advances past a gate on its own") {
 		t.Errorf("every gate should carry the keep-driving reminder in:\n%s", lint)
+	}
+}
+
+func TestReviewGateAfterFixExposesDecisionOnly(t *testing.T) {
+	gate := stepView{
+		Name:          string(types.StepReview),
+		Status:        string(types.StepStatusFixReview),
+		RoundCount:    2,
+		FixRoundCount: 1,
+		FindingsJSON: findingsJSON(t, []types.Finding{{
+			ID: "review-2", Severity: "warning", Action: types.ActionAutoFix, Description: "still reported",
+		}}, "verification still found an issue"),
+	}
+	out := axiDoc(gateFields(gate)...)
+	for _, want := range []string{
+		"review_round: 2",
+		"fixer_runs_used: 1",
+		"fixer_runs_limit: 1",
+		"fixer_runs_remaining: 0",
+		"next_action: approve_or_skip",
+		`allowed_actions[2]: approve,skip`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("terminal review gate missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "--action fix") {
+		t.Fatalf("terminal review gate still advertises another fixer execution:\n%s", out)
 	}
 }
 

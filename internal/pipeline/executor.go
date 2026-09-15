@@ -35,6 +35,13 @@ const (
 	defaultGateReconcileTimeout  = config.DefaultGateReconcileTimeout
 )
 
+// ReviewFixRoundLimit is the total number of fixer executions allowed in one
+// Review step. auto_fix.review controls whether that one execution is started
+// automatically; a human Fix response can spend it when automatic fixing is
+// disabled. Schema-correction retries happen inside one review execution and
+// do not consume this budget.
+const ReviewFixRoundLimit = 1
+
 type approvalResponse struct {
 	action        types.ApprovalAction
 	findingIDs    []string
@@ -65,6 +72,7 @@ type Executor struct {
 	waiting              bool                  // true when blocked on approval
 	waitingStep          types.StepName        // which step is currently awaiting approval
 	waitingProtectedPath bool                  // approval would skip work refused by protected_paths
+	waitingFixAllowed    bool                  // false after Review spent its one fixer execution
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -174,6 +182,10 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if action == types.ActionApprove && e.waitingProtectedPath {
 		e.mu.Unlock()
 		return fmt.Errorf("cannot approve a protected-path refusal: resolve the reported edit, then use fix to retry %s; approval would skip unfinished work", step)
+	}
+	if action == types.ActionFix && !e.waitingFixAllowed {
+		e.mu.Unlock()
+		return fmt.Errorf("review fix budget exhausted after %d fixer execution; choose approve or skip", ReviewFixRoundLimit)
 	}
 	e.waiting = false
 	e.mu.Unlock()
@@ -305,6 +317,7 @@ type stepExecutionState struct {
 	deferredFindings string
 	roundNum         int
 	autoFixAttempts  int
+	fixAttempts      int
 	executionMS      int64
 	currentRoundID   string
 }
@@ -320,6 +333,9 @@ func (e *Executor) durableExecutionState(stepResultID string) (stepExecutionStat
 		if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix {
 			state.autoFixAttempts++
 		}
+		if round.IsFixRound() {
+			state.fixAttempts++
+		}
 	}
 	return state, nil
 }
@@ -332,6 +348,7 @@ type recoveredGate struct {
 	round           int
 	autoFixes       int
 	lastRoundID     string
+	fixAttempts     int
 	reviewedHeadSHA string
 }
 
@@ -432,6 +449,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.waiting = true
 	e.waitingStep = gate.step.Name()
 	e.waitingProtectedPath = HasProtectedPathRefusal(gate.findings)
+	e.waitingFixAllowed = reviewFixAvailable(gate.step.Name(), gate.fixAttempts)
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
@@ -497,6 +515,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "aborted by user", &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: aborted by user", gate.step.Name()), ctx)
 	case types.ActionFix:
+		if !reviewFixAvailable(gate.step.Name(), gate.fixAttempts) {
+			return e.failRun(run, repo, fmt.Errorf("step %s: review fix budget exhausted after %d fixer execution", gate.step.Name(), ReviewFixRoundLimit), ctx)
+		}
 		telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
 		selected := filterFindingsJSON(gate.findings, response.findingIDs)
 		merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
@@ -521,6 +542,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			previousFindings: merged,
 			deferredFindings: removeMatchingFindingsJSON(gate.findings, selected),
 			roundNum:         gate.round,
+			fixAttempts:      gate.fixAttempts + 1,
 			autoFixAttempts:  gate.autoFixes,
 			executionMS:      duration,
 			currentRoundID:   gate.lastRoundID,
@@ -578,9 +600,13 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
 			autoFixes := 0
+			fixAttempts := 0
 			for _, round := range rounds {
 				if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceAutoFix {
 					autoFixes++
+				}
+				if round.IsFixRound() {
+					fixAttempts++
 				}
 			}
 			gate = &recoveredGate{
@@ -591,6 +617,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				round:       latest.Round,
 				autoFixes:   autoFixes,
 				lastRoundID: latest.ID,
+				fixAttempts: fixAttempts,
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
@@ -700,6 +727,10 @@ func (e *Executor) autoFixLimit(stepName types.StepName) int {
 		return 0
 	}
 	return e.config.AutoFixLimit(stepName)
+}
+
+func reviewFixAvailable(stepName types.StepName, fixAttempts int) bool {
+	return stepName != types.StepReview || fixAttempts < ReviewFixRoundLimit
 }
 
 // executeStep runs a single step with approval coordination.
@@ -816,6 +847,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// roundNum is shared with the perf wrapper's round closure below: an
 	// invocation during execution of round N+1 sees roundNum still at N.
 	autoFixAttempts := state.autoFixAttempts
+	fixAttempts := state.fixAttempts
 	roundNum := state.roundNum
 
 	stepAgent := e.agent
@@ -988,10 +1020,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
-		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
+		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit && reviewFixAvailable(stepName, fixAttempts) {
 			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
 				autoFixAttempts++
+				fixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
 				slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
 				executionMS += time.Since(phaseStart).Milliseconds()
@@ -1048,6 +1081,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		e.waiting = true
 		e.waitingStep = stepName
 		e.waitingProtectedPath = HasProtectedPathRefusal(outcome.Findings)
+		e.waitingFixAllowed = reviewFixAvailable(stepName, fixAttempts)
 		e.mu.Unlock()
 
 		// Parking starts before the gate becomes observable. This includes the
@@ -1126,6 +1160,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, "", fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
+			if !reviewFixAvailable(stepName, fixAttempts) {
+				return false, "", fmt.Errorf("step %s: review fix budget exhausted after %d fixer execution", stepName, ReviewFixRoundLimit)
+			}
 			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(outcome.Findings, response.findingIDs), 0))
 			// Fix - mark step as fixing, resume execution timer, re-execute.
 			phaseStart = time.Now()
@@ -1134,6 +1171,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.StartStepFixRound(sr.ID, autoFixLimit); dbErr != nil {
 				slog.Warn("failed to start step fix round in db", "step", stepName, "error", dbErr)
 			}
+			fixAttempts++
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
@@ -1388,6 +1426,7 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		e.mu.Lock()
 		e.waiting = false
 		e.waitingStep = ""
+		e.waitingFixAllowed = false
 		e.mu.Unlock()
 		// Drain any stale response that arrived after context cancellation or
 		// raced with an external reconciliation.
@@ -1449,6 +1488,7 @@ func (e *Executor) claimGateReconciliation() bool {
 	}
 	e.waiting = false
 	e.waitingStep = ""
+	e.waitingFixAllowed = false
 	return true
 }
 

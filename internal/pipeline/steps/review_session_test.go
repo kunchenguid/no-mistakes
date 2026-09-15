@@ -131,17 +131,15 @@ func fixCalls(calls []agent.RunOpts) []agent.RunOpts {
 }
 
 // TestReviewLoop_IndependentReviewTurnsOneFixerSession drives the real review
-// step through the executor's auto-fix loop for multiple rounds and proves:
-// every review turn (the initial review and every post-fix rereview) runs
-// session-free, N fix rounds share ONE durable fixer session, the review
-// turns never receive the fixer's identity, and every review round still asks
-// for a full review pass of the branch.
+// step through its complete bounded cycle and proves: both review turns run
+// session-free, the one fixer turn receives the durable fixer session, review
+// turns never receive that identity, and the rereview still asks for a full
+// review pass of the branch.
 //
-// Review turns are deliberately session-free: round N's fixes implement round
-// N-1's review findings, so resuming any prior review turn's session would
-// seat the prescriber of those fixes as their certifier. The cross-round
-// context a rereview legitimately needs travels in the explicit sanitized
-// round-history prompt section instead.
+// Review turns are deliberately session-free: the fix implements the initial
+// findings, so resuming that review session would seat the prescriber as the
+// certifier. The rereview's legitimate context travels in the explicit
+// sanitized round-history prompt section.
 func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 	reviewRound := 0
 	mock := &sessionMockAgent{}
@@ -155,7 +153,8 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 					reviewRound, reviewRound,
 				))}
 			}
-			return &agent.Result{Output: []byte(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}
+			t.Fatalf("bounded Review cycle invoked an unexpected third review")
+			return &agent.Result{}
 		case "review-fix":
 			return &agent.Result{Output: []byte(`{"summary":"fix the bug"}`)}
 		default:
@@ -165,18 +164,26 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 	}
 
 	exec, database, run, repo, workDir := reviewSessionHarness(t, mock, []pipeline.Step{&ReviewStep{}})
-	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+	waitForReviewStatus(t, database, run.ID, types.StepStatusFixReview)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve bounded Review cycle: %v", err)
+	}
+	if err := <-done; err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
 	calls := mock.snapshot()
 	reviews := reviewCalls(calls)
 	fixes := fixCalls(calls)
-	if len(reviews) != 3 {
-		t.Fatalf("expected 3 review rounds, got %d", len(reviews))
+	if len(reviews) != 2 {
+		t.Fatalf("expected initial review and one rereview, got %d", len(reviews))
 	}
-	if len(fixes) != 2 {
-		t.Fatalf("expected 2 fix rounds, got %d", len(fixes))
+	if len(fixes) != 1 {
+		t.Fatalf("expected one fixer turn, got %d", len(fixes))
 	}
 
 	// Every review turn is session-free: no identity to start, none resumed.
@@ -186,18 +193,12 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 		}
 	}
 
-	// One durable fixer session: started on the first fix turn, resumed on
-	// the second.
+	// The one fixer turn starts the durable fixer session.
 	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
-		t.Fatalf("first fix must start the fixer session, got %+v", fixes[0].Session)
-	}
-	fixerID := "sess-1"
-	if fixes[1].Session == nil || fixes[1].Session.ID != fixerID {
-		t.Fatalf("second fix must resume %s, got %+v", fixerID, fixes[1].Session)
+		t.Fatalf("fix must start the fixer session, got %+v", fixes[0].Session)
 	}
 
-	// Every review round, including rereviews inside the resumed session,
-	// still demands a full adversarial pass over the branch.
+	// Both review rounds still demand a full adversarial pass over the branch.
 	for i, call := range reviews {
 		if !strings.Contains(call.Prompt, "Do a full review pass before returning") {
 			t.Fatalf("review round %d prompt lost the full-review demand:\n%s", i+1, call.Prompt)

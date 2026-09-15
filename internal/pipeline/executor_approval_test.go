@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,5 +465,75 @@ func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
 	}
 	if got := fixEvent.fields["attempt"]; fmt.Sprint(got) != "1" {
 		t.Fatalf("fix attempt = %v, want 1", got)
+	}
+}
+
+func TestExecutor_ResumePreservesSpentReviewFixBudget(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"still reported","action":"auto-fix"}],"summary":"one issue"}`
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &findings, nil, "1111111111111111111111111111111111111111", 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 2, "auto_fix", &findings, nil, "2222222222222222222222222222222222222222", 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusFixReview, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		t.Fatal("restart reran Review after its fixer budget was spent")
+		return nil, nil
+	}}
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 3}}, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { done <- exec.Resume(ctx, run, repo, t.TempDir()) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err = exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"})
+		if err != nil && strings.Contains(err.Error(), "review fix budget exhausted") {
+			break
+		}
+		if err == nil {
+			t.Fatal("recovered gate accepted a second Review fixer execution")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovered gate did not expose its spent fixer budget: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve terminal decision after restart: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Resume() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor did not finish after explicit decision")
 	}
 }

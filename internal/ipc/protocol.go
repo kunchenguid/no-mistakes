@@ -367,18 +367,21 @@ type StepResultInfo struct {
 	// FixSummaries holds one entry per fix round the pipeline ran for this
 	// step, in round order: the agent's one-line fix summary, or "" when the
 	// round recorded none. Agent surfaces use it to report applied fixes.
-	FixSummaries     []string `json:"fix_summaries,omitempty"`
-	RoundCount       int      `json:"round_count,omitempty"`
-	FixRoundCount    int      `json:"fix_round_count,omitempty"`
-	AutoFixLimit     int      `json:"auto_fix_limit,omitempty"`
-	PendingFixSource string   `json:"pending_fix_source,omitempty"`
-	Error            *string  `json:"error,omitempty"`
-	StartedAt        *int64   `json:"started_at,omitempty"`
-	RoundStartedAt   *int64   `json:"round_started_at,omitempty"`
-	CompletedAt      *int64   `json:"completed_at,omitempty"`
-	LastActivityAt   *int64   `json:"last_activity_at,omitempty"`
-	LastActivity     *string  `json:"last_activity,omitempty"`
-	AgentPID         *int     `json:"agent_pid,omitempty"`
+	FixSummaries  []string `json:"fix_summaries,omitempty"`
+	RoundCount    int      `json:"round_count,omitempty"`
+	FixRoundCount int      `json:"fix_round_count,omitempty"`
+	AutoFixLimit  int      `json:"auto_fix_limit,omitempty"`
+	// FixRoundLimit is the total fixer-execution ceiling when it differs from
+	// AutoFixLimit. Review exposes one shared automatic-or-user fixer budget.
+	FixRoundLimit    int     `json:"fix_round_limit,omitempty"`
+	PendingFixSource string  `json:"pending_fix_source,omitempty"`
+	Error            *string `json:"error,omitempty"`
+	StartedAt        *int64  `json:"started_at,omitempty"`
+	RoundStartedAt   *int64  `json:"round_started_at,omitempty"`
+	CompletedAt      *int64  `json:"completed_at,omitempty"`
+	LastActivityAt   *int64  `json:"last_activity_at,omitempty"`
+	LastActivity     *string `json:"last_activity,omitempty"`
+	AgentPID         *int    `json:"agent_pid,omitempty"`
 	// OverrideReason is non-empty when a human answered ActionApprove on this
 	// step's gate despite an unresolved external condition (currently: the CI
 	// step's live checks were still failing). See

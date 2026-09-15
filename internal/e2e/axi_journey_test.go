@@ -142,6 +142,12 @@ func TestAxiBranchSyncJourney(t *testing.T) {
 		t.Fatalf("init: %v\n%s", err, out)
 	}
 
+	// Initiating transition: the initial Review finding is fixed once and the
+	// fresh rereviewer reports it again. The masking condition was
+	// auto_fix.review: 0: it disabled automatic fixes but left every manual Fix
+	// response unbounded. The observed symptom was a second fixer invocation.
+	// The smallest disconfirming evidence is the durable cycle itself: round 2,
+	// one fixer run used, and only approve/skip remaining.
 	originalHead := h.CommitChange("feature/sync-journey", "feature.txt", "unsafe\n", "add unsafe feature")
 	operator := h.AddWorktree("feature/sync-journey")
 	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature and preserve pipeline fixes")
@@ -151,6 +157,33 @@ func TestAxiBranchSyncJourney(t *testing.T) {
 	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
 	if err != nil {
 		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+	for _, want := range []string{
+		"review_round: 2",
+		"fixer_runs_used: 1",
+		"fixer_runs_limit: 1",
+		"fixer_runs_remaining: 0",
+		"next_action: approve_or_skip",
+		"allowed_actions[2]: approve,skip",
+	} {
+		if !strings.Contains(fixOut, want) {
+			t.Errorf("bounded review status missing %q:\n%s", want, fixOut)
+		}
+	}
+	if strings.Contains(fixOut, "--action fix") {
+		t.Fatalf("verification gate advertised another fixer execution:\n%s", fixOut)
+	}
+	repeatedFix, repeatedErr := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
+	if repeatedErr == nil || !strings.Contains(repeatedFix, "review fix budget exhausted after 1 fixer execution") {
+		t.Fatalf("second ordinary Fix response should be rejected without another round: %v\n%s", repeatedErr, repeatedFix)
+	}
+	stillGated := h.ActiveRun("feature/sync-journey")
+	if stillGated == nil {
+		t.Fatal("rejected second Fix removed the active run")
+	}
+	reviewStep, ok := findStep(stillGated.Steps, types.StepReview)
+	if !ok || reviewStep.Status != types.StepStatusFixReview || reviewStep.RoundCount != 2 || reviewStep.FixRoundCount != 1 {
+		t.Fatalf("rejected second Fix changed the durable review cycle: run=%+v review=%+v", stillGated, reviewStep)
 	}
 	for _, want := range []string{"state: pipeline_owned", "blocked_pipeline_owned", "do not make local follow-up commits"} {
 		if !strings.Contains(fixOut, want) {
@@ -661,16 +694,14 @@ func rebaseCustodyScenario(t *testing.T) string {
 	return path
 }
 
-// TestAxiCustodyRecoveryAfterRebaseJourney is the same cancelled-validation
-// custody return, in the shape that used to over-escalate: the default branch
-// advanced before the run, so the pipeline's own rebase step replayed the
-// operator's commits onto the newer base. The preserved gate head then carries
-// the same logical work under different SHAs, which equality and ancestry alone
-// read as plain divergence - and recovery refused, stranding a branch that
-// could lose nothing by adopting the preserved head. The journey proves the
-// real binary now auto-recovers, keeps the operator's file content, brings the
-// advanced base into the worktree, and anchors the exact pre-recovery commits.
-func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
+// TestAxiCustodyRecoveryJoinsDivergentLocalAndReviewedHistories reproduces two
+// coupled terminal-recovery failures against the real daemon: the pipeline
+// rebased and fixed its reviewed head while the clean task branch retained a
+// different local commit, then successful recovery had previously left the
+// authoritative private mirror on its stale pre-recovery head. Recovery must
+// create one ordinary merge commit with both exact heads as parents, archive
+// and advance that mirror, return custody, and admit a fresh run.
+func TestAxiCustodyRecoveryJoinsDivergentLocalAndReviewedHistories(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: rebaseCustodyScenario(t)})
 	h.CommitChange("init-rebase-recover", "seed.txt", "seed\n", "seed rebase recover init")
 	initWorktree := h.AddWorktree("init-rebase-recover")
@@ -733,46 +764,175 @@ func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
 		t.Fatalf("preserved head %s is an ancestor of submitted %s", preserved, submitted)
 	}
 
+	// The initiating transition is terminal cancellation followed by a clean
+	// local task commit. The old containment-only recovery masked this
+	// mergeable counterexample as generic manual reconciliation.
+	if err := os.WriteFile(filepath.Join(operator, "post-terminal-local.txt"), []byte("local task work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "add", "post-terminal-local.txt"); gitErr != nil {
+		t.Fatalf("stage local task work: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "commit", "-m", "retain local task work"); gitErr != nil {
+		t.Fatalf("commit local task work: %v\n%s", gitErr, out)
+	}
+	localBytes, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD")
+	if gitErr != nil {
+		t.Fatalf("read local divergent head: %v\n%s", gitErr, localBytes)
+	}
+	localHead := strings.TrimSpace(string(localBytes))
+
 	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
 	if err != nil {
-		t.Fatalf("rebase-superset recovery escalated instead of returning custody: %v\n%s", err, recoverOut)
+		t.Fatalf("lossless divergent recovery failed: %v\n%s", err, recoverOut)
 	}
 	for _, want := range []string{"recovered: true", "state: custody_returned", "changed: true", "no-mistakes axi run --intent"} {
 		if !strings.Contains(recoverOut, want) {
 			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
 		}
 	}
-	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
-		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	mergedBytes, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD")
+	merged := strings.TrimSpace(string(mergedBytes))
+	if gitErr != nil || merged == localHead || merged == preserved {
+		t.Fatalf("operator HEAD after recovery = %s (err %v), want a new merge", merged, gitErr)
 	}
-	// The operator's own work survived the adoption unchanged, the advanced
-	// base arrived with it, and the exact pre-recovery commits stay reachable
-	// through the local anchor.
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD^1"); gitErr != nil || strings.TrimSpace(string(got)) != localHead {
+		t.Fatalf("recovery first parent = %s (err %v), want local %s", strings.TrimSpace(string(got)), gitErr, localHead)
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD^2"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
+		t.Fatalf("recovery second parent = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	}
+	// Local work, the advanced base, and the pipeline fix all survive.
 	feature, readErr := os.ReadFile(filepath.Join(operator, "feature.txt"))
 	if readErr != nil || strings.TrimSpace(string(feature)) != "unsafe" {
 		t.Fatalf("operator feature content lost after recovery: %q (err %v)", string(feature), readErr)
 	}
+	if local, localErr := os.ReadFile(filepath.Join(operator, "post-terminal-local.txt")); localErr != nil || strings.TrimSpace(string(local)) != "local task work" {
+		t.Fatalf("local task content lost after recovery: %q (err %v)", string(local), localErr)
+	}
 	if _, statErr := os.Stat(filepath.Join(operator, "upstream-advance.txt")); statErr != nil {
-		t.Fatalf("adopted head did not bring the advanced base into the worktree: %v", statErr)
+		t.Fatalf("recovery did not bring the advanced base into the worktree: %v", statErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(operator, "guard.txt")); statErr != nil {
-		t.Fatalf("adopted head did not bring the pipeline fix into the worktree: %v", statErr)
+		t.Fatalf("recovery did not bring the pipeline fix into the worktree: %v", statErr)
 	}
 	if out, gitErr := h.runGit(context.Background(), operator, "status", "--porcelain"); gitErr != nil || strings.TrimSpace(string(out)) != "" {
-		t.Fatalf("worktree not clean after adoption: %q (err %v)", string(out), gitErr)
+		t.Fatalf("worktree not clean after recovery: %q (err %v)", string(out), gitErr)
 	}
 	localAnchor := "refs/no-mistakes/recover-local/" + run.ID
-	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", localAnchor); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
-		t.Fatalf("pre-recovery anchor %s = %s (err %v), want submitted %s", localAnchor, strings.TrimSpace(string(got)), gitErr, submitted)
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", localAnchor); gitErr != nil || strings.TrimSpace(string(got)) != localHead {
+		t.Fatalf("pre-recovery anchor %s = %s (err %v), want local %s", localAnchor, strings.TrimSpace(string(got)), gitErr, localHead)
+	}
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/feature/rebase-recover"); gitErr != nil || strings.TrimSpace(string(got)) != merged {
+		t.Fatalf("authoritative private mirror = %s (err %v), want recovered head %s", strings.TrimSpace(string(got)), gitErr, merged)
+	}
+	mirrorArchive := "refs/tags/no-mistakes-abandoned/feature/rebase-recover/" + submitted
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", mirrorArchive); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("pre-recovery mirror archive %s = %s (err %v), want %s", mirrorArchive, strings.TrimSpace(string(got)), gitErr, submitted)
 	}
 
-	// Custody is back: a fresh run starts cleanly on the adopted head.
-	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "validate on top of the adopted rebased head")
+	// Custody is back: a fresh run starts cleanly on the joined head.
+	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "validate the lossless recovery merge")
 	if err != nil {
 		t.Fatalf("fresh pipeline start after rebase recovery: %v\n%s", err, freshOut)
 	}
 	if !strings.Contains(freshOut, "gate:") {
 		t.Fatalf("fresh pipeline did not start cleanly after rebase recovery:\n%s", freshOut)
+	}
+}
+
+// TestAxiAlreadyReturnedCustodySettlesStalePrivateMirrorBeforeRun reproduces
+// the installed-upgrade canary: custody is already stamped and the worktree is
+// already at the recovered rebased head, but the authoritative private branch
+// still holds divergent submitted history and has no archive. Repeated recovery
+// must repair both refs before it reports success, then a real run must pass
+// admission immediately.
+func TestAxiAlreadyReturnedCustodySettlesStalePrivateMirrorBeforeRun(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: rebaseCustodyScenario(t)})
+	h.CommitChange("init-returned-recover", "seed.txt", "seed\n", "seed returned recovery init")
+	initWorktree := h.AddWorktree("init-returned-recover")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	branch := "feature/returned-recover"
+	submitted := h.CommitChange(branch, "feature.txt", "unsafe\n", "add unsafe feature")
+	h.CommitChange("main", "upstream-advance.txt", "advance\n", "upstream advance")
+	if out, err := h.runGit(context.Background(), h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("advance upstream main: %v\n%s", err, out)
+	}
+
+	operator := h.AddWorktree(branch)
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "recover an already-returned rebased branch")
+	if err != nil || !strings.Contains(gateOut, "rebase-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	if out, fixErr := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "rebase-1"); fixErr != nil {
+		t.Fatalf("review fix: %v\n%s", fixErr, out)
+	}
+	if out, abortErr := h.RunInDir(operator, "axi", "abort"); abortErr != nil {
+		t.Fatalf("axi abort: %v\n%s", abortErr, out)
+	}
+	run := h.WaitForRun(branch, 30*time.Second)
+	if run.Status != types.RunCancelled {
+		t.Fatalf("run status after abort = %s", run.Status)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	preservedBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", custody.RecoveryRef(run.ID))
+	if err != nil {
+		t.Fatalf("gate preserved head: %v\n%s", err, preservedBytes)
+	}
+	preserved := strings.TrimSpace(string(preservedBytes))
+	if _, ancErr := h.runGit(context.Background(), gateDir, "merge-base", "--is-ancestor", submitted, preserved); ancErr == nil {
+		t.Fatalf("fixture did not create divergent rebased history: %s is an ancestor of %s", submitted, preserved)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "fetch", "--no-tags", gateDir, custody.RecoveryRef(run.ID)); gitErr != nil {
+		t.Fatalf("import preserved head: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "reset", "--hard", preserved); gitErr != nil {
+		t.Fatalf("install recovered worktree head: %v\n%s", gitErr, out)
+	}
+
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stampErr := database.SetRunCustodyReturned(run.ID)
+	closeErr := database.Close()
+	if stampErr != nil || closeErr != nil {
+		t.Fatalf("install returned-custody stamp: %v, close: %v", stampErr, closeErr)
+	}
+	archiveRef := "refs/tags/no-mistakes-abandoned/" + branch + "/" + submitted
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/"+branch); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("stale private mirror = %s (err %v), want %s", strings.TrimSpace(string(got)), gitErr, submitted)
+	}
+	if _, gitErr := h.runGit(context.Background(), gateDir, "show-ref", "--verify", archiveRef); gitErr == nil {
+		t.Fatalf("canary fixture unexpectedly has archive %s", archiveRef)
+	}
+
+	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("already-returned recovery failed: %v\n%s", err, recoverOut)
+	}
+	for _, want := range []string{"recovered: true", "changed: false", "state: custody_returned"} {
+		if !strings.Contains(recoverOut, want) {
+			t.Errorf("already-returned recovery output missing %q:\n%s", want, recoverOut)
+		}
+	}
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/"+branch); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
+		t.Fatalf("authoritative private mirror = %s (err %v), want %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	}
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", archiveRef); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("private mirror archive %s = %s (err %v), want %s", archiveRef, strings.TrimSpace(string(got)), gitErr, submitted)
+	}
+
+	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "validate returned-custody mirror repair")
+	if err != nil {
+		t.Fatalf("fresh pipeline start after mirror repair: %v\n%s", err, freshOut)
+	}
+	if !strings.Contains(freshOut, "gate:") {
+		t.Fatalf("fresh pipeline did not cross admission after mirror repair:\n%s", freshOut)
 	}
 }
 
@@ -1108,19 +1268,25 @@ func TestAxiAgentJourney(t *testing.T) {
 		t.Errorf("axi logs missing step header in:\n%s", logsOut)
 	}
 
-	// --- Fast path: --yes auto-approves the gate to completion ---
+	// --- Automatic path: --yes stops at a real ask-user decision ---
 	h.CommitChange("feature/axi-yes", "feature2.txt", "change2\n", "add feature change 2")
 	yw := h.AddWorktree("feature/axi-yes")
 
 	autoOut, err := h.RunInDir(yw, "axi", "run", "--yes", "--intent", axiIntent)
 	if err != nil {
-		t.Fatalf("axi run --yes (expected exit 0 on pass): %v\n%s", err, autoOut)
+		t.Fatalf("axi run --yes (expected a decision gate): %v\n%s", err, autoOut)
 	}
-	if !strings.Contains(autoOut, "outcome: passed") {
-		t.Errorf("axi run --yes did not report a passing outcome:\n%s", autoOut)
+	for _, want := range []string{"gate:", "ask-user", "explicit decision", "status: awaiting_approval"} {
+		if !strings.Contains(autoOut, want) {
+			t.Errorf("axi run --yes silently handled ask-user finding; missing %q:\n%s", want, autoOut)
+		}
 	}
-	if autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second); autoRun.Status != types.RunCompleted {
-		t.Fatalf("feature/axi-yes run status = %s, want completed", autoRun.Status)
+	if autoRun := h.ActiveRun("feature/axi-yes"); autoRun == nil || autoRun.Status != types.RunRunning {
+		t.Fatalf("feature/axi-yes should remain parked for a decision: %+v", autoRun)
+	}
+	autoDone, err := h.RunInDir(yw, "axi", "respond", "--action", "approve")
+	if err != nil || !strings.Contains(autoDone, "outcome: passed") {
+		t.Fatalf("explicit ask-user decision did not complete the run: %v\n%s", err, autoDone)
 	}
 }
 

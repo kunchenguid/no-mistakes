@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -110,6 +111,9 @@ func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 	info := stepToInfo(d, step)
 	if len(info.FixSummaries) != 1 || info.FixSummaries[0] != sum {
 		t.Errorf("fix summaries = %v, want [%q]", info.FixSummaries, sum)
+	}
+	if info.RoundCount != 2 || info.FixRoundCount != 1 || info.FixRoundLimit != pipeline.ReviewFixRoundLimit {
+		t.Errorf("review cycle = round %d, fixes %d/%d", info.RoundCount, info.FixRoundCount, info.FixRoundLimit)
 	}
 }
 

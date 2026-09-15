@@ -451,14 +451,14 @@ func TestGateResolution(t *testing.T) {
 		wantIDs      []string
 	}{
 		{
-			name: "actionable findings are fixed with every finding selected",
+			name: "auto-fix findings are fixed and no-op findings stay unselected",
 			gate: stepView{
 				Name:         "review",
 				Status:       string(types.StepStatusAwaitingApproval),
-				FindingsJSON: `{"findings":[{"id":"review-1","severity":"warning","description":"design choice","action":"ask-user"},{"id":"review-2","severity":"info","description":"fyi","action":"no-op"}],"summary":"2"}`,
+				FindingsJSON: `{"findings":[{"id":"review-1","severity":"warning","description":"bug","action":"auto-fix"},{"id":"review-2","severity":"info","description":"fyi","action":"no-op"}],"summary":"2"}`,
 			},
 			wantAction: types.ActionFix,
-			wantIDs:    []string{"review-1", "review-2"},
+			wantIDs:    []string{"review-1"},
 		},
 		{
 			name: "only non-actionable findings are approved",
@@ -524,6 +524,50 @@ func TestGateResolution(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGateRequiresUserDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		findings string
+		want     bool
+	}{
+		{
+			name:     "ask-user stays a decision under yes",
+			findings: `{"findings":[{"id":"review-1","severity":"warning","description":"choose policy","action":"ask-user"}]}`,
+			want:     true,
+		},
+		{
+			name:     "missing action fails toward the user",
+			findings: `{"findings":[{"id":"review-1","severity":"warning","description":"unclassified"}]}`,
+			want:     true,
+		},
+		{
+			name:     "auto-fix remains automatic",
+			findings: `{"findings":[{"id":"review-1","severity":"warning","description":"bug","action":"auto-fix"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := stepView{Name: "review", Status: string(types.StepStatusAwaitingApproval), FindingsJSON: tc.findings}
+			if got := gateRequiresUserDecision(gate); got != tc.want {
+				t.Fatalf("gateRequiresUserDecision() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGateRequiresReviewDecision(t *testing.T) {
+	for _, gate := range []stepView{
+		{Name: string(types.StepReview), Status: string(types.StepStatusFixReview)},
+		{Name: string(types.StepReview), Status: string(types.StepStatusAwaitingApproval), FixRoundCount: 1},
+	} {
+		if !gateRequiresReviewDecision(gate) {
+			t.Fatalf("spent Review cycle did not require explicit decision: %+v", gate)
+		}
+	}
+	if gateRequiresReviewDecision(stepView{Name: string(types.StepTest), Status: string(types.StepStatusFixReview)}) {
+		t.Fatal("Review-only decision rule changed Test behavior")
 	}
 }
 

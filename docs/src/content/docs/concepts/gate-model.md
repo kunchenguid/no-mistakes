@@ -129,6 +129,19 @@ awaiting review retain their uncertified range. Publication reconciliation
 therefore still sees any intervening private head; ordinary worktrees with
 separate ref storage retain their local branch bookkeeping.
 
+Successful custody recovery settles an existing mirror before recording custody
+as returned. It stages the exact recovered worktree head into the gate, accepts
+only a current mirror head proven by that run's recorded custody fields,
+archives that head at the same immutable abandoned-history tag, and
+compare-and-swap advances the branch to the recovered head without invoking the
+submission hook. An unrelated or concurrently changed mirror refuses recovery;
+an absent gate or branch has no stale private state to settle. This ordering
+prevents a successful recovery from leaving the next fresh AXI submission to
+rediscover and reject the same private-only commits.
+Recovery rechecks this settlement when an older run already has a
+custody-return stamp, repairing the pre-contract state instead of treating the
+stamp alone as idempotent success.
+
 Publication plans reconciliation before pushing and applies it only after
 verifying the upstream head. If mirror settlement then fails or is cancelled,
 it restores the archived branch when no intervening ref has appeared, so a

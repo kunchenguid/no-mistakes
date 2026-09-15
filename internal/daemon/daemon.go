@@ -1477,6 +1477,9 @@ func stepToInfo(d *db.DB, s *db.StepResult) ipc.StepResultInfo {
 	if s.AutoFixLimit != nil {
 		info.AutoFixLimit = *s.AutoFixLimit
 	}
+	if s.StepName == types.StepReview {
+		info.FixRoundLimit = pipeline.ReviewFixRoundLimit
+	}
 	if stats, err := d.StepFindingStats(s); err == nil {
 		info.ReportedFindings = stats.ReportedFindings
 		info.FixedFindings = stats.FixedFindings

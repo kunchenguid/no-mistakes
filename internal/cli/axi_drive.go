@@ -806,6 +806,14 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 				fmt.Fprintf(progress, "%s: protected-path refusal requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
 			}
+			if gateRequiresReviewDecision(gate) {
+				fmt.Fprintf(progress, "%s: bounded correction cycle complete; explicit approve or skip required; --yes leaves this gate awaiting a response\n", gate.Name)
+				return run, false, nil
+			}
+			if gateRequiresUserDecision(gate) {
+				fmt.Fprintf(progress, "%s: ask-user findings require an explicit decision; --yes leaves this gate awaiting a response\n", gate.Name)
+				return run, false, nil
+			}
 			gateKey := gate.Name + "\x00" + gate.Status
 			if pendingGate == gateKey {
 				// Duplicate or delayed events can race persistence after a response.
@@ -845,23 +853,32 @@ func ciReadyToMerge(rv runView) bool {
 	return false
 }
 
-// gateResolution decides how --yes answers an approval gate. A gate with
-// actionable findings (anything other than purely informational "no-op") is
-// fixed with every finding selected, unless this step was already fixed once -
-// in which case the gate is approved so the run converges instead of looping on
-// a finding the fix cannot clear. Gates with only non-actionable findings, no
-// findings, or actionable findings that carry no IDs (which a fix would resolve
-// to zero selections) are approved.
+// gateResolution decides how --yes answers an approval gate after the
+// protected-path, ask-user, and terminal Review decision gates have been
+// excluded. Eligible auto-fix findings are bundled into one response. Other
+// steps may still auto-approve a post-fix gate under their existing contract;
+// Review never reaches that path after its one correction.
+func gateRequiresUserDecision(gate stepView) bool {
+	findings, err := types.ParseFindingsJSON(gate.FindingsJSON)
+	return err == nil && types.HasAskUserFindings(findings)
+}
+
+func gateRequiresReviewDecision(gate stepView) bool {
+	return gate.Name == string(types.StepReview) &&
+		(gate.Status == string(types.StepStatusFixReview) || gate.FixRoundCount >= gate.effectiveFixRoundLimit())
+}
+
 func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []string) {
 	if alreadyFixed || gate.Status == string(types.StepStatusFixReview) {
 		return types.ActionApprove, nil
 	}
 	parsed, err := types.ParseFindingsJSON(gate.FindingsJSON)
-	if err != nil || !types.HasActionableFindings(parsed) {
+	if err != nil {
 		return types.ActionApprove, nil
 	}
-	ids := make([]string, 0, len(parsed.Items))
-	for _, f := range parsed.Items {
+	fixable := types.AutoFixableFindings(parsed)
+	ids := make([]string, 0, len(fixable.Items))
+	for _, f := range fixable.Items {
 		if f.ID != "" {
 			ids = append(ids, f.ID)
 		}

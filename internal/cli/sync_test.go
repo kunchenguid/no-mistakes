@@ -1101,42 +1101,83 @@ func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	}
 }
 
-func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
+func TestAxiSyncRecoverDivergedJoinsBothHistories(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	if err := os.WriteFile(filepath.Join(f.local, "rescope.txt"), []byte("rescope\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cliGit(t, f.local, "add", "rescope.txt")
 	cliGit(t, f.local, "commit", "-m", "diverging rescope")
-	divergedHead := cliGit(t, f.local, "rev-parse", "HEAD")
+	localHead := cliGit(t, f.local, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("diverged recover should join both histories: %v\n%s", err, out)
+	}
+	for _, want := range []string{"recovered: true", "changed: true", "no-mistakes axi run --intent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lossless recovery output missing %q:\n%s", want, out)
+		}
+	}
+	merged := cliGit(t, f.local, "rev-parse", "HEAD")
+	if got := cliGit(t, f.local, "rev-parse", "HEAD^1"); got != localHead {
+		t.Fatalf("merge first parent = %s, want local %s", got, localHead)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD^2"); got != f.preserved {
+		t.Fatalf("merge second parent = %s, want preserved %s", got, f.preserved)
+	}
+	for _, head := range []string{localHead, f.preserved} {
+		cliGit(t, f.local, "merge-base", "--is-ancestor", head, merged)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != merged {
+		t.Fatalf("authoritative private mirror = %s, want recovered merge %s", got, merged)
+	}
+	archiveTag := "refs/tags/no-mistakes-abandoned/feature/recover/" + f.preserved
+	if got := cliGit(t, f.gate, "rev-parse", archiveTag); got != f.preserved {
+		t.Fatalf("private mirror archive %s = %s, want %s", archiveTag, got, f.preserved)
+	}
+}
+
+func TestAxiSyncRecoverConflictReportsOneManualDecision(t *testing.T) {
+	// Initiating transition: both clean heads edit the same preserved line.
+	// The masking condition is otherwise-valid recovery evidence, but the
+	// observed symptom must be one semantic decision rather than a guessed
+	// winner. This one-line disagreement is the smallest counterexample to an
+	// automatic lossless tree merge.
+	f := newCLIRecoverFixture(t)
+	if err := os.WriteFile(filepath.Join(f.local, "fix.txt"), []byte("operator meaning\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "fix.txt")
+	cliGit(t, f.local, "commit", "-m", "operator meaning")
+	localHead := cliGit(t, f.local, "rev-parse", "HEAD")
 
 	out, err := executeCmd("axi", "sync", "--recover")
 	var ee *exitError
 	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
-		t.Fatalf("diverged recover should exit 1, got %#v\n%s", err, out)
+		t.Fatalf("semantic conflict should park for one decision: %#v\n%s", err, out)
 	}
-	for _, want := range append([]string{"safety: blocked_recover_diverged", "refs/no-mistakes/recover/", "--keep-local"}, canonicalRerunRecoveryPhrases...) {
+	for _, want := range []string{
+		"safety: blocked_recover_content_conflict",
+		"code: merge_preserved_histories",
+		"command: git merge --no-ff refs/no-mistakes/recover/",
+	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("diverged refusal missing %q:\n%s", want, out)
+			t.Errorf("conflict output missing %q:\n%s", want, out)
 		}
 	}
-
-	out, err = executeCmd("axi", "sync", "--recover", "--keep-local")
-	if err != nil {
-		t.Fatalf("keep-local recover: %v\n%s", err, out)
+	if strings.Count(out, "code: ") != 1 {
+		t.Fatalf("conflict output offered more than one decision:\n%s", out)
 	}
-	if !strings.Contains(out, "recovered: true") {
-		t.Fatalf("keep-local output:\n%s", out)
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != localHead {
+		t.Fatalf("conflict recovery moved HEAD from %s to %s", localHead, got)
 	}
-	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != divergedHead {
-		t.Fatal("keep-local moved the worktree")
-	}
-	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != divergedHead {
-		t.Fatalf("gate branch = %s, want kept head %s", got, divergedHead)
+	if got := cliGit(t, f.local, "status", "--porcelain"); got != "" {
+		t.Fatalf("conflict recovery changed the clean worktree: %q", got)
 	}
 }
 
-func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testing.T) {
+func TestAxiArchiveBackedRecoveryJoinsExactRequiredAndPreservedHistories(t *testing.T) {
 	f := newCLIDivergentArchiveFixture(t)
 	if _, err := git.Run(context.Background(), f.local, "merge-base", "--is-ancestor", f.submitted, f.preserved); err == nil {
 		t.Fatal("synthetic later head unexpectedly descends from required head")
@@ -1145,13 +1186,11 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 		t.Fatal("synthetic required head unexpectedly descends from later head")
 	}
 
-	// Initiating trigger: a terminal run recorded a divergent later head.
-	// Masking condition: ordinary take-the-preserved-head eligibility cannot
-	// prove containment. Visible symptom: status asks for manual reconciliation
-	// and does not offer keep-local. blocked_recover_preserved_head_missing is
-	// reserved for a verified head that is truly absent (#958); the archive
-	// target and gate anchor below are disconfirming evidence for that, and
-	// without a binding they still must not be treated as authority.
+	// Initiating transition: a terminal run recorded a divergent reviewed head
+	// while the clean task branch retained different local work. The old
+	// keep-local-only handoff masked that both related histories can be joined.
+	// The exact archive target and gate anchor are the disconfirming evidence
+	// against missing-head recovery; cached detection must remain read-only.
 	beforeDetection := cliRecoveryGitSnapshot(t, f)
 	status, err := executeCmd("axi", "status", "--run", f.runID)
 	if err != nil {
@@ -1159,15 +1198,16 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 	}
 	for _, want := range []string{
 		"relation: diverged",
-		"safety: blocked_recover_manual_reconciliation",
-		"code: inspect_and_reconcile_manually",
+		"safety: blocked_pipeline_owned_recoverable",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover",
 	} {
 		if !strings.Contains(status, want) {
 			t.Errorf("initial status missing %q:\n%s", want, status)
 		}
 	}
-	if strings.Contains(status, "command: no-mistakes axi sync --recover --keep-local") {
-		t.Fatalf("unbound archive was trusted:\n%s", status)
+	if strings.Contains(status, "source: bound_archive") {
+		t.Fatalf("unbound archive was presented as verified evidence:\n%s", status)
 	}
 	if after := cliRecoveryGitSnapshot(t, f); after != beforeDetection {
 		t.Fatal("cached detection changed a branch, ref, or worktree")
@@ -1186,10 +1226,11 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 		"preserved_head:",
 		f.preserved,
 		"archive_ref: " + f.archiveRef,
-		"keep_local: true",
+		"integration: merge_histories",
+		"keep_local: false",
 		"proof: verified",
 		"code: recover_custody",
-		"command: no-mistakes axi sync --recover --keep-local",
+		"command: no-mistakes axi sync --recover",
 	} {
 		if !strings.Contains(bound, want) {
 			t.Errorf("bound state missing %q:\n%s", want, bound)
@@ -1216,7 +1257,7 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 			t.Errorf("moved archive status missing %q:\n%s", want, moved)
 		}
 	}
-	movedRecovery, movedErr := executeCmd("axi", "sync", "--recover", "--keep-local")
+	movedRecovery, movedErr := executeCmd("axi", "sync", "--recover")
 	var movedExit *exitError
 	if movedErr == nil || !asExitError(movedErr, &movedExit) || movedExit.code != 1 || !strings.Contains(movedRecovery, "safety: blocked_recover_archive_moved") {
 		t.Fatalf("moved archive recovery should refuse, got %#v\n%s", movedErr, movedRecovery)
@@ -1226,33 +1267,25 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 	}
 	cliGit(t, f.local, "update-ref", f.archiveRef, f.preserved)
 
-	beforeWrongAction := cliRecoveryGitSnapshot(t, f)
-	refused, err := executeCmd("axi", "sync", "--recover")
-	var ee *exitError
-	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
-		t.Fatalf("default recovery should refuse, got %#v\n%s", err, refused)
-	}
-	for _, want := range []string{"safety: blocked_recover_archive_requires_keep_local", "code: recover_custody", "command: no-mistakes axi sync --recover --keep-local"} {
-		if !strings.Contains(refused, want) {
-			t.Errorf("default recovery refusal missing %q:\n%s", want, refused)
-		}
-	}
-	if after := cliRecoveryGitSnapshot(t, f); after != beforeWrongAction {
-		t.Fatal("refused default recovery changed a branch, ref, or worktree")
-	}
-
 	gateBefore := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover")
-	recovered, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	recovered, err := executeCmd("axi", "sync", "--recover")
 	if err != nil {
-		t.Fatalf("keep-local archive recovery: %v\n%s", err, recovered)
+		t.Fatalf("archive-backed lossless recovery: %v\n%s", err, recovered)
 	}
-	for _, want := range []string{"recovered: true", "changed: false", "state: synchronized", "relation: equal"} {
+	for _, want := range []string{"recovered: true", "changed: true"} {
 		if !strings.Contains(recovered, want) {
 			t.Errorf("recovered state missing %q:\n%s", want, recovered)
 		}
 	}
-	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
-		t.Fatalf("archive recovery selected %s, want exact required head %s", got, f.submitted)
+	merged := cliGit(t, f.local, "rev-parse", "HEAD")
+	if got := cliGit(t, f.local, "rev-parse", "HEAD^1"); got != f.submitted {
+		t.Fatalf("merge first parent = %s, want required head %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD^2"); got != f.preserved {
+		t.Fatalf("merge second parent = %s, want preserved head %s", got, f.preserved)
+	}
+	for _, head := range []string{f.submitted, f.preserved} {
+		cliGit(t, f.local, "merge-base", "--is-ancestor", head, merged)
 	}
 	if got := cliGit(t, f.local, "rev-parse", f.archiveRef); got != f.preserved {
 		t.Fatalf("archive moved to %s, want preserved later head %s", got, f.preserved)
@@ -1260,13 +1293,12 @@ func TestAxiArchiveBackedRecoveryKeepsExactRequiredHeadAndBothHistories(t *testi
 	if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover/"+f.runID); got != f.preserved {
 		t.Fatalf("gate recovery ref = %s, want preserved later head %s", got, f.preserved)
 	}
-	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
-		t.Fatalf("gate branch = %s, want exact required head %s", got, f.submitted)
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != merged {
+		t.Fatalf("authoritative private mirror = %s, want recovered merge %s", got, merged)
 	}
-	if gateBefore != f.submitted && gateBefore != f.preserved {
-		if got := cliGit(t, f.gate, "rev-parse", "refs/no-mistakes/recover-gate/"+f.runID); got != gateBefore {
-			t.Fatalf("independent pre-recovery gate head = %s, want %s", got, gateBefore)
-		}
+	mirrorArchive := "refs/tags/no-mistakes-abandoned/feature/recover/" + gateBefore
+	if got := cliGit(t, f.gate, "rev-parse", mirrorArchive); got != gateBefore {
+		t.Fatalf("private mirror archive %s = %s, want %s", mirrorArchive, got, gateBefore)
 	}
 }
 
