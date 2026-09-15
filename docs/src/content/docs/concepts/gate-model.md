@@ -110,14 +110,27 @@ patch-ID or tree-survival proof. This narrow policy exception permits reviewed
 rebases and conflict resolutions to change the submitted patch. Ownership is
 not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
-Fresh AXI submissions do not receive this exception.
+Ordinary fresh AXI submissions do not receive this exception.
+
+A fresh AXI submission after guarded custody return has one separate, equally
+narrow handoff. It may replace the exact returned terminal head only while the
+selected run is still terminal with verified-head and custody-return stamps, the
+invoking branch and worktree are unchanged and clean, and direct run-specific
+recovery refs in both the worktree and local gate still point to that exact
+head. This lets the prescribed `run_pipeline` action accept an intentionally
+rebased head even when conflict resolution changed its patch identity. Missing,
+symbolic, or conflicting recovery evidence refuses before ref mutation. A gate
+branch that moved away from the returned head gets no exception and must pass
+the ordinary containment proof. The old terminal head remains at both recovery
+refs and gains the normal abandoned-head archive; a rejected submission restores
+the archived branch without replacing any intervening ref.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
-unproven private content refuses before upstream publication, leaves the
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside these two
+narrow policies, unproven private content refuses before publication, leaves the
 private branch untouched, and names every at-risk commit. An ancestor already
 supports an ordinary fast-forward. A gate head that is a newer descendant of
 the published head stays untouched, including through the detached worktree's

@@ -34,8 +34,8 @@ type StaleBranchPlan struct {
 // reconciliation. It removes the branch only after Git proves the live head
 // contains all of its content, or under the exact submitted-head exception
 // described in docs/src/content/docs/concepts/gate-model.md.
-func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchReconciliation, error) {
-	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead)
+func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHead, policyReplacementHead string) (StaleBranchReconciliation, error) {
+	plan, err := PlanStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, policyReplacementHead)
 	if err != nil || !plan.Reconcile {
 		return StaleBranchReconciliation{}, err
 	}
@@ -48,23 +48,26 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // exception, an unproven private head is refused before publication.
 //
 // Rewritten histories require both stable per-file patch identities and final
-// tree survival. runOwnedHead is a policy exception, not containment evidence:
-// publication callers must supply only Run.SubmittedHeadSHA, and fresh
-// submissions must leave it empty. The contract and rationale are owned by
+// tree survival. policyReplacementHead is a policy exception, not containment
+// evidence. Publication supplies only Run.SubmittedHeadSHA (Decision 41-A).
+// A fresh submission normally leaves it empty; the one additional caller is
+// AXI's returned-custody handoff, which supplies the exact terminal head only
+// after revalidating the custody stamp and matching recovery anchors in both
+// repositories. The contract and rationale are owned by
 // docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
-func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, false)
+func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, policyReplacementHead string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, policyReplacementHead, false)
 }
 
-func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, true)
+func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, policyReplacementHead string) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, policyReplacementHead, true)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, preserveDescendants bool) (StaleBranchPlan, error) {
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, policyReplacementHead string, preserveDescendants bool) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
-	runOwnedHead = strings.TrimSpace(runOwnedHead)
+	policyReplacementHead = strings.TrimSpace(policyReplacementHead)
 	if branch == "" || liveHead == "" {
 		return plan, fmt.Errorf("reconcile stale gate branch: branch and live head are required")
 	}
@@ -119,7 +122,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 			return plan, nil
 		}
 	}
-	if gateHead != runOwnedHead {
+	if gateHead != policyReplacementHead {
 		atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
 		if err != nil {
 			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
