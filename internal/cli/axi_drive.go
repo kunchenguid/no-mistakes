@@ -103,7 +103,7 @@ func outcomeFor(status string) string {
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
 	word := outcomeFor(rv.Status)
-	if word == "passed" && rv.CIOverrideReason != "" {
+	if word == "passed" && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
 		return "passed-with-override"
 	}
 	if word == "passed" && len(rv.automaticSkips()) > 0 {
@@ -817,7 +817,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil); err != nil {
+			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, ""); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -903,14 +903,15 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 }
 
 // sendRespond issues an approval action to the daemon for a step.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding) error {
+func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) error {
 	params := &ipc.RespondParams{
-		RunID:         runID,
-		Step:          step,
-		Action:        action,
-		FindingIDs:    findingIDs,
-		Instructions:  instructions,
-		AddedFindings: added,
+		RunID:          runID,
+		Step:           step,
+		Action:         action,
+		FindingIDs:     findingIDs,
+		Instructions:   instructions,
+		AddedFindings:  added,
+		ApprovalReason: approvalReason,
 	}
 	var result ipc.RespondResult
 	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
@@ -954,6 +955,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		help := append([]string{merge}, successReportHelp(fixes)...)
+		if rv.TestOverrideReason != "" {
+			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
+		}
 		if hasBranchSync {
 			help = append(help, branchSyncAgentGuidance)
 		}
@@ -980,6 +984,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		var help []string
 		if rv.CIOverrideReason != "" {
 			help = append(help, fmt.Sprintf("A human approved past a live CI failure: %s", rv.CIOverrideReason))
+		}
+		if rv.TestOverrideReason != "" {
+			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
 		if len(rv.automaticSkips()) > 0 {
 			help = append(help, "Publication or CI verification did not run (see `run.automatic_skips` and `run.head_sha`). Report the missing evidence and its cause; this outcome does not establish CI readiness or a code failure.")
@@ -1039,7 +1046,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding string
+	var action, step, findings, instructions, addFinding, reason string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1067,6 +1074,7 @@ func newAxiRespondCmd() *cobra.Command {
 					findings:     findings,
 					instructions: instructions,
 					addFinding:   addFinding,
+					reason:       reason,
 					autoYes:      autoYes,
 					wait:         wait,
 				})
@@ -1077,6 +1085,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
+	cmd.Flags().StringVar(&reason, "reason", "", "exception reason preserved with Test approval (with --action approve)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve subsequent eligible gates until a decision point or outcome; protected-path refusals require an explicit response")
 	bindAxiWaitFlag(cmd, &wait)
@@ -1089,6 +1098,7 @@ type respondArgs struct {
 	findings     string
 	instructions string
 	addFinding   string
+	reason       string
 	autoYes      bool
 	wait         time.Duration
 }
@@ -1161,6 +1171,10 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		stepName = types.StepName(gate.Name)
 	}
 
+	if ra.reason != "" && (act != types.ActionApprove || stepName != types.StepTest) {
+		return emitError(cmd, 2, "--reason applies only to --action approve on the Test step")
+	}
+
 	findingIDs := splitCSV(ra.findings)
 	var instructions map[string]string
 	var added []types.Finding
@@ -1186,7 +1200,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		}
 	}
 
-	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added); err != nil {
+	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
 

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -32,6 +33,10 @@ type StepResult struct {
 	// commands.test exited non-zero). See
 	// pipeline.ApprovalOverrideVerifier and Executor's two ActionApprove sites.
 	OverrideReason *string
+	// ApprovalReason records an explicit Test-gate approval independently of
+	// the configured-command waiver used by PR enforcement. NULL means no
+	// recorded approval; an empty string means approved without a reason.
+	ApprovalReason *string
 	// SkipReason records an automatic PR/CI skip, distinct from an explicit
 	// per-run skip. Legacy rows have no recorded reason.
 	SkipReason *string
@@ -61,6 +66,11 @@ func (d *DB) readableStepResultColumns() string {
 	} else {
 		columns += ", NULL AS skip_reason"
 	}
+	if d.hasColumn("step_results", "approval_reason") {
+		columns += ", approval_reason"
+	} else {
+		columns += ", NULL AS approval_reason"
+	}
 	return columns
 }
 
@@ -88,7 +98,7 @@ func (d *DB) GetStepResult(id string) (*StepResult, error) {
 	s := &StepResult{}
 	err := d.sql.QueryRow(
 		`SELECT `+d.readableStepResultColumns()+` FROM step_results WHERE id = ?`, id,
-	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason)
+	).Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -118,7 +128,7 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 	var steps []*StepResult
 	for rows.Next() {
 		s := &StepResult{}
-		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason); err != nil {
+		if err := rows.Scan(&s.ID, &s.RunID, &s.StepName, &s.StepOrder, &s.Status, &s.ExitCode, &s.DurationMS, &s.LogPath, &s.FindingsJSON, &s.Error, &s.StartedAt, &s.CompletedAt, &s.LastActivityAt, &s.LastActivity, &s.AgentPID, &s.AutoFixLimit, &s.RoundStartedAt, &s.OverrideReason, &s.SkipReason, &s.ApprovalReason); err != nil {
 			return nil, fmt.Errorf("scan step result: %w", err)
 		}
 		steps = append(steps, s)
@@ -132,7 +142,7 @@ func (d *DB) ResetStepsFrom(runID string, stepOrder int) error {
 		SET status = ?, exit_code = NULL, duration_ms = NULL, log_path = NULL,
 			findings_json = NULL, error = NULL, started_at = NULL,
 			round_started_at = NULL, completed_at = NULL, last_activity_at = NULL, last_activity = NULL,
-			agent_pid = NULL, auto_fix_limit = NULL, override_reason = NULL
+			agent_pid = NULL, auto_fix_limit = NULL, override_reason = NULL, approval_reason = NULL
 		WHERE run_id = ? AND step_order >= ? AND status != ?`, types.StepStatusPending, runID, stepOrder, types.StepStatusSkipped)
 	if err != nil {
 		return fmt.Errorf("reset steps for revalidation: %w", err)
@@ -222,7 +232,7 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 // one recorded by an earlier execution.
 func (d *DB) StartStepFixRound(id string, autoFixLimit int) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, auto_fix_limit = ?, override_reason = NULL WHERE id = ?`, types.StepStatusFixing, ts, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), autoFixLimitDBValue(autoFixLimit), id)
+	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, round_started_at = ?, last_activity_at = ?, last_activity = ?, auto_fix_limit = ?, override_reason = NULL, approval_reason = NULL WHERE id = ?`, types.StepStatusFixing, ts, ts, fmt.Sprintf("status: %s", types.StepStatusFixing), autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step fix round: %w", err)
 	}
@@ -253,6 +263,40 @@ func (d *DB) SetStepOverrideReason(id string, reason string) error {
 	return nil
 }
 
+// SetTestApprovalReason preserves the operator's explanation without changing
+// the command failure marker or its PR-enforcement policy.
+func (d *DB) SetTestApprovalReason(id, reason string) error {
+	result, err := d.sql.Exec(`UPDATE step_results SET approval_reason = ? WHERE id = ? AND step_name = ? AND status IN (?, ?)`,
+		reason, id, types.StepTest, types.StepStatusAwaitingApproval, types.StepStatusFixReview)
+	if err != nil {
+		return fmt.Errorf("record Test approval reason: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("record Test approval reason: parked Test step not found")
+	}
+	return nil
+}
+
+// TestOverrideReason qualifies completed Test exceptions on both snapshot and
+// event paths. Older command overrides still qualify without a recorded reason.
+func (s *StepResult) TestOverrideReason() string {
+	if s.StepName != types.StepTest || s.Status != types.StepStatusCompleted {
+		return ""
+	}
+	condition := ""
+	if s.OverrideReason != nil {
+		condition = *s.OverrideReason
+	}
+	if s.ApprovalReason == nil {
+		return condition
+	}
+	reason := *s.ApprovalReason
+	if strings.TrimSpace(reason) == "" {
+		reason = "no operator reason supplied"
+	}
+	return strings.TrimSpace(condition + "\nTest exception approved: " + reason)
+}
+
 func autoFixLimitDBValue(autoFixLimit int) any {
 	if autoFixLimit <= 0 {
 		return nil
@@ -277,8 +321,8 @@ func (d *DB) CompleteSkippedStep(id string, exitCode int, durationMS int64, logP
 
 func (d *DB) completeStep(id string, status types.StepStatus, exitCode int, durationMS int64, logPath, skipReason string) error {
 	_, err := d.sql.Exec(
-		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), override_reason = CASE WHEN ? THEN NULL ELSE override_reason END WHERE id = ?`,
-		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, status == types.StepStatusSkipped, id,
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, skip_reason = NULLIF(?, ''), override_reason = CASE WHEN ? THEN NULL ELSE override_reason END, approval_reason = CASE WHEN ? THEN NULL ELSE approval_reason END WHERE id = ?`,
+		status, exitCode, durationMS, logPath, now(), now(), fmt.Sprintf("status: %s", status), skipReason, status == types.StepStatusSkipped, status == types.StepStatusSkipped, id,
 	)
 	if err != nil {
 		return fmt.Errorf("complete step: %w", err)

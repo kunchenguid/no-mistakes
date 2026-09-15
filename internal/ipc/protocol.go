@@ -186,12 +186,13 @@ type SubscribeParams struct {
 // alongside agent-produced ones. Both fields only apply when Action triggers
 // a fix round.
 type RespondParams struct {
-	RunID         string               `json:"run_id"`
-	Step          types.StepName       `json:"step"`
-	Action        types.ApprovalAction `json:"action"`
-	FindingIDs    []string             `json:"finding_ids,omitempty"`
-	Instructions  map[string]string    `json:"instructions,omitempty"`
-	AddedFindings []types.Finding      `json:"added_findings,omitempty"`
+	RunID          string               `json:"run_id"`
+	Step           types.StepName       `json:"step"`
+	Action         types.ApprovalAction `json:"action"`
+	FindingIDs     []string             `json:"finding_ids,omitempty"`
+	Instructions   map[string]string    `json:"instructions,omitempty"`
+	AddedFindings  []types.Finding      `json:"added_findings,omitempty"`
+	ApprovalReason string               `json:"approval_reason,omitempty"` // Test approval only
 }
 
 // CancelRunParams cancels an active pipeline run.
@@ -334,7 +335,8 @@ type RunInfo struct {
 	// OverrideReason (see StepResultInfo.OverrideReason). It is derived from
 	// Steps rather than a separate DB column, so a run-level consumer such as
 	// axi's outcome wording does not need to inspect every step itself.
-	CIOverrideReason string `json:"ci_override_reason,omitempty"`
+	CIOverrideReason   string `json:"ci_override_reason,omitempty"`
+	TestOverrideReason string `json:"test_override_reason,omitempty"`
 	// StateRev is the monotonic run-state revision this snapshot is at least
 	// as new as. It is sampled before the database read, so every event at or
 	// below it is already reflected here and every event above it still
@@ -436,7 +438,8 @@ type Event struct {
 	// passed-with-override run without a snapshot read. It is derived from the
 	// CI step's OverrideReason the same way RunInfo.CIOverrideReason is, and is
 	// set only on completion (the only event whose banner reads it).
-	CIOverrideReason *string `json:"ci_override_reason,omitempty"`
+	CIOverrideReason   *string `json:"ci_override_reason,omitempty"`
+	TestOverrideReason *string `json:"test_override_reason,omitempty"`
 }
 
 // --- Helpers ---

@@ -160,8 +160,17 @@ If that PR later falls behind the default branch or hits a merge conflict, do no
 The monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push; a PR that is merely behind but clean needs no command.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
-`passed-with-override` is a completed run whose CI approval gate was approved by a human while a live check was still failing; it stays a success but reads distinctly from a genuinely green `passed`, and its `help` names the failure the operator approved past.
-`passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL. It retains exit code 0: missing verification is not a failing code verdict. `run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`. Report that missing evidence; this outcome does not establish CI readiness or a merge. Explicit per-run skips retain their existing behavior. If the run also has a CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible. Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
+`passed-with-override` is a completed run with an explicitly approved Test exception or a CI approval over still-failing checks.
+It stays a success but is distinct from a clean `passed`.
+`run.test_override_reason` preserves the Test exception explanation in drive and status output, including at the `checks-passed` stopping point; CI overrides retain their separate reason.
+Report those exceptions rather than describing Test as clean.
+`passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL.
+It retains exit code 0: missing verification is not a failing code verdict.
+`run.automatic_skips` names each affected step and cause, and `run.head_sha` gives the full recorded head in both drive output and `axi status`.
+Report that missing evidence; this outcome does not establish CI readiness or a merge.
+Explicit per-run skips retain their existing behavior.
+If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
+Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
 ### Strict launch receipts
@@ -207,10 +216,18 @@ no-mistakes axi respond --action skip
 | `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
-| `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
+| `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`             |
+| `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
+
+For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
+The reason is optional: approval without one remains effective and is reported as an exception with no operator reason supplied.
+The step retains its findings and exit code, and the reason is durable local evidence in `step_results.approval_reason`.
+Revalidation, a new fix round, or skipping the step clears that current-step approval so a later result cannot inherit it.
+This is separate from the configured-command waiver and trusted repository opt-in used by [PR enforcement](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation); neither that policy nor approval authority changes.
+`--instructions` remains fix guidance, not an approval-reason input.
 
 After the explicit response, `--yes` uses the same [auto-resolution behavior and exceptions as `axi run --yes`](#no-mistakes-axi-run).
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome, subject to the same default `--wait 8m` boundary as `axi run`. That boundary also covers its initial active-run and run-state reads plus event-subscription acknowledgement, so a caller can interrupt establishment as well as the later event wait.

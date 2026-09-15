@@ -527,7 +527,8 @@ func testAgentError(ctx context.Context, timeout time.Duration, prefix string, e
 // passing command does. The condition is the parked findings of this step
 // (the command result from this execution), not a re-run. A step with no
 // configured command, or whose command passed and parked for another reason,
-// returns "" so the executor records an ordinary completion.
+// returns "" so PR enforcement does not claim a configured-command waiver.
+// The executor records the broader Test exception separately as ApprovalReason.
 func (s *TestStep) VerifyApprovalOverride(sctx *pipeline.StepContext) (string, error) {
 	if sctx == nil {
 		return "could not verify configured test command: step context is not available", nil

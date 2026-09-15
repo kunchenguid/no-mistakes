@@ -36,6 +36,25 @@ func TestModel_ApplyEvent_RunCompletedCarriesCIOverride(t *testing.T) {
 	}
 }
 
+func TestModel_ApplyEvent_RunCompletedCarriesTestException(t *testing.T) {
+	for _, ciReason := range []string{"", "CI override remains visible"} {
+		run := testRun()
+		m := NewModel("/tmp/sock", nil, run)
+		reason := "Test exception approved: synthetic operator explanation"
+		m.applyEvent(ipc.Event{
+			Type:               ipc.EventRunCompleted,
+			RunID:              run.ID,
+			Status:             ptr(string(types.RunCompleted)),
+			TestOverrideReason: ptr(reason),
+			CIOverrideReason:   ptr(ciReason),
+		})
+		banner := stripANSI(renderOutcomeBanner(m.run, m.steps))
+		if !strings.Contains(banner, "passed with override") || !strings.Contains(banner, reason) || !strings.Contains(banner, ciReason) {
+			t.Fatalf("completion banner lost exception evidence: %q", banner)
+		}
+	}
+}
+
 func TestModel_ApplyEvent_StepCompletedCarriesCombinedWorkScope(t *testing.T) {
 	run := testRun()
 	run.Steps = append(run.Steps, ipc.StepResultInfo{StepName: types.StepDocument, Status: types.StepStatusPending})

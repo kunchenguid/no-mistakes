@@ -127,7 +127,8 @@ type runView struct {
 	// live check (see pipeline.ApprovalOverrideVerifier). outcomeForRun uses
 	// it to keep a deliberate override from reading identically to a
 	// genuinely green run in agent-facing output.
-	CIOverrideReason string
+	CIOverrideReason   string
+	TestOverrideReason string
 }
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
@@ -140,6 +141,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CIOverrideReason:   r.CIOverrideReason,
+		TestOverrideReason: r.TestOverrideReason,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -215,6 +217,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 		}
 		if s.FindingsJSON != nil {
 			sv.FindingsJSON = *s.FindingsJSON
+		}
+		if reason := s.TestOverrideReason(); reason != "" {
+			rv.TestOverrideReason = reason
 		}
 		// Mirror executor.ciOverrideReason / RunInfo.CIOverrideReason. Without
 		// this the DB-backed status path reads a CI passed-with-override run as a
@@ -469,6 +474,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
+	if rv.TestOverrideReason != "" {
+		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
+	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}

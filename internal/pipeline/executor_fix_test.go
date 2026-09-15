@@ -404,7 +404,7 @@ func TestExecutor_FixAppliesUserInstructionsAndAddedFindings(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	instructions := map[string]string{"review-1": "only touch parser.go, skip helpers"}
 	added := []types.Finding{{Severity: "warning", Description: "also audit logger init", Action: types.ActionAutoFix}}
-	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, instructions, added); err != nil {
+	if err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"review-1"}, instructions, added, ""); err != nil {
 		t.Fatal(err)
 	}
 

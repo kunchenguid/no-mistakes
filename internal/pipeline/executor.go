@@ -36,10 +36,11 @@ const (
 )
 
 type approvalResponse struct {
-	action        types.ApprovalAction
-	findingIDs    []string
-	instructions  map[string]string
-	addedFindings []types.Finding
+	action         types.ApprovalAction
+	findingIDs     []string
+	instructions   map[string]string
+	addedFindings  []types.Finding
+	approvalReason string
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -155,13 +156,17 @@ func (e *Executor) SetGateReconcileTimings(interval, timeout time.Duration) {
 // The step parameter must match the step currently awaiting approval.
 // Returns an error if no step is awaiting approval or if the step name doesn't match.
 func (e *Executor) Respond(step types.StepName, action types.ApprovalAction, findingIDs []string) error {
-	return e.RespondWithOverrides(step, action, findingIDs, nil, nil)
+	return e.RespondWithOverrides(step, action, findingIDs, nil, nil, "")
 }
 
 // RespondWithOverrides is like Respond but also carries per-finding user
 // instructions and user-authored findings. Both are merged into the round's
-// findings on a fix action before the fix agent runs.
-func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding) error {
+// findings on a fix action before the fix agent runs. approvalReason is only
+// accepted for Test approval and is never passed to a fix agent.
+func (e *Executor) RespondWithOverrides(step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string) error {
+	if approvalReason != "" && (step != types.StepTest || action != types.ActionApprove) {
+		return fmt.Errorf("an approval reason applies only to Test approval")
+	}
 	e.mu.Lock()
 	if !e.waiting {
 		e.mu.Unlock()
@@ -179,10 +184,11 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	e.mu.Unlock()
 
 	e.approvalCh <- approvalResponse{
-		action:        action,
-		findingIDs:    findingIDs,
-		instructions:  instructions,
-		addedFindings: addedFindings,
+		action:         action,
+		findingIDs:     findingIDs,
+		instructions:   instructions,
+		addedFindings:  addedFindings,
+		approvalReason: approvalReason,
 	}
 	return nil
 }
@@ -474,7 +480,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	switch response.action {
 	case types.ActionApprove:
 		e.recordDeclinedRound(gate.lastRoundID, gate.findings, gate.step.Name(), gate.round)
-		if err := e.applyApprovalOverride(gate.step, reconcileCtx, gate.stepResult.ID); err != nil {
+		if err := e.applyApprovalOverride(gate.step, reconcileCtx, gate.stepResult.ID, response.approvalReason); err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
 		if err := completeRecoveredGate(); err != nil {
@@ -1102,7 +1108,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
 			e.recordDeclinedRound(currentRoundID, outcome.Findings, stepName, roundNum)
-			if err := e.applyApprovalOverride(step, sctx, sr.ID); err != nil {
+			if err := e.applyApprovalOverride(step, sctx, sr.ID, response.approvalReason); err != nil {
 				return false, "", err
 			}
 			phaseStart = time.Now()
@@ -1222,12 +1228,20 @@ done:
 // the approval, only what it gets recorded as.
 //
 // Persisting that override marker is itself fail-closed: downstream consumers
-// derive each step's override status solely from step_results.override_reason,
+// derive each step's override status from its durable override/approval reasons,
 // so a swallowed write failure would complete the step as an ordinary clean
 // pass - the exact false-green this feature exists to prevent. When the marker
 // cannot be written this returns the error so the caller fails the run closed
 // instead of recording that plain pass.
-func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID string) error {
+func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID, approvalReason string) error {
+	// Test parks only when findings require a decision, including a failed or
+	// inconclusive evidence turn without a configured command. Keep that
+	// explicit exception separate from the command-waiver enforcement marker.
+	if step.Name() == types.StepTest {
+		if err := e.db.SetTestApprovalReason(stepResultID, approvalReason); err != nil {
+			return err
+		}
+	}
 	verifier, ok := step.(ApprovalOverrideVerifier)
 	if !ok {
 		return nil
@@ -1599,7 +1613,7 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		Error:  run.Error,
 		PRURL:  run.PRURL,
 	}
-	// A completed run may have passed with a CI approval override; the TUI
+	// A completed run may have a Test exception or CI approval override; the TUI
 	// banner reads the reason off the delta (like PRURL) so it never needs a
 	// snapshot to distinguish it from a genuinely green run. Derived from step
 	// rows so both ActionApprove sites (live wait and Resume) are covered.
@@ -1608,6 +1622,13 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 	if run.Status == types.RunCompleted {
 		if reason := e.ciOverrideReason(run.ID); reason != "" {
 			event.CIOverrideReason = &reason
+		}
+		if steps, err := e.db.GetStepsByRun(run.ID); err == nil {
+			for _, step := range steps {
+				if reason := step.TestOverrideReason(); reason != "" {
+					event.TestOverrideReason = &reason
+				}
+			}
 		}
 	}
 	e.onEvent(event)

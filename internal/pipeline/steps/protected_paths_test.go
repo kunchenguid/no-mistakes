@@ -161,7 +161,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				selected = []string{}
 				added = []types.Finding{{ID: "user-1", Severity: "info", Description: "publish the retained repair", Action: types.ActionAutoFix}}
 			}
-			if err := executor.RespondWithOverrides(types.StepCI, types.ActionFix, selected, nil, added); err != nil {
+			if err := executor.RespondWithOverrides(types.StepCI, types.ActionFix, selected, nil, added, ""); err != nil {
 				t.Fatal(err)
 			}
 			select {

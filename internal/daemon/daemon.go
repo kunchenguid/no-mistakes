@@ -1323,7 +1323,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings); err != nil {
+		if err := mgr.HandleRespondWithOverrides(p.RunID, p.Step, p.Action, p.FindingIDs, p.Instructions, p.AddedFindings, p.ApprovalReason); err != nil {
 			return nil, err
 		}
 		return &ipc.RespondResult{OK: true}, nil
@@ -1437,6 +1437,9 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		for _, s := range steps {
 			stepInfo := stepToInfo(d, s)
 			info.Steps = append(info.Steps, stepInfo)
+			if reason := s.TestOverrideReason(); reason != "" {
+				info.TestOverrideReason = reason
+			}
 			if s.StepName == types.StepCI && info.CIOverrideReason == "" && stepInfo.OverrideReason != "" {
 				info.CIOverrideReason = stepInfo.OverrideReason
 			}
