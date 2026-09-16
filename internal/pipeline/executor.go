@@ -1234,9 +1234,9 @@ done:
 // cannot be written this returns the error so the caller fails the run closed
 // instead of recording that plain pass.
 func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResultID, approvalReason string) error {
-	// Test parks only when findings require a decision, including a failed or
-	// inconclusive evidence turn without a configured command. Keep that
-	// explicit exception separate from the command-waiver enforcement marker.
+	// Every Test approval keeps its reason; db.StepResult.TestOverrideReason
+	// decides from the parked evidence whether it qualifies completion. Keep
+	// it separate from the command-waiver enforcement marker.
 	if step.Name() == types.StepTest {
 		if err := e.db.SetTestApprovalReason(stepResultID, approvalReason); err != nil {
 			return err
@@ -1620,33 +1620,32 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 	// Gated on the terminal status, not the event type: errorRun emits the same
 	// event for failed/cancelled runs, whose banner never reads it.
 	if run.Status == types.RunCompleted {
-		if reason := e.ciOverrideReason(run.ID); reason != "" {
-			event.CIOverrideReason = &reason
-		}
 		if steps, err := e.db.GetStepsByRun(run.ID); err == nil {
-			for _, step := range steps {
-				if reason := step.TestOverrideReason(); reason != "" {
-					event.TestOverrideReason = &reason
-				}
+			ciReason, testReason := completionOverrideReasons(steps)
+			if ciReason != "" {
+				event.CIOverrideReason = &ciReason
+			}
+			if testReason != "" {
+				event.TestOverrideReason = &testReason
 			}
 		}
 	}
 	e.onEvent(event)
 }
 
-// ciOverrideReason returns the CI step's override reason for the run,
-// deriving the run-level CI override reason the same way daemon.runToInfo does.
-func (e *Executor) ciOverrideReason(runID string) string {
-	steps, err := e.db.GetStepsByRun(runID)
-	if err != nil {
-		return ""
-	}
+// completionOverrideReasons derives the run-level CI override and Test
+// exception reasons from one read of the step rows, the same way
+// daemon.runToInfo does.
+func completionOverrideReasons(steps []*db.StepResult) (ciReason, testReason string) {
 	for _, s := range steps {
-		if s.StepName == types.StepCI && s.OverrideReason != nil && *s.OverrideReason != "" {
-			return *s.OverrideReason
+		if ciReason == "" && s.StepName == types.StepCI && s.OverrideReason != nil && *s.OverrideReason != "" {
+			ciReason = *s.OverrideReason
+		}
+		if reason := s.TestOverrideReason(); reason != "" {
+			testReason = reason
 		}
 	}
-	return ""
+	return ciReason, testReason
 }
 
 func (e *Executor) emitCIReadinessEvent(run *db.Run, repo *db.Repo, ready, declaredNoCI bool) {

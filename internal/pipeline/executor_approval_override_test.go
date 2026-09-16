@@ -245,7 +245,7 @@ func TestExecutor_ApprovalOverride_RecoveredPathStillFailing(t *testing.T) {
 // without a snapshot read. Before the fix emitRunEvent dropped the reason and
 // the banner read as a plain green pass on the event path.
 func TestExecutor_CIOverrideReasonIgnoresTestOverride(t *testing.T) {
-	database, p, run, _ := setupTest(t)
+	database, _, run, _ := setupTest(t)
 	testStep, err := database.InsertStepResult(run.ID, types.StepTest)
 	if err != nil {
 		t.Fatal(err)
@@ -262,9 +262,12 @@ func TestExecutor_CIOverrideReasonIgnoresTestOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exec := NewExecutor(database, p, nil, nil, nil, nil)
-	if got := exec.ciOverrideReason(run.ID); got != want {
-		t.Fatalf("ciOverrideReason() = %q, want %q", got, want)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := completionOverrideReasons(steps); got != want {
+		t.Fatalf("completionOverrideReasons() CI = %q, want %q", got, want)
 	}
 }
 

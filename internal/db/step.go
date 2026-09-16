@@ -278,14 +278,17 @@ func (d *DB) SetTestApprovalReason(id, reason string) error {
 }
 
 // TestOverrideReason qualifies completed Test exceptions on both snapshot and
-// event paths. Older command overrides still qualify without a recorded reason.
+// event paths. Only an approval past a failing configured command or a no-go
+// or inconclusive verdict is an exception; approving a no-surface park keeps
+// its recorded reason but completes normally. Older command overrides still
+// qualify without a recorded reason.
 func (s *StepResult) TestOverrideReason() string {
 	if s.StepName != types.StepTest || s.Status != types.StepStatusCompleted {
 		return ""
 	}
-	condition := ""
-	if s.OverrideReason != nil {
-		condition = *s.OverrideReason
+	condition := s.testExceptionCondition()
+	if condition == "" {
+		return ""
 	}
 	if s.ApprovalReason == nil {
 		return condition
@@ -295,6 +298,27 @@ func (s *StepResult) TestOverrideReason() string {
 		reason = "no operator reason supplied"
 	}
 	return strings.TrimSpace(condition + "\nTest exception approved: " + reason)
+}
+
+func (s *StepResult) testExceptionCondition() string {
+	if s.OverrideReason != nil && strings.TrimSpace(*s.OverrideReason) != "" {
+		return *s.OverrideReason
+	}
+	if s.FindingsJSON == nil {
+		return ""
+	}
+	findings, err := types.ParseFindingsJSON(*s.FindingsJSON)
+	if err != nil {
+		if s.ApprovalReason != nil {
+			return "approved Test evidence could not be read"
+		}
+		return ""
+	}
+	switch findings.Verdict {
+	case types.TestVerdictNoGo, types.TestVerdictInconclusive:
+		return "live validation verdict: " + findings.Verdict
+	}
+	return ""
 }
 
 func autoFixLimitDBValue(autoFixLimit int) any {

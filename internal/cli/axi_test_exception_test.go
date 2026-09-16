@@ -66,3 +66,30 @@ func TestRunViewFromDBQualifiesLegacyTestOverrides(t *testing.T) {
 		}
 	}
 }
+
+func TestRunViewFromDBQualifiesOnlyExceptionEvidence(t *testing.T) {
+	const reason = "operator explanation"
+	for _, tc := range []struct {
+		name, findings, outcome string
+	}{
+		{"no-go", `{"findings":[],"verdict":"no-go"}`, "passed-with-override"},
+		{"inconclusive", `{"findings":[],"verdict":"inconclusive"}`, "passed-with-override"},
+		{"no-surface", `{"findings":[],"verdict":"no-surface"}`, "passed"},
+		{"go", `{"findings":[],"verdict":"go"}`, "passed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &db.Run{Status: types.RunCompleted}
+			steps := []*db.StepResult{{StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: strptr(tc.findings), ApprovalReason: strptr(reason)}}
+			view := runViewFromDB(run, steps, nil)
+			if got := outcomeForRun(view); got != tc.outcome {
+				t.Fatalf("outcome = %q, want %q (%+v)", got, tc.outcome, view)
+			}
+			if tc.outcome == "passed-with-override" && !strings.Contains(view.TestOverrideReason, reason) {
+				t.Fatalf("operator reason lost: %+v", view)
+			}
+			if steps[0].ApprovalReason == nil || *steps[0].ApprovalReason != reason {
+				t.Fatalf("approval reason not retained: %+v", steps[0])
+			}
+		})
+	}
+}

@@ -162,6 +162,7 @@ After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the r
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
 `passed-with-override` is a completed run with an explicitly approved Test exception or a CI approval over still-failing checks.
 It stays a success but is distinct from a clean `passed`.
+A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, or an `inconclusive` verdict; approving a `no-surface` park records its reason but completes as `passed`.
 `run.test_override_reason` preserves the Test exception explanation in drive and status output, including at the `checks-passed` stopping point; CI overrides retain their separate reason.
 Report those exceptions rather than describing Test as clean.
 `passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL.
@@ -223,7 +224,7 @@ no-mistakes axi respond --action skip
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
-The reason is optional: approval without one remains effective and is reported as an exception with no operator reason supplied.
+The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
 The step retains its findings and exit code, and the reason is durable local evidence in `step_results.approval_reason`.
 Revalidation, a new fix round, or skipping the step clears that current-step approval so a later result cannot inherit it.
 This is separate from the configured-command waiver and trusted repository opt-in used by [PR enforcement](/no-mistakes/reference/pipeline-steps/#pipeline-step-attestation); neither that policy nor approval authority changes.

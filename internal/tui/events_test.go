@@ -55,6 +55,18 @@ func TestModel_ApplyEvent_RunCompletedCarriesTestException(t *testing.T) {
 	}
 }
 
+func TestOutcomeBanner_MultilineTestExceptionStaysOnOneLine(t *testing.T) {
+	run := testRun()
+	run.Status = types.RunCompleted
+	run.TestOverrideReason = "configured test command failed with exit code 7\nTest exception approved: first line\nsecond line"
+	durationMS := int64(62000)
+	banner := stripANSI(renderOutcomeBanner(run, []ipc.StepResultInfo{{StepName: types.StepTest, Status: types.StepStatusCompleted, DurationMS: &durationMS}}))
+	want := "⚠ Pipeline passed with override: configured test command failed with exit code 7; Test exception approved: first line; second line  62.0s"
+	if banner != want {
+		t.Fatalf("banner = %q, want %q", banner, want)
+	}
+}
+
 func TestModel_ApplyEvent_StepCompletedCarriesCombinedWorkScope(t *testing.T) {
 	run := testRun()
 	run.Steps = append(run.Steps, ipc.StepResultInfo{StepName: types.StepDocument, Status: types.StepStatusPending})

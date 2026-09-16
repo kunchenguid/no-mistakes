@@ -47,7 +47,7 @@ func TestTestApprovalReasonMigrationAndLifecycle(t *testing.T) {
 	}
 	defer d.Close()
 	const reason = "Operator's exact reason\nwith a second line"
-	findings := `{"findings":[{"id":"test-1","severity":"error","description":"failed"}]}`
+	findings := `{"findings":[{"id":"test-1","severity":"error","description":"failed"}],"verdict":"no-go"}`
 	for _, reset := range []string{"revalidate", "fix", "skip"} {
 		t.Run(reset, func(t *testing.T) {
 			if err := d.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 7, 10, &findings); err != nil {

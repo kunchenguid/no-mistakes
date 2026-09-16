@@ -214,7 +214,7 @@ Run the pipeline and decide on its findings as they come up:
     - `--wait` bounds the hold (default 8m).
     - `--reason "the operator's explanation"` records an explicitly authorized Test exception with `--step test --action approve`.
       This does not grant approval authority; escalate ask-user findings as before.
-      Without a reason, Test approval remains effective but is reported as an exception with no operator reason supplied.
+      Without a reason, Test approval remains effective; an approval past a failing command, `no-go`, or `inconclusive` verdict is reported as an exception with no operator reason supplied.
     - `--add-finding '<json>'` (with `--action fix`) folds a finding you
       spotted yourself - one the pipeline did not surface - into the fix round,
       as a JSON finding object. Use it for a problem you noticed that is not in
