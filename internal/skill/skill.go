@@ -238,6 +238,9 @@ Run the pipeline and decide on its findings as they come up:
    - ` + "`failed`" + ` or ` + "`cancelled`" + ` - they did not; classify the terminal failure
      against the authorized task before choosing a fix or retry.
      Preserve failed evidence and prior fixes; follow the custody guidance below.
+     Keep unresolved deferred findings, their evidence and disposition, and any
+     affected delivery restrictions in force across terminal outcomes and
+     authorized retries until legitimately resolved.
      Retry only work still required by that contract; otherwise explain the
      remaining limitation. In Firstmate-dispatched work, Firstmate owns finding
      disposition and review limits.
