@@ -241,9 +241,11 @@ Run the pipeline and decide on its findings as they come up:
      Keep unresolved deferred findings, their evidence and disposition, and any
      affected delivery restrictions in force across terminal outcomes and
      authorized retries until legitimately resolved.
-     Retry only work still required by that contract; otherwise explain the
-     remaining limitation. In Firstmate-dispatched work, Firstmate owns finding
-     disposition and review limits.
+     Retry only work still required by that contract: make a bounded in-scope
+     fix, run focused verification, and otherwise explain the remaining
+     limitation. Honor the applicable policy owner's cumulative review limit
+     across restarts without resetting its count. In Firstmate-dispatched work,
+     Firstmate owns finding disposition and that limit.
      Commit an authorized fix on the same feature branch, then submit it with
      ` + "`no-mistakes axi run --intent \"...\"`" + `. A fresh run or ` + "`rerun`" + ` is a
      *between-runs* action, correct only after a terminal outcome like this,
