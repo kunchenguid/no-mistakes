@@ -272,6 +272,14 @@ var harnesses = map[types.AgentName]harness{
 		model:  knob{mechanism: MechanismArgs, args: flagArgs("--model"), pinned: flagPinned("--model")},
 		effort: knob{mechanism: MechanismArgs, args: flagArgs("--thinking"), pinned: flagPinned("--thinking")},
 	},
+	types.AgentOmp: {
+		// omp reads the model off --model and the reasoning depth off --thinking,
+		// whose levels (off, minimal, low, medium, high, xhigh, max, auto) are a
+		// superset of the shared effort vocabulary, so values pass through
+		// verbatim exactly as they do for pi.
+		model:  knob{mechanism: MechanismArgs, args: flagArgs("--model"), pinned: flagPinned("--model")},
+		effort: knob{mechanism: MechanismArgs, args: flagArgs("--thinking"), pinned: flagPinned("--thinking")},
+	},
 	types.AgentOpenCode: {
 		// `opencode serve` rejects model and variant flags outright, so raw
 		// args can never reach either knob and there is nothing to defer to.

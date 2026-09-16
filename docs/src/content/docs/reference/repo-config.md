@@ -126,7 +126,7 @@ Override the default agent for this repo and its setup-wizard suggestions.
 | | |
 | --- | --- |
 | Type | `string` or `string[]` |
-| Values | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Values | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | Inherits from global config |
 
 `auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
@@ -172,12 +172,13 @@ Suppress project-level agent settings and instructions for every gate-agent star
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
+Codex, Claude, Pi, and Omp are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling), and Omp runs with a `--config` overlay disabling its `AGENTS.md`, `CLAUDE.md`, and `copilot-instructions.md` context files. Omp has no flag equivalent, and each disabled id is keyed on the file's basename, so one entry covers that file in the project walk-up and under `.agent/`, `.agents/`, and `.omp/`.
+Since an Omp `--config` overlay would *replace* no-mistakes' own rather than merge with it, `--config` is reserved in `agent_args_override` and an operator-supplied one makes the gate fail closed.
 Grok 1.0.5 still discovers native project instructions and `.grok` project surfaces, so it is not a verified agent for this boundary. A configuration that resolves Grok while this option is enabled therefore fails closed before launch.
 The setting applies to both new and resumed sessions.
 
 The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
-It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
+It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes`, Claude setting sources that include `project` or `local`, or an Omp `--config` overlay that replaces no-mistakes' own.
 When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.

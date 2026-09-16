@@ -127,6 +127,7 @@ func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 		types.AgentRovoDev,
 		types.AgentOpenCode,
 		types.AgentPi,
+		types.AgentOmp,
 		types.AgentCopilot,
 		types.AgentCursor,
 		types.AgentAntigravity,

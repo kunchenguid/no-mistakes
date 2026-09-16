@@ -24,6 +24,8 @@ func nativeExtraArgs(t *testing.T, a Agent) []string {
 		return v.extraArgs
 	case *piAgent:
 		return v.extraArgs
+	case *ompAgent:
+		return v.extraArgs
 	case *copilotAgent:
 		return v.extraArgs
 	case *rovodevAgent:
@@ -51,6 +53,7 @@ func TestNewWithOptions_ProfileReachesEachHarnessArgv(t *testing.T) {
 		{types.AgentGrok, []string{"--model", "some-model", "--reasoning-effort", "high"}},
 		{types.AgentCopilot, []string{"--model", "some-model", "--effort", "high"}},
 		{types.AgentPi, []string{"--model", "some-model", "--thinking", "high"}},
+		{types.AgentOmp, []string{"--model", "some-model", "--thinking", "high"}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.agent), func(t *testing.T) {
