@@ -217,7 +217,7 @@ no-mistakes axi respond --action skip
 | `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
-| `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`             |
+| `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
 | `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |

@@ -22,36 +22,55 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, reason string
 		exit                 int
-		noGo                 bool
+		verdict              string
+		qualified            bool
 	}{
 		{name: "clean"},
-		{name: "command-reason", exit: 7, action: "approve", reason: "Synthetic exception: accept exit 7 only for this isolated test"},
-		{name: "command-no-reason", exit: 7, action: "approve"},
-		{name: "evidence-exception", noGo: true, action: "approve", reason: "Synthetic failed scenario accepted for this test"},
+		{name: "command-reason", exit: 7, action: "approve", reason: "Synthetic exception: accept exit 7 only for this isolated test", qualified: true},
+		{name: "command-no-reason", exit: 7, action: "approve", qualified: true},
+		{name: "evidence-exception", verdict: "no-go", action: "approve", reason: "Synthetic failed scenario accepted for this test", qualified: true},
+		{name: "evidence-inconclusive", verdict: "inconclusive", action: "approve", reason: "Synthetic inconclusive evidence accepted", qualified: true},
+		// A no-surface acknowledgement keeps its reason but completes normally.
+		{name: "no-surface-ack", verdict: "no-surface", action: "approve", reason: "Docs-only change acknowledged"},
 		{name: "skipped", exit: 7, action: "skip"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scenario := ""
-			if tc.noGo {
+			if tc.verdict != "" {
 				scenario = filepath.Join(t.TempDir(), "scenario.yaml")
-				// Only Test receives the failing scenario. Other agent phases
-				// complete without findings, exactly as in the clean control.
-				data := `actions:
-  - match: "You are validating a code change by driving the product itself."
-    text: "synthetic scenario failed"
-    structured:
-      findings: []
-      summary: "synthetic scenario failed"
-      tested: ["fakeagent: simulated scenario"]
-      testing_summary: "synthetic scenario failed"
-      artifacts: []
-      verdict: no-go
-      scenarios:
-        - name: synthetic scenario
+				scenarioYAML := `        - name: synthetic scenario
           result: fail
           live: true
           evidence: "fakeagent: simulated failure"
-          reason: ""
+          reason: ""`
+				switch tc.verdict {
+				case "inconclusive":
+					scenarioYAML = `        - name: synthetic scenario
+          result: untested
+          live: false
+          evidence: "fakeagent: not driven"
+          reason: "synthetic missing capability"`
+				case "no-surface":
+					scenarioYAML = `        - name: synthetic docs scenario
+          result: untested
+          live: false
+          evidence: "fakeagent: no runtime surface"
+          reason: "synthetic docs-only change"`
+				}
+				// Only Test receives the scenario verdict. Other agent phases
+				// complete without findings, exactly as in the clean control.
+				data := `actions:
+  - match: "You are validating a code change by driving the product itself."
+    text: "synthetic scenario"
+    structured:
+      findings: []
+      summary: "synthetic scenario"
+      tested: ["fakeagent: simulated scenario"]
+      testing_summary: "synthetic scenario"
+      artifacts: []
+      verdict: ` + tc.verdict + `
+      scenarios:
+` + scenarioYAML + `
   - text: "no issues found"
     structured:
       findings: []
@@ -89,7 +108,7 @@ func TestAxiTestApprovalExceptionJourney(t *testing.T) {
 				}
 			}
 			want := "passed"
-			if tc.action == "approve" {
+			if tc.qualified {
 				want = "passed-with-override"
 			}
 			assertTestExceptionOutput(t, out, want, tc.reason)
