@@ -22,12 +22,22 @@ import (
 
 func liveValidatedPipelineBody(t *testing.T, scenarios []types.TestScenario, verdict string) string {
 	t.Helper()
+	return liveValidatedPipelineBodyFromSource(t, scenarios, verdict, "")
+}
+
+// liveValidatedPipelineBodyFromSource renders the same body with an explicit
+// evidence source, which the diff-class gate records and the attestation
+// republishes. An empty source is a run with the gate off, or one recorded
+// before the gate existed.
+func liveValidatedPipelineBodyFromSource(t *testing.T, scenarios []types.TestScenario, verdict, evidenceSource string) string {
+	t.Helper()
 	raw, err := json.Marshal(types.Findings{
 		Tested:         []string{"`npm run e2e -- checkout`"},
 		TestingSummary: "drove the checkout scenarios against a running app",
 		Scenarios:      scenarios,
 		Verdict:        verdict,
 		TestedHeadSHA:  requiredWorkflowTestHeadSHA,
+		EvidenceSource: evidenceSource,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,13 +99,41 @@ func TestRequireActionAcceptsAttestationCarryingLiveValidation(t *testing.T) {
 	if live["live"] != float64(1) || live["total"] != float64(2) {
 		t.Errorf("live_validation coverage = %v of %v, want 1 of 2", live["live"], live["total"])
 	}
+	// The gate is off (and every pre-gate run is recorded this way), so the
+	// producer source must disappear entirely rather than render as an empty
+	// string: an off repository's attestation stays byte-identical to one
+	// produced by a build without the diff-class gate.
 	if _, present := live["source"]; present {
-		t.Errorf("live_validation must not carry a producer source: %v", live)
+		t.Errorf("a run with no recorded evidence source must omit live_validation.source: %v", live)
 	}
 
 	result := runRequireAction(t, actionRun{body: body, headSHA: requiredWorkflowTestHeadSHA, number: "1568"})
 	if result.conclusion != "success" {
 		t.Fatalf("gate rejected a body carrying live_validation: %s", result.output)
+	}
+}
+
+// Under the diff-class gate, head equality alone no longer identifies which
+// producer wrote the verdict, so the attestation names it in an extra source
+// key. Every enforcing repository's copy of the action has to keep accepting a
+// body carrying that key, which is the only thing that proves adding the field
+// cannot break every PR.
+func TestRequireActionAcceptsAttestationCarryingAReusedEvidenceSource(t *testing.T) {
+	body := liveValidatedPipelineBodyFromSource(t, []types.TestScenario{
+		{Name: "user reaches the success screen", Result: types.ScenarioResultPass, Live: true, Evidence: "checkout.png"},
+	}, types.TestVerdictGo, types.TestEvidenceSourceReused)
+
+	live, ok := attestationPayload(t, body)["live_validation"].(map[string]any)
+	if !ok {
+		t.Fatal("attestation carries no live_validation object")
+	}
+	if live["source"] != types.TestEvidenceSourceReused {
+		t.Errorf("live_validation.source = %v, want %q", live["source"], types.TestEvidenceSourceReused)
+	}
+
+	result := runRequireAction(t, actionRun{body: body, headSHA: requiredWorkflowTestHeadSHA, number: "1568"})
+	if result.conclusion != "success" {
+		t.Fatalf("gate rejected a body whose live_validation carries a source: %s", result.output)
 	}
 }
 

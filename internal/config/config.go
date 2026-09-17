@@ -112,6 +112,21 @@ const (
 	// repository that never asked for it. See Rebase.Strategy for what the
 	// merge shape buys.
 	DefaultRebaseStrategy = RebaseStrategyRebase
+	// TestEvidenceGateAlways runs the Test step's live-evidence agent on every
+	// run. It is the historical behavior and the default.
+	TestEvidenceGateAlways = "always"
+	// TestEvidenceGateDiffClass runs the live-evidence agent only when the
+	// run's diff class says there is something new to drive. See
+	// TestRaw.EvidenceGate for what that buys and costs.
+	TestEvidenceGateDiffClass = "diff-class"
+	// DefaultTestEvidenceGate is how the Test step decides whether to invoke
+	// the live-evidence agent when test.evidence_gate is unset.
+	//
+	// It is "always" because that is what every existing installation already
+	// does: the gate skips live validation for a whole class of runs, so it is
+	// an explicit opt-in rather than something a version bump turns on under a
+	// repository that never asked for it.
+	DefaultTestEvidenceGate = TestEvidenceGateAlways
 	// DefaultEvalMaxCases caps the auto-captured local eval corpus. Cases
 	// share one object pool per repository, so the marginal cost of a case is
 	// its JSON records plus the objects its commits actually introduced, not a
@@ -806,6 +821,92 @@ type TestRaw struct {
 	// (see EffectiveRepoConfig): a contributor's pushed branch must not be able
 	// to waive the configured-test gate that validates it.
 	AllowApproveOverFailure string `yaml:"allow_approve_over_failure"`
+	// EvidenceGate selects whether the Test step consults its diff-class gate
+	// before invoking the live-evidence agent.
+	//
+	// "always" (default): the evidence turn runs on every run, which is what
+	// every installation did before the gate existed.
+	//
+	// "diff-class": the turn runs only when the run's diff touches a product
+	// file per NonProductPaths AND this branch's newest recorded verdict is
+	// not a go earned, under the same run intent, at a product state this head
+	// still matches. A failing commands.test baseline defeats reuse and forces
+	// the turn, but does not override the no-product-file conclusion, which is
+	// a fact about the diff.
+	//
+	// The turn is the pipeline's single most expensive act - a measured ~21
+	// minutes and ~19M tokens per run, 38% of all pipeline tokens - and a
+	// decision-only re-run of a branch re-buys it in full, so the gate is what
+	// a repository reaches for when that bill outweighs re-deriving evidence
+	// it already has. The configured commands.test is outside the gate and
+	// runs either way.
+	//
+	// It is an opt-in rather than a default because it changes which runs get
+	// live validation at all: a version bump must not quietly stop validating
+	// a repository whose layout the default classification reads wrongly.
+	//
+	// Like Instructions it selects how the gate that validates a pushed branch
+	// behaves, so it is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig): a contributor must not be
+	// able to turn off the live validation of their own branch.
+	EvidenceGate string `yaml:"evidence_gate"`
+	// NonProductPaths classifies which changed paths do NOT count as product
+	// or UI files, and therefore whether the live-evidence agent has anything
+	// to drive at all. It is the diff-class gate: the ~21-minute evidence turn
+	// runs only when the run's diff touches a product file, so a docs-only or
+	// workflow-only change no longer re-buys evidence it cannot produce.
+	//
+	// Absent (nil) means DefaultNonProductPaths. An explicitly empty list is a
+	// deliberate opt-out that makes every changed path product, so the agent
+	// always runs. Patterns follow the ignore_patterns match rules plus a
+	// leading "**/" for a directory at any depth (see the steps package's
+	// matchNonProductPattern).
+	//
+	// It decides whether the gate that validates a pushed branch runs, so like
+	// Instructions it is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig): a contributor must not be
+	// able to declare their own product code non-product and skip live
+	// validation of it.
+	NonProductPaths []string `yaml:"non_product_paths"`
+}
+
+// DefaultNonProductPaths is the built-in answer to "which changed paths cannot
+// carry a live-drivable product change": documentation and markdown, test
+// files and test fixtures, CI workflow definitions, scripts and tooling
+// directories, and the pipeline's own config file. A repository replaces the
+// whole list through test.non_product_paths.
+//
+// Lockfiles are deliberately NOT here, unlike every other class above. A
+// lockfile change swaps the dependency versions the product actually ships
+// and runs, so it is a runtime change even though no first-party source moved
+// - and a lockfile-ONLY diff is the ordinary shape of a dependabot or
+// renovate bump, of `npm audit fix`, and of any transitive update. Listing
+// them would give exactly those runs an automatic no-surface, which by design
+// never parks, so a dependency upgrade would ship with neither live
+// validation nor a human decision. Every other class here genuinely cannot
+// change runtime behavior; that is what earns a skip.
+//
+// The test-file entries mirror isTestFile's naming conventions in
+// internal/pipeline/steps. They are restated here as data on purpose: the
+// configured list is the complete rule, so a maintainer who narrows it must be
+// able to see and remove every default it replaces.
+var DefaultNonProductPaths = []string{
+	// documentation and markdown
+	"*.md", "*.mdx", "docs/**",
+	// test files
+	"*_test.go", "*_test.rs", "test_*.py", "*_test.py", "test_*.rb",
+	"*Test.java", "*Tests.java",
+	"*.test.js", "*.test.ts", "*.test.jsx", "*.test.tsx",
+	"*.spec.js", "*.spec.ts", "*.spec.jsx", "*.spec.tsx",
+	// test fixtures
+	"**/testdata/**", "**/fixtures/**", "**/__fixtures__/**", "**/__snapshots__/**",
+	// CI workflow definitions
+	".github/workflows/**", ".github/actions/**", ".gitlab-ci.yml",
+	".circleci/**", "azure-pipelines.yml", "Jenkinsfile",
+	// scripts and tooling directories
+	"scripts/**", "tools/**", "hack/**",
+	// the pipeline's own config
+	".no-mistakes.yaml", ".no-mistakes.yml",
 }
 
 // EvidenceRaw is the YAML representation of test-evidence settings.
@@ -841,13 +942,20 @@ type EvidenceRaw struct {
 	MaxRuns   *int    `yaml:"max_runs"`
 }
 
-// Test is the resolved test-step config. Instructions and
-// AllowApproveOverFailure come from the trusted default-branch repo config
-// only (see TestRaw).
+// Test is the resolved test-step config. Instructions,
+// AllowApproveOverFailure, EvidenceGate, and NonProductPaths come from the
+// trusted default-branch repo config only (see TestRaw).
 type Test struct {
 	Evidence                Evidence
 	Instructions            string
 	AllowApproveOverFailure string
+	// EvidenceGate is always populated with one of the TestEvidenceGate*
+	// values; an unset key resolves to DefaultTestEvidenceGate.
+	EvidenceGate string
+	// NonProductPaths is always populated: the repository's trusted list when
+	// it set one, DefaultNonProductPaths otherwise. An explicitly empty
+	// configured list resolves to an empty slice, not the defaults.
+	NonProductPaths []string
 }
 
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
@@ -2540,6 +2648,25 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// trusted-only for the same reason no_ci is: a pushed branch must not
 		// waive the gate that certifies it.
 		effective.Test.AllowApproveOverFailure = trusted.Test.AllowApproveOverFailure
+		// test.non_product_paths decides whether the live-evidence gate runs at
+		// all for a change. It is trusted-only for the same reason
+		// test.instructions is: a contributor must not be able to declare their
+		// own product code non-product and skip the live validation of it.
+		// test.evidence_gate decides whether the live-evidence gate is
+		// consulted at all. It is trusted-only for the same reason
+		// test.non_product_paths is: a contributor must not be able to turn off
+		// the live validation of their own branch.
+		effective.Test.EvidenceGate = trusted.Test.EvidenceGate
+		// Copying through a nil slice would erase the difference between "the
+		// repository configured nothing" and "the repository explicitly wrote
+		// non_product_paths: []", which resolveNonProductPaths reads as the
+		// opt-out that makes every path product. YAML decodes an empty
+		// sequence to a non-nil empty slice, and append([]string(nil)) of one
+		// returns nil, so the emptiness has to be preserved deliberately.
+		effective.Test.NonProductPaths = nil
+		if trusted.Test.NonProductPaths != nil {
+			effective.Test.NonProductPaths = append([]string{}, trusted.Test.NonProductPaths...)
+		}
 		// pr.base_branch controls where the contributor's PR lands, so it is
 		// trusted-only unless the repository explicitly opts into pushed
 		// settings alongside commands and agent selection. TitleFormat is a
@@ -2563,6 +2690,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.Test.Evidence.Branch = nil
 		effective.Test.Instructions = ""
 		effective.Test.AllowApproveOverFailure = ""
+		effective.Test.EvidenceGate = ""
+		effective.Test.NonProductPaths = nil
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = ""
 		}
@@ -2790,7 +2919,58 @@ func validateTestRaw(test TestRaw) error {
 	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
 		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
+	// Fail the config closed on an unrecognized gate, exactly as
+	// validateRebaseRaw does: silently falling back to "always" would let a
+	// typo ("diffclass") quietly keep paying a bill the maintainer asked to
+	// stop paying, and the inverse typo would quietly stop validating.
+	switch strings.TrimSpace(test.EvidenceGate) {
+	case "", TestEvidenceGateAlways, TestEvidenceGateDiffClass:
+	default:
+		return fmt.Errorf("test.evidence_gate: %q is not a valid gate (want %q or %q)", test.EvidenceGate, TestEvidenceGateAlways, TestEvidenceGateDiffClass)
+	}
+	// A malformed glob would silently match nothing, which turns the whole
+	// repository back into product code and quietly restores the per-run
+	// evidence bill the gate exists to remove. Surface the typo in the config
+	// instead. Like the fields above, this also validates the PUSHED copy even
+	// though only the trusted list is honored.
+	for _, pattern := range test.NonProductPaths {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			return errors.New("test.non_product_paths: pattern must not be empty")
+		}
+		if err := validateNonProductGlob(trimmed); err != nil {
+			return fmt.Errorf("test.non_product_paths %q: %w", trimmed, err)
+		}
+	}
 	return nil
+}
+
+// validateNonProductGlob accepts the ignore_patterns glob syntax plus a
+// leading "**/", which names a directory or basename at any depth.
+func validateNonProductGlob(pattern string) error {
+	if rest, ok := strings.CutPrefix(pattern, "**/"); ok {
+		if rest == "" {
+			return errors.New("any-depth pattern needs a path after **/")
+		}
+		return validatePathInstructionGlob(rest)
+	}
+	return validatePathInstructionGlob(pattern)
+}
+
+// resolveNonProductPaths trims the configured list and drops entries left
+// empty. A nil list means the repository configured nothing, which takes
+// DefaultNonProductPaths; a non-nil list is authoritative even when empty.
+func resolveNonProductPaths(configured []string) []string {
+	if configured == nil {
+		return append([]string(nil), DefaultNonProductPaths...)
+	}
+	resolved := make([]string, 0, len(configured))
+	for _, pattern := range configured {
+		if trimmed := strings.TrimSpace(pattern); trimmed != "" {
+			resolved = append(resolved, trimmed)
+		}
+	}
+	return resolved
 }
 
 // applyProvidersOverrides applies non-nil raw values onto resolved defaults.
@@ -2962,6 +3142,21 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	// is already trusted-only.
 	test.Instructions = strings.TrimSpace(repo.Test.Instructions)
 	test.AllowApproveOverFailure = strings.TrimSpace(repo.Test.AllowApproveOverFailure)
+	// Both of the next two are resolved from the repository only, for the same
+	// reason Instructions is: they describe ONE repository's layout and
+	// economics, and global config has no repository to describe.
+	//
+	// Validated at parse time, so an unrecognized gate cannot reach here; an
+	// empty string stays "not set" so a repository can comment the key out
+	// without inventing a third meaning.
+	test.EvidenceGate = DefaultTestEvidenceGate
+	if gate := strings.TrimSpace(repo.Test.EvidenceGate); gate != "" {
+		test.EvidenceGate = gate
+	}
+	// An absent list (nil) takes the built-in defaults; an explicitly empty one
+	// stays empty so a repository can opt every path back into being product
+	// code.
+	test.NonProductPaths = resolveNonProductPaths(repo.Test.NonProductPaths)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {

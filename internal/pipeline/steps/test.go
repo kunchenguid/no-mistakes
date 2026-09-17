@@ -136,6 +136,14 @@ Previous test findings to address:
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create test evidence dir: %w", err)
 	}
+	// The diff-class gate decides whether the live-evidence agent runs at all.
+	// It is consulted only here, AFTER the configured test command above, which
+	// it can never skip. test_gate.go owns the rationale and the rules.
+	gate := resolveTestEvidenceGate(sctx, baseSHA, baselineExitCode != 0)
+	if gate.skipsAgent() {
+		sctx.Log("skipping the live-evidence agent: " + gate.Reason)
+		return gatedTestOutcome(sctx, gate, tested, baselineFindings, baselineSummary, baselineExitCode, fixSummary, newTestsFromFix)
+	}
 	if testCmd == "" {
 		sctx.Log("no test command configured, asking agent to run tests...")
 	} else if baselineExitCode != 0 {
@@ -229,7 +237,18 @@ Rules:
 	if len(tested) > 0 {
 		findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 	}
+	// These four are pipeline-owned, and the agent's own output is parsed by
+	// the same types.ParseFindingsJSON that reads them back from the database
+	// (see unmarshalRequiredFindings), so whatever the turn emitted for them
+	// has to be overwritten here rather than trusted. EvidenceOriginRunID is
+	// cleared rather than set: this run drove the agent itself, so it has no
+	// originating run - and it is later joined into a filesystem path by
+	// carryOriginEvidence, which is exactly why an agent-supplied value must
+	// never survive. Add any new pipeline-owned evidence field to this block.
 	findings.TestedHeadSHA = sctx.Run.HeadSHA
+	findings.EvidenceSource = gate.Source
+	findings.EvidenceReason = gate.Reason
+	findings.EvidenceOriginRunID = ""
 	findings.Items = append(baselineFindings, findings.Items...)
 	if baselineSummary != "" {
 		findings.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, findings.Summary}, "\n"))
@@ -415,6 +434,15 @@ func verdictFindings(findings Findings) []Finding {
 			Description: fmt.Sprintf("live validation verdict: inconclusive (%s)%s", coverage, untestedScenarioSuffix(findings.Scenarios)),
 		}}
 	case types.TestVerdictNoSurface:
+		// An AUTOMATIC no-surface is the diff-class gate's own mechanical
+		// conclusion - the run's diff touched no product file - not an agent's
+		// judgement that a change it looked at has no drivable surface. There
+		// is nothing for a human to decide, so it must not park; parking here
+		// would put a decision on every docs-only run and defeat the gate. The
+		// agent's own no-surface still parks, unchanged (see test_gate.go).
+		if findings.EvidenceSource == types.TestEvidenceSourceNoProductChange {
+			return nil
+		}
 		return []Finding{{
 			Severity:    types.FindingSeverityWarning,
 			Action:      types.ActionAskUser,

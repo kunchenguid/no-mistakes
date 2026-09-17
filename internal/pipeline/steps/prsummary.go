@@ -78,6 +78,17 @@ type pipelineAttestationLiveValidation struct {
 	Verdict string `json:"verdict"`
 	Live    int    `json:"live"`
 	Total   int    `json:"total"`
+	// Source names who produced the verdict: the live-evidence agent in this
+	// run, a reused earlier verdict, or the diff-class gate's automatic
+	// no-product-change conclusion. Omitted when the gate is off and for every
+	// run recorded before it existed, so those attestations stay byte-identical
+	// to a build without the gate. Under the gate, head equality alone no
+	// longer proves a freshly driven turn - an automatic no-product-change
+	// verdict belongs to this head with no agent turn behind it, and a reused
+	// verdict keeps the head it was driven at, so live_validation is omitted
+	// for the published head entirely - so a consumer that needs that
+	// distinction reads this field.
+	Source string `json:"source,omitempty"`
 }
 
 type testingArtifactRenderState struct {
@@ -251,6 +262,7 @@ func attestedLiveValidation(steps []*db.StepResult, rounds map[string][]*db.Step
 				Verdict: findings.Verdict,
 				Live:    live,
 				Total:   total,
+				Source:  findings.EvidenceSource,
 			}
 		}
 		return nil
@@ -379,7 +391,8 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		tested := collectTestingDetails(sr, stepRounds)
 		artifacts := collectTestingArtifacts(sr, stepRounds, opts)
 		scenarios := collectTestingScenarios(sr, stepRounds)
-		liveValidation := renderLiveValidationLine(scenarios, collectTestingVerdict(sr, stepRounds))
+		evidenceSource := collectTestingEvidenceSource(sr, stepRounds)
+		liveValidation := renderLiveValidationLine(scenarios, collectTestingVerdict(sr, stepRounds), collectTestingEvidenceReason(sr, stepRounds), evidenceSource)
 		if testingSummary == "" && len(tested) == 0 && len(artifacts) == 0 && liveValidation == "" {
 			return "## Testing\n\n- " + line
 		}
@@ -1567,7 +1580,7 @@ func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.F
 	if sr.StepName != types.StepTest {
 		return
 	}
-	if line := renderLiveValidationLine(findings.Scenarios, findings.Verdict); line != "" {
+	if line := renderLiveValidationLine(findings.Scenarios, findings.Verdict, findings.EvidenceReason, findings.EvidenceSource); line != "" {
 		b.WriteString("- ")
 		b.WriteString(line)
 		b.WriteString("\n")
