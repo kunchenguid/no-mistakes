@@ -107,6 +107,17 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
+	// Only an answer settles an open review question, so yolo has no standing
+	// consent to give - exactly as --yes does not. Without this, the question
+	// is an ask-user finding on the ordinary channel, so
+	// stepHasActionableFindings counts it, resetFindingSelection selects it,
+	// and the FIXER is handed the question text as work; the rereview re-emits
+	// the still-open question and the fix_review gate is then approved as
+	// already-fixed. A human's own approve or fix keypress stays allowed, which
+	// is why the guard is here and not in respondCmd.
+	if pipeline.HasUnansweredReviewQuestion(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	if !m.approvalReady(step) {
 		return nil
 	}

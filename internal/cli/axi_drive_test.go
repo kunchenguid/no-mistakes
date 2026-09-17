@@ -804,3 +804,108 @@ func TestRunReconciler_UnknownEventTypeIsTreatedAsStateBearing(t *testing.T) {
 		t.Fatalf("status after unknown event = %q, want a reconciliation", after.Status)
 	}
 }
+
+// TestDriveRun_YesLeavesAnOpenReviewQuestionAwaitingAnAnswer is the regression
+// for the hole --yes used to open in the review conversation.
+//
+// An open question is an ask-user warning on the ordinary findings channel, so
+// HasActionableFindings counted it and gateResolution selected its id like any
+// other finding and returned ActionFix. The fixer was then handed "Review
+// question awaiting an answer: ..." as work, guessed an answer and edited code;
+// the rereview re-emitted the still-open question and the second gate was
+// approved as already-fixed. The stated property that no verdict can release a
+// gate with questions open held only for the explicit answer path.
+//
+// Asserting zero IPC responses is the whole point: any response at all - fix or
+// approve - is the bug, because a question is resolved by an answer.
+func TestDriveRun_YesLeavesAnOpenReviewQuestionAwaitingAnAnswer(t *testing.T) {
+	socketPath := filepath.Join(makeSocketSafeTempDir(t), "review-question.sock")
+	srv := ipc.NewServer()
+	var responses atomic.Int32
+	srv.Handle(ipc.MethodRespond, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		responses.Add(1)
+		return nil, errors.New("unexpected automatic response to an open review question")
+	})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(socketPath) }()
+	t.Cleanup(func() {
+		srv.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("IPC server did not stop")
+		}
+	})
+	var client *ipc.Client
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		client, err = ipc.Dial(socketPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if client == nil {
+		t.Fatal("IPC server did not become ready")
+	}
+	defer client.Close()
+
+	// One open question beside an ordinary auto-fixable finding, which is the
+	// mixed gate the reviewer actually produces: the presence of other
+	// actionable work must not let --yes resolve the question with it.
+	findings := `{"findings":[` +
+		`{"id":"question-q1","severity":"warning","description":"Review question awaiting an answer: keep the legacy route?","action":"ask-user","category":"review-question"},` +
+		`{"id":"f1","severity":"warning","description":"ordinary finding","action":"auto-fix"}` +
+		`],"summary":"one open question"}`
+	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+		t.Run(string(status), func(t *testing.T) {
+			parked := &ipc.RunInfo{
+				ID: "run-1", Status: types.RunRunning,
+				Steps: []ipc.StepResultInfo{{StepName: types.StepReview, Status: status, FindingsJSON: &findings}},
+			}
+			source := &scriptedRunStateSource{
+				subscriptions: []scriptedSubscription{{events: make(chan ipc.Event)}},
+				runs:          []*ipc.RunInfo{parked},
+			}
+			reconciler := newRunReconciler(source, parked.ID)
+			defer reconciler.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var progress bytes.Buffer
+			run, ciReady, err := driveRunWithReconciler(ctx, &progress, client, reconciler, parked.ID, true)
+			if err != nil || run != parked || ciReady || responses.Load() != 0 {
+				t.Fatalf("--yes resolved a gate with an open review question: run=%+v ciReady=%v responses=%d err=%v", run, ciReady, responses.Load(), err)
+			}
+			// The operator has to be told what to do instead, or --yes just
+			// looks like it hung.
+			for _, want := range []string{"explicit answer", "axi answer"} {
+				if !strings.Contains(progress.String(), want) {
+					t.Fatalf("progress missing %q: %s", want, progress.String())
+				}
+			}
+		})
+	}
+}
+
+// A gate with no review question is unaffected: --yes still resolves ordinary
+// ask-user findings as standing consent, which is what it is for.
+func TestDriveRun_YesStillResolvesAGateWithoutAReviewQuestion(t *testing.T) {
+	findings := `{"findings":[{"id":"f1","severity":"warning","description":"ordinary finding","action":"ask-user"}],"summary":"one issue"}`
+	parsed, err := types.ParseFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if types.HasReviewQuestion(parsed) {
+		t.Fatal("an ordinary ask-user finding was mistaken for a review question")
+	}
+	// The ID prefix alone must never trigger the carve-out; only the category.
+	prefixed := `{"findings":[{"id":"question-q1","severity":"warning","description":"agent named it that way","action":"ask-user"}],"summary":"one issue"}`
+	parsed, err = types.ParseFindingsJSON(prefixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if types.HasReviewQuestion(parsed) {
+		t.Fatal("a finding was treated as a review question on its ID prefix alone")
+	}
+}

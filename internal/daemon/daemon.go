@@ -1329,6 +1329,17 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RespondResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodAnswerReview, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.AnswerReviewQuestionParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		return mgr.HandleAnswerReviewQuestion(p.RunID, p.QuestionID, p.Answer, p.AnsweredBy)
+	})
+
 	srv.Handle(ipc.MethodCancelRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err

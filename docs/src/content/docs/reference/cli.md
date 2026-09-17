@@ -214,7 +214,7 @@ no-mistakes axi respond --action skip
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required                                |
+| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
@@ -235,6 +235,30 @@ Each `axi respond` blocks until the next gate, CI-ready decision point, or final
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
 When the daemon is already running, `axi respond` can continue an active run even if the global config file has become invalid, because it is not starting a fresh run.
 The same successful-output reporting instructions apply to `axi respond` results.
+
+## no-mistakes axi answer
+
+Answer one question the run's reviewer asked while it was reviewing. See [The Review Conversation](/no-mistakes/concepts/review-conversation/) for the protocol and state machine.
+
+Requires trusted [`review.conversation: true`](/no-mistakes/reference/repo-config/#reviewconversation), which is off by default. Without it the reviewer was never told to ask, so this command refuses and names the setting.
+
+```sh
+no-mistakes axi answer --question q1 --answer "Keep it behind a flag" --by captain
+```
+
+| Flag         | Type     | Default            | Description                                                              |
+| ------------ | -------- | ------------------ | ------------------------------------------------------------------------ |
+| `--question` | `string` | (none)             | Question ID, as carried by the review gate's `question-<id>` findings, or named by the gate's omission notice when more questions are open than the gate renders as rows; required |
+| `--answer`   | `string` | (none)             | The answer, ideally one of the question's stated options; required       |
+| `--by`       | `string` | (none)             | Who answered; recorded on the PR and in the branch's settled questions   |
+
+The run is always the current branch's active run, and there is deliberately no `--run`: `axi`'s run resolution is branch-scoped, and this command mutates, so a second selection path could land an answer meant for one branch's reviewer on another's. Run it from a clone of the repository whose run it answers - the repository is resolved from the working directory, so a directory outside any initialized repository reports `repo not initialized` rather than answering.
+
+This is not a gate response, and `axi respond` does not accept an answer. The answer is appended to the run's review conversation immediately, so a reviewer that is still working reads it at its next checkpoint and can redirect the rest of its pass. The output reports `open_questions` and `reviewer_resumed`: once no question is open, the daemon resumes that same reviewer session with the answers so it can finish its pass, rather than the caller approving or fixing to get past the gate.
+
+Every answered question is recorded per branch, so a later cold reviewer receives it as settled and does not re-raise it, and the question and answer appear in the PR body's review conversation.
+
+Answering requires an active run, because only its executor can resume the reviewer.
 
 ## no-mistakes axi status
 

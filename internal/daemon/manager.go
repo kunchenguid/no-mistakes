@@ -26,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
+	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -1731,6 +1732,154 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 	}
 
 	return exec.RespondWithOverrides(step, action, findingIDs, instructions, addedFindings, approvalReason)
+}
+
+// HandleAnswerReviewQuestion records one operator answer to a question the
+// run's reviewer asked, and releases the review gate once nothing is left
+// open.
+//
+// The three outcomes are all correct and all expected:
+//
+//   - the reviewer is still working (no gate parked yet). The answer is
+//     durably appended and the reviewer reads it at its next checkpoint, which
+//     is the whole point of emitting questions mid-turn: an early answer can
+//     redirect the pass instead of arriving after the effort is spent.
+//   - the reviewer has parked in waiting-on-answers. Once this answer closes
+//     the last open question, types.ActionAnswer resumes the reviewer's own
+//     session with the answers. That is the push the captain required: nothing
+//     polls, and the reviewer receives a message it did not ask for.
+//   - this answer closed no question that was open before the append - an id
+//     nobody asked, or a correction sent after the last question was already
+//     answered. It is recorded and NO gate is released; see the wasOpen
+//     snapshot below, which exists because the open count alone would let such
+//     an answer steal the verdict on a gate parked on ordinary findings.
+//
+// Every answer is stamped with the ask it settles, so a correction binds to the
+// already-settled ask instead of pre-answering a later re-ask of the same id.
+// The two ways that stamp cannot be trusted are refused before anything is
+// written, and they stay distinguishable from each other and from the third
+// outcome above: a conversation that cannot be READ AT ALL, and one whose
+// question history could not be read TO THE END.
+//
+// The write happens before the release decision, so a failure to resume never
+// loses the answer - the next answer, or a recovered gate, finds it on disk.
+func (m *RunManager) HandleAnswerReviewQuestion(runID, questionID, answer, answeredBy string) (*ipc.AnswerReviewQuestionResult, error) {
+	questionID = strings.TrimSpace(questionID)
+	answer = strings.TrimSpace(answer)
+	if questionID == "" || answer == "" {
+		return nil, fmt.Errorf("answering a review question needs a question id and an answer")
+	}
+
+	m.mu.Lock()
+	exec, ok := m.executors[runID]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("no active executor for run %s", runID)
+	}
+	// A repository that has not turned the conversation on has no channel to
+	// answer into, and the reviewer was never told to ask, so say which setting
+	// would accept an answer rather than report a missing directory.
+	if !exec.ReviewConversationEnabled() {
+		return nil, fmt.Errorf("run %s has no review conversation: set review.conversation: true in .no-mistakes.yaml on the default branch to let the reviewer ask questions", runID)
+	}
+	dir := exec.ReviewConversationDir(runID)
+	if dir == "" {
+		return nil, fmt.Errorf("run %s has no review conversation directory", runID)
+	}
+	// Snapshot what was OPEN before the append, because "nothing is open now"
+	// is not evidence that THIS answer closed anything. An answer for an id
+	// nobody asked is recorded as an orphan and leaves the open count at zero,
+	// as does a duplicate or corrected answer sent after the last question was
+	// already closed. Releasing on the count alone let either of those release
+	// a review gate that had parked on ordinary ask-user CODE findings: the
+	// step re-executed as a finalize turn, burned a review round, and the
+	// operator's pending verdict never happened - their next axi respond then
+	// failed with "no step awaiting approval".
+	//
+	// The same snapshot supplies the ask this answer settles. reviewqa cannot
+	// recover that at load time - the two files are appended independently, so
+	// two asks and two answers read the same whether the second answer is a
+	// correction to the first ask or the answer to a re-ask - and binding it
+	// here, at the only writer of answers.ndjson, is what stops a correction
+	// pre-answering the next re-ask of that id.
+	//
+	// So a conversation this cannot READ is refused rather than written
+	// through: an unstamped answer settles nothing, so the questions it was
+	// meant for would park forever with the operator told they had answered
+	// them. The refusal names the read failure, because an operator told "no open
+	// question" about a conversation nobody could read would go looking for
+	// the wrong thing entirely. A conversation that reads fine with nothing
+	// open is unaffected: that answer is still recorded, still stamped, and
+	// still releases no gate.
+	before, err := reviewqa.Load(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read run %s's review conversation before recording the answer: %w", runID, err)
+	}
+	// A question history the reader could not reach the end of is refused for
+	// the same reason, and it is a DIFFERENT failure from the one above: the
+	// file opened and parsed, so nothing here errored, but a later ask of any
+	// id is past the seen region, so the load settles nothing and never will.
+	// Stamping an answer against it would record an answer that can never
+	// close its question, leaving the gate parked forever with the operator
+	// told they had answered it. Refusing before the append is what keeps this
+	// from becoming that silent strand - and it is not the ordinary case of an
+	// answer that closed nothing, which reads fine, stays recorded and is
+	// deliberately not an error.
+	if before.QuestionsIncomplete {
+		return nil, fmt.Errorf("run %s's review question history could not be read to the end (%s), so an answer cannot be bound to the ask it settles; nothing was recorded - read that file for the questions asked, and resolve the parked review with `no-mistakes axi respond` instead", runID, filepath.Join(dir, reviewqa.QuestionsFile))
+	}
+	wasOpen := false
+	askOrdinal := 0
+	for _, e := range before.Open() {
+		if e.ID == questionID {
+			wasOpen = true
+			break
+		}
+	}
+	for _, ask := range before.Asks {
+		if ask.Question.ID == questionID {
+			askOrdinal = ask.Ordinal
+		}
+	}
+
+	if err := reviewqa.AppendAnswer(dir, reviewqa.Answer{
+		ID:         questionID,
+		Answer:     answer,
+		AnsweredBy: strings.TrimSpace(answeredBy),
+		AskOrdinal: askOrdinal,
+	}); err != nil {
+		return nil, err
+	}
+
+	conv, err := reviewqa.Load(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read review conversation after recording the answer: %w", err)
+	}
+	open := conv.Open()
+	result := &ipc.AnswerReviewQuestionResult{OK: true, Open: len(open)}
+	for _, e := range open {
+		result.OpenIDs = append(result.OpenIDs, e.ID)
+	}
+	if len(open) > 0 {
+		result.Note = "recorded; the reviewer still has open questions"
+		return result, nil
+	}
+	if !wasOpen {
+		// Recorded durably and deliberately inert: it corrects the ask it is
+		// stamped with, and no gate is touched. A later re-ask of this id is a
+		// different question and stays open until it is answered itself.
+		result.Note = "recorded; it answered no open question, so no review gate was released"
+		return result, nil
+	}
+	if err := exec.Respond(types.StepReview, types.ActionAnswer, nil); err != nil {
+		// Not an error for the caller: the answer is recorded either way, and
+		// "no step awaiting approval" is the ordinary mid-turn case.
+		result.Note = fmt.Sprintf("recorded; the review gate was not released (%v)", err)
+		return result, nil
+	}
+	result.Resumed = true
+	result.Note = "recorded; every question is answered and the reviewer was resumed"
+	return result, nil
 }
 
 // Shutdown cancels all active runs. Called during daemon shutdown to prevent

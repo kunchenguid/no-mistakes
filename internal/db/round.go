@@ -29,10 +29,13 @@ const DeclinedSelectionJSON = "[]"
 
 // StepRound represents one execution round within a pipeline step.
 type StepRound struct {
-	ID               string
-	StepResultID     string
-	Round            int
-	Trigger          string  // "initial", "auto_fix"; legacy "user_fix" is treated as "auto_fix"
+	ID           string
+	StepResultID string
+	Round        int
+	// Trigger is "initial", "auto_fix", or "answer" (a review turn resumed
+	// once every question it left open was answered - not a fix round, since
+	// no code changed); legacy "user_fix" is treated as "auto_fix".
+	Trigger          string
 	FindingsJSON     *string // nullable - findings produced by this round
 	ReviewedHeadSHA  *string // non-authoritative commit candidate captured by a review round
 	StartingHeadSHA  *string

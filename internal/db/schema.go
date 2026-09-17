@@ -185,6 +185,36 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     created_at  INTEGER NOT NULL
 );
 
+-- Answers a human gave to a review turn's questions, keyed by branch so the
+-- next COLD reviewer - in this run or any later one - reads what is already
+-- settled. A mid-turn answer is not a gate response, so it cannot ride the
+-- step_rounds decision channel; nothing deletes these rows, for the same
+-- reason nothing deletes a branch decision. PRIMARY KEY per
+-- branch+question+run+ask: a correction to the SAME ask replaces its earlier
+-- answer, two runs that both happen to use the question id "q1" - ids are
+-- chosen by the agent and unique only by accident - keep their own rows
+-- instead of one overwriting the other's settled decision, and a re-ask of an
+-- id WITHIN one run (a cold rereview in a fix round is shown only the
+-- still-open questions, so it starts numbering at q1 again) records its own
+-- decision instead of overwriting the earlier ask's.
+CREATE TABLE IF NOT EXISTS review_questions (
+    repo_id      TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    branch       TEXT NOT NULL,
+    question_id  TEXT NOT NULL,
+    run_id       TEXT NOT NULL,
+    ask_ordinal  INTEGER NOT NULL,
+    question     TEXT NOT NULL,
+    options_json TEXT,
+    file         TEXT,
+    line         INTEGER,
+    answer       TEXT NOT NULL,
+    answered_by  TEXT,
+    answered_at  TEXT,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, branch, question_id, run_id, ask_ordinal)
+);
+
 -- Per-branch range of pipeline-authored commits whose re-review did not
 -- complete. The next run's initial review reads this so it is not cold on
 -- uncertified fixer commits. PRIMARY KEY per branch: the latest uncertified

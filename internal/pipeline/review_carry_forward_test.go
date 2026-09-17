@@ -574,6 +574,123 @@ func TestExecutor_ReviewCarryForward_PositiveCoverageClearsFinding(t *testing.T)
 	}
 }
 
+// TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification pins
+// the boundary between the two mechanisms. A review question is not a report
+// about the code, so it must not take part in verification: a question's file
+// is optional and the omission marker never has one, so leaving questions in
+// the verification input made hasUnanchoredFinding true and refused to clear
+// EVERY selected finding for as long as any question stayed open.
+func TestExecutor_ReviewCarryForward_AnOpenQuestionDoesNotBlockVerification(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			if round == 1 {
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        `{"findings":[{"id":"review-1","severity":"error","file":"service.go","line":10,"description":"nil deref","action":"ask-user"}],"summary":"1 finding"}`,
+					ReviewedPaths:   []string{"service.go"},
+					ReviewablePaths: []string{"service.go"},
+				}, nil
+			}
+			// The fix is verified - service.go was reviewed and reports
+			// nothing - while an unanswered question rides along, exactly as
+			// ReviewStep.Execute appends one to its own output.
+			return &StepOutcome{
+				NeedsApproval:   true,
+				Findings:        `{"findings":[{"id":"question-q1","severity":"warning","description":"Review question awaiting an answer: keep the legacy route?","action":"ask-user","category":"review-question"}],"summary":"one open question"}`,
+				ReviewedPaths:   []string{"service.go"},
+				ReviewablePaths: []string{"service.go"},
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].FindingsJSON == nil {
+		t.Fatal("the gate carries no findings at all, so the open question was lost")
+	}
+	if strings.Contains(*steps[0].FindingsJSON, `"review-1"`) {
+		t.Fatalf("the verified finding stayed outstanding because a question was open: %s", *steps[0].FindingsJSON)
+	}
+	if !strings.Contains(*steps[0].FindingsJSON, "question-q1") {
+		t.Fatalf("the open question is missing from the gate: %s", *steps[0].FindingsJSON)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+}
+
+// TestExecutor_ReviewCarryForward_AnAnswerRoundCanVerifyWhatItCarried covers
+// the round type the append-only set was not written for. The reviewer's
+// protocol tells it to prefix any finding contingent on an open question with
+// "PENDING ANSWER (<id>)", so a round that asks a question routinely reports
+// one. Nothing is dispatched to a fixer, so without seeding there is nothing
+// pending to verify, and the finalize turn that learns the answer disproves
+// the finding cannot withdraw it: the carry-forward re-injects it, still
+// pointing at a question that is already settled.
+func TestExecutor_ReviewCarryForward_AnAnswerRoundCanVerifyWhatItCarried(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			round++
+			if round == 1 {
+				return &StepOutcome{
+					NeedsApproval:   true,
+					Findings:        `{"findings":[{"id":"review-1","severity":"warning","file":"service.go","line":10,"description":"PENDING ANSWER (q1): the legacy route is only wrong if /v1 is going","action":"ask-user"},{"id":"question-q1","severity":"warning","description":"Review question awaiting an answer: is /v1 going?","action":"ask-user","category":"review-question"}],"summary":"1 finding and a question"}`,
+					ReviewedPaths:   []string{"service.go"},
+					ReviewablePaths: []string{"service.go"},
+				}, nil
+			}
+			// The finalize turn: the answer settled the question and disproved
+			// the contingent finding, so it reports neither, over a genuine
+			// coverage record for the file it carried in.
+			return &StepOutcome{ReviewedPaths: []string{"service.go"}, ReviewablePaths: []string{"service.go"}}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionAnswer, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[0].Status != types.StepStatusCompleted {
+		t.Fatalf("step status = %s, want %s: the answer round could not withdraw the finding its answer disproved", steps[0].Status, types.StepStatusCompleted)
+	}
+	if steps[0].FindingsJSON != nil && strings.Contains(*steps[0].FindingsJSON, "review-1") {
+		t.Fatalf("the contingent finding survived the answer that disproved it: %s", *steps[0].FindingsJSON)
+	}
+}
+
 // TestResolveVerifiedFindingsJSON pins the verify-before-clear rule: only a
 // positive coverage record that also stops reporting the defect clears a
 // selected finding. Silence, a round that looked elsewhere, a re-reported

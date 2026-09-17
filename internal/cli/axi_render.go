@@ -521,6 +521,19 @@ func gateFields(gate stepView) []toon.Field {
 		"Run `no-mistakes axi respond --action approve` to accept this step and continue",
 		"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
 	}
+	// A review parked in waiting-on-answers is not asking for a verdict: its
+	// reviewer asked questions and cannot finish without them. Approving or
+	// fixing would discard the pass it paused, so answering leads the help.
+	// Keyed on the shared predicate, the same one the two auto-resolve paths
+	// read, rather than on a second rendering of the questions: each open
+	// question is already a finding in the rows below, carrying its id and the
+	// options the reviewer stated.
+	if pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON) {
+		help = append([]string{
+			"This review is waiting on answers to the question(s) its reviewer asked; each is a `question-<id>` finding below. Answer each with `no-mistakes axi answer --question <id> --answer \"<one of its options>\"` and the same reviewer resumes and finishes its pass",
+			"Do not approve or fix to get past a review question: that throws away the paused review pass instead of answering it",
+		}, help...)
+	}
 	if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Protected-path refusals require an explicit operator response; Approve is rejected.",

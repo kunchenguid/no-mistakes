@@ -103,6 +103,14 @@ const (
 	FindingCategoryCIReviewBot     = "ci-review-bot"
 )
 
+// FindingCategoryReviewQuestion marks the synthetic finding the review step
+// emits for each question its reviewer asked and nobody has answered yet. It
+// is always an ask-user warning, which is what parks the step in
+// waiting-on-answers; the ID is derived from the question id so the same
+// question keeps the same finding across rounds. See
+// docs/src/content/docs/concepts/review-conversation.md.
+const FindingCategoryReviewQuestion = "review-question"
+
 // FindingCategoryTestCommand marks the deterministic finding produced when a
 // configured commands.test exits non-zero. The Test step's
 // ApprovalOverrideVerifier keys on it so an approval over that failure is
@@ -473,6 +481,26 @@ func HasAskUserFindings(findings Findings) bool {
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
 		if item.ActionOrDefault() != ActionNoOp {
+			return true
+		}
+	}
+	return false
+}
+
+// HasReviewQuestion reports whether a gate is parked on a question its
+// reviewer asked and nobody has answered.
+//
+// It qualifies HasActionableFindings above, which counts an open question as
+// actionable because its action is ask-user. That is right for every other
+// ask-user finding and wrong for this one: a question is resolved by an
+// ANSWER, not by a verdict and not by a fix, so yolo / auto-resolve has to
+// recognize it and stand aside rather than treating it as standing consent.
+// Keyed on the category, never on the finding ID's "question-" prefix, so an
+// agent-authored finding that happens to be named that way is never mistaken
+// for one.
+func HasReviewQuestion(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.Category == FindingCategoryReviewQuestion {
 			return true
 		}
 	}

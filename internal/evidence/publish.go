@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -49,6 +50,12 @@ type Request struct {
 	Segments []string
 	// SourceDir is the local directory holding the run's evidence files.
 	SourceDir string
+	// ExcludeDirs names directories directly under SourceDir that must never
+	// be published, as slash-separated paths relative to it. The run's evidence
+	// directory is shared with content that is deliberately NOT publishable -
+	// the review conversation lives there - and this package must not have to
+	// know which name that is, so the caller supplies it.
+	ExcludeDirs []string
 	// Message is the evidence commit message.
 	Message string
 	// ForbiddenBranches names branches that must never receive evidence (the
@@ -98,7 +105,7 @@ func Publish(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	dir := normalizeInBranchDir(req.Dir, req.Segments)
-	files, err := collectFiles(req.SourceDir)
+	files, err := collectFiles(req.SourceDir, req.ExcludeDirs)
 	if err != nil {
 		return nil, err
 	}
@@ -294,12 +301,25 @@ type collectedFile struct {
 	Mode string
 }
 
-// collectFiles lists the regular files under root in a deterministic order.
+// collectFiles lists the regular files under root in a deterministic order,
+// skipping any directory named in exclude (slash-separated, relative to root).
 // Symlinks are skipped: an evidence symlink would publish a pointer to a path
 // that only exists on the daemon host.
-func collectFiles(root string) ([]collectedFile, error) {
+//
+// This is the single boundary every publication routes through, which is why
+// the exclusion belongs here rather than at a caller: an excluded directory is
+// skipped WHOLE, so its contents are never published and never counted against
+// the size and file-count budgets either - otherwise unpublishable content
+// could still fail the publication and drop real evidence back to local links.
+func collectFiles(root string, exclude []string) ([]collectedFile, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, nil
+	}
+	excluded := make(map[string]bool, len(exclude))
+	for _, name := range exclude {
+		if name = strings.Trim(strings.TrimSpace(name), "/"); name != "" {
+			excluded[name] = true
+		}
 	}
 	var files []collectedFile
 	var total int64
@@ -310,7 +330,13 @@ func collectFiles(root string) ([]collectedFile, error) {
 			}
 			return err
 		}
-		if d.IsDir() || !d.Type().IsRegular() {
+		if d.IsDir() {
+			if rel, relErr := filepath.Rel(root, p); relErr == nil && excluded[filepath.ToSlash(rel)] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		info, err := d.Info()

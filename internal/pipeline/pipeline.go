@@ -15,20 +15,34 @@ var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx                   context.Context
-	Run                   *db.Run
-	Repo                  *db.Repo
-	WorkDir               string
-	GateDir               string
-	Agent                 agent.Agent
-	Config                *config.Config
-	ForgeContext          *forgecontext.Context
-	DB                    *db.DB
-	Log                   func(string) // discrete log line (newline-terminated, user-visible + file)
-	LogChunk              func(string) // raw streaming chunk (user-visible + file)
-	LogFile               func(string) // file-only log callback (not shown to user)
-	Fixing                bool         // true when re-executing after a "fix" action
-	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
+	Ctx              context.Context
+	Run              *db.Run
+	Repo             *db.Repo
+	WorkDir          string
+	GateDir          string
+	Agent            agent.Agent
+	Config           *config.Config
+	ForgeContext     *forgecontext.Context
+	DB               *db.DB
+	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk         func(string) // raw streaming chunk (user-visible + file)
+	LogFile          func(string) // file-only log callback (not shown to user)
+	Fixing           bool         // true when re-executing after a "fix" action
+	SkipFixExecution bool         // replay an already-completed fix round's review turn only
+	// FinalizingAnswers is true when re-executing after a types.ActionAnswer
+	// response: every question the reviewer left open has been answered, and
+	// the step resumes the SAME reviewer session with those answers so it can
+	// finish the pass it parked mid-way.
+	//
+	// The answer itself changes no code, but this CAN be set together with
+	// Fixing, and both answer paths do set both: a question may be asked by a
+	// rereview inside a fix round, whose gate parks as fix_review, and the
+	// answer round has to keep that context or the step's durable status
+	// changes depending on whether a daemon restart happened. SkipFixExecution
+	// is what keeps the fixer from re-running over already-fixed code, and
+	// review.go's `FinalizingAnswers && !Fixing` exists because the
+	// combination is reachable - not to forbid it.
+	FinalizingAnswers     bool
 	ReviewStartingHeadSHA string
 	PreviousFindings      string // JSON findings selected for the current fix round
 	DeferredFindings      string // JSON findings left unselected when the current fix round began
@@ -73,9 +87,17 @@ type StepContext struct {
 	// context only.
 	PriorBranchDecisions          []*db.BranchDecisionRound
 	PriorBranchDecisionsTruncated bool
-	// Sessions manages the run's durable review-fixer session. The session
-	// machinery remains role-generic for legacy recovery; nil runs every
-	// invocation cold.
+	// PreviousRunReviewRounds are the review rounds of the most recent OTHER
+	// run on this branch. They are bound on the review step so a run that
+	// superseded a parked one - which is what an author's own fix push does -
+	// still carries what the previous round found and what was already
+	// answered. The code itself is still reviewed cold. Nil when there is no
+	// such run, or when the uncertified-range channel already carries the same
+	// run's rounds.
+	PreviousRunReviewRounds []*db.StepRound
+	// Sessions manages the run's durable review-loop sessions: the fixer's,
+	// which spans its fix turns, and the reviewer's, which spans one review
+	// pass and is dropped before any fix round. Nil runs every invocation cold.
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
@@ -96,10 +118,11 @@ type StepContext struct {
 
 // RunAgentSession executes one turn of a durable review-loop role session,
 // running cold when sessions are unavailable. The invocation is bounded by
-// RunAgent's deadline. Only the review step's fixer turns use this; every
-// other agent invocation - including every review turn, which must stay
-// independent of the session that prescribed the fixes under review - goes
-// through RunAgent and stays session-isolated.
+// RunAgent's deadline. Only the review step uses it: its fixer turns, and the
+// asking/finalize pair of one review pass. A review turn that judges changed
+// code - every post-fix rereview - passes an empty role so it stays isolated
+// from the session that prescribed the fixes under review. Every other agent
+// invocation goes through RunAgent.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	return sctx.runAgent(sctx.Ctx, opts, role)
 }
@@ -157,6 +180,26 @@ type Step interface {
 // leaves the gate parked. Implementations must be read-only and fail closed.
 type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
+}
+
+// ApprovalGateResumer is implemented by a step whose parked approval gate can
+// become ANSWERABLE rather than obsolete: the condition that parked it is gone,
+// but the right outcome is to run the step again rather than to complete it.
+//
+// It exists because ApprovalGateReconciler cannot express that. A reconciler's
+// true result completes the step through the success path, which is correct for
+// the CI step - a merged or closed PR genuinely settles it - and wrong for the
+// review step, where completing would approve the run's head off the findings
+// snapshot the gate parked with, without the reviewer ever seeing the answers
+// that arrived. So a resumer returns the ApprovalAction to re-enter the step
+// with, and the executor delivers it exactly as if an operator had sent it; no
+// step completes on this path.
+//
+// resume false leaves the gate parked. Implementations must be read-only, must
+// fail closed, and must be certain the action belongs to THIS gate: a gate
+// parked on something the action does not answer must be left alone.
+type ApprovalGateResumer interface {
+	ResumeApprovalGate(sctx *StepContext, findingsJSON string) (action types.ApprovalAction, resume bool, err error)
 }
 
 // ApprovalOverrideVerifier is implemented by a step whose approval must not

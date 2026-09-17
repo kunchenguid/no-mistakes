@@ -736,3 +736,49 @@ func filterFindingsJSON(raw string, ids []string) string {
 	}
 	return filteredRaw
 }
+
+// dropReviewQuestionFindingsJSON removes the reviewer's own open-question
+// findings from an outstanding set.
+//
+// It is the one narrow exception to the append-only rule the rest of this file
+// enforces, and it exists because a review question is resolved by its ANSWER,
+// never by a coverage record: the conversation is its authority, which is why
+// every automatic resolver already stands aside at such a gate
+// (HasUnansweredReviewQuestion). Carrying one forward makes it immortal - the
+// finalize turn after an answer returns clean, the merge re-injects the old
+// question, the gate re-parks, and the gate resumer answers it again, for ever.
+//
+// Nothing is lost by dropping them: openReviewQuestionFindings re-emits every
+// question that is still open from the live conversation on EVERY review turn,
+// so an unanswered question comes straight back, while an answered one stays
+// gone. Keyed on the category rather than the "question-" ID prefix, like every
+// other consumer of these findings, and every other finding keeps upstream's
+// append-only guarantee untouched.
+func dropReviewQuestionFindingsJSON(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	if !types.HasReviewQuestion(findings) {
+		return raw
+	}
+	kept := make([]types.Finding, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		if item.Category == types.FindingCategoryReviewQuestion {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	findings.Items = kept
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}

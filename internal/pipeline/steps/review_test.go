@@ -1980,3 +1980,69 @@ func TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestRereviewProvenanceIsNotContradictedByThePreviousRunsRounds covers the
+// two prompt blocks that both render on an ordinary run: a branch with an
+// earlier run has its review rounds bound once at step entry, before the fix
+// loop, so the binding survives every rereview - and a rereview also carries
+// the fix-round provenance clause.
+//
+// The superseded-rounds block used to end by asserting that the code under
+// review is the author's own and should get "the ordinary standard", which is
+// false on exactly those rereviews and directly weakens the anti-ratchet
+// framing the provenance clause exists to carry. Only fixRoundProvenanceClause
+// has the state to direct the standard for the current head.
+func TestRereviewProvenanceIsNotContradictedByThePreviousRunsRounds(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
+			}
+			j, _ := json.Marshal(cleanReviewFindings())
+			return &agent.Result{Output: j}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"possible nil deref"}],"summary":"1 issue"}`
+	previousFindings := `{"findings":[{"id":"f-9","severity":"error","description":"drops the straggler","action":"ask-user"}],"summary":"1 issue"}`
+	sctx.PreviousRunReviewRounds = []*db.StepRound{{
+		Round:        1,
+		Trigger:      "initial",
+		FindingsJSON: &previousFindings,
+	}}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 2 {
+		t.Fatalf("expected fix + rereview calls, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[1].Prompt
+
+	// Both blocks really are in this one prompt; without that the assertion
+	// below could pass on a prompt that carries neither.
+	if !strings.Contains(prompt, "Previous run's review rounds on this branch:") {
+		t.Fatalf("the previous run's rounds did not reach the rereview prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Fix-round provenance:") {
+		t.Fatalf("the rereview lost its provenance clause:\n%s", prompt)
+	}
+	for _, contradiction := range []string{
+		"The code you are reviewing is the author's own",
+		"review it to the ordinary standard",
+	} {
+		if strings.Contains(prompt, contradiction) {
+			t.Fatalf("the superseded-rounds block contradicts the provenance clause with %q:\n%s", contradiction, prompt)
+		}
+	}
+}

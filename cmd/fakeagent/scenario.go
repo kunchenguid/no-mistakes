@@ -61,6 +61,25 @@ type Action struct {
 
 	// DelayMS pauses before responding, for e2e tests that need an observable active run.
 	DelayMS int `yaml:"delay_ms,omitempty"`
+
+	// AskQuestions are raw questions.ndjson lines the fake reviewer appends to
+	// the run's review conversation before responding, which is how a real
+	// reviewer asks while it works. The directory is read out of the prompt
+	// (see conversation.go), never from the scenario, so this cannot write
+	// anywhere the product did not name.
+	AskQuestions []string `yaml:"ask_questions,omitempty"`
+
+	// WriteEvidence are test-evidence files written into the run's evidence
+	// directory, which the test prompt names and which lives outside the
+	// worktree by design.
+	WriteEvidence []EvidenceFile `yaml:"write_evidence,omitempty"`
+}
+
+// EvidenceFile is one test-evidence file written under the evidence directory
+// the prompt names, relative to it.
+type EvidenceFile struct {
+	Path    string `yaml:"path"`
+	Content string `yaml:"content"`
 }
 
 // Edit performs a Replace of Old with New in Path. If Old is empty the

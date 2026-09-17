@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `rebase.strategy`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, and `pr.publish_intent` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -39,9 +39,11 @@ document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
 
-# Optional extra review guidance, scoped to the paths a change touches.
-# Read only from the trusted default branch.
+# Optional review settings, read only from the trusted default branch:
+# whether the reviewer may ask you questions while it works (off by default),
+# and extra guidance scoped to the paths a change touches.
 review:
+  conversation: true
   path_instructions:
     - path: "internal/scm/**"
       instructions: |
@@ -383,6 +385,29 @@ The document step always applies a built-in placement policy: every fact has exa
 It augments or clarifies the built-in policy; it cannot disable documentation integrity.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+
+### review.conversation
+
+Whether the reviewer may ask you questions while it reviews, instead of turning every undecidable point into a finding you answer with a verdict. The [Review conversation](/no-mistakes/concepts/review-conversation/) concept page owns the protocol, the state machine, and what is persisted.
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+review:
+  conversation: true
+```
+
+**Opting in.** Commit that block to your **default branch** (the same copy the daemon reads `commands` and `agent` from). It takes effect on the next run of every branch in the repository; a branch cannot opt itself in or out, in either direction. A contributor must not be able to make their own review park for a human answer, and once you have asked for the conversation a pushed branch must not be able to decline it.
+
+**On**, the review step gains a question channel. The reviewer emits each larger question the moment it has one, keeps reviewing while it is open, and re-reads answers at its own checkpoints. A pass that ends with an unanswered question parks with one `ask-user` warning per question; you answer each with [`no-mistakes axi answer`](/no-mistakes/reference/cli/#no-mistakes-axi-answer), and once none are open that same reviewer session is resumed to finish its pass. Answers are recorded per branch, reach every later cold reviewer as settled, and are published in the PR body.
+
+**Off (the default)**, the review step is the monologue it has always been: the reviewer is told nothing about a channel, no conversation files are written, no question findings are produced, every review turn runs session-free, the PR body grows no conversation group, and `no-mistakes axi answer` refuses and names this setting. Upgrading no-mistakes never starts a conversation under a repository that did not ask for one.
+
+The trade-off is latency against precision. A question costs the run a park - tens of minutes to hours of wall clock, waiting on you - and buys a review that decided the point instead of handing you a finding to rule on. Repositories whose changes rarely turn on product intent will not get much for that wait; repositories where the reviewer regularly cannot tell deliberate from accidental will.
 
 ### review.path_instructions
 

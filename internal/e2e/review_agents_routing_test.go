@@ -202,7 +202,8 @@ func TestReviewAgentsRouteIndependentProfilesOnRealBinary(t *testing.T) {
 
 	// The initial review and the post-fix rereview must be session-free: a fresh
 	// review must never resume a prior turn's session (claude spells resume as
-	// "--resume <id>").
+	// "--resume <id>"). review.conversation is off here, as it is by default, so
+	// no review turn starts a reviewer session either.
 	assertNoResume(t, "initial review", initialReview.Args)
 	assertNoResume(t, "post-fix rereview", rereview.Args)
 }

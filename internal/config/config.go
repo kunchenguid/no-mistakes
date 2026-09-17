@@ -298,11 +298,13 @@ type RepoConfig struct {
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
 	// Review carries the repository's review-step settings. Its
-	// path_instructions steer the review gate prompt, so they are honored
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (see
-	// EffectiveRepoConfig), regardless of allow_repo_commands: a contributor's
-	// pushed branch must not be able to inject or weaken the guidance that
-	// reviews it.
+	// path_instructions steer the review gate prompt and its conversation flag
+	// decides whether that gate may park for a human answer, so the whole
+	// block is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig), regardless of
+	// allow_repo_commands: a contributor's pushed branch must not be able to
+	// inject or weaken the guidance that reviews it, nor to turn the
+	// conversation on or off for its own review.
 	Review ReviewRaw `yaml:"review"`
 	// Gates are repository-declared extra checks that run immediately after
 	// their anchor core step. They are additive only: a gate cannot skip,
@@ -350,6 +352,19 @@ type DocumentRaw struct {
 
 // ReviewRaw is the YAML representation of review-step settings.
 type ReviewRaw struct {
+	// Conversation turns the review conversation on: the reviewer may emit the
+	// larger questions it cannot settle itself, keep reviewing while they are
+	// open, and be resumed with the answers. Off (the default), the review step
+	// is a monologue exactly as it was before the setting existed.
+	//
+	// Like the rest of this block it is honored ONLY from the trusted
+	// default-branch copy, and for a stronger reason than path_instructions:
+	// an open question PARKS the gate for a human, so a pushed branch must not
+	// be able to make its own review wait on an answer - or, once a maintainer
+	// has asked for the conversation, to turn it off for its own review.
+	// A plain bool so a missing key or a YAML/JSON null is falsy and preserves
+	// today's behavior, exactly like no_ci and disable_project_settings.
+	Conversation bool `yaml:"conversation"`
 	// PathInstructions scope extra review guidance to the paths a change
 	// actually touches. The review step appends the blocks whose glob matches
 	// at least one changed file; a run that touches nothing matching leaves
@@ -779,10 +794,16 @@ type Document struct {
 	Instructions string
 }
 
-// Review is the resolved review-step config. PathInstructions come from the
-// trusted default-branch repo config and scope extra review guidance to the
-// changed paths each glob matches.
+// Review is the resolved review-step config. Both fields come from the trusted
+// default-branch repo config: PathInstructions scope extra review guidance to
+// the changed paths each glob matches, and Conversation decides whether the
+// reviewer may ask questions while it works.
 type Review struct {
+	// Conversation is true when the reviewer may ask the operator questions
+	// mid-pass. It gates the whole protocol: the prompt section, the
+	// conversation files, the question findings that park the gate, the
+	// reviewer session a finalize turn resumes, and `no-mistakes axi answer`.
+	Conversation     bool
 	PathInstructions []PathInstruction
 }
 
@@ -2484,7 +2505,11 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// regardless of allow_repo_commands: a contributor must not be able to
 		// inject rules into their own review, and enabling the commands opt-in
 		// must not silently drop the maintainer's review rules when the pushed
-		// branch happens to carry no review block.
+		// branch happens to carry no review block. review.conversation rides
+		// the same whole-block assignment and needs it at least as much: an
+		// open question parks the gate for a human, so a pushed branch must
+		// not be able to make its own review wait on an answer, or to decline
+		// the conversation a maintainer asked for.
 		effective.Review = trusted.Review
 		// gates define what validating the pushed branch means - they execute
 		// shell on the daemon host - so they are
@@ -3027,10 +3052,17 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:         intent,
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:             pr,
-		ForgeProfiles:  global.ForgeProfiles,
-		Providers:      providers,
+		// repo is the EffectiveRepoConfig result, so both values are already
+		// trusted-only. Like document.instructions and test.instructions, the
+		// review block is resolved from the repository alone - global config
+		// carries no review block to overlay.
+		Review: Review{
+			Conversation:     repo.Review.Conversation,
+			PathInstructions: resolvePathInstructions(repo.Review.PathInstructions),
+		},
+		PR:            pr,
+		ForgeProfiles: global.ForgeProfiles,
+		Providers:     providers,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

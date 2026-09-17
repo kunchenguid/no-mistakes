@@ -82,7 +82,9 @@ func (a *sessionFallbackTimeoutAgent) Run(ctx context.Context, opts agent.RunOpt
 
 // reviewSessionHarness wires a real executor around real steps with a
 // session-capable mock agent and real git worktree.
-func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
+// tweaks adjust the run's effective config before the executor is built, for
+// the tests of a setting the harness must not turn on by default.
+func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline.Step, tweaks ...func(*config.Config)) (*pipeline.Executor, *db.DB, *db.Run, *db.Repo, string) {
 	t.Helper()
 	workDir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -105,6 +107,9 @@ func reviewSessionHarness(t *testing.T, mock *sessionMockAgent, steps []pipeline
 		Agent:        types.AgentClaude,
 		AutoFix:      config.AutoFix{Review: 3},
 		SessionReuse: true,
+	}
+	for _, tweak := range tweaks {
+		tweak(cfg)
 	}
 	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, mock, steps, nil)
 	return exec, database, run, repo, workDir

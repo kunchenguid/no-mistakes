@@ -20,6 +20,7 @@ const (
 	MethodRerun              = "rerun"
 	MethodSubscribe          = "subscribe"
 	MethodRespond            = "respond"
+	MethodAnswerReview       = "answer_review_question"
 	MethodCancelRun          = "cancel_run"
 	MethodGateContext        = "gate_context"
 	MethodAdmitPush          = "admit_push"
@@ -273,6 +274,35 @@ type RerunResult struct {
 // RespondResult confirms the action was accepted.
 type RespondResult struct {
 	OK bool `json:"ok"`
+}
+
+// AnswerReviewQuestionParams records one operator answer to a question the
+// run's reviewer asked. It is not a gate response: the daemon appends it to
+// the run's review conversation and releases the review gate only once no
+// question is left open (see docs concepts/review-conversation).
+type AnswerReviewQuestionParams struct {
+	RunID      string `json:"run_id"`
+	QuestionID string `json:"question_id"`
+	Answer     string `json:"answer"`
+	AnsweredBy string `json:"answered_by,omitempty"`
+}
+
+// AnswerReviewQuestionResult reports what the recorded answer did. Open counts
+// the questions still unanswered after it, and Resumed is true when that count
+// reached zero and the reviewer's own session was resumed to finish its pass.
+// Resumed false with Open zero covers TWO cases, and Note distinguishes them:
+// the reviewer is still working and reads the answer at its next checkpoint, so
+// there is no gate to release; or this answer closed no question that was open
+// before it was appended - an id nobody asked, or a correction sent after the
+// last question was already answered - in which case it is recorded durably and
+// deliberately releases nothing, because the gate may be parked on ordinary
+// findings that are the operator's to answer.
+type AnswerReviewQuestionResult struct {
+	OK      bool     `json:"ok"`
+	Open    int      `json:"open"`
+	OpenIDs []string `json:"open_ids,omitempty"`
+	Resumed bool     `json:"resumed"`
+	Note    string   `json:"note,omitempty"`
 }
 
 // CancelRunResult confirms the run cancellation request was accepted.
