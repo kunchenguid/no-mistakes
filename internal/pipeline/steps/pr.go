@@ -70,25 +70,33 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	ctx := sctx.Ctx
+	explicitHost, explicit, err := ValidateExistingPublishedPR(sctx, sctx.Run.HeadSHA)
+	if err != nil {
+		return nil, err
+	}
 
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
 	baseBranch := effectivePRBaseBranch(sctx)
-	if branch == baseBranch {
+	if branch == baseBranch && explicit == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := resolvedProvider(sctx)
-	host, skipReason := buildHost(sctx, provider)
+	host := explicitHost
 	if host == nil {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
-		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
-	}
-	if err := host.Available(ctx); err != nil {
-		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
-		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+		var skipReason string
+		host, skipReason = buildHost(sctx, provider)
+		if host == nil {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
+			return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
+		}
+		if err := host.Available(ctx); err != nil {
+			sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
+			return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+		}
 	}
 
 	// Capture live author content before model drafting. An unreadable
@@ -104,12 +112,18 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
-	bodyLimit := scm.MaxPRBodyChars(provider)
-	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, "")
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if err != nil {
 		return nil, err
+	}
+	bodyLimit := scm.MaxPRBodyChars(provider)
+	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
+	existing := explicit
+	if existing == nil {
+		existing, err = host.FindPR(ctx, branch, "")
+		if err != nil {
+			return nil, err
+		}
 	}
 	existing, err = bindExistingPR(sctx, host, existing)
 	if err != nil {
@@ -129,23 +143,28 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		updated := existing
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
-		if template != "" || hasPRAppendixMarkers(live.Body) {
+		if template != "" || hasPRAppendixMarkers(live.Body) || explicit != nil {
 			if _, err := parsePROwnedBody(live.Body); err != nil {
 				return nil, err
 			}
 			var emptyNarrative string
 			var title string
-			if live.Body == "" && template != "" {
-				draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
-				if err != nil {
-					return nil, err
-				}
-				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
-				title = draft.Title
-			} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
-				title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
-				if err != nil {
-					return nil, err
+			// An associated run appends its evidence and nothing else: the
+			// title and the description - including an empty one - belong to
+			// the pull request's author, not to this repository's template.
+			if explicit == nil {
+				if live.Body == "" && template != "" {
+					draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
+					if err != nil {
+						return nil, err
+					}
+					emptyNarrative = neutralizeAttestationMarkers(draft.Body)
+					title = draft.Title
+				} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+					title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 			appendix, err := s.buildPRAppendix(sctx, provider)
@@ -224,6 +243,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, existing *scm.PR, requested string) error {
 	requested = strings.TrimSpace(requested)
 	if requested == "" || existing == nil {
+		return nil
+	}
+	// An explicit target's base is the forge's, not a per-run request: the
+	// operator cannot pass --base-branch with it, so a difference here means
+	// the PR moved under the run. Never retarget someone else's review object.
+	if existingPRURL(sctx) != "" {
 		return nil
 	}
 	actual := strings.TrimSpace(existing.BaseBranch)

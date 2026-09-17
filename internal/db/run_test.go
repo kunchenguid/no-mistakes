@@ -105,14 +105,14 @@ func TestLaunchNonceBindingClaimsOnceAndPreservesLegacyRows(t *testing.T) {
 	const generation = "generation-001"
 	const intentDigest = "intent-digest"
 	intent := RunIntent{Summary: "exact persisted intent\n", Source: RunIntentSourceAgent, Score: 1}
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "")
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.LaunchNonce == nil || *run.LaunchNonce != "nonce-1" || run.LaunchValidationGeneration == nil || *run.LaunchValidationGeneration != generation || run.LaunchIntentDigest == nil || *run.LaunchIntentDigest != intentDigest {
 		t.Fatalf("launch binding = %#v", run)
 	}
-	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, ""); err == nil {
+	if _, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-1", generation, intentDigest, "", ""); err == nil {
 		t.Fatal("duplicate nonce insert succeeded")
 	}
 
@@ -147,7 +147,7 @@ func TestClaimLaunchReceiptRejectsMismatchedPRBaseBranch(t *testing.T) {
 	const generation = "generation-base-001"
 	const intentDigest = "base-intent-digest"
 	const prBaseBranch = "release/v1"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch)
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-base", generation, intentDigest, prBaseBranch, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestClaimLaunchReceiptAtomicallyReturnsCreatedOnce(t *testing.T) {
 	intent := RunIntent{Summary: "exact persisted intent", Source: RunIntentSourceAgent, Score: 1}
 	const generation = "generation-race-001"
 	const intentDigest = "race-intent-digest"
-	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "")
+	run, err := d.InsertRunWithIntentAndLaunchNonce(repo.ID, "feature", "head", "base", &intent, "nonce-race", generation, intentDigest, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

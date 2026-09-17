@@ -280,7 +280,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - Self-hosted Gitea isn't detected because `tea` has no login configured for the host; run `tea logins add --url https://your-gitea.example.com --token <token> --name <name>` so detection finds it. See [Self-hosted Gitea](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 - A non-GitHub repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- You pushed the PR base branch (PR step always skips there; this is the repository's default branch, or the configured [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when set)
+- You pushed the PR base branch (this is the repository's default branch, or the configured [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when set); the step skips there unless the branch is associated with an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr), whose target lives in another repository
 
 ## CI step stuck or timed out
 

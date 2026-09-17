@@ -10,6 +10,15 @@ CREATE TABLE IF NOT EXISTS repos (
     created_at     INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS branch_pr_targets (
+    repo_id    TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    branch     TEXT NOT NULL,
+    pr_url     TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, branch)
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id                   TEXT PRIMARY KEY,
     repo_id              TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
@@ -44,6 +53,7 @@ CREATE TABLE IF NOT EXISTS runs (
     launch_intent_digest TEXT,
     launch_receipt_claimed_at INTEGER,
     pr_base_branch       TEXT,
+    existing_pr_url      TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -278,6 +288,7 @@ var migrationStatements = []string{
 	// --base-branch). Nullable: absent means fall back to repo config and the
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	`ALTER TABLE runs ADD COLUMN existing_pr_url TEXT`,
 	// The start of the currently displayed execution/fix round is separate
 	// from started_at, which remains the whole-step clock.
 	`ALTER TABLE step_results ADD COLUMN round_started_at INTEGER`,

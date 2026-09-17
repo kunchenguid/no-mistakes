@@ -28,6 +28,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
@@ -890,7 +891,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, inheritedPRURL)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, inheritedPRURL, "")
 		if err != nil {
 			return "", err
 		}
@@ -1082,13 +1083,24 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	storedPRBaseBranch := strings.TrimSpace(prBaseBranch)
-	if storedPRBaseBranch == "" && selectedRun.PRBaseBranch != nil {
+	if storedPRBaseBranch == "" && selectedRun.PRBaseBranch != nil && explicitRunTarget(selectedRun) == "" {
+		// An explicit target's base is not an operator override to inherit; the
+		// replacement run reads it back from the live pull request.
 		storedPRBaseBranch = strings.TrimSpace(*selectedRun.PRBaseBranch)
 	}
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritablePRURL(selectedRun))
+	// A rerun is not an operator claiming the pull request's head: the branch's
+	// own association supplies the target, and the head it publishes is proven
+	// against the remote before the push like every other run's.
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, storedPRBaseBranch, inheritablePRURL(selectedRun), "")
 }
 
 func inheritablePRURL(run *db.Run) string {
+	// An explicit cross-repository URL must never escape into a legacy host
+	// selected from origin. Rerun carries its complete constraint separately;
+	// independent launches without --existing-pr retain ordinary discovery.
+	if run.ExistingPRURL != nil {
+		return ""
+	}
 	if run.PRURL == nil {
 		return ""
 	}
@@ -1161,15 +1173,15 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, prBaseBranch string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, "")
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, prBaseBranch, "", "")
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch, inheritedPRURL string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch, inheritedPRURL, existingPR string) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, inheritedPRURL)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, inheritedPRURL, existingPR)
 	})
 }
 
@@ -1184,7 +1196,7 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 
 // startRunWithIntentSourceLocked performs run creation while the caller owns
 // the repository/branch lock. Proof fields are empty for ordinary launches.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch, inheritedPRURL string) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch, inheritedPRURL, existingPR string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -1210,6 +1222,30 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		repo = refreshed
 	}
 
+	// A branch keeps the pull request an explicit association proved, so every
+	// later launch - unflagged, push-hook or rerun - publishes to that same
+	// review object instead of discovering or creating another one. A branch
+	// with no association is untouched.
+	target := existingPR
+	if target == "" {
+		stored, err := m.db.GetBranchPRTarget(repo.ID, branch)
+		if err != nil {
+			trackStartFailure("read_branch_pr_target")
+			return "", err
+		}
+		target = stored
+	}
+	// A run that publishes to someone else's pull request delivers the whole
+	// pipeline: skipping a step leaves the target updated from an unvalidated
+	// head, or not updated at all, and its base comes from the pull request.
+	if target != "" && len(skipSteps) != 0 {
+		trackStartFailure("associated_pr_skip_conflict")
+		return "", fmt.Errorf("branch %s publishes to %s, so its runs cannot skip steps; run `no-mistakes axi run --retire-existing-pr` on the branch to return to ordinary discovery", branch, target)
+	}
+	if target != "" && strings.TrimSpace(prBaseBranch) != "" {
+		trackStartFailure("associated_pr_base_conflict")
+		return "", fmt.Errorf("branch %s publishes to %s, whose own base branch this run follows; run `no-mistakes axi run --retire-existing-pr` on the branch to retarget it", branch, target)
+	}
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
@@ -1231,12 +1267,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		return "", err
 	}
 
-	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch)
+	// The insert commits the run's pin and the branch's association together,
+	// so the association this run publishes under is the one the next launch
+	// reads back, whatever happens to the daemon from here on.
+	run, err := m.db.InsertRunWithIntentAndLaunchNonce(repo.ID, branch, headSHA, baseSHA, runIntent, launchNonce, validationGeneration, intentDigest, storedPRBaseBranch, target)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
-	if inherited := strings.TrimSpace(inheritedPRURL); inherited != "" {
+	if inherited := strings.TrimSpace(inheritedPRURL); inherited != "" && run.ExistingPRURL == nil {
 		if err := m.db.UpdateRunPRURL(run.ID, inherited); err != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("inherit PR URL: %s", err))
 			trackStartFailure("inherit_pr_url")
@@ -1385,6 +1424,47 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("resolve forge profile: %s", err))
 		trackStartFailure("resolve_forge_profile")
 		return "", fmt.Errorf("resolve forge profile: %w", err)
+	}
+
+	explicitCtx := &pipeline.StepContext{Ctx: ctx, Run: run, Repo: repo, WorkDir: wtDir, Config: cfg, ForgeContext: forgeCtx}
+	// An operator naming the target claims this exact commit is already the
+	// pull request's head, and that claim is checked. A run that inherits the
+	// branch's association is usually about to publish a NEW head, so only the
+	// association itself - repository, source repository and source ref - is
+	// proven here; the head is proven again against the remote before the push
+	// and after it by the PR and CI steps.
+	var explicitPR *scm.PR
+	if existingPR != "" {
+		_, explicitPR, err = steps.ValidateExistingPR(explicitCtx, headSHA)
+	} else {
+		_, explicitPR, err = steps.ValidateExistingPRIdentity(explicitCtx)
+	}
+	if err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("validate_existing_pr")
+		return "", err
+	}
+	// The run integrates with the branch the pull request actually targets, not
+	// the repository default: rebase, PR and CI all read this.
+	if explicitPR != nil {
+		base, err := normalizeRunPRBaseBranch(explicitPR.BaseBranch)
+		if err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("invalid_existing_pr_base")
+			return "", err
+		}
+		if err := steps.FetchRunUpstreamBranch(ctx, explicitCtx, base); err != nil {
+			err = fmt.Errorf("fetch explicit PR integration branch: %w", err)
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("fetch_existing_pr_base")
+			return "", err
+		}
+		if err := m.db.SetRunPRBaseBranch(run.ID, base); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("store_existing_pr_base")
+			return "", err
+		}
+		run.PRBaseBranch = &base
 	}
 
 	// Create agent. In demo mode, newPipelineAgent returns a no-op agent, and it

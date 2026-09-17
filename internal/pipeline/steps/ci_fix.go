@@ -141,6 +141,28 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	return nil, nil
 }
 
+// resolveCIRepairBases answers the two commits a repair turn is given: the base
+// its diff is measured from, and the commit a merge-conflict repair rebases
+// onto. An associated run proves its live integration branch once and uses that
+// tip for both; it never resolves the branch a second time, because a failed
+// second lookup would answer with the run's own recorded base - which for an
+// associated run is its head, so the agent would be told to rebase onto the
+// commit it is already on.
+func resolveCIRepairBases(ctx context.Context, sctx *pipeline.StepContext, baseBranch string) (string, string, error) {
+	integrationTip, err := requireRunIntegrationBase(ctx, sctx, baseBranch)
+	if err != nil {
+		return "", "", err
+	}
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	if err != nil {
+		return "", "", err
+	}
+	if integrationTip != "" {
+		return baseSHA, integrationTip, nil
+	}
+	return baseSHA, resolveRunDefaultBranchTipSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch), nil
+}
+
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
 // records the repair under the run's uniform continuity rule: published
 // immediately through the guarded push path when its continuity with the
@@ -160,8 +182,10 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	if pr != nil && strings.TrimSpace(pr.BaseBranch) != "" {
 		baseBranch = strings.TrimSpace(pr.BaseBranch)
 	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
-	rebaseBaseSHA := resolveRunDefaultBranchTipSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	baseSHA, rebaseBaseSHA, err := resolveCIRepairBases(ctx, sctx, baseBranch)
+	if err != nil {
+		return ciRepairResult{}, err
+	}
 	promptBaseSHA := baseSHA
 	if mergeConflict {
 		promptBaseSHA = rebaseBaseSHA
@@ -176,12 +200,23 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	// Build prompt based on what issues are present
 	var promptIntro string
 	var promptRules string
+	// An associated run integrates with a branch in the pull request's
+	// repository, and the fork's own origin/<base> is a different commit that
+	// resolves locally, so its rebase is pointed at the commit the run proved.
+	// An unassociated run's integration branch is the local origin/<base> the
+	// step has always used, and its recorded tip is not proven, so it keeps
+	// being named as the ref to rebase onto.
+	conflictBase := integrationBranchLabel(sctx, baseBranch)
+	rebaseDirective := "Rebase onto " + conflictBase
+	if existingPRURL(sctx) != "" {
+		rebaseDirective = "Rebase onto the base commit named in Context - not onto a local branch ref"
+	}
 	switch {
 	case len(failingNames) > 0 && mergeConflict:
-		promptIntro = "The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts."
+		promptIntro = fmt.Sprintf("The following CI checks have failed and the PR has merge conflicts with %s. Diagnose and fix the CI issues first. %s and resolve the merge conflicts.", conflictBase, rebaseDirective)
 		promptRules = ciFailingCheckFixRules
 	case mergeConflict:
-		promptIntro = "The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts."
+		promptIntro = fmt.Sprintf("The PR has merge conflicts with %s. %s and resolve the merge conflicts.", conflictBase, rebaseDirective)
 		promptRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 		- Verify the rebase completes cleanly before finishing.`
@@ -215,9 +250,6 @@ Context:
 		mergeConflict,
 		promptRules,
 	)
-	if mergeConflict {
-		prompt += fmt.Sprintf("\n- rebase target commit: %s", rebaseBaseSHA)
-	}
 	if logOutput != "" {
 		prompt += fmt.Sprintf(`
 
@@ -752,7 +784,17 @@ func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRe
 // no-mistakes - restampPRAttestationWithSteps already enforces that. Any
 // other failure (PR discovery errors, or a discoverable PR whose write does
 // not settle) is wrapped in errAttestationWriteFailed and returned.
-func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult) error {
+func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*db.StepResult, remoteHead string) error {
+	if existingPRURL(sctx) != "" {
+		host, pr, err := ValidateExistingPublishedPR(sctx, remoteHead)
+		if err != nil {
+			return err
+		}
+		if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
+			return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
+		}
+		return nil
+	}
 	provider := resolvedProvider(sctx)
 	if !supportsPRTemplates(provider) {
 		return nil

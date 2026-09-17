@@ -230,6 +230,7 @@ Run records also store the nullable `awaiting_agent_since` timestamp used only t
 Each agent invocation records local-only purpose, provider/model metadata, session mode and a truncated session-identity hash, timing, failure category, and token usage; prompts, outputs, diffs, and credentials are never stored there.
 Use `no-mistakes stats --agents` for aggregates or `no-mistakes stats --run <id>` for a run timeline and parked time.
 Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
+A branch bound to an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr) is the exception: that association is recorded per repository and branch, pinned on each run it starts, and anchors the PR and CI context to the pull request's own repository and base branch until it is replaced or retired.
 At the start of each run, no-mistakes best-effort refreshes those URLs from the working clone without changing any clone or gate remote.
 `origin` is the upstream authority, and an existing fork registration is refreshed only when exactly one other clone remote identifies the same fork repository.
 The two registered URLs are replaced atomically after validation; an unreadable, invalid, credential-bearing, or ambiguous remote, or a database failure, leaves the exact prior registration in place and does not stop the run.

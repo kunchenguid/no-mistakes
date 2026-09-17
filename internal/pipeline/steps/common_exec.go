@@ -194,7 +194,13 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 
 // stepGitRunRaw preserves NUL-delimited paths and porcelain status columns.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
-	cmd := stepCmd(sctx, "git", args...)
+	return stepGitRunRawContext(sctx.Ctx, sctx, args...)
+}
+
+// stepGitRunRawContext is stepGitRunRaw bounded by a deadline the caller owns
+// rather than the step's own, for work that carries its own timeout.
+func stepGitRunRawContext(ctx context.Context, sctx *pipeline.StepContext, args ...string) (string, error) {
+	cmd := stepCmdContext(sctx, ctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
 	out, err := cmd.Output()
 	if err != nil {

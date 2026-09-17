@@ -26,16 +26,49 @@ func (s *RebaseStep) Name() types.StepName { return types.StepRebase }
 
 const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
 
+// explicitIntegrationRefPrefix keeps an associated run's integration branch in
+// its own remote-tracking namespace. refs/remotes/origin/ lives in the gate
+// repository shared by every worktree and run of the registered repository, so
+// a foreign repository's commits must never land there.
+const explicitIntegrationRefPrefix = "refs/remotes/no-mistakes-upstream/"
+
+// runIntegrationRef names the ref an associated run's integration branch is
+// fetched into. The pull request's repository is part of the ref, so two runs
+// of the same fork whose pull requests live in different repositories cannot
+// read each other's branch of the same name out of the shared gate.
+func runIntegrationRef(sctx *pipeline.StepContext, branch string) string {
+	if repo := explicitTargetRepo(sctx); repo != "" {
+		return explicitIntegrationRefPrefix + repo + "/" + branch
+	}
+	return "origin/" + branch
+}
+
+// runIntegrationBranch answers callers that have no branch of their own to
+// name. An associated run integrates with its pull request's base; every other
+// run keeps measuring from the repository default.
+func runIntegrationBranch(sctx *pipeline.StepContext) string {
+	if existingPRURL(sctx) != "" {
+		return effectivePRBaseBranch(sctx)
+	}
+	return sctx.Repo.DefaultBranch
+}
+
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	defaultBranch := effectivePRBaseBranch(sctx)
+	integrationRef := runIntegrationRef(sctx, defaultBranch)
+	// An associated run's branch lives in the fork while its integration base
+	// lives in the pull request's repository, so the two are never the same ref
+	// however their names compare. Only an unassociated run can be sitting on
+	// the branch it would otherwise integrate with.
+	integrationIsOwnBranch := branch == defaultBranch && existingPRURL(sctx) == ""
 	branchTarget := ""
 	pushRemote := resolveUpstreamURL(sctx)
 	if branch != "" {
 		branchTarget = "origin/" + branch
-		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
-			pushRemote = sctx.Repo.PushURL()
+		if branchTrackedInPushNamespace(sctx) {
+			pushRemote = resolvePushURL(sctx)
 			branchTarget = forkBranchTrackingRef(branch)
 		}
 	}
@@ -47,7 +80,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
+	if err := FetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
+		if existingPRURL(sctx) != "" {
+			return nil, fmt.Errorf("fetch explicit PR integration branch: %w", err)
+		}
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
@@ -60,9 +96,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// when the remote carries an out-of-band commit - silently clobbering it
 	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
 	// what lets the push step's content check catch that case.
-	if !forcePush && branch != "" && branch != defaultBranch {
-		if strings.TrimSpace(sctx.Repo.ForkURL) == "" {
-			if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
+	if !forcePush && branch != "" && !integrationIsOwnBranch {
+		if !branchTrackedInPushNamespace(sctx) {
+			if err := FetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
 				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
 			}
 		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, branch, branchTarget); err != nil {
@@ -75,10 +111,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// origin/<default>. Rebasing onto the fresh remote default keeps those
 	// commits in the branch's history, so the PR may bundle another
 	// workstream's unpushed work. Surface the ambiguity for a human decision.
-	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
+	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch, integrationRef, integrationIsOwnBranch); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && integrationIsOwnBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, integrationRef, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
@@ -93,10 +129,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
+	targets := rebaseTargetsForBranch(branch, branchTarget, integrationRef, integrationIsOwnBranch)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, defaultBranch)
+		targets = forcePushRebaseTargets(integrationRef, integrationIsOwnBranch)
 	}
 
 	merging := mergesMovedBase(sctx)
@@ -173,30 +209,30 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	return updateHeadSHA(ctx, sctx)
 }
 
-// rebaseTargets returns the ordered list of refs to rebase onto.
-func rebaseTargets(branch, defaultBranch string) []string {
-	return rebaseTargetsForBranch(branch, defaultBranch, "origin/"+branch)
-}
-
-func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string {
+// rebaseTargetsForBranch returns the ordered list of refs to integrate. A run
+// sitting on the branch it would integrate with has nothing to integrate;
+// integrationIsOwnBranch is the only thing that decides that, because two bare
+// branch names are not evidence of the same ref once the integration base can
+// live in another repository.
+func rebaseTargetsForBranch(branch, branchTarget, integrationRef string, integrationIsOwnBranch bool) []string {
+	if integrationIsOwnBranch {
+		return nil
+	}
 	var targets []string
-	if branch != "" && branch != defaultBranch {
+	if branch != "" {
 		targets = append(targets, branchTarget)
 	}
-	if branch != defaultBranch {
-		targets = append(targets, "origin/"+defaultBranch)
-	}
-	return targets
+	return append(targets, integrationRef)
 }
 
 // forcePushRebaseTargets returns rebase targets for a force push. The pushed
 // branch target is skipped because it may contain autofix commits from prior
 // pipeline runs that the force push intended to discard.
-func forcePushRebaseTargets(branch, defaultBranch string) []string {
-	if branch == defaultBranch {
+func forcePushRebaseTargets(integrationRef string, integrationIsOwnBranch bool) []string {
+	if integrationIsOwnBranch {
 		return nil
 	}
-	return []string{"origin/" + defaultBranch}
+	return []string{integrationRef}
 }
 
 // effectivePRBaseBranch resolves the branch used as the integration base for
@@ -230,8 +266,14 @@ func effectivePRBaseBranch(sctx *pipeline.StepContext) string {
 // evidence of an additional bundled workstream.
 // Detection is best-effort - if the local default tip advanced past the branch
 // point, or the working repo cannot be read, it returns nil rather than guess.
-func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepContext, branch, defaultBranch string) *pipeline.StepOutcome {
-	if branch == "" || branch == defaultBranch {
+//
+// A run sitting on the branch it integrates with has no separate workstream to
+// bundle, and integrationIsOwnBranch is the only thing that decides that: for
+// an associated run the two names can match across repositories (fork:develop
+// against upstream:develop) while the refs are different commits, and that run
+// is exactly the one whose local default commits need surfacing.
+func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepContext, branch, defaultBranch, remoteRef string, integrationIsOwnBranch bool) *pipeline.StepOutcome {
+	if branch == "" || integrationIsOwnBranch {
 		return nil
 	}
 	workingPath := strings.TrimSpace(sctx.Repo.WorkingPath)
@@ -246,7 +288,6 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	if localTip == "" {
 		return nil
 	}
-	remoteRef := "origin/" + defaultBranch
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
@@ -293,9 +334,10 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 		firstFile = files[0]
 	}
 
+	integration := integrationBranchLabel(sctx, defaultBranch)
 	description := fmt.Sprintf(
-		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to origin/%s; these may be unintended bundled work (%s):\n- %s\n\nConfirm these commits belong in this PR before approving, or manually separate the intended work onto origin/%s before gating.",
-		len(commits), defaultBranch, defaultBranch, fileEvidence, strings.Join(commits, "\n- "), defaultBranch,
+		"branch carries %d commit(s) that exist on your local %s branch but are not in %s; these may be unintended bundled work (%s):\n- %s\n\nConfirm these commits belong in this PR before approving, or manually separate the intended work onto %s before gating.",
+		len(commits), defaultBranch, integration, fileEvidence, strings.Join(commits, "\n- "), integration,
 	)
 	fixSummary := ""
 	if sctx.Fixing {
@@ -330,11 +372,11 @@ func isAncestor(ctx context.Context, workDir, ancestor, descendant string) bool 
 	return err == nil
 }
 
-func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+func remoteDefaultBranchAdvanced(ctx context.Context, workDir, remoteRef, baseSHA string) bool {
 	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
 		return false
 	}
-	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", remoteRef)
 	if err != nil {
 		return false
 	}
@@ -387,6 +429,16 @@ func isForcePushAgainstRemote(ctx context.Context, workDir, remote, branch, loca
 
 func forkBranchTrackingRef(branch string) string {
 	return forkBranchRefPrefix + branch
+}
+
+// branchTrackedInPushNamespace reports whether the pushed branch is tracked
+// outside refs/remotes/origin/. A configured fork and an explicit PR target
+// both publish the branch to a repository other than the one the integration
+// refs are fetched from, so the branch keeps its own tracking namespace: the
+// fetch destination must be a fully qualified ref, and origin/<branch> must
+// stay free for the integration repository.
+func branchTrackedInPushNamespace(sctx *pipeline.StepContext) bool {
+	return strings.TrimSpace(sctx.Repo.ForkURL) != "" || existingPRURL(sctx) != ""
 }
 
 func isRemoteBranchRewritten(ctx context.Context, workDir, remoteRef string) bool {
@@ -820,7 +872,10 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	// Check if the branch has any diff against the default branch.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
 	defaultBranch := effectivePRBaseBranch(sctx)
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, defaultBranch)
+	if err != nil {
+		return nil, err
+	}
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

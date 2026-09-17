@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,8 +64,11 @@ func run(argv []string) int {
 // returns non-zero (so SCM detection treats GitHub as unauthenticated)
 // and any other subcommand prints a clear error.
 func runGhStub(args []string) int {
-	if os.Getenv("FAKEAGENT_GH_MODE") == "fork-pr" {
+	switch os.Getenv("FAKEAGENT_GH_MODE") {
+	case "fork-pr":
 		return runGhForkPRStub(args)
+	case "existing-pr":
+		return runGhExistingPRStub(args)
 	}
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		fmt.Fprintln(os.Stderr, "fakeagent gh: not authenticated (e2e stub)")
@@ -128,17 +132,10 @@ func runGhForkPRStub(args []string) int {
 	return 1
 }
 
-func recordGhStubInvocation(args []string) {
-	logPath := os.Getenv("FAKEAGENT_GH_LOG")
-	if logPath == "" {
-		return
-	}
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
+// recordGhStubInvocation appends the invocation to the stub log and returns the
+// body read from stdin, so a caller that must also persist it does not have to
+// consume stdin a second time (it is only readable once).
+func recordGhStubInvocation(args []string) string {
 	inv := ghStubInvocation{
 		Time: time.Now().Format(time.RFC3339Nano),
 		Args: append([]string(nil), args...),
@@ -150,7 +147,17 @@ func recordGhStubInvocation(args []string) {
 		body, _ := io.ReadAll(os.Stdin)
 		inv.Body = string(body)
 	}
+	logPath := os.Getenv("FAKEAGENT_GH_LOG")
+	if logPath == "" {
+		return inv.Body
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return inv.Body
+	}
+	defer f.Close()
 	_ = json.NewEncoder(f).Encode(inv)
+	return inv.Body
 }
 
 // runTeaStub shadows any system-installed tea during the Gitea provider e2e
@@ -257,4 +264,244 @@ func agentNameFromArgv0(arg0 string) string {
 	base := filepath.Base(arg0)
 	base = strings.TrimSuffix(base, ".exe")
 	return base
+}
+
+// existingPRStubConfig describes the single upstream pull request the
+// existing-pr gh stub models. It is read from the JSON file named by
+// $FAKEAGENT_GH_PR_CONFIG on EVERY invocation rather than from the
+// environment, because the daemon is long-lived: a test that changes the
+// forge's answer mid-run must be able to change it after the daemon started.
+type existingPRStubConfig struct {
+	PRRepo     string `json:"pr_repo"`     // upstream owner/repo the PR lives in
+	PRNumber   string `json:"pr_number"`   // its number
+	BaseRef    string `json:"base_ref"`    // the branch it targets
+	SourceRepo string `json:"source_repo"` // owner/repo of the source (fork)
+	SourceRef  string `json:"source_ref"`  // the source branch
+	SourceDir  string `json:"source_dir"`  // the fork's git dir, read for the live head
+	HeadSHA    string `json:"head_sha"`    // pins the head instead of reading the fork
+	State      string `json:"state"`       // "open" (default) or "closed", for the identity lookup
+	// ViewState is what `gh pr view --json state` answers, separately from the
+	// identity lookup above. It defaults to State; a case only sets it when it
+	// needs the two to disagree.
+	ViewState string `json:"view_state"`
+	Merged    bool   `json:"merged"`
+	BodyFile  string `json:"body_file"`  // the PR body; `gh pr edit` rewrites it
+	TitleFile string `json:"title_file"` // the PR title
+	CreatedPR string `json:"created_pr"` // URL `gh pr create` would answer with
+}
+
+func loadExistingPRStubConfig() existingPRStubConfig {
+	cfg := existingPRStubConfig{}
+	if path := os.Getenv("FAKEAGENT_GH_PR_CONFIG"); path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			_ = json.Unmarshal(data, &cfg)
+		}
+	}
+	if cfg.State == "" {
+		cfg.State = "open"
+	}
+	if cfg.BaseRef == "" {
+		cfg.BaseRef = "main"
+	}
+	if cfg.ViewState == "" {
+		cfg.ViewState = cfg.State
+	}
+	return cfg
+}
+
+func (c existingPRStubConfig) url() string {
+	return "https://github.com/" + c.PRRepo + "/pull/" + c.PRNumber
+}
+
+// head reports the pull request's source head. Unless a test pins one, it is
+// the fork repository's real branch tip, so the stub tracks every push the
+// pipeline makes the way the forge would.
+func (c existingPRStubConfig) head() string {
+	if c.HeadSHA != "" {
+		return c.HeadSHA
+	}
+	if c.SourceDir == "" {
+		return ""
+	}
+	out, err := exec.Command("git", "--git-dir", c.SourceDir, "rev-parse", "refs/heads/"+c.SourceRef).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// runGhExistingPRStub models one upstream github.com pull request whose source
+// branch lives in another repository (the contributor's fork), which is the
+// shape `--existing-pr` exists for. Nothing about the head is canned: it is
+// read live from the fork repository the pipeline actually pushes to.
+func runGhExistingPRStub(args []string) int {
+	body := recordGhStubInvocation(args)
+	if len(args) == 0 {
+		return 1
+	}
+	cfg := loadExistingPRStubConfig()
+
+	switch {
+	case args[0] == "auth" && len(args) >= 2 && args[1] == "status":
+		return 0
+
+	case args[0] == "api":
+		return ghExistingPRAPI(args, cfg)
+
+	case args[0] == "pr" && len(args) >= 2 && args[1] == "view":
+		return ghExistingPRView(args, cfg)
+
+	case args[0] == "pr" && len(args) >= 2 && args[1] == "edit":
+		if title := argAfter(args, "--title"); title != "" {
+			writeStubFile(cfg.TitleFile, title)
+		}
+		if hasArgValue(args, "--body-file", "-") {
+			writeStubFile(cfg.BodyFile, body)
+		}
+		fmt.Println(cfg.url())
+		return 0
+
+	case args[0] == "pr" && len(args) >= 2 && args[1] == "checks":
+		fmt.Println("[]")
+		return 0
+
+	case args[0] == "pr" && len(args) >= 2 && args[1] == "list":
+		// Branch discovery must never be how an associated run finds its
+		// target: answering "no pull request" here means a run that fell back
+		// to discovery would go on to create one, which the test can see.
+		fmt.Println("[]")
+		return 0
+
+	case args[0] == "pr" && len(args) >= 2 && args[1] == "create":
+		// Recorded above. A run that reaches this has opened the accidental
+		// fork pull request `--existing-pr` exists to prevent, so the URL is
+		// deliberately distinguishable from the associated one.
+		created := cfg.CreatedPR
+		if created == "" {
+			created = "https://github.com/" + cfg.SourceRepo + "/pull/1"
+		}
+		fmt.Println(created)
+		return 0
+	}
+
+	fmt.Fprintf(os.Stderr, "fakeagent gh existing-pr: subcommand not implemented: %v\n", args)
+	return 1
+}
+
+func ghExistingPRAPI(args []string, cfg existingPRStubConfig) int {
+	joined := strings.Join(args, " ")
+	switch {
+	case strings.Contains(joined, "graphql"):
+		// One completed, successful check run on the head commit, so the CI
+		// step reaches a green verdict instead of waiting for registration.
+		fmt.Println(`{"data":{"repository":{"object":{"statusCheckRollup":{"contexts":{"nodes":[` +
+			`{"__typename":"CheckRun","databaseId":1,"id":"CR_1","name":"build","status":"COMPLETED","conclusion":"SUCCESS",` +
+			`"completedAt":"2026-01-01T00:00:00Z","startedAt":"2026-01-01T00:00:00Z",` +
+			`"detailsUrl":"https://github.com/` + cfg.PRRepo + `/actions/runs/1",` +
+			`"checkSuite":{"app":{"slug":"github-actions"}}}` +
+			`],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}}`)
+		return 0
+	case strings.Contains(joined, "/actions/runs"):
+		// This read is `--paginate --slurp`, so its result is an ARRAY OF
+		// PAGES. A bare `[]` is zero pages, which the reader rejects outright
+		// ("workflow run discovery returned no pages") and the CI step then
+		// escalates as a persistent check-read failure. One empty page is the
+		// honest "this commit triggered no workflow runs".
+		fmt.Println(`[{"total_count":0,"workflow_runs":[]}]`)
+		return 0
+	case args[len(args)-1] == "repos/"+cfg.PRRepo+"/pulls/"+cfg.PRNumber:
+		payload := map[string]any{
+			"number":   atoiOrZero(cfg.PRNumber),
+			"html_url": cfg.url(),
+			"state":    strings.ToLower(cfg.State),
+			"merged":   cfg.Merged,
+			"base": map[string]any{
+				"ref":  cfg.BaseRef,
+				"repo": map[string]any{"full_name": cfg.PRRepo, "html_url": "https://github.com/" + cfg.PRRepo},
+			},
+			"head": map[string]any{
+				"ref":  cfg.SourceRef,
+				"sha":  cfg.head(),
+				"repo": map[string]any{"full_name": cfg.SourceRepo, "html_url": "https://github.com/" + cfg.SourceRepo},
+			},
+		}
+		encoded, _ := json.Marshal(payload)
+		fmt.Println(string(encoded))
+		return 0
+	}
+	// Every other API read (workflow runs for a head commit, and so on)
+	// reports nothing rather than failing the step.
+	fmt.Println("[]")
+	return 0
+}
+
+// ghExistingPRView answers `gh pr view`. The caller asks for named JSON fields
+// and optionally a --jq expression selecting exactly one of them, so the stub
+// renders the selected scalar alone and the object otherwise.
+func ghExistingPRView(args []string, cfg existingPRStubConfig) int {
+	values := map[string]any{
+		"title":            stubFileOr(cfg.TitleFile, "Upstream account-context change"),
+		"body":             stubFileOr(cfg.BodyFile, ""),
+		"state":            strings.ToUpper(cfg.ViewState),
+		"baseRefName":      cfg.BaseRef,
+		"headRefName":      cfg.SourceRef,
+		"headRefOid":       cfg.head(),
+		"mergeable":        "MERGEABLE",
+		"mergeStateStatus": "CLEAN",
+	}
+	if jq := argAfter(args, "--jq"); jq != "" {
+		key := strings.TrimPrefix(strings.TrimSpace(jq), ".")
+		value, ok := values[key]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "fakeagent gh existing-pr: unmodelled --jq %q\n", jq)
+			return 1
+		}
+		fmt.Println(value)
+		return 0
+	}
+	selected := map[string]any{}
+	for _, field := range strings.Split(argAfter(args, "--json"), ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		value, ok := values[field]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "fakeagent gh existing-pr: unmodelled --json field %q\n", field)
+			return 1
+		}
+		selected[field] = value
+	}
+	encoded, err := json.Marshal(selected)
+	if err != nil {
+		return 1
+	}
+	fmt.Println(string(encoded))
+	return 0
+}
+
+func atoiOrZero(value string) int {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func stubFileOr(path, fallback string) string {
+	if path == "" {
+		return fallback
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+	return string(data)
+}
+
+func writeStubFile(path, content string) {
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, []byte(content), 0o644)
 }

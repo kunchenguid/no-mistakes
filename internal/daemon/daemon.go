@@ -1267,6 +1267,36 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.ClaimLaunchReceiptResult{Receipt: &receipt}, nil
 	})
 
+	srv.Handle(ipc.MethodStartExistingPRRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.StartExistingPRRunParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		id, err := mgr.HandleStartExistingPRRun(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.RerunResult{RunID: id}, nil
+	})
+
+	srv.Handle(ipc.MethodRetireExistingPR, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.RetireExistingPRParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		retired, err := mgr.HandleRetireExistingPR(p.RepoID, p.Branch)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.RetireExistingPRResult{RetiredURL: retired}, nil
+	})
+
 	srv.Handle(ipc.MethodStartFreshRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err
@@ -1427,6 +1457,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReady:            r.CIReadyAt != nil,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
+		ExistingPRURL:      r.ExistingPRURL,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

@@ -91,7 +91,7 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 		t.Fatal(err)
 	}
 	newHead := strings.Repeat("bc", 20)
-	if err := attestHeadBeforePush(sctx, newHead, nil); err != nil {
+	if err := attestHeadBeforePush(sctx, newHead, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	rebound, err := parsePROwnedBody(body)

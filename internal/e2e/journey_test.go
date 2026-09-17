@@ -280,8 +280,8 @@ func runHappyPath(t *testing.T, agentName string) {
 	assertPromptsAbsent(t, invs,
 		"Draft a pull request title and summary for the full branch delta.",
 		"The following CI checks have failed on this PR. Diagnose and fix the issues.",
-		"The PR has merge conflicts with the base branch. Rebase onto the base branch and resolve the merge conflicts.",
-		"The following CI checks have failed and the PR has merge conflicts with the base branch. Diagnose and fix the CI issues, then rebase onto the base branch and resolve the merge conflicts.",
+		"The PR has merge conflicts with",
+		"The following CI checks have failed and the PR has merge conflicts with",
 	)
 
 	assertPushedHead(t, run.HeadSHA, h.UpstreamBranchSHA("feature/e2e"))

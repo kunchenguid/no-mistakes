@@ -59,7 +59,7 @@ func TestFetchRunUpstreamBranch_TimesOutAndSaysSo(t *testing.T) {
 
 	start := time.Now()
 	// No deadline on the caller context: the fetch must impose its own.
-	err = fetchRunUpstreamBranch(context.Background(), sctx, "main")
+	err = FetchRunUpstreamBranch(context.Background(), sctx, "main")
 	elapsed := time.Since(start)
 
 	if err == nil {

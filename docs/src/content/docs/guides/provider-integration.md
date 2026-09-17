@@ -85,7 +85,9 @@ If one daemon serves repositories that require non-overlapping accounts, give ea
 
 ### GitHub fork contributions
 
-Fork routing is available for GitHub when you need to push branches to your fork but open PRs against the parent repository.
+If `origin` already points at your fork and you want to validate an existing upstream PR, use [`axi run --existing-pr <URL>`](/no-mistakes/reference/cli/#explicit-existing-upstream-pr). Its explicit association fails closed instead of discovering or creating another PR.
+
+For general fork routing, including new PR creation, configure the parent repository and fork separately.
 Keep `origin` pointed at the parent repository, then initialize with your fork URL:
 
 ```sh

@@ -290,6 +290,22 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	var explicitHost scm.Host
+	if existingPRURL(sctx) != "" {
+		// A retained, unpublished repair can already have advanced HeadSHA.
+		// Validate the last durable publication, not that local repair.
+		published, err := sctx.DB.GetRun(sctx.Run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if published == nil || published.LastPushedSHA == nil {
+			return nil, fmt.Errorf("explicit PR has no durable published head for CI")
+		}
+		explicitHost, _, err = ValidateExistingPublishedPR(sctx, *published.LastPushedSHA)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// A run recovered after a restart resumes the rerun budget it already
 	// spent. Without this the fresh in-memory budget would grant reruns the
 	// documented limit already accounted for.
@@ -299,14 +315,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		return nil, err
 	}
 	provider := resolvedProvider(sctx)
-	host, skipReason := buildHost(sctx, provider)
+	host := explicitHost
 	if host == nil {
-		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
-		return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
-	}
-	if err := host.Available(ctx); err != nil {
-		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
-		return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+		var skipReason string
+		host, skipReason = buildHost(sctx, provider)
+		if host == nil {
+			sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
+			return &pipeline.StepOutcome{Skipped: true, SkipReason: skipReason}, nil
+		}
+		if err := host.Available(ctx); err != nil {
+			sctx.Log(fmt.Sprintf("skipping CI: %v", err))
+			return &pipeline.StepOutcome{Skipped: true, SkipReason: err.Error()}, nil
+		}
 	}
 
 	// Get PR URL from run record

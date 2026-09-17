@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 )
 
 // reviewWorkload returns the bounded change size (files + net lines) between
@@ -28,11 +29,11 @@ func reviewWorkload(ctx context.Context, workDir, base, head string) *agent.Invo
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base
 // against the default branch, falling back to the empty tree SHA.
-func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string) string {
-	if !git.IsZeroSHA(baseSHA) {
+func resolveBaseSHA(ctx context.Context, sctx *pipeline.StepContext, workDir, baseSHA, defaultBranch string) string {
+	if usableBaseSHA(baseSHA) {
 		return baseSHA
 	}
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+	if mb := mergeBaseWithDefaultBranch(ctx, sctx, workDir, defaultBranch); mb != "" {
 		return mb
 	}
 	return git.EmptyTreeSHA
@@ -41,12 +42,55 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string)
 // resolveBranchBaseSHA returns the branch base commit relative to the default
 // branch when possible. This keeps pipeline steps scoped to the full branch,
 // not just the last pushed delta. If merge-base cannot be determined, it falls
-// back to resolveBaseSHA.
-func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
-		return mb
+// back to the run's recorded base and finally to the empty tree.
+//
+// An associated run has no such fallback: its integration branch lives in
+// another repository, and every other answer either measures the change from a
+// different branch - handing the fix agent commits the contributor never wrote
+// - or from the run's own head, which is an empty diff no step reports as a
+// failure. It stops instead.
+func resolveBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, error) {
+	if mb := mergeBaseWithDefaultBranch(ctx, sctx, sctx.WorkDir, defaultBranch); mb != "" {
+		return mb, nil
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+	if target := existingPRURL(sctx); target != "" {
+		return "", fmt.Errorf("integration branch %s of %s is unreadable in this run; refusing to measure the change from another base", defaultBranch, target)
+	}
+	if usableBaseSHA(fallbackBaseSHA) {
+		return fallbackBaseSHA, nil
+	}
+	return git.EmptyTreeSHA, nil
+}
+
+// requireRunIntegrationBase refreshes the branch an associated run is about to
+// measure against, proves it is readable, and returns its tip. CI repair is the
+// one place the live base can differ from the one the launch validated, because
+// the maintainer can retarget the pull request mid-run; it rebases onto the tip
+// proven here rather than resolving the same branch a second time, where a
+// failed lookup would quietly answer with the run's own recorded base.
+// Unassociated runs are unaffected: they get "" and keep reading the ref their
+// own fetch maintains.
+func requireRunIntegrationBase(ctx context.Context, sctx *pipeline.StepContext, branch string) (string, error) {
+	target := existingPRURL(sctx)
+	if target == "" {
+		return "", nil
+	}
+	if err := FetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
+		return "", fmt.Errorf("fetch integration branch %s of %s: %w", branch, target, err)
+	}
+	tip, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", runIntegrationRef(sctx, branch)+"^{commit}")
+	if err != nil || strings.TrimSpace(tip) == "" {
+		return "", fmt.Errorf("integration branch %s of %s is unreadable after fetching it", branch, target)
+	}
+	return strings.TrimSpace(tip), nil
+}
+
+// usableBaseSHA reports whether a recorded base can be handed to git as one
+// side of a diff. The zero ref means "new branch"; an empty string is not a
+// revision at all, and git reads "..HEAD" as HEAD..HEAD - an empty diff that
+// no step would report as a failure.
+func usableBaseSHA(baseSHA string) bool {
+	return strings.TrimSpace(baseSHA) != "" && !git.IsZeroSHA(baseSHA)
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
@@ -61,15 +105,15 @@ func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepConte
 
 func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, bool) {
 	if strings.TrimSpace(defaultBranch) != "" {
-		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
+		if err := FetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
 			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
 		}
-		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", runIntegrationRef(sctx, defaultBranch))
 		if err == nil && strings.TrimSpace(sha) != "" {
 			return strings.TrimSpace(sha), true
 		}
 	}
-	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
+	return resolveBaseSHA(ctx, sctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
 }
 
 func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) (string, bool) {
@@ -85,11 +129,11 @@ func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallback
 			}
 		}
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch), false
+	return resolveBaseSHA(ctx, nil, workDir, fallbackBaseSHA, defaultBranch), false
 }
 
 func unresolvedDefaultBranchTip(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	if !git.IsZeroSHA(fallbackBaseSHA) {
+	if usableBaseSHA(fallbackBaseSHA) {
 		return fallbackBaseSHA
 	}
 	sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
@@ -116,17 +160,35 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 	return "origin"
 }
 
-func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
-	if strings.TrimSpace(defaultBranch) == "" {
+func mergeBaseWithDefaultBranch(ctx context.Context, sctx *pipeline.StepContext, workDir, defaultBranch string) string {
+	refs := integrationMergeBaseRefs(sctx, defaultBranch)
+	if len(refs) == 0 {
 		return ""
 	}
-	for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+	for _, ref := range refs {
 		mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
 		if err == nil && strings.TrimSpace(mb) != "" {
 			return strings.TrimSpace(mb)
 		}
 	}
 	return ""
+}
+
+// integrationMergeBaseRefs names the refs a diff base may be measured from.
+// An associated run is answered by the caller's branch in its own integration
+// namespace alone - never by a second ref: the registered repository's
+// origin/<branch> and any other upstream branch both report, and let the fix
+// agent edit, commits the contributor never wrote. The ref is the snapshot the
+// launch validated and the rebase step refreshed; CI repair refreshes it again
+// through requireRunIntegrationBase before it reads the live base.
+func integrationMergeBaseRefs(sctx *pipeline.StepContext, defaultBranch string) []string {
+	if strings.TrimSpace(defaultBranch) == "" {
+		return nil
+	}
+	if existingPRURL(sctx) != "" {
+		return []string{runIntegrationRef(sctx, defaultBranch)}
+	}
+	return []string{"origin/" + defaultBranch, defaultBranch}
 }
 
 // lastFetchedBranchTip returns the commit the push branch's remote-tracking ref
@@ -187,7 +249,7 @@ var fetchUpstreamTimeout = 120 * time.Second
 // ErrFetchTimeout marks a fetch that exceeded fetchUpstreamTimeout.
 var ErrFetchTimeout = errors.New("upstream fetch timed out")
 
-func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+func FetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
 	// Respect a deadline the caller already set rather than extending it.
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -203,6 +265,22 @@ func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, bra
 }
 
 func fetchRunUpstreamBranchInner(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+	if target := existingPRURL(sctx); target != "" {
+		// Integration refs belong to the explicit PR's repository, while push
+		// routing and trusted-config selection remain unchanged. They are kept
+		// out of refs/remotes/origin/, which the gate shares with every other
+		// worktree and run of the registered repository.
+		repo, _, err := github.ExistingPRTarget(target)
+		if err != nil {
+			return err
+		}
+		// Through the step runner, so the fetch reads with the forge profile
+		// this run selected rather than whatever account the daemon process
+		// happens to have configured: an upstream repository is often private
+		// to the contributor, and one daemon can serve several accounts.
+		_, err = stepGitRunRawContext(ctx, sctx, "fetch", "--no-tags", "https://github.com/"+repo+".git", "+refs/heads/"+branch+":"+runIntegrationRef(sctx, branch))
+		return err
+	}
 	upstreamURL := resolveUpstreamURL(sctx)
 	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
 	if err == nil && upstreamURL == originURL {

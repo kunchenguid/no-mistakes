@@ -223,3 +223,79 @@ func TestRebaseStep_LocalDefaultTipIsIntendedDelivery(t *testing.T) {
 		}
 	}
 }
+
+// An associated run's source branch lives in the contributor's fork while the
+// pull request's base lives in another repository, so the two can share a name
+// (fork:develop -> upstream:develop) and still be different commits. Comparing
+// the names alone reads that run as sitting on the branch it integrates with
+// and suppresses the only warning the operator gets about local develop
+// commits the upstream base does not have.
+func TestRebaseStep_AssociatedRunSharingTheBaseBranchNameStillFlagsBundledCommits(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	gitCmd(t, parent, "init", "--bare")
+	fork := t.TempDir()
+	gitCmd(t, fork, "init", "--bare")
+
+	// Contributor's clone: local develop advances with another workstream's
+	// commit that reaches neither the fork nor the pull request's repository.
+	working := t.TempDir()
+	gitCmd(t, working, "init")
+	gitCmd(t, working, "config", "user.name", "test")
+	gitCmd(t, working, "config", "user.email", "test@test.com")
+	gitCmd(t, working, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(working, "base.txt"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "base")
+	d0 := gitCmd(t, working, "rev-parse", "HEAD")
+	gitCmd(t, working, "push", parent, "develop")
+	gitCmd(t, working, "remote", "add", "origin", fork)
+	gitCmd(t, working, "push", "origin", "develop")
+	if err := os.WriteFile(filepath.Join(working, "unrelated.txt"), []byte("other workstream"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "unrelated backend work")
+	localDevelopTip := gitCmd(t, working, "rev-parse", "HEAD")
+
+	// Gate worktree: develop was branched off the local (ahead) develop, so it
+	// carries the unrelated commit as an ancestor.
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", fork, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "fetch", working, "develop")
+	gitCmd(t, dir, "checkout", "--detach", localDevelopTip)
+	gitCmd(t, dir, "checkout", "-B", "develop")
+	if err := os.WriteFile(filepath.Join(dir, "my_fix.txt"), []byte("my fix"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "my fix")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "config", "url."+parent+".insteadOf", "https://github.com/upstream/widgets.git")
+	gitCmd(t, dir, "config", "url."+fork+".insteadOf", fixtureSourceURL)
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, d0, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/develop"
+	sctx.Repo.WorkingPath = working
+	pinFixturePR(t, sctx)
+	prBase := "develop"
+	sctx.Run.PRBaseBranch = &prBase
+
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected the bundled-commits warning for fork:develop -> upstream:develop, got outcome=%#v", outcome)
+	}
+	if !strings.Contains(outcome.Findings, "unrelated backend work") {
+		t.Fatalf("expected the unpushed local develop commit in the findings, got: %s", outcome.Findings)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("step integrated instead of stopping for review: HEAD moved to %s", got)
+	}
+}

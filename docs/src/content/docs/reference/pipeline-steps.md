@@ -61,6 +61,8 @@ Fetches the latest authoritative remote state, fetches the configured pushed-bra
 
 The integration branch used below is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch): the repository's forge default branch, or the trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) when configured.
 
+On a branch associated with an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr), it is instead the branch that pull request targets, in the pull request's own repository, fetched into a separate `refs/remotes/no-mistakes-upstream/<owner>/<repo>/<branch>` tracking ref rather than `origin/`. Because those are two different repositories, an associated run always integrates even when the two branch names match, and a failed fetch of that branch fails the step instead of warning.
+
 **Behavior:**
 - Fetches `origin/<PR base branch>` from the remote into the worktree, and also fetches the pushed branch for non-base branches unless the push rewrote branch history
 - Without fork routing, the pushed-branch target is `origin/<branch>`
@@ -243,7 +245,7 @@ This step never requires approval - it runs automatically after review, test, do
 Creates or updates a pull request.
 
 **Skipped when:**
-- The branch is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch) (the repository's forge default branch, or the trusted `pr.base_branch` when configured)
+- The branch is the [PR base branch](/no-mistakes/reference/repo-config/#prbase_branch) (the repository's forge default branch, or the trusted `pr.base_branch` when configured), unless the branch is associated with an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr), whose target lives in another repository
 - The upstream host is not GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), Azure DevOps (`dev.azure.com` / `*.visualstudio.com`), or Gitea
 - The provider CLI (`gh`, `glab`, `forgejo-axi`, or `tea`) is not installed for GitHub, GitLab, Forgejo, or Gitea (GitHub also skips when `gh` is missing from `PATH`)
 - The provider CLI is not authenticated for GitHub, GitLab, Forgejo, or Gitea (GitHub reports a timed-out or interrupted `gh auth status` separately from auth failure; either still skips)
@@ -252,7 +254,7 @@ Creates or updates a pull request.
 - A legacy or manually edited non-GitHub repo record has `fork_url` set, because fork MR/PR routing is currently GitHub-only
 
 **Behavior:**
-- Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate
+- Checks for an existing PR on the branch, matching by branch alone rather than filtering by base, so a still-open PR against a since-changed [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is found and updated instead of orphaned behind a duplicate. A branch associated with an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr) runs no discovery at all: it validates and updates that pull request, or fails
 - If one exists, updates it. If not, creates a new one against the configured base branch, or the per-run `--base-branch` override when set.
 - A per-run `--base-branch` that disagrees with an existing PR's live forge base retargets that PR (GitHub `gh pr edit --base`, GitLab `glab mr update --target-branch`, Gitea `tea api` PATCH) before updating title and body, but only the run's persisted PR URL or number after `GetPRState` proves it is still open. A sibling first-list-hit is ignored in favor of that identity; a closed or merged persisted identity, a run with no persisted identity, or a provider that cannot retarget, fails closed instead of moving another review object. A rerun inherits the selected run's PR URL only when that PR is not already merged or closed. A repo-config `pr.base_branch` change still does not retarget.
 - If existing-PR discovery fails or its provider response cannot be decoded and validated as a PR listing for the configured repository, stops instead of treating the result as no PR and creating a duplicate.

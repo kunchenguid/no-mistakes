@@ -47,6 +47,16 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 	cmdFactory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		return stepCmdContext(sctx, ctx, name, args...)
 	}
+	if target := existingPRURL(sctx); target != "" {
+		repo, _, err := github.ExistingPRTarget(target)
+		if err != nil {
+			return nil, err.Error()
+		}
+		if provider != scm.ProviderGitHub || resolvedHost(sctx, sctx.Repo.PushURL()) != "github.com" {
+			return nil, "explicit PR requires a github.com push repository"
+		}
+		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, scm.ProviderGitHub) }, "github.com", repo, github.RepoSlug(sctx.Repo.PushURL()), false), ""
+	}
 	switch provider {
 	case scm.ProviderGitHub:
 		// Resolve the slug so gh commands carry --repo and work from the

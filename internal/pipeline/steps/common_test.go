@@ -53,7 +53,7 @@ func TestCopyDirContents_PreservesGitRepo(t *testing.T) {
 func TestResolveBaseSHA_NonZero(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	got := resolveBaseSHA(context.Background(), dir, "abc123", "main")
+	got := resolveBaseSHA(context.Background(), nil, dir, "abc123", "main")
 	if got != "abc123" {
 		t.Errorf("resolveBaseSHA non-zero = %q, want abc123", got)
 	}
@@ -78,7 +78,7 @@ func TestResolveBaseSHA_ZeroWithMergeBase(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "feature commit")
 
 	zeroSHA := "0000000000000000000000000000000000000000"
-	got := resolveBaseSHA(context.Background(), dir, zeroSHA, "main")
+	got := resolveBaseSHA(context.Background(), nil, dir, zeroSHA, "main")
 	if got != mainSHA {
 		t.Errorf("resolveBaseSHA zero with merge-base = %q, want %q", got, mainSHA)
 	}
@@ -97,7 +97,7 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "initial")
 
 	zeroSHA := "0000000000000000000000000000000000000000"
-	got := resolveBaseSHA(context.Background(), dir, zeroSHA, "main")
+	got := resolveBaseSHA(context.Background(), nil, dir, zeroSHA, "main")
 	if got != git.EmptyTreeSHA {
 		t.Errorf("resolveBaseSHA zero no default = %q, want %q", got, git.EmptyTreeSHA)
 	}

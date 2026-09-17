@@ -219,6 +219,7 @@ When unset, no-mistakes preserves the existing behavior and targets `Repo.Defaul
 PR lookup matches an existing PR by branch alone, never filtered by base, so a `pr.base_branch` change after a PR was opened updates that PR instead of opening a duplicate against the new base.
 A per-run `--base-branch` override is different: if the run's already-open PR targets another branch, the PR step retargets that PR (GitHub, GitLab, and Gitea) so title, body, and CI follow the requested integration branch. A discovered PR that is not the run's persisted identity, or a provider that cannot retarget, fails closed rather than moving another review object. See [PR](/no-mistakes/reference/pipeline-steps/#pr).
 Once a PR exists, its actual forge base branch is authoritative over `pr.base_branch` for the CI step's merge-conflict auto-fix and base-branch tip monitoring, protecting a resumed run from a configuration change made after the PR was created.
+On a branch associated with an [explicit existing upstream PR](/no-mistakes/reference/cli/#explicit-existing-upstream-pr), that pull request's own base branch replaces this setting for every step, and `--base-branch` is refused.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
@@ -13,6 +14,7 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	prHeadSettleDelay = time.Millisecond
 	cleanup, err := stepstest.Init()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init fake CLI helper: %v\n", err)

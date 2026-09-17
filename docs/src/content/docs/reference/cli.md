@@ -129,6 +129,8 @@ no-mistakes axi run --intent "the user's goal" --base-branch epic/foo
 | `-y`, `--yes`   | `bool`   | `false` | Auto-resolve eligible gates until a decision point or outcome                                       |
 | `--skip`        | `string` | (none)  | Comma-separated pipeline steps to skip                                                               |
 | `--base-branch` | `string` | (none)  | Integration branch for this run only; overrides [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) |
+| `--existing-pr` | `string` | (none) | Explicit existing github.com PR URL; validates repository, source ref and head; remembered for the branch; never falls back to another PR |
+| `--retire-existing-pr` | `bool` | `false` | Drop the branch's remembered PR association and start no run |
 | `--wait`        | `duration` | `8m`    | Maximum time for active-run lookup and run driving before the caller must reattach |
 | `--launch-nonce` | `string` | (none) | Non-secret correlation identifier for a durable pre-drive receipt; requires `--validation-generation` |
 | `--validation-generation` | `string` | (none) | Caller-selected validation generation bound to `--launch-nonce`; requires that flag |
@@ -173,6 +175,41 @@ Explicit per-run skips retain their existing behavior.
 If the run also has a Test or CI approval override, `passed-with-override` takes precedence and the automatic skip causes remain visible.
 Legacy rows without a recorded skip cause keep their prior classification; their logs remain inspectable.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
+
+### Explicit existing upstream PR
+
+When `origin` points at your fork but the PR lives upstream, select the existing review object explicitly:
+
+```sh
+no-mistakes axi run \
+  --existing-pr https://github.com/upstream/widgets/pull/168 \
+  --intent "Validate the account-context change in the existing upstream PR"
+```
+
+Run this from the PR's clean, checked-out source branch. The URL supplies both the upstream repository and PR number; no remote rewrite or separate repository flag is needed. This mode currently supports canonical `https://github.com/OWNER/REPO/pull/NUMBER` URLs only, not GitHub Enterprise Server or other providers.
+
+Before any pipeline step starts, the daemon requires an open PR whose returned URL, number and base repository match the request, whose full source repository matches the configured push target (`fork_url` when configured, otherwise `origin`), and whose source branch and full head SHA match the submitted local branch and commit. **The source head must already be published**: local-only commits, stale local heads, deleted forks, closed/merged PRs, authentication failures and unavailable or incomplete validation fail rather than select or create another PR. A newer CLI also refuses an older daemon that lacks this launch protocol; it does not fall back to the ordinary push hook.
+
+The association is stored atomically with the run and survives recovery and `rerun`. PR updates, pre-push attestation writes and CI target that exact upstream PR, without branch-based discovery. The PR's existing title and body are the author's: an explicit target is only ever appended to, through the same owned-appendix mechanism [`pr.template`](/no-mistakes/reference/repo-config/#prtemplate) uses, so the run adds its evidence section and never redrafts the description. An empty description stays empty - a repository template fills a blank body on that repository's own pull requests, never on an associated one. Before each pipeline push, the PR's live head must match the source remote head verified by the existing push-safety checks; publication and CI also validate the published head. Pipeline fixes still push to the source repository. Integration-branch fetches use the explicit upstream repository, while trusted configuration still comes from the registered repository's pinned default branch. The integration branch is the one the PR actually targets, read from the PR at launch and stored on the run, so Rebase, PR and CI all use it instead of the repository default or [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch), and every gate measures its diff from that branch rather than your fork's default. It is fetched at launch, so an unreachable upstream refuses the run instead of silently reviewing against the fork. The gates then measure from that validated snapshot; only CI repair re-reads the branch, because a maintainer can retarget the PR mid-run. If the branch it must measure against cannot be read, the run stops: no other branch and no empty diff is ever substituted for it. This option does not retarget the PR.
+
+Like every other launch, this one binds the branch in the daemon's gate repository to the submitted commit, which is what lets `rerun` and recovery read the validated head after a run that stopped at a gate. It only ever advances that branch: if the gate holds a head your submission does not contain, the launch is refused and you reconcile the branch (`no-mistakes sync`) first.
+
+`--existing-pr` cannot be combined with `--base-branch`, `--skip`, or the strict launch-receipt flags. Reattach with the same URL or omit it; a different or absent explicit target on an active run is refused when you supply the flag. The same two restrictions hold for every later run on an associated branch, flag or not: a run that publishes to someone else's pull request delivers the whole pipeline, and its base comes from that pull request, so `--skip` (including a `no-mistakes.skip=` push option) and `--base-branch` are refused at launch until the association is retired.
+
+#### Association lifecycle
+
+A validated association belongs to the **branch**, so you name the pull request once:
+
+| Step | Command | Effect |
+| --- | --- | --- |
+| Establish | `axi run --existing-pr <url> --intent "..."` | Validates the target and records it for this branch |
+| Reuse | `axi run --intent "..."`, a `git push` that fires the hook, `rerun`, CI repair | Publishes to the recorded pull request; no discovery, no new PR |
+| Replace | `axi run --existing-pr <other-url> --intent "..."` | Validates the new target and replaces the record |
+| Retire | `axi run --retire-existing-pr` | Removes the record and starts no run; later runs use ordinary discovery. It refuses the flags that describe a run (`--intent`, `--skip`, `--base-branch`, `--existing-pr`, `--launch-nonce`, `--validation-generation`) rather than discarding them; `--yes` and `--wait` are accepted and have nothing to do |
+
+Establishing and replacing require the submitted head to already be the pull request's live head, because you are asserting which commit the target is at. A reused association does not: those runs exist to publish a new head, so they prove the association itself - the pull request is open, lives in the recorded repository, and its source is this push repository and branch - and the head is proven against the remote before the push and again by the PR and CI steps. A head this run just published is re-read a bounded number of times before a mismatch is reported, because the forge serves pull requests from a replica; the comparison itself stays exact, and an ancestor is never accepted. Either way a stale, ambiguous or unreadable target - a merged or closed pull request, a source ref that moved - fails the run rather than discovering, creating or updating a different pull request, and the failure names the branch, its pull request and the retire command. Nothing is retired automatically. Retiring is refused while a run is active on the branch, so an in-flight run never changes where it publishes.
+
+Branches with no association are untouched: ordinary repository-scoped discovery is unchanged, and an `origin` pointing at a fork does **not** automatically discover upstream PRs. For general fork routing, including new PR creation, use [`init --fork-url`](#no-mistakes-init).
 
 ### Strict launch receipts
 
