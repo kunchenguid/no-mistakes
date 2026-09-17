@@ -110,18 +110,53 @@ patch-ID or tree-survival proof. This narrow policy exception permits reviewed
 rebases and conflict resolutions to change the submitted patch. Ownership is
 not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
-Fresh AXI submissions do not receive this exception.
+Fresh AXI submissions do not receive this Decision 41-A exception; recorded
+supersession below is the only exception they can receive.
+
+**Recorded supersession:** a fresh submission can also reach a settled state for
+a mirror left stranded by a terminal run. After a rebase, such a run can leave the
+mirror ref on its superseded pre-rebase lineage, where the containment check
+correctly refuses and every recovery command is a no-op - the branch is stranded
+even though its work is intact. For that case a submission may replace the
+private head when this repository's own run records prove it superseded: one
+terminal run on this branch that already returned custody
+(`CustodyReturnedAt`), that submitted **exactly** the private head
+(`SubmittedHeadSHA` equal, never an abbreviated or other recorded head), whose
+verified final head (`TerminalHeadVerifiedAt`) is its own reviewed head
+(`HeadSHA` equal to `ReviewApprovedHeadSHA`), and whose reviewed head is still
+contained in the head being submitted. The exception is resolved by the guard
+from the database, never asserted by the caller, and it leaves every other
+containment check in force: an unproven private head, a still-active run, a
+different submitted head, or an accepted result the live head does not contain
+all still refuse, leave the branch untouched, and name every at-risk commit. The
+refusal is reported as a terminal condition with the operator action attached,
+rather than as a bare Git error. The guard resolves this evidence on the AXI
+submission paths only, which supply the repository's own run records; publication
+reconciliation supplies none, so Decision 41-A stays its only exception.
+
+The exception deliberately does not extend to a verified final head that carries
+commits made after review (document/lint and CI-repair rounds commit after
+review completes, so such a run records `HeadSHA != ReviewApprovedHeadSHA`).
+That shape is refused like any other unproven head, but it is named in its own
+terms: the guard reports the condition (which run submitted the head, its
+reviewed head, and its verified post-review head) and the step that actually
+settles it - retrieving the mirror's commits from the gate remote and integrating
+them into the head being submitted, which turns the blocked push into an ordinary
+fast-forward. The generic refusal cannot serve here, because that run already
+returned custody, so `axi sync --recover` is a no-op and the `axi run` the state
+reports is the entry point that refuses. Nothing about the refusal itself
+changes: the branch stays untouched and every containment check still ran.
 
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
-unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit. An ancestor already
-supports an ordinary fast-forward. A gate head that is a newer descendant of
-the published head stays untouched, including through the detached worktree's
-shared branch refs.
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
+and recorded supersession, unproven private content refuses before upstream
+publication, leaves the private branch untouched, and names every at-risk
+commit. An ancestor already supports an ordinary fast-forward. A gate head that
+is a newer descendant of the published head stays untouched, including through
+the detached worktree's shared branch refs.
 
 Correction and CI-repair recording persist the agent-created worktree head in
 the run and database without moving a branch ref shared with the gate. Repairs
@@ -132,9 +167,11 @@ separate ref storage retain their local branch bookkeeping.
 Publication plans reconciliation before pushing and applies it only after
 verifying the upstream head. If mirror settlement then fails or is cancelled,
 it restores the archived branch when no intervening ref has appeared, so a
-retry can still resolve the branch. AXI reconciles before its ordinary submission
-push and restores an archived ref after a failed submission if no intervening
-ref has appeared. Neither path forces the private mirror.
+retry can still resolve the branch. AXI reconciles before every submission
+push - the ordinary one and the one bound to [strict launch
+receipts](/no-mistakes/reference/cli/#strict-launch-receipts) - and each
+restores an archived ref after a failed submission if no intervening ref has
+appeared. Neither path forces the private mirror.
 
 ### Daemon
 

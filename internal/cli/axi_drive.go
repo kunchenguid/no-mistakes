@@ -287,6 +287,9 @@ func runAxiRunWithLaunchProof(cmd *cobra.Command, autoYes bool, skipSteps []type
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
 			}
+			if mirrorErr, ok := err.(*staleMirrorError); ok {
+				return emitStaleMirrorError(cmd, mirrorErr)
+			}
 			return emitError(cmd, 1, err.Error())
 		}
 	}
@@ -539,9 +542,9 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 			priorRunIDs = nil
 		}
 	}
-	reconciliation, err := gate.ReconcileStaleBranch(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, "")
+	reconciliation, err := preparePrivateMirror(ctx, env, branch, submissionHead)
 	if err != nil {
-		return "", fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+		return "", err
 	}
 	// A reconciled branch is re-created by this push, so the hook reports no
 	// previous head. Carry the archived pre-reconciliation head so the run's
@@ -552,9 +555,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	}
 	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, submissionHead, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
-		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
-		restoreErr := gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
-		cancel()
+		restoreErr := restoreMirrorAfterFailedPush(ctx, env, branch, reconciliation)
 		if restoreErr != nil {
 			return "", fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
 		}
@@ -587,6 +588,76 @@ func triggerRun(ctx context.Context, env *axiEnv, branch string, skipSteps []typ
 	return rr.RunID, nil
 }
 
+// preparePrivateMirror settles a private mirror ref that would otherwise reject
+// this submission's ordinary push. The guard replaces the private head only on
+// evidence from this repository's own run records (see gate.SupersessionSource);
+// when it cannot prove the private work superseded, it refuses and the refusal
+// reaches the operator as a terminal, actionable outcome.
+//
+// Every submission path calls this, so an operator cannot be stranded by picking
+// one entry point over another.
+func preparePrivateMirror(ctx context.Context, env *axiEnv, branch, submissionHead string) (gate.StaleBranchReconciliation, error) {
+	reconciliation, err := gate.ReconcileSupersededSubmission(ctx, env.p.RepoDir(env.repo.ID), ".", branch, submissionHead, gate.SupersessionSource{
+		DB:     env.d,
+		RepoID: env.repo.ID,
+		Branch: branch,
+	})
+	if err != nil {
+		var refusal *gate.StaleBranchRefusal
+		if errors.As(err, &refusal) {
+			return gate.StaleBranchReconciliation{}, &staleMirrorError{branch: branch, refusal: refusal}
+		}
+		return gate.StaleBranchReconciliation{}, fmt.Errorf("prepare private mirror for %q: %w", branch, err)
+	}
+	return reconciliation, nil
+}
+
+// restoreMirrorAfterFailedPush puts a reconciled mirror branch back after its
+// submission push failed, so a refused or rejected submission never leaves the
+// archived head detached from the branch that named it.
+func restoreMirrorAfterFailedPush(ctx context.Context, env *axiEnv, branch string, reconciliation gate.StaleBranchReconciliation) error {
+	if !reconciliation.Reconciled {
+		return nil
+	}
+	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerWaitTimeout)
+	defer cancel()
+	return gate.RestoreReconciledBranch(restoreCtx, env.p.RepoDir(env.repo.ID), branch, reconciliation)
+}
+
+// staleMirrorError reports a private mirror the guard refused to replace, with
+// the exact operator action attached. It exists so the refusal reaches the
+// operator as a terminal, actionable outcome (condition named, action named)
+// instead of a bare wrapped Git error.
+type staleMirrorError struct {
+	branch  string
+	refusal *gate.StaleBranchRefusal
+}
+
+func (e *staleMirrorError) Error() string {
+	return e.refusal.Error()
+}
+
+func emitStaleMirrorError(cmd *cobra.Command, err *staleMirrorError) error {
+	return emitError(cmd, 1, err.Summary(), err.refusal.Action())
+}
+
+// Summary states the exact condition in operator terms, naming the heads
+// involved so the refusal is diagnosable without re-running Git by hand. When a
+// recorded run establishes why the private head could not be replaced, that exact
+// condition is named instead of only the at-risk count.
+func (e *staleMirrorError) Summary() string {
+	if condition := e.refusal.Condition(); condition != "" {
+		return fmt.Sprintf(
+			"the private mirror for %q holds %d commit(s) the current head %s does not contain (mirror at %s); it was left untouched, and recorded supersession does not apply: %s",
+			e.branch, len(e.refusal.AtRisk), e.refusal.LiveHead, e.refusal.PreviousHead, condition,
+		)
+	}
+	return fmt.Sprintf(
+		"the private mirror for %q holds %d commit(s) the current head %s does not contain (mirror at %s); it was left untouched",
+		e.branch, len(e.refusal.AtRisk), e.refusal.LiveHead, e.refusal.PreviousHead,
+	)
+}
+
 func claimLaunchReceipt(client *ipc.Client, repoID, branch, launchNonce, submittedHeadSHA, validationGeneration, intentDigest, baseBranch string) (*ipc.LaunchReceipt, error) {
 	var result ipc.ClaimLaunchReceiptResult
 	if err := client.Call(ipc.MethodClaimLaunchReceipt, &ipc.ClaimLaunchReceiptParams{
@@ -614,8 +685,18 @@ func triggerProofRun(ctx context.Context, env *axiEnv, branch, headSHA string, s
 	if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 		return nil, &branchOwnershipError{state: *state}
 	}
+	reconciliation, err := preparePrivateMirror(ctx, env, branch, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	if opt := formatReconciledPreviousHeadPushOption(reconciliation.PreviousHead); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
 	pushErr := git.PushCommitWithOptions(ctx, ".", gate.RemoteName, headSHA, "refs/heads/"+branch, "", false, pushOptions)
 	if pushErr != nil {
+		if restoreErr := restoreMirrorAfterFailedPush(ctx, env, branch, reconciliation); restoreErr != nil {
+			return nil, fmt.Errorf("push %q to gate: %v; restore reconciled branch: %w", branch, pushErr, restoreErr)
+		}
 		if state := freshRunBranchOwnershipState(ctx, env); state != nil {
 			return nil, &branchOwnershipError{state: *state}
 		}
