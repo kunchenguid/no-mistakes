@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.77.1](https://github.com/kunchenguid/no-mistakes/compare/v1.77.0...v1.77.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **agent:** bound pipeline agent host filesystem searches ([#1096](https://github.com/kunchenguid/no-mistakes/issues/1096)) ([3eb3c25](https://github.com/kunchenguid/no-mistakes/commit/3eb3c25e51a0b19547d56d2b6958c2d521da96df))
+* **pipeline:** keep review findings outstanding until verified ([#1095](https://github.com/kunchenguid/no-mistakes/issues/1095)) ([8f683b5](https://github.com/kunchenguid/no-mistakes/commit/8f683b5313fe93b70b4d76f52f37dfd69f187197))
+* **pipeline:** report approved Test exceptions as passed-with-override ([#1100](https://github.com/kunchenguid/no-mistakes/issues/1100)) ([2bcb710](https://github.com/kunchenguid/no-mistakes/commit/2bcb710112036952dc794fdebf575ea2626839dc))
+
 ## [1.77.0](https://github.com/kunchenguid/no-mistakes/compare/v1.76.0...v1.77.0) (2026-09-16)
 
 
