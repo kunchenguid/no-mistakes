@@ -92,7 +92,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		stderrBuf, _ = io.ReadAll(started.stderr)
 	}()
 
-	pp := &piParser{onChunk: opts.OnChunk}
+	pp := newPiParser(opts, "pi")
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
@@ -270,11 +270,30 @@ func buildPiPrompt(prompt string, schema json.RawMessage) string {
 		string(pretty)
 }
 
+// newPiParser builds the streaming parser for one invocation, wiring both of
+// the callbacks an adapter owes it: assistant text for the step log, and
+// progress for the invocation's stall bound. A pi-family adapter that
+// constructs piParser directly instead of through this helper must pass
+// onProgress itself, or its long tool stretches will carry no progress signal.
+func newPiParser(opts RunOpts, name string) *piParser {
+	return &piParser{
+		onChunk:    opts.OnChunk,
+		onProgress: agentProgressEmitter(opts, name),
+	}
+}
+
 // piParser tracks the streaming state of one Pi run. It accumulates text
 // deltas, captures the final assistant text and usage, and surfaces any
 // reported assistant error.
 type piParser struct {
 	onChunk func(string)
+	// onProgress, when set, is invoked on every event that advances the turn
+	// without producing prose: a tool call, a tool result, or a completed
+	// assistant message. The JSON stream is dominated by these - a review turn
+	// spends most of its life in tool sequences - so without them the only
+	// progress signal would be the occasional line of prose and a healthy long
+	// turn would look identical to a wedged one. See LifecyclePhaseProgress.
+	onProgress func()
 
 	streamText     map[int]string
 	completeText   map[int]string
@@ -334,8 +353,20 @@ func (p *piParser) handleEvent(event map[string]any) {
 	case "message_end", "turn_end":
 		p.rememberAssistant(event["message"])
 		p.recordAssistantUsage(event["message"])
+		p.progress()
+	case "tool_execution_start", "tool_execution_end":
+		// A tool boundary is unambiguous forward motion, and these are the
+		// events that keep a long tool-heavy turn visible as progress.
+		p.progress()
 	case "agent_end":
 		p.rememberAgentEnd(event["messages"])
+	}
+}
+
+// progress reports one turn advance to the observer, when one is installed.
+func (p *piParser) progress() {
+	if p.onProgress != nil {
+		p.onProgress()
 	}
 }
 
@@ -466,6 +497,7 @@ func (p *piParser) handleAssistantEvent(raw any) {
 		if p.onChunk != nil {
 			p.onChunk(delta)
 		}
+		p.progress()
 	case "text_end":
 		// Capture the complete text for final-result resolution. Don't
 		// re-emit to OnChunk: the deltas already covered it. If the event

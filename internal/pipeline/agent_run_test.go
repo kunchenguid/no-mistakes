@@ -653,3 +653,357 @@ func TestExecutor_DirectAgentRunUnderACallerDeadlineRefusesLateWork(t *testing.T
 		t.Fatal("expected the expired caller deadline to fail the run")
 	}
 }
+
+// The wedge this reproduces, measured across a night of real runs (2026-09-17):
+// the review agent's first turn kept its subprocess alive and kept writing
+// bytes - thinking and tool events - while the step log, which is what the
+// operator actually reads, stopped growing. Every byte-level liveness signal
+// stayed green, so the only thing that ever ended such a turn was
+// review_agent_timeout; nine invocations burned the full 3h budget and six
+// consecutive attempts on one branch died that way. The failure message then
+// claimed the agent "last produced output 1s ago", which is true and useless.
+//
+// The agent below is that shape exactly: it streams non-stop so `activity` and
+// `last produced output` stay fresh, but it never reports progress. Before the
+// progress bound existed this test could not terminate early - the assertion is
+// that the invocation now ends on the MEASURED lack of progress, with a
+// diagnostic that says so, well inside the wall-clock budget.
+func TestRunAgent_ByteLiveButProgresslessTurnStallsInsteadOfBurningTheBudget(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+					// Bytes keep flowing: this is what pins `activity` and
+					// `last produced output` to "just now" on a real wedge.
+					if opts.OnLifecycle != nil {
+						opts.OnLifecycle(agent.LifecycleEvent{
+							Agent: "wedged",
+							Phase: agent.LifecyclePhaseActivity,
+						})
+					}
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout: 30 * time.Second,
+			// The stall bound is the only thing that can end this turn; the
+			// wall clock is deliberately far away so a pass cannot come from it.
+			AgentStallTimeout: 80 * time.Millisecond,
+		},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("a byte-live but progressless turn must not run to completion")
+	}
+	if !errors.Is(err, ErrAgentStall) {
+		t.Fatalf("error = %v, want ErrAgentStall", err)
+	}
+	if errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, must not be reported as a wall-clock timeout", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("stall took %s; the wall-clock budget was 30s and must not be spent", elapsed)
+	}
+	if !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("error = %q, want a diagnostic naming the lack of progress", err)
+	}
+	// The whole point of the fix: the agent WAS producing bytes, and the
+	// diagnostic must not pretend otherwise or claim a wall-clock limit.
+	if strings.Contains(err.Error(), "wall-clock") {
+		t.Fatalf("error = %q, must not claim a wall-clock limit fired", err)
+	}
+}
+
+// The complement, and the reason progress and activity are separate signals: a
+// turn that reports progress for as long as it works must never be stalled out,
+// however many bytes it emits. This is the healthy review - long tool
+// sequences, sparse prose - and it must survive a stall bound shorter than its
+// total runtime.
+func TestRunAgent_ProgressingTurnOutlivesTheStallBound(t *testing.T) {
+	t.Parallel()
+	const progressInterval = 20 * time.Millisecond
+	ag := &hangingAgent{
+		name: "working",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for i := 0; i < 8; i++ {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(progressInterval):
+				}
+				if opts.OnLifecycle != nil {
+					opts.OnLifecycle(agent.LifecycleEvent{
+						Agent: "working",
+						Phase: agent.LifecyclePhaseProgress,
+					})
+				}
+			}
+			return &agent.Result{Text: "done"}, nil
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout:      time.Minute,
+			AgentStallTimeout: 60 * time.Millisecond,
+		},
+	}
+
+	// Total work is 8*20ms = 160ms, far longer than the 60ms stall bound, yet
+	// every interval advances the turn so the bound never fires.
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	if err != nil {
+		t.Fatalf("a progressing turn must not be stalled out: %v", err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %#v, want the completed turn", result)
+	}
+}
+
+// Prose is progress too. An adapter that streams assistant text and nothing
+// else (no structured event stream behind it) still advances the turn, so a
+// long prose-only turn is not a stall.
+func TestRunAgent_StreamedProseCountsAsProgress(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "prosy",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for i := 0; i < 8; i++ {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(20 * time.Millisecond):
+				}
+				if opts.OnChunk != nil {
+					opts.OnChunk("checking the callers...")
+				}
+			}
+			return &agent.Result{Text: "done"}, nil
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout:      time.Minute,
+			AgentStallTimeout: 60 * time.Millisecond,
+		},
+	}
+
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	if err != nil {
+		t.Fatalf("streamed prose must count as progress: %v", err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %#v, want the completed turn", result)
+	}
+}
+
+// The stall bound must be switchable off, because a repository with a
+// legitimately slow single operation needs the absolute limits alone.
+func TestRunAgent_DisabledStallBoundNeverStalls(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+					if opts.OnLifecycle != nil {
+						opts.OnLifecycle(agent.LifecycleEvent{
+							Agent: "wedged",
+							Phase: agent.LifecyclePhaseActivity,
+						})
+					}
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout:      80 * time.Millisecond,
+			AgentStallTimeout: config.AgentStallUnlimited,
+		},
+	}
+
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	// With the stall bound off, the wall clock is what ends it - the exact
+	// pre-fix behaviour, now opt-in.
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout when the stall bound is disabled", err)
+	}
+	if errors.Is(err, ErrAgentStall) {
+		t.Fatalf("error = %v, a disabled stall bound must never fire", err)
+	}
+}
+
+// End-to-end, at the executor seam the real pipeline uses: a step whose agent
+// is byte-live but never advances must fail the RUN with the progress
+// diagnostic, not sit active until the wall clock.
+//
+// This is the acceptance case for the fleet outage. The step here calls
+// Agent.Run directly (the backstop path every step has), and the only bound
+// short enough to end it is the progress bound - so a passing test proves the
+// wedge is now survivable through the real executor, not merely through a unit
+// seam.
+func TestExecutor_ByteLiveButProgresslessAgentFailsTheRunWithTheStallDiagnostic(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+					if opts.OnLifecycle != nil {
+						opts.OnLifecycle(agent.LifecycleEvent{
+							Agent: "wedged",
+							Phase: agent.LifecyclePhaseActivity,
+						})
+					}
+				}
+			}
+		},
+	}
+	step := &adaptiveCallStep{
+		name: types.StepDocument,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			_, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "work"})
+			return nil, err
+		},
+	}
+	cfg := &config.Config{
+		AgentTimeout: 30 * time.Second,
+		// Only the progress bound can end this turn; the wall clock is far away.
+		AgentStallTimeout: 80 * time.Millisecond,
+	}
+	exec := NewExecutor(database, p, cfg, ag, []Step{step}, nil)
+
+	start := time.Now()
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("expected the progressless agent to fail the run")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("run took %s; the 30s wall-clock budget must not be spent", elapsed)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", got.Status, types.RunFailed)
+	}
+	if got.Error == nil || !strings.Contains(*got.Error, "no progress") {
+		var msg string
+		if got.Error != nil {
+			msg = *got.Error
+		}
+		t.Fatalf("run error = %q, want the stall diagnostic", msg)
+	}
+}
+
+// The production review path installs its own absolute deadline
+// (review_agent_timeout) before calling the agent, which means the shared
+// deadline seam hands back a no-op cancel. The progress bound must still be
+// able to end the invocation there - that is precisely the configuration that
+// wedged, so a stall bound that only worked for steps without their own
+// deadline would miss the reported defect entirely.
+func TestRunAgent_StallBoundWorksUnderACallerInstalledDeadline(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+					if opts.OnLifecycle != nil {
+						opts.OnLifecycle(agent.LifecycleEvent{
+							Agent: "wedged",
+							Phase: agent.LifecyclePhaseActivity,
+						})
+					}
+				}
+			}
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout:      time.Minute,
+			AgentStallTimeout: 80 * time.Millisecond,
+		},
+	}
+
+	// Mirrors ReviewStep.runReviewAgent: a caller-owned deadline, far beyond the
+	// stall bound, wrapped around the invocation.
+	parent, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := sctx.RunAgentContext(parent, agent.RunOpts{Prompt: "review"})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrAgentStall) {
+		t.Fatalf("error = %v, want ErrAgentStall under a caller-installed deadline", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("stall took %s; the caller's 30s deadline must not be spent", elapsed)
+	}
+}
+
+// A stalled turn's output must never be accepted, even if the agent returns a
+// parseable result moments after the bound fired. A wedged review that
+// eventually emits something is exactly the case where accepting it would
+// certify a head the turn never actually reviewed.
+func TestRunAgent_LateSuccessAfterStallIsRejected(t *testing.T) {
+	t.Parallel()
+	ag := &hangingAgent{
+		name: "wedged",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			<-ctx.Done()
+			// The bound fired, but the agent still returns a "good" result.
+			return &agent.Result{Text: "looks fine to me"}, nil
+		},
+	}
+	sctx := &StepContext{
+		Ctx:   context.Background(),
+		Agent: ag,
+		Config: &config.Config{
+			AgentTimeout:      time.Minute,
+			AgentStallTimeout: 40 * time.Millisecond,
+		},
+	}
+
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"})
+	if err == nil {
+		t.Fatalf("result %#v accepted after the stall bound expired", result)
+	}
+	if !errors.Is(err, ErrAgentStall) {
+		t.Fatalf("error = %v, want ErrAgentStall", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %#v, want nil so post-agent work cannot use a stalled turn", result)
+	}
+}

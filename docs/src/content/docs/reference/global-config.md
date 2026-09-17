@@ -42,6 +42,8 @@ step_quiet_warning: "10m"
 
 agent_timeout: "30m"
 
+agent_stall_timeout: "30m"
+
 review_agent_timeout: "30m"
 
 test_agent_timeout: "30m"
@@ -465,7 +467,7 @@ The diagnostic identifies expiration as an **absolute wall-clock limit** and sep
 - `agent produced no output at all in 30m0s and never reported a subprocess start` - the current attempt never reached a running agent process.
 
 Output means anything observable: streamed assistant text, or raw bytes on the agent subprocess's stdout or stderr. Subprocess bytes matter because an agent spends most of a long turn running tools rather than writing prose, so prose alone cannot tell a working agent from a wedged one.
-There is no activity-reset idle watchdog: [`step_quiet_warning`](#step_quiet_warning) is a separate status-only signal and does not cancel work. The absolute limit is the bounded safety policy for both active and no-output invocations.
+[`step_quiet_warning`](#step_quiet_warning) is a separate status-only signal and does not cancel work. The absolute limit bounds every invocation, active or silent.
 Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings. A bare context cancellation is omitted because it adds no evidence.
 
 |         |                        |
@@ -476,6 +478,32 @@ Any substantive report from the agent adapter - for a native agent, its exit sta
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
 Raise it for repositories whose document, lint, rebase, PR, or CI-fix agent turns legitimately run long.
+It is global-only: repository config and environment variables cannot override it.
+
+### agent_stall_timeout
+
+Maximum time one pipeline agent invocation may go without **advancing its turn** while its subprocess stays alive.
+This is the progress bound, and it is deliberately narrower than [`agent_timeout`](#agent_timeout): the absolute limit asks whether the turn still exists, while this one asks whether it is still getting anywhere.
+
+The two differ because bytes are not progress.
+The agent CLIs stream reasoning and tool events continuously, and an agent that keeps thinking without converging satisfies every byte-level liveness signal while producing nothing an operator can act on - the step log, which is what you actually read, simply stops growing.
+Before this bound existed, such a turn had no ceiling short of its absolute wall-clock limit, so a spinning review could burn its entire budget and then fail with a diagnostic reporting that the agent had produced output a second earlier, which is both true and useless.
+This is measured behaviour, not a hypothetical: `omp` review turns hit their then-30m and later 3h limits nine times in roughly thirty hours, six of them on one branch in a row, always with that same misleading evidence line.
+
+An invocation is stalled when no assistant text, tool call, or tool result has been observed for this long.
+Reasoning-only traffic, subprocess byte liveness, and retry or fallback bookkeeping do not count - only forward motion does.
+When the bound expires the agent is cancelled and the run fails with `agent made no progress; agent produced no assistant output or tool activity for <measured>` instead of continuing to consume the remaining budget.
+That diagnostic is deliberately distinct from the wall-clock one, because the two demand different responses: a wall-clock expiry means the turn was working and needs a larger budget, while a stall means it was not converging and needs investigating.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `30m`                  |
+
+Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
+Set it to `0`, `unlimited`, `none`, `off`, or `never` to disable the bound and rely on the absolute wall-clock limits alone; that is the documented escape hatch for a turn with one legitimately long silent step.
+A malformed value is rejected when loading the global config rather than silently removing the bound.
+The default matches [`agent_timeout`](#agent_timeout) on purpose: 30m is already treated as a safe ceiling for an entire invocation, so 30m of measured silence is strictly more conservative, and it stays well clear of the longest silent stretch observed in healthy work (a single 21-minute tool call).
 It is global-only: repository config and environment variables cannot override it.
 
 ### review_agent_timeout

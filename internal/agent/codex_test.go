@@ -586,6 +586,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		nil,
+		nil,
 		&usage,
 		&lastMessage,
 		nil,
@@ -624,6 +625,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 		&lastMessage,
 		nil,
@@ -659,6 +661,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 		&lastMessage,
 		nil,
@@ -684,7 +687,7 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
-	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil)
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, nil, &usage, &lastMessage, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

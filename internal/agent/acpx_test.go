@@ -488,6 +488,7 @@ func TestParseAcpxJSONEvents_AgentMessageChunkText(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 	)
 	if err != nil {
@@ -514,6 +515,7 @@ func TestParseAcpxJSONEvents_AgentMessageChunkContentArray(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 	)
 	if err != nil {
@@ -533,7 +535,7 @@ func TestParseAcpxJSONEvents_UsageUpdate(t *testing.T) {
 `
 	var usage TokenUsage
 
-	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -552,7 +554,7 @@ func TestParseAcpxJSONEvents_ResultUsageNormalized(t *testing.T) {
 `
 	var usage TokenUsage
 
-	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -569,7 +571,7 @@ func TestParseAcpxJSONEvents_PreservesUsagePresence(t *testing.T) {
 		"",
 	}, "\n")
 	var usage TokenUsage
-	if _, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage); err != nil {
+	if _, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage); err != nil {
 		t.Fatal(err)
 	}
 	if !usage.Reported || usage.InputTokens != 42 {
@@ -588,7 +590,7 @@ func TestParseAcpxJSONEvents_UsageTracksMaxNotSum(t *testing.T) {
 `
 	var usage TokenUsage
 
-	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	_, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -614,6 +616,7 @@ func TestParseAcpxJSONEvents_MultipleChunksAccumulate(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 	)
 	if err != nil {
@@ -642,7 +645,7 @@ func TestParseAcpxJSONEvents_CapturesFirstError(t *testing.T) {
 	}, "\n")
 
 	var usage TokenUsage
-	out, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	out, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -670,6 +673,7 @@ func TestParseAcpxJSONEvents_SkipsMalformedAndEmptyLines(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 	)
 	if err != nil {
@@ -685,7 +689,7 @@ func TestParseAcpxJSONEvents_SkipsMalformedAndEmptyLines(t *testing.T) {
 
 func TestParseAcpxJSONEvents_EmptyStream(t *testing.T) {
 	var usage TokenUsage
-	out, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(""), nil, &usage)
+	out, stdoutErr, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(""), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -705,7 +709,7 @@ func TestParseAcpxJSONEvents_NilOnChunkSafe(t *testing.T) {
 	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"safe"}}}
 `
 	var usage TokenUsage
-	out, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, &usage)
+	out, _, err := parseAcpxJSONEvents(context.Background(), strings.NewReader(events), nil, nil, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -725,6 +729,7 @@ func TestParseAcpxJSONEvents_EmptyChunkTextSkipped(t *testing.T) {
 		context.Background(),
 		strings.NewReader(events),
 		func(text string) { chunks = append(chunks, text) },
+		nil,
 		&usage,
 	)
 	if err != nil {
@@ -745,8 +750,58 @@ func TestParseAcpxJSONEvents_ContextCancellation(t *testing.T) {
 	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"never"}}}
 `
 	var usage TokenUsage
-	_, _, err := parseAcpxJSONEvents(ctx, strings.NewReader(events), nil, &usage)
+	_, _, err := parseAcpxJSONEvents(ctx, strings.NewReader(events), nil, nil, &usage)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+}
+
+// The progress signal is what keeps a long ACP turn from being mistaken for a
+// stalled one. omp runs through acpx, and its review turns spend most of their
+// life in reasoning and tool calls that produce no assistant text, so a parser
+// that only counted message chunks would leave the whole turn looking silent.
+func TestParseAcpxJSONEvents_ReportsProgressForNonProseTurnActivity(t *testing.T) {
+	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","text":"weighing options"}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"bash"}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_plan","entries":[]}}}
+`
+	var progress int
+	var usage TokenUsage
+
+	if _, _, err := parseAcpxJSONEvents(
+		context.Background(),
+		strings.NewReader(events),
+		nil,
+		func() { progress++ },
+		&usage,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if progress != 4 {
+		t.Fatalf("progress events = %d, want 4 (one per turn-advancing update)", progress)
+	}
+}
+
+// Assistant prose is progress too, and a pure usage tick is not: reading token
+// counters reports what the turn spent, not that it moved.
+func TestParseAcpxJSONEvents_ProseIsProgressButUsageIsNot(t *testing.T) {
+	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":100}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","text":"done"}}}
+`
+	var progress int
+	var usage TokenUsage
+
+	if _, _, err := parseAcpxJSONEvents(
+		context.Background(),
+		strings.NewReader(events),
+		nil,
+		func() { progress++ },
+		&usage,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if progress != 1 {
+		t.Fatalf("progress events = %d, want 1 (the message chunk only)", progress)
 	}
 }

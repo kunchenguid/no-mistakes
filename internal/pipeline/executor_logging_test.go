@@ -474,6 +474,11 @@ func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *
 			{Agent: "pi", Phase: agent.LifecyclePhaseStart, PID: 1234, Message: "pi started pid=1234"},
 			{Agent: "pi", Phase: agent.LifecyclePhaseActivity, Message: "pi producing output"},
 			{Agent: "pi", Phase: agent.LifecyclePhaseActivity, Message: "pi producing output"},
+			// Forward motion with no narrative of its own. A real review turn
+			// emits these thousands of times, so they carry the same obligation
+			// as the liveness ticks: reach activity, never the log.
+			{Agent: "pi", Phase: agent.LifecyclePhaseProgress, Message: "pi progress"},
+			{Agent: "pi", Phase: agent.LifecyclePhaseProgress, Message: "pi progress"},
 		},
 	}
 
@@ -489,12 +494,12 @@ func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *
 			if err != nil {
 				t.Fatalf("get step result: %v", err)
 			}
-			if got.LastActivity == nil || !strings.Contains(*got.LastActivity, "producing output") {
+			if got.LastActivity == nil || (!strings.Contains(*got.LastActivity, "producing output") && !strings.Contains(*got.LastActivity, "progress")) {
 				var activity string
 				if got.LastActivity != nil {
 					activity = *got.LastActivity
 				}
-				t.Fatalf("last_activity = %q, want the subprocess liveness signal recorded", activity)
+				t.Fatalf("last_activity = %q, want a liveness or progress signal recorded", activity)
 			}
 			return &StepOutcome{ExitCode: 0}, nil
 		},
@@ -522,6 +527,9 @@ func TestExecutor_SubprocessLivenessUpdatesActivityWithoutFloodingTheStepLog(t *
 	}
 	if strings.Contains(log, "producing output") {
 		t.Fatalf("step log = %q, liveness ticks must not be written to the step log", log)
+	}
+	if strings.Contains(log, "progress") {
+		t.Fatalf("step log = %q, progress events must not be written to the step log", log)
 	}
 }
 

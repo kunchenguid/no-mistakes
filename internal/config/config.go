@@ -45,6 +45,30 @@ const (
 	// active forever. Review and Test keep their own knobs; this is the
 	// default-by-construction budget for every other step.
 	DefaultAgentTimeout = 30 * time.Minute
+	// DefaultAgentStallTimeout bounds how long one pipeline agent invocation
+	// may go without advancing its turn while its subprocess stays alive.
+	//
+	// A subprocess that is still writing bytes is not evidence of progress:
+	// the pi-family JSON stream carries thinking and tool events, and no-mistakes
+	// forwards only assistant prose to the step log. A turn that spins - making
+	// tool calls and thinking without ever converging - therefore keeps every
+	// byte-level liveness signal satisfied while the step log, which is what an
+	// operator actually reads, stops growing. Before this bound the only limit
+	// on such a turn was the absolute wall clock, so a spinning review burned
+	// its whole budget (observed: 3h, six consecutive attempts on one branch)
+	// and then failed with a message claiming the agent had just produced
+	// output.
+	//
+	// The default matches DefaultAgentTimeout: the codebase already treats 30m
+	// as a safe ceiling for an entire invocation, so 30m of measured silence is
+	// strictly more conservative. It is also comfortably above the longest
+	// no-progress window observed in healthy work (a single 21m tool call).
+	DefaultAgentStallTimeout = 30 * time.Minute
+	// AgentStallUnlimited is the sentinel meaning "do not bound inactivity;
+	// rely on the absolute wall-clock limits alone". It exists because a plain
+	// zero already means "not configured" - DefaultGlobalConfig always
+	// populates the field - so the two states need distinct values.
+	AgentStallUnlimited = time.Duration(-1)
 	// DefaultReviewAgentTimeout is the absolute wall-clock limit for one
 	// review or review-fix invocation. Every later invocation derives a fresh
 	// limit, so a stalled agent is bounded without charging the next turn.
@@ -168,6 +192,7 @@ type GlobalConfig struct {
 	CITimeout               time.Duration     `yaml:"-"`
 	StepQuietWarning        time.Duration     `yaml:"-"`
 	AgentTimeout            time.Duration     `yaml:"-"`
+	AgentStallTimeout       time.Duration     `yaml:"-"`
 	ReviewAgentTimeout      time.Duration     `yaml:"-"`
 	TestAgentTimeout        time.Duration     `yaml:"-"`
 	DaemonConnectTimeout    time.Duration     `yaml:"-"`
@@ -225,6 +250,7 @@ type globalConfigRaw struct {
 	BabysitTimeout          string                     `yaml:"babysit_timeout"`
 	StepQuietWarning        string                     `yaml:"step_quiet_warning"`
 	AgentTimeout            string                     `yaml:"agent_timeout"`
+	AgentStallTimeout       string                     `yaml:"agent_stall_timeout"`
 	ReviewAgentTimeout      string                     `yaml:"review_agent_timeout"`
 	TestAgentTimeout        string                     `yaml:"test_agent_timeout"`
 	LogLevel                string                     `yaml:"log_level"`
@@ -656,6 +682,7 @@ type Config struct {
 	CITimeout             time.Duration
 	StepQuietWarning      time.Duration
 	AgentTimeout          time.Duration
+	AgentStallTimeout     time.Duration
 	ReviewAgentTimeout    time.Duration
 	TestAgentTimeout      time.Duration
 	GateReconcileInterval time.Duration
@@ -1910,6 +1937,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		CITimeout:               DefaultCITimeout,
 		StepQuietWarning:        DefaultStepQuietWarning,
 		AgentTimeout:            DefaultAgentTimeout,
+		AgentStallTimeout:       DefaultAgentStallTimeout,
 		ReviewAgentTimeout:      DefaultReviewAgentTimeout,
 		TestAgentTimeout:        DefaultTestAgentTimeout,
 		DaemonConnectTimeout:    DefaultDaemonConnectTimeout,
@@ -2158,6 +2186,13 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.AgentTimeout = d
 	}
+	if raw.AgentStallTimeout != "" {
+		d, err := parseStallTimeout(raw.AgentStallTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.AgentStallTimeout = d
+	}
 	if raw.ReviewAgentTimeout != "" {
 		d, err := parsePositiveDuration("review_agent_timeout", raw.ReviewAgentTimeout)
 		if err != nil {
@@ -2307,6 +2342,27 @@ func parsePositiveDuration(name, value string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("parse %s %q: duration must be positive", name, value)
+	}
+	return d, nil
+}
+
+// parseStallTimeout parses agent_stall_timeout, the one timeout knob that is
+// also allowed to be switched off. A non-positive value (or an explicit
+// "unlimited"/"none"/"off"/"never") disables the stall bound and leaves the
+// absolute wall-clock limits as the only ceiling, which is what the setting
+// documents. A malformed value is still an error, so a typo never silently
+// removes a safety bound.
+func parseStallTimeout(value string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "unlimited", "none", "off", "never":
+		return AgentStallUnlimited, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse agent_stall_timeout %q: %w", value, err)
+	}
+	if d <= 0 {
+		return AgentStallUnlimited, nil
 	}
 	return d, nil
 }
@@ -3035,6 +3091,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		CITimeout:             global.CITimeout,
 		StepQuietWarning:      global.StepQuietWarning,
 		AgentTimeout:          global.AgentTimeout,
+		AgentStallTimeout:     global.AgentStallTimeout,
 		ReviewAgentTimeout:    global.ReviewAgentTimeout,
 		TestAgentTimeout:      global.TestAgentTimeout,
 		GateReconcileInterval: global.GateReconcileInterval,

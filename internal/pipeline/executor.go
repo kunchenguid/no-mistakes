@@ -871,6 +871,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
 			}
 			return
+		case agent.LifecyclePhaseProgress:
+			// Forward motion with no narrative of its own - a tool call, a tool
+			// result. It advances the stall bound and refreshes the activity
+			// timestamp, but it must never reach the step log: a review turn
+			// emits these thousands of times and the log is what an operator
+			// reads. This phase is handled explicitly so it cannot fall through
+			// to the default branch below, which writes every unknown phase's
+			// synthesized text into the log.
+			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+			}
+			return
 		default:
 			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
 				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
@@ -906,7 +918,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if stepAgent != nil {
 		// Innermost: default-by-construction invocation deadline so a step
 		// that calls Agent.Run directly cannot hang the run.
-		stepAgent = &timeoutAgent{inner: stepAgent, timeout: AgentTimeout(e.config)}
+		stepAgent = &timeoutAgent{inner: stepAgent, timeout: AgentTimeout(e.config), stall: AgentStallTimeout(e.config)}
 		stepAgent = &gateStepBoundaryAgent{inner: stepAgent, phase: stepName}
 		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
 		stepAgent = &perfRecordingAgent{

@@ -813,3 +813,58 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+func TestLoadGlobal_AgentStallTimeout(t *testing.T) {
+	t.Run("override", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("agent_stall_timeout: 90s\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadGlobal(path)
+		if err != nil {
+			t.Fatalf("LoadGlobal: %v", err)
+		}
+		if cfg.AgentStallTimeout != 90*time.Second {
+			t.Fatalf("agent_stall_timeout = %v, want 90s", cfg.AgentStallTimeout)
+		}
+	})
+	t.Run("unset keeps the default", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("log_level: info\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadGlobal(path)
+		if err != nil {
+			t.Fatalf("LoadGlobal: %v", err)
+		}
+		if cfg.AgentStallTimeout != DefaultAgentStallTimeout {
+			t.Fatalf("agent_stall_timeout = %v, want default %v", cfg.AgentStallTimeout, DefaultAgentStallTimeout)
+		}
+	})
+	// The bound is a safety net, so switching it off must be explicit and must
+	// never be reachable by a malformed value.
+	t.Run("disabled spellings and non-positive durations", func(t *testing.T) {
+		for _, value := range []string{"0", "unlimited", "none", "off", "never", "-5m"} {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("agent_stall_timeout: \""+value+"\"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatalf("LoadGlobal(%q): %v", value, err)
+			}
+			if cfg.AgentStallTimeout != AgentStallUnlimited {
+				t.Fatalf("agent_stall_timeout = %q gave %v, want AgentStallUnlimited", value, cfg.AgentStallTimeout)
+			}
+		}
+	})
+	t.Run("malformed value is rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("agent_stall_timeout: \"half an hour\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadGlobal(path); err == nil {
+			t.Fatal("a malformed agent_stall_timeout must fail closed, not silently disable the bound")
+		}
+	})
+}
