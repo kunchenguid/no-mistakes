@@ -27,7 +27,7 @@ import (
 // overlay omp receives its contents in the system prompt, and with the overlay
 // the same prompt's token count returns exactly to its file-free baseline.
 //
-// This overlay is NOT sufficient on its own. omp injects two further
+// This overlay is NOT sufficient on its own. omp injects further
 // project-controlled surfaces through separate capability providers whose
 // extension ids are not `context-file:*`, so the overlay cannot name them:
 //
@@ -43,6 +43,17 @@ import (
 // inert (verified with the same token-accounting experiment). The overlay is
 // still required: `--no-rules` does not suppress AGENTS.md/CLAUDE.md/
 // copilot-instructions.md.
+//
+// Even together, none of this closes the project SETTINGS surface: a
+// project-local `.omp/config.yml` is loaded with no extension id at all (so it
+// cannot be named in disabledExtensions) and omp offers no flag to skip it.
+// Measured: `.omp/config.yml` still changed the system prompt delivered to the
+// agent under this overlay plus --no-rules plus --no-skills (3/3 trials,
+// +472 input+cacheRead tokens), and a project `autoResume` setting also
+// defeated the adapter's durable-start argv. That is why omp is not a verified
+// neutralizer - see ompAgent.NeutralizesGateInstructions. Everything below is
+// retained as defense in depth for a direct caller that sets the opt-out, not
+// as a claim the gate relies on.
 //
 // Ordering matters and is why this must be the operator's only --config
 // overlay: `disabledExtensions` REPLACES rather than merges when several
@@ -60,7 +71,8 @@ const ompNeutralizationOverlay = `disabledExtensions:
 // message_end/turn_end/agent_end events carrying the same assistantMessageEvent
 // deltas and the same assistant message shape), so this adapter reuses pi's
 // parser and text helpers and only owns what genuinely differs: argv shape,
-// project-settings neutralization, and the session header's identity form.
+// the suppression argv it carries under the project-settings opt-out, and the
+// session header's identity form.
 //
 // omp differs from pi in three ways that matter here: it rejects pi's
 // --no-context-files and --session-id flags outright, it suppresses project
@@ -91,30 +103,30 @@ func (a *ompAgent) SupportsSessionResume() bool { return true }
 
 func (a *ompAgent) ReportsAgentAttempts() bool { return true }
 
-// NeutralizesGateInstructions reports whether omp is currently launched with
-// the target repo's project agent-instruction files suppressed. It is
-// meaningful only under the opt-out (disableProjectSettings): the gate only
-// consults it when the repo opted out.
-//
-// buildArgs writes and passes the ompNeutralizationOverlay plus `--no-rules`
-// and `--no-skills` whenever the opt-out is on, so neutralization holds unless
-// the operator pinned their own --config. An operator overlay's contents are
-// unknowable here and would REPLACE ours, so a pinned --config returns false and
-// the gate fails closed rather than claiming a suppression it cannot
-// demonstrate; the two kill-switches are monotonic, so they need no such check.
-// config.reservedAgentArgs already refuses an operator --config for omp at
-// config-load time; this is the same check at the adapter boundary, which is
-// what protects programmatic callers that build the agent directly.
+// NeutralizesGateInstructions deliberately fails closed, like grok's. omp's
+// context-file overlay plus `--no-rules` and `--no-skills` genuinely close the
+// three provider surfaces the overlay and the two flags can name, and the
+// adapter keeps passing them as defense in depth. They do not close every
+// project-controlled surface: a project-local `.omp/config.yml` carries no
+// extension id, so `disabledExtensions` cannot name it, and omp offers no flag
+// that skips it. Measured under the adapter's maximal suppression argv (overlay
+// + `--no-rules` + `--no-skills`): a project `.omp/config.yml` still changed the
+// system prompt delivered to the agent (3/3 trials, +472 input+cacheRead
+// tokens), and a project `autoResume` setting defeated the durable-start argv by
+// resuming sessions the adapter did not select. No Mistakes must not claim
+// verified disable_project_settings support for a harness whose project settings
+// surface it cannot close, so the gate refuses omp under the opt-out rather than
+// advertising a suppression it cannot demonstrate.
 func (a *ompAgent) NeutralizesGateInstructions() bool {
-	return a.canNeutralize()
+	return false
 }
 
-// canNeutralize is the single owner of "this invocation really is neutralized":
-// the opt-out is on, the overlay will be passed, AND every other project-
-// controlled surface is covered by a flag omp cannot be talked out of.
-// NeutralizesGateInstructions and buildArgs must not disagree about it, or the
-// adapter would claim a suppression its argv does not carry.
-func (a *ompAgent) canNeutralize() bool {
+// suppressionApplies reports whether this invocation carries the
+// defend-in-depth suppression argv: the opt-out is on and the overlay will be
+// passed. It gates buildArgs only and is deliberately NOT the neutralization
+// verdict - NeutralizesGateInstructions fails closed because no combination of
+// these keys closes omp's project SETTINGS surface.
+func (a *ompAgent) suppressionApplies() bool {
 	return a.disableProjectSettings && !ompUserSetConfigOverlay(a.extraArgs)
 }
 
@@ -292,11 +304,12 @@ func (a *ompAgent) writeNeutralizationOverlay() (string, func(), error) {
 func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
 	args := make([]string, 0, len(a.extraArgs)+7)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
-	// disable the target repo's AGENTS.md/CLAUDE.md/copilot-instructions.md so an
-	// agent-orchestration target (firstmate) cannot install a fleet-captain
-	// identity on the gate agent. Skipped when the operator pinned their own
-	// --config, whose overlay would replace ours; NeutralizesGateInstructions
-	// then fails closed.
+	// suppress the target repo's AGENTS.md/CLAUDE.md/copilot-instructions.md so an
+	// agent-orchestration target cannot install a fleet-captain identity on the
+	// gate agent. This is defense in depth, not a neutralization claim: the
+	// adapter reports false (see NeutralizesGateInstructions) because omp's
+	// project settings surface cannot be closed. Skipped when the operator pinned
+	// their own --config, whose overlay would replace ours.
 	if overlayPath != "" && !ompUserSetConfigOverlay(a.extraArgs) {
 		args = append(args, "--config", overlayPath)
 	}
@@ -306,7 +319,7 @@ func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
 	// them, and both are monotonic - omp has no flag that re-enables rules or
 	// skills, so an operator cannot defeat them by pinning one. Neither flag
 	// suppresses the context files, which is why the overlay stays required.
-	if a.canNeutralize() {
+	if a.suppressionApplies() {
 		args = append(args, "--no-rules", "--no-skills")
 	}
 	args = append(args, a.extraArgs...)

@@ -299,8 +299,10 @@ When structured output is requested, no-mistakes injects the JSON schema into th
 ## Omp
 
 Spawns an `omp` subprocess for each invocation with `--mode json`. Its JSON stream is protocol-identical to Pi's, so it is parsed the same way and streams incremental text deltas to the TUI. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Omp session per run with `--session <UUID>`. Omp rejects Pi's `--session-id`, only a full canonical UUID is accepted as a resume identity, and `--fork`, `--from-claude`, and `--from-codex` are reserved so an override cannot re-seat a turn onto another session's transcript.
-Model and reasoning effort come from [`agent_config.omp`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Omp override precedence; `--config` is reserved because it carries the [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) neutralization overlay.
+Model and reasoning effort come from [`agent_config.omp`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Omp override precedence; `--config` is reserved because it carries no-mistakes' own suppression overlay for [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+
+Omp is not a verified agent for [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): a project-local `.omp/config.yml` is loaded as settings rather than as an extension, so it has no extension id the suppression overlay could name and no flag skips it. The daemon therefore refuses an Omp gate agent while that option is enabled, the same way it refuses Grok.
 
 ## Copilot CLI
 

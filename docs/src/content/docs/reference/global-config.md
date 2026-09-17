@@ -336,7 +336,7 @@ User-supplied flags are normally inserted ahead of no-mistakes' managed flags, s
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude, Codex, Grok, Pi, Omp, and Antigravity session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
 
-For `omp`, `--config` is reserved for a different reason: it carries the trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) neutralization overlay. An operator-supplied `--config` would *replace* that overlay rather than merge with it, re-enabling the target repository's `AGENTS.md` on the gate agent, so it is refused at config load and the gate agent fails closed if one is somehow present.
+For `omp`, `--config` is reserved for a different reason: it carries no-mistakes' own suppression overlay for [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings). An operator-supplied `--config` would *replace* that overlay rather than merge with it, re-enabling the target repository's `AGENTS.md` for a direct caller that sets the opt-out, so it is refused at config load. Omp is not a verified agent for that boundary (its project `.omp/config.yml` settings surface cannot be closed), so the gate itself refuses an Omp gate agent while the option is enabled.
 
 Smart defaults:
 

@@ -59,11 +59,11 @@ func TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst(t *testing.T) {
 
 	// An operator-pinned --config replaces ours, so buildArgs adds none: two
 	// would silently re-enable every instruction file (see
-	// ompNeutralizationOverlay). The overlay is the suppression carrier, so the
-	// gate refuses this launch rather than advertising a suppression the argv
-	// does not establish - and buildArgs must not emit the kill-switches either,
-	// since without the overlay they would cover rules and skills but leave
-	// AGENTS.md loaded.
+	// ompNeutralizationOverlay). The overlay is the suppression carrier, so
+	// buildArgs does not emit the kill-switches either, since without the overlay
+	// they would cover rules and skills but leave AGENTS.md loaded. The gate
+	// refuses every omp launch under the opt-out regardless (omp fails closed on
+	// its project settings surface), and this adapter must still report false.
 	pinned := &ompAgent{
 		bin:                    "omp",
 		extraArgs:              []string{"--config", "/tmp/operator.yml"},
@@ -75,6 +75,34 @@ func TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst(t *testing.T) {
 	}
 	if pinned.NeutralizesGateInstructions() {
 		t.Fatal("an operator --config overlay replaces ours; the adapter must fail closed")
+	}
+}
+
+// TestOmpAgent_FailsClosedOnNeutralization is the honest-contract regression:
+// omp's project .omp/config.yml settings surface has no extension id (so
+// disabledExtensions cannot name it) and no disabling flag, and it measurably
+// changes the prompt delivered to the agent under the adapter's maximal
+// suppression argv. The adapter must therefore NOT claim neutralization, so the
+// gate refuses omp under disable_project_settings instead of advertising a
+// suppression it cannot demonstrate. Fails before the fix (the claim was true)
+// and passes after it.
+func TestOmpAgent_FailsClosedOnNeutralization(t *testing.T) {
+	if (&ompAgent{bin: "omp", disableProjectSettings: true}).NeutralizesGateInstructions() {
+		t.Fatal("omp's project settings surface cannot be closed; it must not claim neutralization")
+	}
+	if (&ompAgent{bin: "omp"}).NeutralizesGateInstructions() {
+		t.Fatal("omp without the opt-out must not claim neutralization")
+	}
+	if NeutralizesGateInstructions(NewFallback([]Agent{&ompAgent{bin: "omp", disableProjectSettings: true}})) {
+		t.Fatal("a fallback containing omp must fail closed")
+	}
+	// The defense-in-depth argv is still emitted for a direct caller that set the
+	// opt-out; failing closed must not silently drop the suppression machinery.
+	oa := &ompAgent{bin: "omp", disableProjectSettings: true}
+	if path, remove, err := oa.writeNeutralizationOverlay(); err != nil || path == "" {
+		t.Fatalf("overlay must still be written under the opt-out: path=%q err=%v", path, err)
+	} else {
+		remove()
 	}
 }
 
@@ -197,28 +225,35 @@ func TestOmpAgent_RegisteredAsNativeHarness(t *testing.T) {
 	}
 }
 
-// ompNeutralizationExperiment drives the real omp binary to compare project
-// instruction reachability with and without the adapter's neutralization argv.
-// It is the control-vs-neutralized experiment the adapter's claim rests on, so
-// it skips (rather than passes) when omp is unavailable.
+// ompNeutralizationExperiment drives the real omp binary to prove WHY omp fails
+// closed: even the adapter's maximal suppression argv (the overlay plus
+// --no-rules and --no-skills) leaves omp's project SETTINGS surface live, so the
+// adapter must not claim neutralization. It is the evidence the
+// NeutralizesGateInstructions verdict rests on, so it skips (rather than passes)
+// when omp is unavailable.
 //
 // The measurement is prompt token accounting rather than the model's
-// self-report: a project file of known size is placed in the working directory,
-// and the assistant message's input+cacheRead tokens are compared across runs.
-// Without neutralization the file's contents are injected into the system
-// prompt and the count rises by the file's own cost; with it the count must
-// return exactly to its file-free baseline. A self-report can be defeated by an
-// agent that simply reads the file with a tool, which is why the file is never
-// named in the prompt and the delta is what is asserted.
+// self-report: a project-controlled file of known size is placed in the working
+// directory, and the assistant message's input+cacheRead tokens are compared
+// across runs. A self-report can be defeated by an agent that simply reads the
+// file with a tool, which is why the file is never named in the prompt.
 //
-// Three surfaces are covered because they are three different omp providers,
-// and a mechanism that closes one does not close the others: the context files
-// (the overlay's disabledExtensions), `.github/instructions/*.instructions.md`
-// (a rule, which only --no-rules reaches), and a project SKILL.md (listed by
-// description, which only --no-skills reaches). Tools stay ENABLED: a project
-// skill reaches the prompt only through the skill provider, which omp gates on
-// tools being available, so a --no-tools run would make that surface untestable
-// rather than inert.
+// The control-vs-suppressed arms keep the same shape as before, but the
+// assertion is inverted to match the honest contract: the context-file overlay
+// and the two kill-switches DO close the three surfaces they name (asserted
+// inert), while a project .omp/config.yml stays live under that same maximal
+// argv (asserted still steering the prompt). That second assertion is the
+// grounds for failing closed - it would fail if omp ever grew a way to close
+// the settings surface, which is exactly when the verdict should be revisited.
+//
+// Three named surfaces are covered because they are three different omp
+// providers, and a mechanism that closes one does not close the others: the
+// context files (the overlay's disabledExtensions),
+// `.github/instructions/*.instructions.md` (a rule, which only --no-rules
+// reaches), and a project SKILL.md (listed by description, which only
+// --no-skills reaches). Tools stay ENABLED: a project skill reaches the prompt
+// only through the skill provider, which omp gates on tools being available, so
+// a --no-tools run would make that surface untestable rather than inert.
 func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 	if os.Getenv("NM_TEST_REAL_OMP") != "1" {
 		t.Skip("set NM_TEST_REAL_OMP=1 to run the live omp neutralization experiment")
@@ -234,12 +269,12 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The control argv carries no neutralization; the neutralized argv is the
+	// The control argv carries no neutralization; the suppressed argv is the
 	// adapter's own for a repo that opted out, so the experiment measures what
-	// the gate actually launches rather than a hand-rolled approximation. Each
+	// buildArgs actually launches rather than a hand-rolled approximation. Each
 	// arm is asserted against its OWN file-free baseline, so the constant offset
-	// between the two arms (the adapter overlay adds no memory setting) cancels
-	// out and only a surface's injected cost is ever compared.
+	// between the two arms cancels out and only a surface's injected cost is ever
+	// compared.
 	control := []string{"--mode", "json", "--no-session", "--config", base}
 	agent := &ompAgent{bin: bin, disableProjectSettings: true}
 	overlayPath, removeOverlay, err := agent.writeNeutralizationOverlay()
@@ -247,7 +282,7 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 		t.Fatalf("writeNeutralizationOverlay: %v", err)
 	}
 	defer removeOverlay()
-	neutral := agent.buildArgs(nil, overlayPath)
+	suppressed := agent.buildArgs(nil, overlayPath)
 
 	measure := func(args []string) int {
 		t.Helper()
@@ -281,15 +316,17 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 	// directory pays a cold-start cost that later runs do not, so the baselines
 	// must be taken from a settled state.
 	measure(control)
-	measure(neutral)
+	measure(suppressed)
 	baselineControl := measure(control)
-	baselineNeutral := measure(neutral)
+	baselineSuppressed := measure(suppressed)
 
 	// Each file is large enough that its injection is unmistakable in the token
 	// counts, and each is written and removed in turn so one surface's token
-	// cost cannot be mistaken for another's.
+	// cost cannot be mistaken for another's. Every entry here is a surface the
+	// suppression argv DOES close; inert is asserted as equality with the
+	// suppressed baseline.
 	filler := strings.Repeat("Repository convention line describing tooling and layout.\n", 400)
-	surfaces := []struct {
+	named := []struct {
 		name    string
 		path    string
 		content string
@@ -301,7 +338,7 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 		{"nested .github/instructions", ".github/instructions/sub/y.instructions.md", "---\napplyTo: \"**\"\n---\n" + filler},
 		{"project skill", ".agents/skills/probe/SKILL.md", "---\nname: probe\ndescription: \"" + strings.ReplaceAll(filler, "\n", " ") + "\"\n---\nBody.\n"},
 	}
-	for _, surface := range surfaces {
+	for _, surface := range named {
 		path := filepath.Join(cwd, surface.path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -310,17 +347,39 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 			t.Fatal(err)
 		}
 		controlTokens := measure(control)
-		neutralTokens := measure(neutral)
+		suppressedTokens := measure(suppressed)
 		_ = os.Remove(path)
 
 		if controlTokens <= baselineControl {
 			t.Fatalf("control run must load %s into context: baseline=%d control=%d",
 				surface.name, baselineControl, controlTokens)
 		}
-		if neutralTokens != baselineNeutral {
-			t.Fatalf("neutralized run must not load %s: baseline=%d neutralized=%d",
-				surface.name, baselineNeutral, neutralTokens)
+		if suppressedTokens != baselineSuppressed {
+			t.Fatalf("the suppression argv must close %s: baseline=%d suppressed=%d",
+				surface.name, baselineSuppressed, suppressedTokens)
 		}
+	}
+
+	// The open surface that forces the fail-closed verdict: a project
+	// .omp/config.yml. It is NOT named by any extension id and no flag skips it,
+	// so it must still change the prompt under the maximal suppression argv.
+	// Equality with the baseline here would mean omp grew a way to close its
+	// settings surface; that is the signal to revisit the verdict, so the
+	// assertion is deliberately the opposite of the loop above.
+	projectConfig := filepath.Join(cwd, ".omp", "config.yml")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte("autolearn:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	openTokens := measure(suppressed)
+	_ = os.Remove(projectConfig)
+	if openTokens == baselineSuppressed {
+		t.Fatalf("a project .omp/config.yml reached no part of the prompt under the suppression argv: "+
+			"baseline=%d with-config=%d. If omp now closes its project settings surface, revisit "+
+			"ompAgent.NeutralizesGateInstructions instead of deleting this assertion",
+			baselineSuppressed, openTokens)
 	}
 }
 
