@@ -2,9 +2,10 @@
 //
 // Reasoning effort and model selection vary across the supported harnesses:
 // codex takes `-m` plus a TOML config override, copilot and claude take
-// `--effort`, pi calls the same idea `--thinking`, opencode has no launch flag
-// and carries both in the session-message body, ACP targets are driven through
-// acpx rather than the vendor CLI, and some harnesses expose neither knob.
+// `--effort`, pi and omp call the same idea `--thinking`, opencode has no
+// launch flag and carries both in the session-message body, ACP targets are
+// driven through acpx rather than the vendor CLI, and some harnesses expose
+// neither knob.
 // Before this package the only pipeline configuration lever was
 // agent_args_override, so an operator had to know each harness's own flag, and
 // the eval path carried a second, divergent copy of the model rule.

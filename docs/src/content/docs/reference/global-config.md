@@ -252,7 +252,7 @@ How each field maps:
 | `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
 | `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
-| `omp`             | `--model`                                     | `--thinking`                      | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `auto` |
+| `omp`             | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
 | `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
 | `rovodev`         | not expressible                               | not expressible                   | -                                                   |

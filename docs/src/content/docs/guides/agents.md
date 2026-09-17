@@ -229,7 +229,7 @@ Each invocation returns:
 
 When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict, while trailing provider tool-protocol residue after a complete object - markup whose tags wrap no words, or punctuation alone, never prose or markup around real words - is. When a model splits one answer across adjacent bare objects - separated by nothing but whitespace or a single comma - the merged object is accepted only when their keys are disjoint and the union validates, so two competing verdicts are never combined; a concluding split with disjoint keys whose union still does not validate fails with its own dedicated error rather than a generic schema error, while a run that repeats a top-level key is competing values and stays terminal. Two bare objects that each validate on their own remain a terminal ambiguity for the standard adapters; ACP targets are the one exception, keeping the last valid bare object instead of failing (see the ACP aliases below).
 
-One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Grok, Pi, Omp, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -352,6 +352,7 @@ $ no-mistakes doctor
   – rovodev (not found)
   – opencode (not found)
   – pi (not found)
+  – omp (not found)
   – copilot (not found)
   – antigravity (not found)
   – acpx (not found)

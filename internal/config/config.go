@@ -1083,9 +1083,9 @@ log_level: info
 # Model and reasoning effort per agent, in one common spelling (optional, global
 # only). no-mistakes maps these down to whatever the harness actually uses:
 # --model/--effort for claude and copilot, -m plus -c model_reasoning_effort for
-# codex, --model/--reasoning-effort for grok, --model/--thinking for pi, the
-# session-message body for opencode (its model needs the provider/model form),
-# and acpx --model for cursor and acp:<target>. Effort is one of
+# codex, --model/--reasoning-effort for grok, --model/--thinking for pi and omp,
+# the session-message body for opencode (its model needs the provider/model
+# form), and acpx --model for cursor and acp:<target>. Effort is one of
 # minimal, low, medium, high, xhigh, max; a harness rejects any level it does not
 # implement. rovodev and antigravity expose no mechanism no-mistakes can set, so
 # agent_config is refused for them; agent_args_override remains an escape hatch

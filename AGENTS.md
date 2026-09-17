@@ -73,7 +73,7 @@ Safest local verification sequence after non-trivial changes:
 
 **Review Schema Retry (`internal/pipeline/steps/review.go`)**
 
-- When the agent adapter marks a review turn's final output as rejected against the schema (`agent.IsStructuredOutputRejected`: Pi when its final JSON fails validation, opencode once its own internal StructuredOutput retries run out), or `parseReviewAnalyzerOutput` refuses the output, that is a formatting slip, not a verdict: `ReviewStep.Execute` reruns a fresh, session-free review of the same prompt plus a note quoting the validation error, up to `reviewAnalyzerMaxAttempts` (3) attempts in total.
+- When the agent adapter marks a review turn's final output as rejected against the schema (`agent.IsStructuredOutputRejected`: Pi or Omp when its final JSON fails validation, opencode once its own internal StructuredOutput retries run out), or `parseReviewAnalyzerOutput` refuses the output, that is a formatting slip, not a verdict: `ReviewStep.Execute` reruns a fresh, session-free review of the same prompt plus a note quoting the validation error, up to `reviewAnalyzerMaxAttempts` (3) attempts in total.
 Claude Code's `--json-schema` re-prompts within its own limit and reports exhaustion as `error_max_structured_output_retries`; that result is deliberately not marked as a rejection and fails the step as before, so there is no second retry layer and Test's correction loop is untouched.
 Findings come only from the attempt that validates; nothing else from a rejected attempt carries over, and fix-mode turns are never retried.
 Exhausting the bound fails the step with `validate review analyzer findings after 3 attempts: <last error>`, so an unreadable review never passes (issue #703); the unconfigured "pass" meaning is unchanged.
