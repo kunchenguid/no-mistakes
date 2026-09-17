@@ -591,3 +591,54 @@ func TestOmpAgent_AssistantErrorSurfaces(t *testing.T) {
 		t.Fatalf("assistantError = %q", pp.assistantError)
 	}
 }
+
+// Regression for the review finding that omp bypassed the progress wiring: it
+// built piParser directly, leaving onProgress nil, so only assistant prose
+// could advance the turn. Every wedged omp turn was tool-heavy with almost no
+// prose, so the stall bound could never see one.
+//
+// This drives the real adapter end to end against a fake omp that emits tool
+// events and no prose, and asserts the adapter reports LifecyclePhaseProgress.
+// A literal `&piParser{onChunk: ...}` construction leaves onProgress nil and
+// reports nothing, which is exactly the defect this pins.
+func TestOmpAgent_ReportsProgressForToolOnlyTurn(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "omp")
+	script := `#!/bin/sh
+cat > /dev/null
+printf '%s\n' '{"type":"session","version":3,"id":"01a0aba2-bd3d-7381-a438-95d4b1de9f0c"}'
+printf '%s\n' '{"type":"agent_start"}'
+printf '%s\n' '{"type":"turn_start"}'
+printf '%s\n' '{"type":"tool_execution_start","toolName":"bash"}'
+printf '%s\n' '{"type":"tool_execution_end","toolName":"bash"}'
+printf '%s\n' '{"type":"tool_execution_start","toolName":"read"}'
+printf '%s\n' '{"type":"tool_execution_end","toolName":"read"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":5,"output":1,"cacheRead":0,"cacheWrite":0}}}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":1,"cacheRead":0,"cacheWrite":0}}]}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake omp: %v", err)
+	}
+
+	var progress int
+	res, err := (&ompAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt: "review",
+		CWD:    dir,
+		OnLifecycle: func(event LifecycleEvent) {
+			if event.Phase == LifecyclePhaseProgress {
+				progress++
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Two tool boundaries, each reported at start and end. The assertion is on
+	// the real emitted phase, not on the parser's internal wiring.
+	if progress < 4 {
+		t.Fatalf("LifecyclePhaseProgress count = %d, want >=4; a tool-only omp turn must advance the stall bound", progress)
+	}
+	if res == nil || res.Text != "done" {
+		t.Fatalf("result = %#v, want the parsed turn", res)
+	}
+}

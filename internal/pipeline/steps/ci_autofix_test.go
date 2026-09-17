@@ -1598,3 +1598,80 @@ func TestCIStep_FixPromptPrefersRemovalOfUnrequiredPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestCIStep_FixAgentStallParksForADecisionInsteadOfRetrying is the stall
+// sibling of the budget-exhaustion test above.
+//
+// A stalled repair surfaces as ErrAgentStall, not ErrAgentTimeout. Before the
+// budget classifier understood both, the stall fell through to the generic
+// warn-and-retry branch, so the monitor re-emitted the same findings and spent
+// up to auto_fix.ci further stall windows with nothing visible but warning
+// lines - reopening exactly the invisible spin the budget park exists to close.
+func TestCIStep_FixAgentStallParksForADecisionInsteadOfRetrying(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	var invocations int
+	ag := &mockAgent{
+		name: "stalled",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			invocations++
+			// The shape a stalled turn produces: the invocation ends on the
+			// progress bound with no usable result.
+			return nil, fmt.Errorf("agent made no progress; agent produced no assistant output or tool activity for 30m0s: %w", pipeline.ErrAgentStall)
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/3196"
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 10}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 3 {
+				t.Fatal("CI monitor kept polling after a stalled fix agent; the stall must park, not retry")
+			}
+			return nil
+		},
+	}
+
+	outcome, err := driveCI(t, step, sctx)
+	if err != nil {
+		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+	}
+	if invocations != 1 {
+		t.Fatalf("agent invocations = %d, want exactly one stall before asking", invocations)
+	}
+
+	var findings Findings
+	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+	}
+	var stall *Finding
+	for i := range findings.Items {
+		if findings.Items[i].ID == "ci-fix-agent-timeout" {
+			stall = &findings.Items[i]
+		}
+	}
+	if stall == nil {
+		t.Fatalf("findings = %#v, want the parked budget diagnostic", findings.Items)
+	}
+	if stall.Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q so the gate parks for a human decision", stall.Action, types.ActionAskUser)
+	}
+	if !strings.Contains(stall.Description, "no progress") {
+		t.Fatalf("description = %q, want the stall account preserved for the operator", stall.Description)
+	}
+}

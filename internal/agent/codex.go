@@ -129,7 +129,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		}
 		return res
 	}
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, agentProgressEmitter(opts, "codex"), &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -339,7 +339,7 @@ type codexUsage struct {
 // evidence (round-trips, tool calls + categories, subprocess wait time). It is
 // clocked by time.Now as events arrive, so a tool item's started->completed gap
 // is its real subprocess wall time.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), onProgress func(), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -373,9 +373,11 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 
 		case "item.started":
 			metrics.onItem(event.Type, event.Item, time.Now())
+			reportCodexProgress(onProgress)
 
 		case "item.completed":
 			metrics.onItem(event.Type, event.Item, time.Now())
+			reportCodexProgress(onProgress)
 			if event.Item != nil && event.Item.Type == "agent_message" {
 				*lastMessage = event.Item.Text
 				if onChunk != nil {
@@ -398,6 +400,16 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 	}
 
 	return scanner.Err()
+}
+
+// reportCodexProgress forwards one turn advance when an observer is installed.
+// Codex reports tool and reasoning work as item events and only emits assistant
+// text at item completion, so without this its long tool stretches carry no
+// progress signal at all.
+func reportCodexProgress(onProgress func()) {
+	if onProgress != nil {
+		onProgress()
+	}
 }
 
 func codexOutputSchema(schema json.RawMessage) ([]byte, error) {

@@ -26,6 +26,21 @@ const (
 	// byte. Together with streamed assistant text, this phase supplies the
 	// measured output evidence used by invocation-timeout diagnostics.
 	LifecyclePhaseActivity = "activity"
+	// LifecyclePhaseProgress marks observed forward motion in a running agent
+	// turn: assistant prose, a tool call, or a tool result.
+	//
+	// Activity and progress answer different questions. Activity is satisfied by
+	// any byte on stdout or stderr, and an agent CLI emits those continuously
+	// while it thinks - so a turn that never converges keeps every byte-level
+	// liveness signal green while producing nothing an operator can act on.
+	// Progress is the signal an inactivity bound can trust: it resets only when
+	// the turn actually advances. See DefaultAgentStallTimeout for what that
+	// bound exists to catch.
+	//
+	// Only adapters that parse a structured event stream report this phase.
+	// Adapters that forward assistant prose alone contribute it through
+	// OnChunk, which is the same forward motion.
+	LifecyclePhaseProgress = "progress"
 )
 
 // nativeAgentActivityInterval throttles LifecyclePhaseActivity so a chatty
@@ -109,6 +124,30 @@ func emitAgentControl(opts RunOpts, event LifecycleEvent) {
 	}
 	if opts.OnChunk != nil {
 		opts.OnChunk(event.Message)
+	}
+}
+
+// agentProgressEmitter returns the callback a structured-stream parser uses to
+// report a turn advance, or nil when nobody is observing this invocation.
+//
+// Returning nil keeps the parse path allocation-free and branch-free for
+// callers that do not care (eval replay), which is the same contract
+// nativeAgentActivityObserver follows for byte-level liveness.
+//
+// Progress travels as a lifecycle event rather than through OnChunk because a
+// tool call has no text to stream: routing it through OnChunk would write tool
+// bookkeeping into the step log, which is exactly what the log exists not to
+// contain. When no lifecycle observer is installed there is no sink for
+// progress at all, so the emitter stays nil rather than inventing one.
+func agentProgressEmitter(opts RunOpts, name string) func() {
+	if opts.OnLifecycle == nil {
+		return nil
+	}
+	return func() {
+		emitLifecycle(opts, LifecycleEvent{
+			Agent: name,
+			Phase: LifecyclePhaseProgress,
+		})
 	}
 }
 

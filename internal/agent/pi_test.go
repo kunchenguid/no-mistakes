@@ -824,3 +824,41 @@ exit 1
 		t.Error("Pi reported no usage; the result must not claim it did")
 	}
 }
+
+// A pi/omp turn spends most of its life in tool sequences and thinking, which
+// carry no assistant prose. The parser must report those as progress, or a
+// healthy long turn is indistinguishable from a wedged one that keeps emitting
+// bytes - the exact pair of behaviours that made the review step hang.
+func TestPiParser_ReportsProgressForToolAndTurnActivity(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"turn_start"}`,
+		`{"type":"tool_execution_start","toolName":"bash"}`,
+		`{"type":"tool_execution_end","toolName":"bash"}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"looked"}]}}`,
+		`{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"looked"}]}}`,
+	}, "\n")
+	var progress int
+	pp := &piParser{onProgress: func() { progress++ }}
+	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// tool start, tool end, message_end, turn_end - turn_start is not progress
+	// on its own, it only marks the boundary the others advance within.
+	if progress != 4 {
+		t.Fatalf("progress events = %d, want 4", progress)
+	}
+}
+
+// Streaming assistant prose is progress as well, so an adapter that produces
+// only text still advances the turn.
+func TestPiParser_TextDeltaReportsProgress(t *testing.T) {
+	stream := `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"reading"}}`
+	var progress int
+	pp := &piParser{onProgress: func() { progress++ }}
+	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if progress != 1 {
+		t.Fatalf("progress events = %d, want 1", progress)
+	}
+}

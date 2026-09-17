@@ -73,7 +73,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	}()
 
 	var usage TokenUsage
-	text, stdoutErr, err := parseAcpxJSONEvents(ctx, started.stdout, opts.OnChunk, &usage)
+	text, stdoutErr, err := parseAcpxJSONEvents(ctx, started.stdout, opts.OnChunk, agentProgressEmitter(opts, a.Name()), &usage)
 	// Estimate before any return, not just the success one: acpx can report an
 	// input-only usage event and then fail, and a reported usage with no output
 	// count would otherwise record the text it did stream as a reported zero.
@@ -215,7 +215,7 @@ type acpxUsageFields struct {
 // parseAcpxJSONEvents streams acpx's JSON events and returns the assistant
 // text accumulated so far, on its error paths too, so a turn that fails partway
 // can still account for the output acpx already produced.
-func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage) (string, string, error) {
+func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string), onProgress func(), usage *TokenUsage) (string, string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), acpxScannerMaxTokenSize)
 	var output strings.Builder
@@ -259,12 +259,35 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 			if onChunk != nil {
 				onChunk(text)
 			}
+			reportAcpxProgress(onProgress)
+		case "tool_call", "tool_call_update", "agent_plan":
+			// Forward motion that produces no assistant text: a tool invocation,
+			// its result stream, and the agent's plan. An ACP-driven agent - omp
+			// runs through acpx - spends most of a long turn here, so without
+			// these the parser has no progress signal at all and a healthy turn
+			// is indistinguishable from a wedged one. See LifecyclePhaseProgress.
+			//
+			// `agent_thought_chunk` is deliberately NOT progress. Reasoning is
+			// the one stream a non-converging model emits indefinitely while
+			// producing nothing an operator can act on, so counting it would
+			// leave the stall bound unable to fire on exactly the failure it
+			// exists to catch - and it would contradict the documented rule in
+			// reference/global-config.md that reasoning-only traffic does not
+			// count. Reasoning still satisfies byte-level liveness.
+			reportAcpxProgress(onProgress)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return output.String(), stdoutErr, err
 	}
 	return output.String(), stdoutErr, nil
+}
+
+// reportAcpxProgress forwards one turn advance when an observer is installed.
+func reportAcpxProgress(onProgress func()) {
+	if onProgress != nil {
+		onProgress()
+	}
 }
 
 func acpxUpdateUsage(update acpxSessionUpdate) TokenUsage {

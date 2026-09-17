@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -18,6 +19,17 @@ import (
 // budget; a late successful return after this cause is still a timeout.
 var ErrAgentTimeout = errors.New("agent timeout")
 
+// ErrAgentStall is the context cause used when an invocation stops advancing
+// its turn (see LifecyclePhaseProgress) for longer than its progress bound.
+//
+// It is distinct from ErrAgentTimeout on purpose. A wall-clock expiry means the
+// turn was still working and ran out of budget, which is a sizing decision; a
+// stall expiry means the turn stopped converging at all, which is a fault. Both
+// fail the invocation, and only the diagnostic and the operator's response
+// differ - so callers that already treat an agent failure as fatal need no
+// change, while a caller that wants to distinguish them can.
+var ErrAgentStall = errors.New("agent stalled")
+
 // AgentTimeout is the per-invocation budget applied at the shared agent-run
 // seam. A positive Config.AgentTimeout wins; otherwise the default (30m).
 func AgentTimeout(cfg *config.Config) time.Duration {
@@ -25,6 +37,27 @@ func AgentTimeout(cfg *config.Config) time.Duration {
 		return cfg.AgentTimeout
 	}
 	return config.DefaultAgentTimeout
+}
+
+// AgentStallTimeout is the per-invocation progress bound applied at the shared
+// agent-run seam. A positive Config.AgentStallTimeout wins; otherwise the
+// default (30m). config.AgentStallUnlimited disables the bound, leaving the
+// absolute wall-clock limits as the only ceiling.
+func AgentStallTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return config.DefaultAgentStallTimeout
+	}
+	switch {
+	case cfg.AgentStallTimeout > 0:
+		return cfg.AgentStallTimeout
+	case cfg.AgentStallTimeout == config.AgentStallUnlimited:
+		return 0
+	default:
+		// Zero means the field was never populated (a hand-built Config in a
+		// test, say), so the safe default applies rather than silently
+		// removing the bound.
+		return config.DefaultAgentStallTimeout
+	}
 }
 
 // RunAgent executes one agent invocation with a deadline scoped only to that
@@ -58,12 +91,14 @@ func (sctx *StepContext) RunAgentSessionContext(parent context.Context, role Ses
 func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, sessionRole SessionRole) (*agent.Result, error) {
 	var ag agent.Agent
 	timeout := AgentTimeout(nil)
+	stall := AgentStallTimeout(nil)
 	if sctx != nil {
 		ag = sctx.Agent
 		timeout = AgentTimeout(sctx.Config)
+		stall = AgentStallTimeout(sctx.Config)
 	}
 	activity := observeAgentActivity(&opts)
-	return invokeAgent(parent, timeout, activity, func(ctx context.Context) (*agent.Result, error) {
+	return invokeAgent(parent, timeout, stall, activity, func(ctx context.Context) (*agent.Result, error) {
 		if sessionRole != "" && sctx != nil && sctx.Sessions != nil {
 			return sctx.Sessions.Run(ctx, ag, sessionRole, opts, sctx.Log)
 		}
@@ -74,15 +109,94 @@ func (sctx *StepContext) runAgent(parent context.Context, opts agent.RunOpts, se
 	})
 }
 
-func invokeAgent(parent context.Context, timeout time.Duration, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {
-	ctx, cancel, applied := bindAgentDeadline(parent, timeout)
-	result, err := run(ctx)
-	runErr := classifyAgentRun(ctx, applied, activity, err)
-	cancel()
+// invokeAgent runs one agent invocation under both of its inactivity bounds.
+//
+// timeout is the absolute wall-clock ceiling and stall is the progress bound
+// (see ErrAgentStall): the first bounds the whole turn, the second bounds a turn
+// that is still emitting bytes but has stopped advancing. Both are independent
+// - a stall expiry ends the invocation early rather than extending the wall
+// clock, so no configuration makes a wedged turn outlive its budget.
+func invokeAgent(parent context.Context, timeout, stall time.Duration, activity *agentActivity, run func(context.Context) (*agent.Result, error)) (*agent.Result, error) {
+	ctx, cancelDeadline, applied := bindAgentDeadline(parent, timeout)
+	// The stall bound cancels the invocation itself, so it needs a cancel
+	// function it owns. bindAgentDeadline deliberately hands back a no-op cancel
+	// when the caller already installed a deadline - and Review and Test both do
+	// - which is precisely the case where a stalled turn is most expensive. An
+	// independent cancellable child keeps the stall effective there while
+	// leaving the caller's context (and its deadline cause) untouched, so the
+	// wall-clock diagnosis below still sees the cause it expects.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	stopWatch := watchAgentStall(runCtx, cancelRun, stall, activity)
+	// Cleanup is deferred so a panicking adapter cannot strand the watcher
+	// goroutine or leave the layered context live. stopWatch is once-guarded, so
+	// the explicit call below and this deferred one cannot race.
+	defer cancelRun()
+	defer cancelDeadline()
+	defer func() { stopWatch() }()
+	result, err := run(runCtx)
+	stalled := stopWatch()
+	runErr := classifyAgentRun(ctx, applied, activity, stalled, err)
 	if runErr != nil {
 		return nil, runErr
 	}
 	return result, nil
+}
+
+// watchAgentStall cancels ctx when an in-flight invocation stops advancing its
+// turn for longer than stall. It returns a function that stops watching and
+// reports whether the bound is what ended the invocation.
+//
+// The verdict is carried out of band - not as a context cause - because the
+// deadline this seam installs already owns the context's cause, and
+// context.WithTimeoutCause hands back a plain CancelFunc with no way to
+// override it. The watcher is the only thing that knows a stall fired, so it
+// reports it directly. A non-positive stall disables the bound.
+//
+// The check is polled rather than scheduled per event because the signal it
+// watches is the ABSENCE of events: an event-driven timer would have to be
+// re-armed from the agent's own callbacks, which run on the path that is by
+// definition silent when this matters. The interval is a fraction of the bound
+// so detection is prompt without busy-waiting, and it is floored so a
+// deliberately tiny bound (tests, pathological configs) cannot spin.
+func watchAgentStall(ctx context.Context, cancel context.CancelFunc, stall time.Duration, activity *agentActivity) func() bool {
+	if stall <= 0 || activity == nil {
+		return func() bool { return false }
+	}
+	interval := stall / 4
+	if interval < 25*time.Millisecond {
+		interval = 25 * time.Millisecond
+	}
+	var fired atomic.Bool
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				silent, _, ok := activity.progressSilence()
+				if ok && silent >= stall {
+					fired.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() bool {
+		once.Do(func() {
+			close(done)
+			<-stopped
+		})
+		return fired.Load()
+	}
 }
 
 // agentActivity records when an in-flight invocation last produced anything
@@ -106,6 +220,13 @@ type agentActivity struct {
 	// anything, and counting it would erase the difference this whole
 	// measurement exists to expose.
 	observed int
+	// progressed is when this attempt last advanced its turn, and progressCount
+	// counts those advances. Progress is strictly narrower than output: it
+	// requires assistant text or a tool call/result, so thinking-only byte
+	// traffic keeps output fresh while leaving progress stale. That gap is what
+	// the stall bound watches.
+	progressed    time.Time
+	progressCount int
 	// launchedPID is the native subprocess PID, when one was reported.
 	launchedPID int
 	launchedAt  time.Time
@@ -134,6 +255,8 @@ func (a *agentActivity) beginAttempt() {
 	a.begun = time.Now()
 	a.last = time.Time{}
 	a.observed = 0
+	a.progressed = time.Time{}
+	a.progressCount = 0
 	a.launchedPID = 0
 	a.launchedAt = time.Time{}
 	a.launched = false
@@ -149,6 +272,52 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.launchedPID = pid
 	a.launchedAt = time.Now()
 	a.mu.Unlock()
+}
+
+// observeProgress records forward motion in the turn. Unlike observe it is not
+// satisfied by arbitrary bytes, so it is the signal an inactivity bound can
+// trust.
+func (a *agentActivity) observeProgress() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.progressCount++
+	a.progressed = time.Now()
+	a.mu.Unlock()
+}
+
+// progressSilence reports how long this attempt has gone without advancing its
+// turn, measured from the start of the attempt when nothing has advanced yet.
+// ok is false when there is nothing to measure (no observer, or a stall bound
+// that is switched off).
+func (a *agentActivity) progressSilence() (time.Duration, int, bool) {
+	if a == nil {
+		return 0, 0, false
+	}
+	a.mu.Lock()
+	begun, progressed, count := a.begun, a.progressed, a.progressCount
+	a.mu.Unlock()
+	if progressed.IsZero() {
+		return time.Since(begun), 0, true
+	}
+	return time.Since(progressed), count, true
+}
+
+// progressEvidence renders the measured stall for the stall-bound diagnostic.
+// It names the longest single silent stretch, which is what decides whether to
+// raise the bound or go look at the agent CLI.
+func (a *agentActivity) progressEvidence() string {
+	silent, count, ok := a.progressSilence()
+	if !ok {
+		return "agent progress was not observed for this invocation"
+	}
+	if count == 0 {
+		return fmt.Sprintf("agent produced no assistant output or tool activity at all in %s",
+			roundActivity(silent))
+	}
+	return fmt.Sprintf("agent produced no assistant output or tool activity for %s (%d progress events observed earlier in the turn)",
+		roundActivity(silent), count)
 }
 
 // evidence renders what was actually observed, for the timeout message.
@@ -187,6 +356,20 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 	onChunk := opts.OnChunk
 	opts.OnChunk = func(text string) {
 		activity.observe()
+		// Prose is forward motion, and for an adapter that only streams text
+		// this is the sole progress signal available. Adapters that parse a
+		// structured event stream report finer-grained progress through
+		// LifecyclePhaseProgress below.
+		//
+		// emitAgentControl routes retry/fallback messages here when no
+		// OnLifecycle is installed, which would count a control message as a
+		// turn advance. That can only delay stall detection by one event, never
+		// mask a stall, and the pipeline always installs OnLifecycle (so control
+		// messages take the retry/fallback branch instead and restart the
+		// attempt's clock).
+		if text != "" {
+			activity.observeProgress()
+		}
 		if onChunk != nil {
 			onChunk(text)
 		}
@@ -199,6 +382,9 @@ func observeAgentActivity(opts *agent.RunOpts) *agentActivity {
 			activity.observeLaunch(event.PID)
 		case agent.LifecyclePhaseActivity:
 			activity.observe()
+		case agent.LifecyclePhaseProgress:
+			activity.observe()
+			activity.observeProgress()
 		case agent.LifecyclePhaseRetry, agent.LifecyclePhaseFallback:
 			activity.beginAttempt()
 		case agent.LifecyclePhaseExit:
@@ -232,7 +418,15 @@ func bindAgentDeadline(parent context.Context, timeout time.Duration) (context.C
 	return ctx, cancel, timeout
 }
 
-func classifyAgentRun(ctx context.Context, applied time.Duration, activity *agentActivity, err error) error {
+func classifyAgentRun(ctx context.Context, applied time.Duration, activity *agentActivity, stalled bool, err error) error {
+	// A stall expiry is the watchAgentStall verdict, not a context cause: a
+	// stall cancels the invocation rather than letting its deadline pass, so
+	// ctx.Err() is Canceled and the cause is unavailable here. It is checked
+	// first because it is the more specific account of why the turn ended - a
+	// turn that stalled would otherwise be reported as a plain cancellation.
+	if stalled {
+		return diagnoseAgentStall(activity, err)
+	}
 	cause := context.Cause(ctx)
 	if cause == nil {
 		return err
@@ -251,6 +445,23 @@ func classifyAgentRun(ctx context.Context, applied time.Duration, activity *agen
 		return diagnoseAgentTimeout("", activity, err, cause)
 	}
 	return cause
+}
+
+// diagnoseAgentStall builds the failure a stalled invocation returns. It reads
+// the same measured evidence as a timeout but reports the opposite finding: not
+// that the turn ran out of budget while working, but that it stopped advancing
+// altogether. The adapter's own account is still appended, because a killed
+// subprocess's exit status and stderr remain the only view inside the agent.
+func diagnoseAgentStall(activity *agentActivity, adapterErr error) error {
+	parts := []string{"agent made no progress; " + activity.progressEvidence()}
+	if clause := agentReportClause(adapterErr); clause != "" {
+		parts = append(parts, clause)
+	}
+	return &agentInvocationError{
+		message: strings.Join(parts, "; "),
+		cause:   ErrAgentStall,
+		adapter: adapterErr,
+	}
 }
 
 // diagnoseAgentTimeout builds the one error a timed-out invocation returns. It
@@ -325,6 +536,7 @@ func (e *agentInvocationError) Unwrap() []error {
 type timeoutAgent struct {
 	inner   agent.Agent
 	timeout time.Duration
+	stall   time.Duration
 }
 
 func (a *timeoutAgent) Name() string { return a.inner.Name() }
@@ -351,7 +563,7 @@ func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Resu
 		}
 	}
 	activity := observeAgentActivity(&opts)
-	return invokeAgent(ctx, a.timeout, activity, func(runCtx context.Context) (*agent.Result, error) {
+	return invokeAgent(ctx, a.timeout, a.stall, activity, func(runCtx context.Context) (*agent.Result, error) {
 		return a.inner.Run(runCtx, opts)
 	})
 }
