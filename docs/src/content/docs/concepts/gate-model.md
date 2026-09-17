@@ -112,16 +112,35 @@ not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
 Fresh AXI submissions do not receive this exception.
 
+**Recorded supersession:** a fresh submission can also reach a settled state for
+a mirror left stranded by a terminal run. After a rebase, such a run can leave the
+mirror ref on its superseded pre-rebase lineage, where the containment check
+correctly refuses and every recovery command is a no-op - the branch is stranded
+even though its work is intact. For that case a submission may replace the
+private head when this repository's own run records prove it superseded: one
+terminal run on this branch that already returned custody
+(`CustodyReturnedAt`), that submitted **exactly** the private head
+(`SubmittedHeadSHA` equal, never an abbreviated or other recorded head), whose
+verified final head (`TerminalHeadVerifiedAt`) is its own reviewed head
+(`HeadSHA` equal to `ReviewApprovedHeadSHA`), and whose reviewed head is still
+contained in the head being submitted. The exception is resolved by the guard
+from the database, never asserted by the caller, and it leaves every other
+containment check in force: an unproven private head, a still-active run, a
+different submitted head, or an accepted result the live head does not contain
+all still refuse, leave the branch untouched, and name every at-risk commit. The
+refusal is reported as a terminal condition with the operator action attached,
+rather than as a bare Git error.
+
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old
 values. Before deleting a reconciled branch ref, the gate archives its exact
-head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A,
-unproven private content refuses before upstream publication, leaves the
-private branch untouched, and names every at-risk commit. An ancestor already
-supports an ordinary fast-forward. A gate head that is a newer descendant of
-the published head stays untouched, including through the detached worktree's
-shared branch refs.
+head at `refs/tags/no-mistakes-abandoned/<branch>/<sha>`. Outside Decision 41-A
+and recorded supersession, unproven private content refuses before upstream
+publication, leaves the private branch untouched, and names every at-risk
+commit. An ancestor already supports an ordinary fast-forward. A gate head that
+is a newer descendant of the published head stays untouched, including through
+the detached worktree's shared branch refs.
 
 Correction and CI-repair recording persist the agent-created worktree head in
 the run and database without moving a branch ref shared with the gate. Repairs

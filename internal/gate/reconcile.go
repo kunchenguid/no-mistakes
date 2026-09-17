@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -30,6 +31,57 @@ type StaleBranchPlan struct {
 	ArchiveTag           string
 }
 
+// SupersessionEvidence is durable, run-recorded proof that a private mirror head
+// is superseded by an accepted fix from the very run that submitted it. It is a
+// policy input, never containment evidence: the planner still applies every
+// ancestry and descendant check, then requires SubmittedHead to equal the private
+// mirror head exactly and AcceptedHead to be contained in the live head. A head
+// that does not match both exactly cannot be replaced on this basis, so unproven
+// private content is still refused.
+//
+// It exists so the operator record can name WHICH run's accepted result
+// superseded the archived head: replacing a private mirror ref is otherwise a
+// silent rewrite of a branch other tooling may be reading.
+type SupersessionEvidence struct {
+	RunID         string
+	SubmittedHead string
+	AcceptedHead  string
+}
+
+// StaleBranchRefusal is the guard's refusal to replace a private mirror head
+// whose content it cannot prove preserved. It carries the exact evidence an
+// operator needs to act on instead of only a formatted sentence, so a driver can
+// report the condition and the concrete next step rather than parking with no
+// legal action.
+//
+// Every field is diagnostic. The refusal itself is a pure read: it never mutates
+// a ref, so reporting it can never discard the at-risk work it names.
+type StaleBranchRefusal struct {
+	BranchRef    string
+	LiveHead     string
+	PreviousHead string
+	// AtRisk lists "<sha> <subject>" for every private commit the live head does
+	// not already contain.
+	AtRisk []string
+}
+
+func (r *StaleBranchRefusal) Error() string {
+	return fmt.Sprintf(
+		"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
+		r.BranchRef, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; "),
+	)
+}
+
+// Action is the concrete operator step for this refusal. The mirror is left
+// untouched, so the at-risk commits are still retrievable; the offered step must
+// therefore be a command that is reachable in exactly this state. `no-mistakes
+// rerun` deliberately is not offered here: it resolves the recorded head and then
+// refuses a clean caller-head mismatch, so naming it would point the operator at
+// a path that is itself refused.
+func (r *StaleBranchRefusal) Action() string {
+	return "the private mirror was left untouched, so no work was discarded: run `no-mistakes axi status` and follow the `branch_sync.next_action.command` it offers; anything still needed from the mirror commits can be retrieved from it before submitting again"
+}
+
 // ReconcileStaleBranch plans and immediately applies stale private gate branch
 // reconciliation. It removes the branch only after Git proves the live head
 // contains all of its content, or under the exact submitted-head exception
@@ -53,14 +105,53 @@ func ReconcileStaleBranch(ctx context.Context, gateDir, workDir, branch, liveHea
 // submissions must leave it empty. The contract and rationale are owned by
 // docs/src/content/docs/concepts/gate-model.md (Private mirror reconciliation).
 func PlanStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, false)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, SupersessionSource{}, false)
 }
 
 func PlanMirrorPublicationReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string) (StaleBranchPlan, error) {
-	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, true)
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, runOwnedHead, SupersessionSource{}, true)
 }
 
-func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, preserveDescendants bool) (StaleBranchPlan, error) {
+// PlanSupersededSubmissionReconciliation inspects a private gate branch that a
+// completed run submitted and then superseded. Unlike the submitted-head
+// exception, this path is reachable for a fresh submission, so it proves the
+// supersession from the repository's own run records instead of a caller
+// asserting ownership. source supplies that proof; its zero value supplies none.
+func PlanSupersededSubmissionReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead string, source SupersessionSource) (StaleBranchPlan, error) {
+	return planStaleBranchReconciliation(ctx, gateDir, workDir, branch, liveHead, "", source, false)
+}
+
+// ReconcileSupersededSubmission plans and immediately applies the reconciliation
+// of a private mirror head that recorded evidence proves superseded.
+func ReconcileSupersededSubmission(ctx context.Context, gateDir, workDir, branch, liveHead string, source SupersessionSource) (StaleBranchReconciliation, error) {
+	plan, err := PlanSupersededSubmissionReconciliation(ctx, gateDir, workDir, branch, liveHead, source)
+	if err != nil || !plan.Reconcile {
+		return StaleBranchReconciliation{}, err
+	}
+	return ApplyStaleBranchReconciliation(ctx, gateDir, plan)
+}
+
+// authorizes reports whether recorded evidence proves that replacing privateHead
+// with liveHead discards nothing the pipeline did not already accept. It is
+// deliberately narrow: the private head must be exactly the head the named run
+// submitted, and that run's own accepted result must survive in the live head.
+// Anything else - another recorded head, an abbreviated SHA, an external or newer
+// private head, an accepted head absent from the live history - leaves the
+// ordinary containment check in force.
+//
+// The caller reaches this only through SupersessionSource.evidenceFor, which has
+// already applied the run-record conditions; the head comparison is repeated here
+// so a caller holding an evidence value cannot bypass it.
+func (e *SupersessionEvidence) authorizes(privateHead string) bool {
+	if e == nil {
+		return false
+	}
+	submitted := strings.TrimSpace(e.SubmittedHead)
+	accepted := strings.TrimSpace(e.AcceptedHead)
+	return submitted != "" && accepted != "" && submitted == privateHead
+}
+
+func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch, liveHead, runOwnedHead string, source SupersessionSource, preserveDescendants bool) (StaleBranchPlan, error) {
 	var plan StaleBranchPlan
 	branch = strings.TrimSpace(branch)
 	liveHead = strings.TrimSpace(liveHead)
@@ -119,7 +210,17 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 			return plan, nil
 		}
 	}
-	if gateHead != runOwnedHead {
+	// Evidence is resolved only after the live head is staged, because proving
+	// the accepted result survives requires it to be readable in this gate.
+	evidence := source.evidenceFor(ctx, gateDir, gateHead, liveHead)
+	if gateHead != runOwnedHead && evidence.authorizes(gateHead) {
+		// Replacing a private mirror ref is a rewrite of a branch other tooling
+		// may read, so record which run's accepted result justified it.
+		slog.Info("reconciling private mirror ref on recorded supersession",
+			"ref", branchRef, "previous_head", gateHead, "live_head", liveHead,
+			"run_id", evidence.RunID, "accepted_head", evidence.AcceptedHead)
+	}
+	if gateHead != runOwnedHead && !evidence.authorizes(gateHead) {
 		atRiskCommits, err := privateCommitsAbsentFromLive(ctx, gateDir, liveHead, gateHead)
 		if err != nil {
 			return plan, fmt.Errorf("compare private mirror content for %s: %w", branchRef, err)
@@ -133,10 +234,12 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				}
 				atRisk = append(atRisk, description)
 			}
-			return plan, fmt.Errorf(
-				"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
-				branchRef, len(atRisk), liveHead, strings.Join(atRisk, "; "),
-			)
+			return plan, &StaleBranchRefusal{
+				BranchRef:    branchRef,
+				LiveHead:     liveHead,
+				PreviousHead: gateHead,
+				AtRisk:       atRisk,
+			}
 		}
 	}
 
