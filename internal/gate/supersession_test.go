@@ -36,7 +36,10 @@ type supersededMirrorChain struct {
 	base     string
 	private  string // the mirror head: the head this run submitted
 	accepted string // the run's own accepted, reviewed result
-	live     string // the current clean local head
+	// continued is a post-review continuation of accepted: the terminal shape
+	// whose verified final head carries commits made after the reviewed head.
+	continued string
+	live      string // the current clean local head
 }
 
 func newSupersededMirrorChain(t *testing.T) *supersededMirrorChain {
@@ -78,12 +81,21 @@ func newSupersededMirrorChain(t *testing.T) *supersededMirrorChain {
 	reconcileGit(t, work, "commit", "-m", "feat(feeds): stage reconciliation")
 	live := reconcileGit(t, work, "rev-parse", "HEAD")
 
+	// The post-review continuation shape: a document/lint or CI-repair round
+	// commits AFTER review, so the run's verified final head differs from the
+	// head review approved.
+	reconcileGit(t, work, "reset", "--hard", accepted)
+	writeReconcileFile(t, work, "notes.md", "post-review housekeeping\n")
+	reconcileGit(t, work, "add", "notes.md")
+	reconcileGit(t, work, "commit", "-m", "docs: post-review housekeeping")
+	continued := reconcileGit(t, work, "rev-parse", "HEAD")
+
 	// The mirror holds the superseded submitted head.
 	reconcileGit(t, gateDir, "update-ref", "refs/heads/feature/stranded", private)
 
 	chain := &supersededMirrorChain{
 		work: work, gateDir: gateDir, branch: "feature/stranded",
-		base: base, private: private, accepted: accepted, live: live,
+		base: base, private: private, accepted: accepted, continued: continued, live: live,
 	}
 	for _, head := range []string{private, live} {
 		if _, err := reconcileGitErr(chain.gateDir, "merge-base", "--is-ancestor", head, live); err == nil && head == private {
@@ -117,6 +129,9 @@ type terminalRunOptions struct {
 	submittedHead string
 	// reviewApprovedHead overrides the run's review authority; empty omits it.
 	reviewApprovedHead string
+	// verifiedHead overrides the verified final head the terminal status records,
+	// which is how the post-review-continuation shape is recorded.
+	verifiedHead string
 }
 
 // terminalRun records the terminal run that submitted the mirror head and
@@ -127,11 +142,15 @@ func (c *supersededMirrorChain) terminalRun(t *testing.T, d *db.DB, repoID strin
 	if submitted == "" {
 		submitted = c.private
 	}
+	verified := opts.verifiedHead
+	if verified == "" {
+		verified = c.accepted
+	}
 	run, err := d.InsertRun(repoID, c.branch, submitted, c.base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.UpdateRunHeadSHA(run.ID, c.accepted); err != nil {
+	if err := d.UpdateRunHeadSHA(run.ID, verified); err != nil {
 		t.Fatal(err)
 	}
 	if approved := opts.reviewApprovedHead; approved != "" {
@@ -139,7 +158,7 @@ func (c *supersededMirrorChain) terminalRun(t *testing.T, d *db.DB, repoID strin
 			t.Fatal(err)
 		}
 	}
-	if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, c.accepted); err != nil {
+	if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, verified); err != nil {
 		t.Fatal(err)
 	}
 	if opts.custodyReturned {
@@ -247,6 +266,97 @@ func TestStaleDivergentMirrorDeadlockIsPinnedAndResolvedByRecordedEvidence(t *te
 		t.Fatalf("ordinary push reached %s, want %s", got, chain.live)
 	}
 	t.Logf("after: run %s submitted %s, accepted %s survived in %s; ordinary push reached %s", run.ID, chain.private, chain.accepted, chain.live, chain.live)
+}
+
+// TestStaleDivergentMirrorNamesPostReviewContinuationRefusal is the second
+// recorded shape's regression: a terminal run whose verified final head carries
+// commits made after review cannot use recorded supersession (that exception
+// requires the verified head to equal the reviewed head), and the run already
+// returned custody, so neither `axi sync --recover` nor the `axi run` this state
+// reports can settle the mirror. The refusal must therefore name that exact
+// condition and the step that actually resolves it - bringing the mirror's own
+// commits into the submitted head - while still moving no ref and still refusing.
+func TestStaleDivergentMirrorNamesPostReviewContinuationRefusal(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	chain := newSupersededMirrorChain(t)
+	d := openTestDB(t, testPaths(t))
+	repo, err := d.InsertRepo(chain.work, "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The recorded continuation: submitted exactly the mirror head, reviewed the
+	// accepted head, then committed a post-review round, then returned custody.
+	chain.terminalRun(t, d, repo.ID, terminalRunOptions{
+		custodyReturned:    true,
+		reviewApprovedHead: chain.accepted,
+		verifiedHead:       chain.continued,
+	})
+
+	plan, err := PlanSupersededSubmissionReconciliation(ctx, chain.gateDir, chain.work, chain.branch, chain.live, chain.sourceFor(repo.ID, d))
+	var refusal *StaleBranchRefusal
+	if err == nil || !errors.As(err, &refusal) {
+		t.Fatalf("guard did not refuse the post-review continuation: plan=%+v err=%v", plan, err)
+	}
+	if plan.Reconcile {
+		t.Fatalf("post-review continuation reported as reconcilable: %+v", plan)
+	}
+	// The replacement is refused, so the diagnosis must never read as authority.
+	if refusal.Continuation == nil {
+		t.Fatal("refusal did not name the continuation it was in")
+	}
+	if refusal.Continuation.RunID == "" || refusal.Continuation.VerifiedHead != chain.continued || refusal.Continuation.ReviewedHead != chain.accepted {
+		t.Fatalf("continuation = %+v, want run naming verified %s and reviewed %s", refusal.Continuation, chain.continued, chain.accepted)
+	}
+	for _, want := range []string{chain.continued, chain.accepted} {
+		if !strings.Contains(refusal.Condition(), want) {
+			t.Errorf("condition %q does not name %s", refusal.Condition(), want)
+		}
+	}
+	if !strings.Contains(refusal.Error(), refusal.Condition()) {
+		t.Errorf("Error() = %q does not carry the continuation condition", refusal.Error())
+	}
+	// The generic dead-end action points at `axi status`, which in this state
+	// offers `axi run` - the very entry point that refuses. The continuation
+	// refusal must instead name a step that is reachable here.
+	action := refusal.Action()
+	if strings.Contains(action, "branch_sync.next_action.command") {
+		t.Errorf("action %q still offers the branch_sync dead-end for a returned-custody run", action)
+	}
+	if !strings.Contains(action, RemoteName) || !strings.Contains(action, chain.branch) {
+		t.Errorf("action %q does not name the gate remote and branch to fetch the mirror commits from", action)
+	}
+	// The preservation guarantee is untouched: no ref moved, nothing archived.
+	if got := chain.mirrorHead(t); got != chain.private {
+		t.Fatalf("refusal moved the mirror to %s, want %s untouched", got, chain.private)
+	}
+	if tags := chain.archiveTags(t); tags != "" {
+		t.Fatalf("refusal archived a mirror it did not prove: %q", tags)
+	}
+
+	// The named step really settles it: once the submitted head contains the
+	// mirror's commits, the same submission is an ordinary fast-forward. The
+	// private lineage conflicts with the accepted result exactly where the
+	// superseded intermediate assertion sits, so this is the resolution an
+	// operator performs.
+	reconcileGit(t, chain.work, "reset", "--hard", chain.live)
+	if _, err := reconcileGitErr(chain.work, "merge", "--no-edit", chain.private); err == nil {
+		t.Fatal("fixture expected the mirror lineage to conflict with the accepted result")
+	}
+	writeReconcileFile(t, chain.work, "DailyRepairRepository.test.ts", "final assertion\n")
+	reconcileGit(t, chain.work, "add", "DailyRepairRepository.test.ts")
+	reconcileGit(t, chain.work, "commit", "--no-edit")
+	settled := reconcileGit(t, chain.work, "rev-parse", "HEAD")
+	if _, err := reconcileGitErr(chain.gateDir, "merge-base", "--is-ancestor", chain.private, settled); err != nil {
+		t.Fatalf("resolved head %s does not contain the mirror head %s", settled, chain.private)
+	}
+	plan, err = PlanSupersededSubmissionReconciliation(ctx, chain.gateDir, chain.work, chain.branch, settled, chain.sourceFor(repo.ID, d))
+	if err != nil {
+		t.Fatalf("submitting a head that contains the mirror's commits was still refused: %v", err)
+	}
+	if plan.Reconcile {
+		t.Fatalf("an ancestor mirror reported as needing reconciliation: %+v", plan)
+	}
 }
 
 // TestStaleDivergentMirrorStillRefusesWithoutRecordedEvidence is the preservation

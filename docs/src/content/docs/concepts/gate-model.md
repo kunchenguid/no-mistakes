@@ -131,6 +131,19 @@ all still refuse, leave the branch untouched, and name every at-risk commit. The
 refusal is reported as a terminal condition with the operator action attached,
 rather than as a bare Git error.
 
+The exception deliberately does not extend to a verified final head that carries
+commits made after review (document/lint and CI-repair rounds commit after
+review completes, so such a run records `HeadSHA != ReviewApprovedHeadSHA`).
+That shape is refused like any other unproven head, but it is named in its own
+terms: the guard reports the condition (which run submitted the head, its
+reviewed head, and its verified post-review head) and the step that actually
+settles it - retrieving the mirror's commits from the gate remote and integrating
+them into the head being submitted, which turns the blocked push into an ordinary
+fast-forward. The generic refusal cannot serve here, because that run already
+returned custody, so `axi sync --recover` is a no-op and the `axi run` the state
+reports is the entry point that refuses. Nothing about the refusal itself
+changes: the branch stays untouched and every containment check still ran.
+
 Reconciliation requires direct private branch and archive refs; symbolic refs,
 including dangling symbolic refs, are refused before containment checks. Ref
 creation and deletion use exact names without dereferencing and expected old

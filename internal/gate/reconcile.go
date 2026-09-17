@@ -63,12 +63,38 @@ type StaleBranchRefusal struct {
 	// AtRisk lists "<sha> <subject>" for every private commit the live head does
 	// not already contain.
 	AtRisk []string
+	// Continuation is the recorded shape one condition away from recorded
+	// supersession: the run that submitted this head returned custody, and its
+	// verified final head carries commits made after its reviewed head. It is
+	// diagnosis only - it never authorizes the replacement, and every containment
+	// check still ran against this head.
+	Continuation *SupersessionContinuation
 }
 
 func (r *StaleBranchRefusal) Error() string {
+	if condition := r.Condition(); condition != "" {
+		return fmt.Sprintf(
+			"refusing to reconcile private mirror ref %s: %s; %d private commit(s) contain content absent from live head %s: %s",
+			r.BranchRef, condition, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; "),
+		)
+	}
 	return fmt.Sprintf(
 		"refusing to reconcile private mirror ref %s: %d at-risk commit(s) contain content absent from live head %s: %s",
 		r.BranchRef, len(r.AtRisk), r.LiveHead, strings.Join(r.AtRisk, "; "),
+	)
+}
+
+// Condition names the exact recorded reason this head could not be replaced,
+// when a recorded run establishes one. It is empty for work the guard simply
+// cannot prove, which keeps the generic at-risk refusal for that case.
+func (r *StaleBranchRefusal) Condition() string {
+	c := r.Continuation
+	if c == nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"run %s submitted exactly this head and already returned custody, but its verified final head %s carries commits made after its reviewed head %s, so recorded supersession cannot apply (that exception requires the verified head to equal the reviewed head)",
+		c.RunID, c.VerifiedHead, c.ReviewedHead,
 	)
 }
 
@@ -78,7 +104,20 @@ func (r *StaleBranchRefusal) Error() string {
 // rerun` deliberately is not offered here: it resolves the recorded head and then
 // refuses a clean caller-head mismatch, so naming it would point the operator at
 // a path that is itself refused.
+//
+// A recorded continuation has no `branch_sync` next action to follow: the run
+// already returned custody, so `axi sync --recover` is a no-op and the ordinary
+// `axi run` this state reports is the very entry point that refuses. The refusal
+// therefore names the step that actually resolves it - bringing the mirror's own
+// commits into the head being submitted, which turns the blocked push into an
+// ordinary fast-forward.
 func (r *StaleBranchRefusal) Action() string {
+	if c := r.Continuation; c != nil {
+		return fmt.Sprintf(
+			"the private mirror was left untouched, so no work was discarded: run %s that submitted it already returned custody, so no recovery action remains and re-submitting the same head is refused again. Retrieve the mirror commits from the gate remote (`git fetch %s %s`, then integrate FETCH_HEAD into your local head) so the head being submitted contains everything the mirror holds, then submit that head again; the push is then an ordinary fast-forward",
+			c.RunID, RemoteName, strings.TrimPrefix(r.BranchRef, "refs/heads/"),
+		)
+	}
 	return "the private mirror was left untouched, so no work was discarded: run `no-mistakes axi status` and follow the `branch_sync.next_action.command` it offers; anything still needed from the mirror commits can be retrieved from it before submitting again"
 }
 
@@ -212,7 +251,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 	}
 	// Evidence is resolved only after the live head is staged, because proving
 	// the accepted result survives requires it to be readable in this gate.
-	evidence := source.evidenceFor(ctx, gateDir, gateHead, liveHead)
+	evidence, continuation := source.evidenceFor(ctx, gateDir, gateHead, liveHead)
 	if gateHead != runOwnedHead && evidence.authorizes(gateHead) {
 		// Replacing a private mirror ref is a rewrite of a branch other tooling
 		// may read, so record which run's accepted result justified it.
@@ -239,6 +278,7 @@ func planStaleBranchReconciliation(ctx context.Context, gateDir, workDir, branch
 				LiveHead:     liveHead,
 				PreviousHead: gateHead,
 				AtRisk:       atRisk,
+				Continuation: continuation,
 			}
 		}
 	}

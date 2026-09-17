@@ -78,17 +78,25 @@ func newCLIMirrorEnv(t *testing.T, build func(dir string, write func(string, str
 // reviewed result, and returned custody.
 func (e *cliMirrorEnv) recordTerminalRun(t *testing.T) *db.Run {
 	t.Helper()
+	return e.recordTerminalRunWithVerifiedHead(t, e.accepted)
+}
+
+// recordTerminalRunWithVerifiedHead records the same terminal run but with the
+// verified final head the terminal status carries, so a test can reproduce the
+// post-review-continuation shape where that head differs from the reviewed head.
+func (e *cliMirrorEnv) recordTerminalRunWithVerifiedHead(t *testing.T, verifiedHead string) *db.Run {
+	t.Helper()
 	run, err := e.d.InsertRun(e.repo.ID, "main", e.mirrorHead, e.base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.d.UpdateRunHeadSHA(run.ID, e.accepted); err != nil {
+	if err := e.d.UpdateRunHeadSHA(run.ID, verifiedHead); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.d.UpdateRunReviewApprovedHeadSHA(run.ID, e.accepted); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, e.accepted); err != nil {
+	if err := e.d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, verifiedHead); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.d.SetRunCustodyReturned(run.ID); err != nil {
@@ -210,6 +218,79 @@ func TestPreparePrivateMirrorRefusalIsActionableAndLeavesTheMirrorUntouched(t *t
 	}
 	if got := cliGit(t, e.dir, "rev-parse", "HEAD"); got != e.localHead {
 		t.Fatalf("refusal moved the caller head to %s, want %s", got, e.localHead)
+	}
+}
+
+// TestPreparePrivateMirrorNamesPostReviewContinuationRefusalAtTheOperatorSurface
+// drives the same submission path with the second recorded shape: the terminal
+// run returned custody but its verified final head carries post-review commits.
+// Recorded supersession cannot apply, so the submission must refuse with the
+// exact condition named and a step that is reachable in that state. The generic
+// refusal instead points at `axi status`, which here reports `custody_returned`
+// and offers `axi run` - the entry point that just refused - so the deadlock the
+// change set out to remove would remain.
+func TestPreparePrivateMirrorNamesPostReviewContinuationRefusalAtTheOperatorSurface(t *testing.T) {
+	var continuedHead string
+	e := newCLIMirrorEnv(t, func(dir string, write func(string, string)) (string, string, string, string) {
+		write("base.txt", "base\n")
+		cliGit(t, dir, "add", "base.txt")
+		cliGit(t, dir, "commit", "-m", "base")
+		base := cliGit(t, dir, "rev-parse", "HEAD")
+
+		write("feature.txt", "submitted version\n")
+		cliGit(t, dir, "add", "feature.txt")
+		cliGit(t, dir, "commit", "-m", "submitted work")
+		mirrorHead := cliGit(t, dir, "rev-parse", "HEAD")
+
+		cliGit(t, dir, "reset", "--hard", base)
+		write("feature.txt", "accepted version\n")
+		cliGit(t, dir, "add", "feature.txt")
+		cliGit(t, dir, "commit", "-m", "review: accept the fix")
+		accepted := cliGit(t, dir, "rev-parse", "HEAD")
+		// A document/lint or CI-repair round commits AFTER review completed.
+		write("notes.md", "post-review housekeeping\n")
+		cliGit(t, dir, "add", "notes.md")
+		cliGit(t, dir, "commit", "-m", "docs: post-review housekeeping")
+		continuedHead = cliGit(t, dir, "rev-parse", "HEAD")
+		write("followup.txt", "follow-up\n")
+		cliGit(t, dir, "add", "followup.txt")
+		cliGit(t, dir, "commit", "-m", "follow-up work")
+		return base, mirrorHead, accepted, cliGit(t, dir, "rev-parse", "HEAD")
+	})
+	cliGit(t, e.dir, "push", e.gateDir, e.mirrorHead+":refs/heads/main")
+	run := e.recordTerminalRunWithVerifiedHead(t, continuedHead)
+
+	_, err := preparePrivateMirror(context.Background(), e.env, "main", e.localHead)
+	if err == nil {
+		t.Fatal("submission reconciled a private head whose continuation the exception does not accept")
+	}
+	mirrorErr, ok := err.(*staleMirrorError)
+	if !ok {
+		t.Fatalf("refusal was not actionable: %T %v", err, err)
+	}
+	summary := mirrorErr.Summary()
+	for _, want := range []string{run.ID, continuedHead, e.accepted} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("summary %q does not name %q", summary, want)
+		}
+	}
+	action := mirrorErr.refusal.Action()
+	if strings.Contains(action, "branch_sync.next_action.command") {
+		t.Errorf("action %q offers the branch_sync dead-end for a returned-custody run", action)
+	}
+	for _, want := range []string{gate.RemoteName, "main"} {
+		if !strings.Contains(action, want) {
+			t.Errorf("action %q does not name %q, so the mirror commits cannot be retrieved", action, want)
+		}
+	}
+	t.Logf("post-review continuation refusal summary: %s", summary)
+	t.Logf("post-review continuation refusal action: %s", action)
+
+	if got := cliGit(t, e.gateDir, "rev-parse", "refs/heads/main"); got != e.mirrorHead {
+		t.Fatalf("refusal moved the mirror to %s, want %s untouched", got, e.mirrorHead)
+	}
+	if tags := cliGit(t, e.gateDir, "tag", "--list", "no-mistakes-abandoned/*"); tags != "" {
+		t.Fatalf("refusal archived a mirror it did not prove: %q", tags)
 	}
 }
 

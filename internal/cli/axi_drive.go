@@ -642,8 +642,16 @@ func emitStaleMirrorError(cmd *cobra.Command, err *staleMirrorError) error {
 }
 
 // Summary states the exact condition in operator terms, naming the heads
-// involved so the refusal is diagnosable without re-running Git by hand.
+// involved so the refusal is diagnosable without re-running Git by hand. When a
+// recorded run establishes why the private head could not be replaced, that exact
+// condition is named instead of only the at-risk count.
 func (e *staleMirrorError) Summary() string {
+	if condition := e.refusal.Condition(); condition != "" {
+		return fmt.Sprintf(
+			"the private mirror for %q holds %d commit(s) the current head %s does not contain (mirror at %s); it was left untouched, and recorded supersession does not apply: %s",
+			e.branch, len(e.refusal.AtRisk), e.refusal.LiveHead, e.refusal.PreviousHead, condition,
+		)
+	}
 	return fmt.Sprintf(
 		"the private mirror for %q holds %d commit(s) the current head %s does not contain (mirror at %s); it was left untouched",
 		e.branch, len(e.refusal.AtRisk), e.refusal.LiveHead, e.refusal.PreviousHead,
