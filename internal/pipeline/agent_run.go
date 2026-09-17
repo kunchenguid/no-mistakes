@@ -127,11 +127,15 @@ func invokeAgent(parent context.Context, timeout, stall time.Duration, activity 
 	// wall-clock diagnosis below still sees the cause it expects.
 	runCtx, cancelRun := context.WithCancel(ctx)
 	stopWatch := watchAgentStall(runCtx, cancelRun, stall, activity)
+	// Cleanup is deferred so a panicking adapter cannot strand the watcher
+	// goroutine or leave the layered context live. stopWatch is once-guarded, so
+	// the explicit call below and this deferred one cannot race.
+	defer cancelRun()
+	defer cancelDeadline()
+	defer func() { stopWatch() }()
 	result, err := run(runCtx)
 	stalled := stopWatch()
-	cancelRun()
 	runErr := classifyAgentRun(ctx, applied, activity, stalled, err)
-	cancelDeadline()
 	if runErr != nil {
 		return nil, runErr
 	}
