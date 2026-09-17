@@ -13,6 +13,32 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
+// ompMemoryIsolationOverlay closes omp's persistent memory backend for EVERY
+// invocation. omp's memory is a second channel into a turn beyond the session
+// and the project files: mnemopi autoRetain stores a turn's prompt, and
+// autoRecall injects earlier rows into later prompts across steps, rounds, and
+// runs. The pipeline's review contract (see review.go's round-history note)
+// requires a review turn to receive no prior turn's context except the explicit
+// sanitized round history, and a memory recall is an unsanitized, unbounded
+// path that crosses all three boundaries - it can hand round N's reviewer round
+// N-1's findings and its own prior prescription. It is therefore closed
+// unconditionally, including on the default path where the repo did not opt out
+// and on the durable fixer-session path.
+//
+// The key must be the NESTED `memory: backend: "off"` mapping. Measured against
+// omp 18.2.0 with a codeword control: a durable turn stored the codeword and the
+// following cold turn recalled it with no overlay and with the flat
+// `memory.backend: "off"` spelling, and answered NONE only with this nested
+// form.
+//
+// The consequence is deliberate and is stated plainly: a gate run does NOT
+// inherit the operator's own omp memory. No-mistakes' isolation contract outranks
+// memory convenience on gate turns, and the operator's memory is otherwise
+// untouched - this is a per-run overlay file, never an edit to their settings.
+const ompMemoryIsolationOverlay = `memory:
+  backend: "off"
+`
+
 // ompNeutralizationOverlay is the `--config` overlay that suppresses the target
 // repository's project agent-instruction files. omp has no flag equivalent of
 // pi's --no-context-files for those files; its documented kill-switch is a
@@ -26,6 +52,9 @@ import (
 // (internal/agent/omp_test.go reproduces it): with the file present and no
 // overlay omp receives its contents in the system prompt, and with the overlay
 // the same prompt's token count returns exactly to its file-free baseline.
+//
+// It composes ompMemoryIsolationOverlay (in effect for every invocation) with
+// the opt-out's disabledExtensions keys.
 //
 // This overlay is NOT sufficient on its own. omp injects further
 // project-controlled surfaces through separate capability providers whose
@@ -59,7 +88,7 @@ import (
 // overlay: `disabledExtensions` REPLACES rather than merges when several
 // overlays are supplied, so a later overlay would re-enable every file here.
 // --config is reserved for omp in config.reservedAgentArgs for that reason.
-const ompNeutralizationOverlay = `disabledExtensions:
+const ompNeutralizationOverlay = ompMemoryIsolationOverlay + `disabledExtensions:
   - context-file:project:AGENTS.md
   - context-file:project:CLAUDE.md
   - context-file:project:copilot-instructions.md
@@ -71,22 +100,23 @@ const ompNeutralizationOverlay = `disabledExtensions:
 // message_end/turn_end/agent_end events carrying the same assistantMessageEvent
 // deltas and the same assistant message shape), so this adapter reuses pi's
 // parser and text helpers and only owns what genuinely differs: argv shape,
-// the suppression argv it carries under the project-settings opt-out, and the
-// session header's identity form.
+// the memory isolation and project-suppression overlay it always carries, and
+// the session header's identity form.
 //
 // omp differs from pi in three ways that matter here: it rejects pi's
-// --no-context-files and --session-id flags outright, it suppresses project
-// agent-instruction files through a --config overlay plus its own --no-rules and
-// --no-skills kill-switches rather than one context-file flag, and its
-// durable-start shape is the absence of a session flag rather than an explicit
-// one.
+// --no-context-files and --session-id flags outright, it carries memory
+// isolation and (under the opt-out) project-instruction suppression through a
+// --config overlay plus its own --no-rules and --no-skills kill-switches rather
+// than one context-file flag, and its durable-start shape is the absence of a
+// session flag rather than an explicit one.
 type ompAgent struct {
 	bin       string
 	extraArgs []string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs launches omp with an overlay that disables the target repo's
 	// project agent-instruction files plus the two flags covering the surfaces
-	// the overlay cannot name (see ompNeutralizationOverlay).
+	// the overlay cannot name (see ompNeutralizationOverlay). The overlay also
+	// carries the memory isolation that holds on every path.
 	disableProjectSettings bool
 	subprocessContext
 }
@@ -122,10 +152,12 @@ func (a *ompAgent) NeutralizesGateInstructions() bool {
 }
 
 // suppressionApplies reports whether this invocation carries the
-// defend-in-depth suppression argv: the opt-out is on and the overlay will be
-// passed. It gates buildArgs only and is deliberately NOT the neutralization
-// verdict - NeutralizesGateInstructions fails closed because no combination of
-// these keys closes omp's project SETTINGS surface.
+// project-instruction suppression (the overlay's disabledExtensions keys plus
+// `--no-rules`/`--no-skills`): the opt-out is on and no operator --config
+// replaces the overlay. It is deliberately NOT the neutralization verdict -
+// NeutralizesGateInstructions fails closed because no combination of these keys
+// closes omp's project SETTINGS surface. Memory isolation is not gated here: it
+// is required on every path and lives in the overlay regardless.
 func (a *ompAgent) suppressionApplies() bool {
 	return a.disableProjectSettings && !ompUserSetConfigOverlay(a.extraArgs)
 }
@@ -257,60 +289,68 @@ func ompStdinError(err error) error {
 	return fmt.Errorf("omp stdin: %w", err)
 }
 
-// writeNeutralizationOverlay materializes ompNeutralizationOverlay when the
-// repo opted out of project settings AND the operator did not pin their own
-// --config, returning the overlay's absolute path and a removal function. A
-// repo that did not opt out writes nothing and gets an empty path, so buildArgs
-// adds no --config and omp loads project instruction files exactly as before.
-// An operator-pinned --config also yields no file, because that overlay is the
-// one omp will actually read (later overlays replace ours) and a temp file
-// nothing references would be dead weight.
+// writeNeutralizationOverlay materializes the `--config` overlay for one
+// invocation and returns its path plus a cleanup function. It is never empty:
+// the memory-isolation key is required on every path, so even a repo that did
+// not opt out gets a file carrying ompMemoryIsolationOverlay alone. It is
+// skipped only when the operator pinned their own --config, whose overlay would
+// REPLACE ours wholesale and whose contents are unknowable here.
 //
-// The overlay lives in a temp file rather than the target checkout: the
-// pipeline validates a worktree that must stay clean, and omp resolves
-// --config against its cwd, so the path is absolute.
+// The overlay lives in a temp file rather than the target checkout: the pipeline
+// validates a worktree that must stay clean, and omp resolves --config against
+// its cwd, so the path is absolute.
 func (a *ompAgent) writeNeutralizationOverlay() (string, func(), error) {
-	if !a.disableProjectSettings || ompUserSetConfigOverlay(a.extraArgs) {
+	if ompUserSetConfigOverlay(a.extraArgs) {
 		return "", func() {}, nil
 	}
-	f, err := os.CreateTemp("", "no-mistakes-omp-neutralize-*.yml")
+	f, err := os.CreateTemp("", "no-mistakes-omp-overlay-*.yml")
 	if err != nil {
-		return "", nil, fmt.Errorf("omp neutralization overlay: %w", err)
+		return "", nil, fmt.Errorf("omp config overlay: %w", err)
 	}
 	path := f.Name()
 	remove := func() { _ = os.Remove(path) }
-	if _, err := f.WriteString(ompNeutralizationOverlay); err != nil {
+	if _, err := f.WriteString(a.overlayDocument()); err != nil {
 		_ = f.Close()
 		remove()
-		return "", nil, fmt.Errorf("omp neutralization overlay: %w", err)
+		return "", nil, fmt.Errorf("omp config overlay: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		remove()
-		return "", nil, fmt.Errorf("omp neutralization overlay: %w", err)
+		return "", nil, fmt.Errorf("omp config overlay: %w", err)
 	}
 	return path, remove, nil
+}
+
+// overlayDocument returns the overlay document for this invocation: memory
+// isolation always, plus the project-instruction suppression when the repo opted
+// out. It must not be named `overlay`, which the embedded subprocessContext
+// already owns for the run-scoped forge overlay.
+func (a *ompAgent) overlayDocument() string {
+	if a.suppressionApplies() {
+		return ompNeutralizationOverlay
+	}
+	return ompMemoryIsolationOverlay
 }
 
 // buildArgs returns the omp argv for one invocation. A nil session is an
 // intentionally cold step; an empty SessionRef starts a durable session; a
 // populated SessionRef resumes the UUID that no-mistakes previously recorded.
 //
-// overlayPath is the neutralization overlay from writeNeutralizationOverlay
-// (empty when the repo did not opt out). It is placed FIRST so it cannot be
-// consumed as the value of a preceding user flag, matching pi's placement of
+// overlayPath is the config overlay from writeNeutralizationOverlay (empty only
+// when the operator pinned their own --config). It is placed FIRST so it cannot
+// be consumed as the value of a preceding user flag, matching pi's placement of
 // its equivalent suppression flag. omp's durable-start shape is the absence of
 // a session flag: unlike pi, it has no "start a new named session" flag, and
 // --no-session is reserved for the intentional cold step.
 func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
 	args := make([]string, 0, len(a.extraArgs)+7)
-	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
-	// suppress the target repo's AGENTS.md/CLAUDE.md/copilot-instructions.md so an
-	// agent-orchestration target cannot install a fleet-captain identity on the
-	// gate agent. This is defense in depth, not a neutralization claim: the
-	// adapter reports false (see NeutralizesGateInstructions) because omp's
-	// project settings surface cannot be closed. Skipped when the operator pinned
-	// their own --config, whose overlay would replace ours.
-	if overlayPath != "" && !ompUserSetConfigOverlay(a.extraArgs) {
+	// The overlay carries the memory isolation that must hold on every path
+	// (including the default, non-opt-out path) and, under the opt-out, the
+	// suppression of the target repo's AGENTS.md/CLAUDE.md/
+	// copilot-instructions.md. Skipped when the operator pinned their own
+	// --config, whose overlay would replace ours; memory isolation is then not
+	// established, which is the same reason omp is not admitted under the opt-out.
+	if overlayPath != "" {
 		args = append(args, "--config", overlayPath)
 	}
 	// The overlay cannot name omp's other two project-controlled surfaces: a
@@ -341,8 +381,10 @@ func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
 func isOmpSessionID(id string) bool { return isPiSessionID(id) }
 
 // ompUserSetConfigOverlay reports whether extraArgs pin a --config overlay, in
-// which case buildArgs does not add its own and neutralization cannot be
-// claimed. Handles both `--config <path>` and `--config=<path>`.
+// which case buildArgs does not add its own. That overlay REPLACES ours rather
+// than merging, so neither the project-instruction suppression nor the memory
+// isolation is established by it. Handles both `--config <path>` and
+// `--config=<path>`.
 func ompUserSetConfigOverlay(extraArgs []string) bool {
 	for _, arg := range extraArgs {
 		if arg == "--config" || strings.HasPrefix(arg, "--config=") {

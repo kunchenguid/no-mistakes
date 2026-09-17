@@ -15,11 +15,19 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// TestOmpAgent_BuildArgs pins the cold-step argv on the DEFAULT path: the
+// adapter's own overlay always leads it (memory isolation is unconditional),
+// and no suppression flags are added without the opt-out.
 func TestOmpAgent_BuildArgs(t *testing.T) {
 	oa := &ompAgent{bin: "omp"}
-	args := oa.buildArgs(nil, "")
+	overlayPath, remove, err := oa.writeNeutralizationOverlay()
+	if err != nil {
+		t.Fatalf("writeNeutralizationOverlay: %v", err)
+	}
+	defer remove()
 
-	expected := []string{"--mode", "json", "--no-session"}
+	args := oa.buildArgs(nil, overlayPath)
+	expected := []string{"--config", overlayPath, "--mode", "json", "--no-session"}
 	if got := strings.Join(args, " "); got != strings.Join(expected, " ") {
 		t.Fatalf("cold args = %q, want %q", got, strings.Join(expected, " "))
 	}
@@ -46,8 +54,8 @@ func TestOmpAgent_BuildArgs_DurableSession(t *testing.T) {
 
 // TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst pins the positional
 // contract: the overlay leads argv so it cannot be consumed as the value of a
-// preceding user flag, the two flags covering the rule and skill providers
-// follow it, and nothing is emitted when the repo did not opt out.
+// preceding user flag, and the two flags covering the rule and skill providers
+// follow it under the opt-out.
 func TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst(t *testing.T) {
 	oa := &ompAgent{bin: "omp", extraArgs: []string{"--model", "deepseek"}, disableProjectSettings: true}
 	args := oa.buildArgs(nil, "/tmp/overlay.yml")
@@ -139,21 +147,26 @@ func TestOmpAgent_RejectsInvalidSessionIdentity(t *testing.T) {
 	}
 }
 
-// ompOverlay is the parsed shape of the neutralization overlay's disabled
-// extension ids. omp consumes the overlay through a real YAML parser, so the
-// test asserts the parsed set rather than matching text in the file.
+// ompOverlay is the parsed shape of the config overlay: the disabled extension
+// ids plus the memory backend setting. omp consumes the overlay through a real
+// YAML parser, so the test asserts the parsed model rather than matching text in
+// the file.
 type ompOverlay struct {
 	DisabledExtensions []string `yaml:"disabledExtensions"`
+	Memory             struct {
+		Backend string `yaml:"backend"`
+	} `yaml:"memory"`
 }
 
-// TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout proves the overlay
-// is materialized outside the validated worktree (which must stay clean), that
-// it parses to exactly the disabled-extension set the controlled experiment
-// confirmed, and that the adapter's argv carries the two kill-switches covering
-// the project surfaces the overlay cannot name. Equality, not containment: a
-// dropped or duplicated id is a neutralization bug, and containment is what let
-// the `.github/instructions` gap pass unnoticed.
-func TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout(t *testing.T) {
+// TestOmpAgent_WritesOverlayFromTempNotCheckout proves the overlay is
+// materialized outside the validated worktree (which must stay clean), that it
+// parses to exactly the disabled-extension set the controlled experiment
+// confirmed, that it closes omp's persistent memory backend, and that the
+// adapter's argv carries the two kill-switches covering the project surfaces the
+// overlay cannot name. Equality, not containment: a dropped or duplicated id is
+// a neutralization bug, and containment is what let the `.github/instructions`
+// gap pass unnoticed.
+func TestOmpAgent_WritesOverlayFromTempNotCheckout(t *testing.T) {
 	cwd := t.TempDir()
 	oa := &ompAgent{bin: "omp", disableProjectSettings: true}
 
@@ -182,12 +195,14 @@ func TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout(t *testing.T) {
 	if !reflect.DeepEqual(parsed.DisabledExtensions, want) {
 		t.Fatalf("overlay disabledExtensions = %v, want %v", parsed.DisabledExtensions, want)
 	}
+	if parsed.Memory.Backend != "off" {
+		t.Fatalf("overlay memory backend = %q, want off (memory must be closed on every invocation)",
+			parsed.Memory.Backend)
+	}
 
 	// The full argv delivered to omp: the overlay leads it so it cannot be
 	// consumed as a preceding user flag's value, and the two flags that cover
-	// the rule and skill providers follow. Dropping either flag would leave a
-	// project-controlled surface live while the adapter still claimed
-	// neutralization.
+	// the rule and skill providers follow.
 	wantArgs := []string{"--config", path, "--no-rules", "--no-skills", "--mode", "json", "--no-session"}
 	if got := oa.buildArgs(nil, path); !reflect.DeepEqual(got, wantArgs) {
 		t.Fatalf("neutralized argv = %q, want %q", got, wantArgs)
@@ -198,14 +213,29 @@ func TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout(t *testing.T) {
 		t.Errorf("overlay must be removed after the invocation: %v", err)
 	}
 
-	// No opt-out -> no file and no suppression flags at all.
+	// No opt-out -> still an overlay, because memory isolation is unconditional;
+	// it carries memory alone and the argv gains no suppression flags.
 	plain := &ompAgent{bin: "omp"}
 	p, rm, err := plain.writeNeutralizationOverlay()
-	if err != nil || p != "" {
-		t.Fatalf("repo without opt-out must not write an overlay: path=%q err=%v", p, err)
+	if err != nil || p == "" {
+		t.Fatalf("memory isolation requires an overlay even without the opt-out: path=%q err=%v", p, err)
 	}
-	rm()
-	if got, want := plain.buildArgs(nil, ""), []string{"--mode", "json", "--no-session"}; !reflect.DeepEqual(got, want) {
+	defer rm()
+	plainBody, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read overlay: %v", err)
+	}
+	var plainParsed ompOverlay
+	if err := yaml.Unmarshal(plainBody, &plainParsed); err != nil {
+		t.Fatalf("overlay must be valid YAML for omp: %v\n%s", err, plainBody)
+	}
+	if plainParsed.Memory.Backend != "off" {
+		t.Fatalf("default-path overlay memory backend = %q, want off", plainParsed.Memory.Backend)
+	}
+	if len(plainParsed.DisabledExtensions) != 0 {
+		t.Fatalf("default-path overlay must not suppress project files: %v", plainParsed.DisabledExtensions)
+	}
+	if got, want := plain.buildArgs(nil, p), []string{"--config", p, "--mode", "json", "--no-session"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv without the opt-out = %q, want %q", got, want)
 	}
 }
@@ -236,7 +266,10 @@ func TestOmpAgent_RegisteredAsNativeHarness(t *testing.T) {
 // self-report: a project-controlled file of known size is placed in the working
 // directory, and the assistant message's input+cacheRead tokens are compared
 // across runs. A self-report can be defeated by an agent that simply reads the
-// file with a tool, which is why the file is never named in the prompt.
+// file with a tool, which is why the file is never named in the prompt. Both
+// arms carry the adapter's overlay, so omp's memory backend cannot retain this
+// experiment's own prompts and drift the counts; the isolated channel itself is
+// proven separately by TestOmpAgent_MemoryIsolationExperiment.
 //
 // The control-vs-suppressed arms keep the same shape as before, but the
 // assertion is inverted to match the honest contract: the context-file overlay
@@ -264,18 +297,21 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 	}
 
 	cwd := t.TempDir()
-	base := filepath.Join(cwd, "base.yml")
-	if err := os.WriteFile(base, []byte("memory:\n  backend: none\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
-	// The control argv carries no neutralization; the suppressed argv is the
-	// adapter's own for a repo that opted out, so the experiment measures what
-	// buildArgs actually launches rather than a hand-rolled approximation. Each
-	// arm is asserted against its OWN file-free baseline, so the constant offset
-	// between the two arms cancels out and only a surface's injected cost is ever
+	// Both arms are the adapter's own argv - the control is the default path (no
+	// opt-out) and the suppressed arm is the opt-out - so the experiment measures
+	// what buildArgs actually launches rather than a hand-rolled approximation.
+	// Each arm is asserted against its OWN file-free baseline, so the constant
+	// offset between them cancels out and only a surface's injected cost is ever
 	// compared.
-	control := []string{"--mode", "json", "--no-session", "--config", base}
+	plain := &ompAgent{bin: bin}
+	controlOverlay, removeControl, err := plain.writeNeutralizationOverlay()
+	if err != nil {
+		t.Fatalf("writeNeutralizationOverlay (default path): %v", err)
+	}
+	defer removeControl()
+	control := plain.buildArgs(nil, controlOverlay)
+
 	agent := &ompAgent{bin: bin, disableProjectSettings: true}
 	overlayPath, removeOverlay, err := agent.writeNeutralizationOverlay()
 	if err != nil {
@@ -380,6 +416,129 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 			"baseline=%d with-config=%d. If omp now closes its project settings surface, revisit "+
 			"ompAgent.NeutralizesGateInstructions instead of deleting this assertion",
 			baselineSuppressed, openTokens)
+	}
+}
+
+// TestOmpAgent_MemoryIsolationExperiment proves the memory channel is closed by
+// measurement rather than by reading the overlay: a codeword is planted in a
+// durable turn, and a following cold turn is asked to recall it. The control arm
+// (no overlay at all) recalls it because omp's persistent memory is active by
+// default; every adapter argv must answer NONE, on the DEFAULT path as well as
+// under the opt-out, because memory isolation is unconditional.
+//
+// This assertion is deliberately behavioral rather than token accounting: it
+// proves the isolated channel itself, so unrelated recall drift cannot make it
+// fire for a reason other than the surface under test.
+func TestOmpAgent_MemoryIsolationExperiment(t *testing.T) {
+	if os.Getenv("NM_TEST_REAL_OMP") != "1" {
+		t.Skip("set NM_TEST_REAL_OMP=1 to run the live omp memory isolation experiment")
+	}
+	bin, err := exec.LookPath("omp")
+	if err != nil {
+		t.Skip("omp not installed")
+	}
+
+	root := t.TempDir()
+
+	// runTurn executes one omp invocation in dir with the given argv and returns
+	// the final assistant text. A durable turn starts a session (empty
+	// SessionRef), a cold turn passes nil.
+	runTurn := func(dir string, agent *ompAgent, session *SessionRef, overlayPath, prompt string) string {
+		t.Helper()
+		cmd := exec.Command(bin, agent.buildArgs(session, overlayPath)...)
+		cmd.Dir = dir
+		cmd.Stdin = strings.NewReader(prompt + "\n")
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		pp := &piParser{}
+		if err := pp.parse(context.Background(), strings.NewReader(string(out))); err != nil {
+			return ""
+		}
+		return pp.finalText()
+	}
+
+	// recalls plants the codeword in a durable turn then asks for it cold,
+	// retrying a degenerate (empty) completion. It returns the cold turn's text.
+	recalls := func(name string, agent *ompAgent) string {
+		t.Helper()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		overlayPath := ""
+		if path, remove, err := agent.writeNeutralizationOverlay(); err != nil {
+			t.Fatalf("%s: writeNeutralizationOverlay: %v", name, err)
+		} else if path != "" {
+			defer remove()
+			overlayPath = path
+		}
+		for range 3 {
+			runTurn(dir, agent, &SessionRef{}, overlayPath,
+				"The secret codeword for this session is ZEBRA7. Reply with the single word: ok")
+			got := runTurn(dir, agent, nil, overlayPath,
+				"What is the secret codeword? Reply with the codeword, or exactly NONE if you do not know.")
+			if strings.TrimSpace(got) != "" {
+				return got
+			}
+		}
+		return ""
+	}
+
+	// The control invokes omp with no overlay at all, which is the shape that
+	// leaked: it measures whether this host's memory backend is active, so the
+	// suppression arms have something real to prove. Building the bare argv
+	// directly mirrors a caller that never adopted the adapter. An inactive
+	// backend skips rather than passing vacuously.
+	controlDir := filepath.Join(root, "control")
+	if err := os.MkdirAll(controlDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plainRun := func(session *SessionRef, prompt string) string {
+		args := []string{"--mode", "json"}
+		if session == nil {
+			args = append(args, "--no-session")
+		}
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = controlDir
+		cmd.Stdin = strings.NewReader(prompt + "\n")
+		out, err := cmd.Output()
+		if err != nil {
+			return ""
+		}
+		pp := &piParser{}
+		if err := pp.parse(context.Background(), strings.NewReader(string(out))); err != nil {
+			return ""
+		}
+		return pp.finalText()
+	}
+	var control string
+	for range 3 {
+		plainRun(&SessionRef{}, "The secret codeword for this session is ZEBRA7. Reply with the single word: ok")
+		control = plainRun(nil, "What is the secret codeword? Reply with the codeword, or exactly NONE if you do not know.")
+		if strings.TrimSpace(control) != "" {
+			break
+		}
+	}
+	if !strings.Contains(control, "ZEBRA7") {
+		t.Skipf("this host's omp memory backend did not recall the codeword (%q); "+
+			"the channel under test is inactive, so the isolation assertion would be vacuous", control)
+	}
+
+	// Both adapter shapes must be closed: the default path (no opt-out) and the
+	// opt-out. Memory isolation is what these two must not differ on.
+	for _, arm := range []struct {
+		name string
+		oa   *ompAgent
+	}{
+		{"default", &ompAgent{bin: bin}},
+		{"opt-out", &ompAgent{bin: bin, disableProjectSettings: true}},
+	} {
+		if got := recalls(arm.name, arm.oa); strings.Contains(got, "ZEBRA7") {
+			t.Fatalf("%s: the adapter's argv recalled a prior turn's codeword (%q); "+
+				"memory isolation is not in effect", arm.name, got)
+		}
 	}
 }
 
