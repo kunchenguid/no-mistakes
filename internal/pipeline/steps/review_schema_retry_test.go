@@ -53,6 +53,9 @@ func TestReviewStep_SchemaRejectionRerunsAFreshReview(t *testing.T) {
 		if call.Session != nil || call.Purpose != "review" {
 			t.Fatalf("call %d = purpose %q session %+v, want a session-free review", i+1, call.Purpose, call.Session)
 		}
+		if !strings.Contains(call.Prompt, "Use that skill as the canonical contract") {
+			t.Fatalf("call %d did not invoke the canonical code-review skill:\n%s", i+1, call.Prompt)
+		}
 	}
 	note, ok := strings.CutPrefix(ag.calls[1].Prompt, ag.calls[0].Prompt)
 	if !ok {

@@ -18,6 +18,8 @@ code review, evidence-oriented test validation, test or lint detection when you
 have not configured explicit commands, auto-fixing, and setup-wizard suggestions
 when you leave prompts blank.
 
+Review invokes the user-installed `code-review` skill through normal discovery in the selected agent runtime. Install that skill where the runtime discovers user skills; no-mistakes does not bundle a copy. A runtime that cannot load it parks Review for a decision instead of substituting a different review policy.
+
 Pipeline agent prompts also include a workspace-boundary preamble and an execution-context section with the exact worktree directory and path contract.
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, use that exact path prefix when tools require absolute paths without guessing or re-resolving paths, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
 The only intentional out-of-worktree write it allows is test evidence under the run's managed evidence directory when a testing prompt asks for it.

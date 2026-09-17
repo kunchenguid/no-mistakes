@@ -32,7 +32,7 @@ func axiScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "axi-scenario.yaml")
 	content := `actions:
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found a warning"
     structured:
       findings:
@@ -92,7 +92,7 @@ func branchSyncScenario(t *testing.T) string {
         new: "safe"
     structured:
       summary: "guard unsafe value"
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found a warning"
     structured:
       findings:
@@ -621,7 +621,7 @@ func rebaseCustodyScenario(t *testing.T) string {
         new: "guard helper\n"
     structured:
       summary: "add a guard helper alongside the feature"
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found a warning"
     structured:
       findings:
@@ -1070,7 +1070,7 @@ func TestAxiAgentJourney(t *testing.T) {
 	if storedIntent.source == nil || *storedIntent.source != "agent" {
 		t.Errorf("runs.intent_source = %v, want agent for explicit --intent", storedIntent.source)
 	}
-	reviewPrompt := findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings")
+	reviewPrompt := findInvocationContaining(h.AgentInvocations(), `Invoke the user-installed "code-review" skill`)
 	if reviewPrompt == "" {
 		t.Fatal("no review-step prompt observed")
 	}

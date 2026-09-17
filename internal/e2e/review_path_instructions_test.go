@@ -182,7 +182,7 @@ func pushMainRepoConfig(t *testing.T, h *Harness, yaml string) {
 // reviewStepPromptMarker is the first line of the review step's own prompt. The
 // agent receives it after the workspace-boundary and gate-phase preamble, so
 // this is a contains check rather than a prefix check.
-const reviewStepPromptMarker = "Review the code changes and return structured findings"
+const reviewStepPromptMarker = `Invoke the user-installed "code-review" skill`
 
 // reviewPrompt returns the prompt of the first review invocation in the fake
 // agent log, failing the test when the review step never called the agent.

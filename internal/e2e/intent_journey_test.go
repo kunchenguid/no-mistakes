@@ -87,7 +87,7 @@ func TestIntentJourney(t *testing.T) {
 	// 3. The review step prompt carried the user-intent section. This is
 	// the assertion that catches "intent is computed but never reaches
 	// the steps" - the failure mode this whole journey is here to detect.
-	reviewPrompt := findInvocationContaining(invocations, "Review the code changes and return structured findings")
+	reviewPrompt := findInvocationContaining(invocations, `Invoke the user-installed "code-review" skill`)
 	if reviewPrompt == "" {
 		t.Fatalf("no review-step prompt observed; agent invocations:\n%s", dumpPrompts(invocations))
 	}

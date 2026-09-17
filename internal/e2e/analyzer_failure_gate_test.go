@@ -61,7 +61,7 @@ func TestAnalyzerEvidenceFailuresFailPipelineJourney(t *testing.T) {
   - match: "branch: analyzer-review-null-findings"
     text: "review unavailable"
     structured_raw: '{"findings":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}'
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review clean"
     structured:
       findings: []

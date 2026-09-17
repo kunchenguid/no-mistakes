@@ -199,11 +199,8 @@ func TestReviewLoop_IndependentReviewTurnsOneFixerSession(t *testing.T) {
 	// Every review round, including rereviews inside the resumed session,
 	// still demands a full adversarial pass over the branch.
 	for i, call := range reviews {
-		if !strings.Contains(call.Prompt, "Do a full review pass before returning") {
-			t.Fatalf("review round %d prompt lost the full-review demand:\n%s", i+1, call.Prompt)
-		}
-		if !strings.Contains(call.Prompt, "Review the code changes") {
-			t.Fatalf("review round %d prompt is not a full review prompt:\n%s", i+1, call.Prompt)
+		if !strings.Contains(call.Prompt, "Use that skill as the canonical contract") {
+			t.Fatalf("review round %d prompt does not invoke the canonical code-review skill:\n%s", i+1, call.Prompt)
 		}
 	}
 
@@ -319,8 +316,8 @@ func TestReviewLoop_ParkRespondFixKeepsRoleSessions(t *testing.T) {
 	if fixes[0].Session == nil || fixes[0].Session.ID != "" {
 		t.Fatalf("user-driven fix must start the fixer session, got %+v", fixes[0].Session)
 	}
-	if !strings.Contains(reviews[1].Prompt, "Do a full review pass before returning") {
-		t.Fatalf("post-fix rereview lost the full-review demand:\n%s", reviews[1].Prompt)
+	if !strings.Contains(reviews[1].Prompt, "Use that skill as the canonical contract") {
+		t.Fatalf("post-fix rereview does not invoke the canonical code-review skill:\n%s", reviews[1].Prompt)
 	}
 }
 

@@ -25,7 +25,7 @@ func configurableFixCommitScenario(t *testing.T, fixSummary string) string {
         new: "safe"
     structured:
       summary: "FIX_SUMMARY"
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found an issue"
     structured:
       findings:

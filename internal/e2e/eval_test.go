@@ -21,7 +21,7 @@ import (
 func TestEvalJourney(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "eval-scenario.yaml")
 	if err := os.WriteFile(scenario, []byte(`actions:
-  - match: "Review the code changes and return structured findings with a risk assessment."
+  - match: 'Invoke the user-installed "code-review" skill'
     structured:
       findings:
         - id: review-warning
@@ -129,7 +129,7 @@ func TestEvalJourney(t *testing.T) {
 func TestEvalAutoCaptureJourney(t *testing.T) {
 	scenario := filepath.Join(t.TempDir(), "auto-capture-scenario.yaml")
 	if err := os.WriteFile(scenario, []byte(`actions:
-  - match: "Review the code changes and return structured findings with a risk assessment."
+  - match: 'Invoke the user-installed "code-review" skill'
     structured:
       findings:
         - id: review-warning

@@ -18,7 +18,7 @@ func silentAgentScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "silent-agent-scenario.yaml")
 	content := `actions:
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     delay_ms: 60000
     text: "never reached"
     structured:

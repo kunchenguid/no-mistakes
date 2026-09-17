@@ -114,6 +114,91 @@ func TestReviewStep_UnrunAnalyzerDoesNotApprove(t *testing.T) {
 	}
 }
 
+func TestReviewStep_InvokesCodeReviewSkillAsCanonicalContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	findingsJSON, _ := json.Marshal(cleanReviewFindings())
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		`Invoke the user-installed "code-review" skill through this runtime's normal skill discovery`,
+		`invoked as "/code-review"`,
+		"Use that skill as the canonical contract",
+		"Do not substitute or recreate another review policy",
+		"scope mode: exact refs",
+		"Compare the named base and target endpoints without replacing them with a merge-base",
+		"Return the completed skill result through the provided JSON schema",
+		`Convert each material unresolved risk and every active lane the skill reports as partial or blocked into a "warning" / "ask-user" finding`,
+		`Map Critical and High verified findings to "error", Medium and Low verified findings to "warning", and verified nits to "info"`,
+		`Use "ask-user" when the remedy needs a product or scope decision`,
+		`Anchor each source finding to a file and one-indexed line`,
+		`Use risk_scope "source-or-external" when any source or external risk remains`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing canonical skill invocation %q:\n%s", want, prompt)
+		}
+	}
+	for _, competingContract := range []string{
+		"Task:\n- Read the relevant history and diff yourself",
+		"Simplification (a dedicated pass over what the change introduced",
+		"Risk assessment (after listing all findings)",
+		"## Test-quality rule",
+		"Reviewer action:",
+	} {
+		if strings.Contains(prompt, competingContract) {
+			t.Errorf("review prompt retained competing built-in policy %q:\n%s", competingContract, prompt)
+		}
+	}
+}
+
+func TestReviewStep_UnavailableCodeReviewSkillFindingParksForUser(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if !strings.Contains(opts.Prompt, `If the "code-review" skill is missing, unsupported, or cannot be loaded`) ||
+				!strings.Contains(opts.Prompt, "do not perform a substitute review") {
+				t.Fatalf("review prompt does not fail closed when the canonical skill is unavailable:\n%s", opts.Prompt)
+			}
+			return &agent.Result{Output: json.RawMessage(`{
+				"findings":[{
+					"severity":"error",
+					"description":"The canonical code-review skill is unavailable in this runtime.",
+					"action":"ask-user",
+					"review_scope":"source"
+				}],
+				"risk_level":"high",
+				"risk_rationale":"The required review contract did not run.",
+				"risk_scope":"source-or-external"
+			}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("outcome = %+v, findings = %+v; want unavailable skill parked for user review", outcome, findings.Items)
+	}
+}
+
 func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
@@ -507,17 +592,15 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if strings.Contains(ag.calls[1].Prompt, "<<<<<<< HEAD") {
 		t.Error("expected review prompt to exclude merge markers")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "challenges the author's deliberate intent") {
-		t.Error("expected review prompt action to cover intent-challenging scenarios")
+	if !strings.Contains(ag.calls[1].Prompt, "Use that skill as the canonical contract") {
+		t.Error("expected rereview to invoke the canonical code-review skill")
 	}
 	if !strings.Contains(ag.calls[1].Prompt, `"ask-user"`) {
 		t.Error("expected review prompt to include ask-user action for ambiguous findings")
 	}
-	if !strings.Contains(ag.calls[1].Prompt, "inspect surrounding code, call sites, shared helpers, tests, and invariants") {
-		t.Error("expected review prompt to allow surrounding-code inspection for root cause")
+	if !strings.Contains(ag.calls[1].Prompt, "Apply the skill's inspect-only review workflow") {
+		t.Error("expected review prompt to retain the skill's inspect-only boundary")
 	}
-	assertTestQualityRulePrompt(t, ag.calls[1].Prompt)
-	assertTestQualityReviewerAction(t, ag.calls[1].Prompt)
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -546,8 +629,6 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 			calls++
 			switch calls {
 			case 1:
-				assertTestQualityRulePrompt(t, opts.Prompt)
-				assertTestQualityReviewerAction(t, opts.Prompt)
 				output, _ := json.Marshal(Findings{Items: []Finding{{
 					ID:          "source-content-only-test",
 					Severity:    "warning",
@@ -563,8 +644,6 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 				}
 				return &agent.Result{Output: json.RawMessage(`{"summary":"replace source test"}`)}, nil
 			case 3:
-				assertTestQualityRulePrompt(t, opts.Prompt)
-				assertTestQualityReviewerAction(t, opts.Prompt)
 				output, _ := json.Marshal(cleanReviewFindings())
 				return &agent.Result{Output: output}, nil
 			default:
@@ -679,253 +758,6 @@ func TestReviewStep_FixMode_FocusedVerificationContract(t *testing.T) {
 	// must be gone.
 	if strings.Contains(fixPrompt, "Verify that the issues are resolved before finishing") {
 		t.Errorf("fixer prompt still carries the open-ended full-suite verification instruction:\n%s", fixPrompt)
-	}
-}
-
-func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
-	}
-	prompt := ag.calls[0].Prompt
-
-	for _, want := range []string{
-		"claims a durable fix or explicitly authorized short-term containment",
-		"reconstruct the concrete failing sequence and required invariant",
-		"inspect relevant sibling paths and shared state transitions",
-		"whether the same authorized failure remains reachable",
-		"source evidence proves the failure remains reachable",
-		"earliest supported shared boundary that would make the invariant hold",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing durable-fix evidence requirement %q:\n%s", want, prompt)
-		}
-	}
-
-	for _, want := range []string{
-		"Do not infer a systemic flaw from code shape, duplication, or architectural preference alone.",
-		"Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.",
-		"Do not block explicitly authorized honest containment merely because a later durable fix is possible.",
-		"Do not expand user scope or turn optional broader improvements into blockers.",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing scope guardrail %q:\n%s", want, prompt)
-		}
-	}
-}
-
-// The qualitative corpus is an executable unified-diff contract, so each
-// fixture must remain consumable by the documented git-based evaluation flow.
-func TestReviewStep_IntendedUsageFixturesApply(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name     string
-		file     string
-		baseline string
-	}{
-		{name: "rare duplicate window", file: "jobs/finish.go", baseline: "package jobs\n"},
-		{name: "hypothetical unused lock", file: "run/status.go", baseline: "package run\n"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			path := filepath.Join(dir, tc.file)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(tc.baseline), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			gitCmd(t, dir, "init", "-q")
-			// Keep both inputs LF-only regardless of the runner's checkout
-			// conversion policy. Git parses context lines from the patch as-is.
-			gitCmd(t, dir, "config", "core.autocrlf", "false")
-			fixture, err := os.ReadFile(filepath.Join("testdata", "intended_usage_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			fixturePath := filepath.Join(dir, "fixture.diff")
-			fixture = []byte(strings.ReplaceAll(string(fixture), "\r\n", "\n"))
-			if err := os.WriteFile(fixturePath, fixture, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			gitCmd(t, dir, "apply", "--check", fixturePath)
-		})
-	}
-}
-
-// Intended-usage evidence is a finding threshold, not a general "be less
-// noisy" rewrite: a rare but real sequence under intended usage still
-// qualifies, while a hypothetical unused path does not. The completeness
-// obligations stay; this pins the emitted contract, not model interpretation.
-func TestReviewStep_IntendedUsageEvidenceContract(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
-	}
-	prompt := ag.calls[0].Prompt
-
-	for _, want := range []string{
-		"Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage",
-		"including rare but real sequences those callers actually perform",
-		"hypothetical unused execution that intended callers, the public API, or documented usage never take",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing intended-usage evidence threshold %q:\n%s", want, prompt)
-		}
-	}
-
-	// Completeness stays: this is not a license to stop early or emit fewer findings.
-	for _, want := range []string{
-		"Do a full review pass before returning",
-		"Do not stop after the first valid finding",
-		"Continue inspecting the rest of the changed code",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt dropped completeness obligation %q:\n%s", want, prompt)
-		}
-	}
-
-	for _, overreach := range []string{
-		"be less noisy",
-		"prefer fewer findings",
-		"reduce the number of findings",
-		"lock on every status write",
-		"parent-channel",
-		"parent channel",
-	} {
-		if strings.Contains(strings.ToLower(prompt), overreach) {
-			t.Errorf("review prompt broadened past the intended-usage criterion with %q:\n%s", overreach, prompt)
-		}
-	}
-}
-
-// Counterexample construction is a general review principle for any new or
-// changed logic, not a bug-fix-only reconstruction. Silently wrong values,
-// labels, and sets are named as risks. The principle stays short and general:
-// it must not become a checklist of incident-specific probes.
-func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
-	}
-	prompt := ag.calls[0].Prompt
-
-	for _, want := range []string{
-		"For any new or changed logic, construct at least one concrete input or state and trace it",
-		"wrong result without erroring",
-		"wrong value, label, or set without failing",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing general correctness principle %q:\n%s", want, prompt)
-		}
-	}
-
-	// Durable-fix reconstruction remains a paired, still-gated discipline.
-	if !strings.Contains(prompt, "For a claimed durable fix, reconstruct the concrete failing sequence") {
-		t.Errorf("review prompt dropped the durable-fix reconstruction pairing:\n%s", prompt)
-	}
-
-	for _, overfit := range []string{
-		"each read path and each write/refresh path",
-		"configured bound is changed after state already exists",
-		"greedy or order-dependent loop",
-	} {
-		if strings.Contains(prompt, overfit) {
-			t.Errorf("review prompt overfit an incident-specific probe %q:\n%s", overfit, prompt)
-		}
-	}
-}
-
-// Authorization and privacy are one conditional obligation in the existing
-// review pass. The emitted prompt must require concrete cross-boundary evidence,
-// preserve repository ownership of access policy, accept equivalent controls
-// and intentionally public data, and route material policy ambiguity through the
-// existing ask-user action rather than inventing a rule.
-func TestReviewStep_AuthorizationPrivacyTracingContract(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected the existing single review call, got %d", len(ag.calls))
-	}
-	prompt := ag.calls[0].Prompt
-
-	for _, want := range []string{
-		"potentially protected resources or user data",
-		"where identity is established and whether unauthenticated execution remains reachable",
-		"earliest shared boundary used by every caller",
-		"ownership, role, tenant, organization, and administrative scope",
-		"public responses and serialization",
-		"search projections, caches, logs, telemetry, error details, exports, and generated artifacts",
-		"fail-open defaults, missing-context behavior, preview or bypass paths, and stale authorization assumptions",
-		"source-backed evidence of a concrete reachable operation or disclosure path",
-		"protected resource or field, the bypass or missing control, and the resulting unauthorized action or exposure",
-		"do not invent access policy",
-		`you MUST emit an "ask-user" finding that names the missing policy decision`,
-		"Do not report immaterial or pre-existing ambiguity",
-		"equivalent controls and intentionally public data",
-		"middleware, an authorization call, or an auth-related test is absent by name",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing authorization/privacy contract %q:\n%s", want, prompt)
-		}
 	}
 }
 
@@ -1481,48 +1313,6 @@ func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {
 	return rounds[len(rounds)-1].ID
 }
 
-// TestReviewStep_PromptClassifiesFindingsByRemedyScope pins the reviewer's
-// remedy-scope classification rule as it is actually rendered to the model. A
-// finding whose smallest honest remedy would extend the change - new durable
-// state, a schema change, new background/retry/persistence machinery, a new
-// subsystem - must be classified ask-user even when the defect itself reads as
-// mechanical, and the description must name the remedy as the thing needing
-// authorization. This routes expanding remedies to the existing gate instead of
-// letting them be built silently inside an auto-fix round.
-func TestReviewStep_PromptClassifiesFindingsByRemedyScope(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	prompt := ag.calls[0].Prompt
-	for _, want := range []string{
-		"Classify by the remedy, not only by the topic",
-		"new durable state, a schema change, new background, retry, or persistence machinery, a new subsystem",
-		"EXTEND the change beyond its stated intent rather than CORRECT what it already does",
-		`the action must be "ask-user" even when the defect itself looks mechanical`,
-		"the remedy, not the defect, is what needs authorization",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt missing remedy-scope classification rule %q:\n%s", want, prompt)
-		}
-	}
-	// The rule belongs to the reviewer's action vocabulary, not the fixer.
-	if !strings.Contains(prompt, `- For each finding, set the action field to one of:`) {
-		t.Fatalf("review prompt lost the action vocabulary it must extend:\n%s", prompt)
-	}
-}
-
 // TestReviewStep_FixPromptPrefersSimplificationOverMachinery pins the fixer's
 // depth rule as rendered: fix the reported instance narrowly, and when depth is
 // warranted reach it by simplifying an architectural reason rather than bolting
@@ -1670,143 +1460,6 @@ func TestReviewStep_RereviewOffersRevertExitFromPriorRoundMachinery(t *testing.T
 			t.Errorf("a review with no prior-round code must not carry the revert exit ramp:\n%s", ag.calls[0].Prompt)
 		}
 	})
-}
-
-// The Simplification section is a dedicated pass that asks whether the intent
-// requires each component the change introduced, distinct from the defect pass
-// and from the refactor-only "simplification opportunities" meaning that stays
-// in place. An unrequired component is a warning whose remedy is removal and
-// whose action stays ask-user: whether extra surface is wanted is the author's
-// call. This pins the emitted contract, not model interpretation.
-func TestReviewStep_SimplificationSectionContract(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	findingsJSON, _ := json.Marshal(cleanReviewFindings())
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return &agent.Result{Output: findingsJSON}, nil
-		},
-	}
-
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
-	}
-	prompt := ag.calls[0].Prompt
-
-	sectionIdx := strings.Index(prompt, "\nSimplification (a dedicated pass over what the change introduced")
-	if sectionIdx < 0 {
-		t.Fatalf("review prompt missing the dedicated Simplification section:\n%s", prompt)
-	}
-	// It is its own section between the finding rules and the risk assessment,
-	// not a bullet folded into either.
-	if rulesIdx := strings.Index(prompt, "\nRules:"); rulesIdx < 0 || rulesIdx > sectionIdx {
-		t.Errorf("Simplification section must follow the Rules section:\n%s", prompt)
-	}
-	if riskIdx := strings.Index(prompt, "\nRisk assessment"); riskIdx < 0 || riskIdx < sectionIdx {
-		t.Errorf("Simplification section must precede the Risk assessment section:\n%s", prompt)
-	}
-	section := prompt[sectionIdx:]
-	if riskIdx := strings.Index(section, "\nRisk assessment"); riskIdx >= 0 {
-		section = section[:riskIdx]
-	}
-
-	for _, want := range []string{
-		"Enumerate every component the change introduced",
-		"a second definition of a concept the code already defines once",
-		"Judge each one against the User intent when one is stated, otherwise against the change's own stated purpose",
-		`not strictly required to satisfy that intent, report a finding with severity "warning" and action "ask-user"`,
-		"recommend removing it as the remedy",
-		"Do not recommend hardening, validating, or documenting a component the intent does not require",
-		"name removal of the component as the smallest honest remedy",
-		"name the narrower form",
-	} {
-		if !strings.Contains(section, want) {
-			t.Errorf("Simplification section missing %q:\n%s", want, section)
-		}
-	}
-
-	// The refactor-only meaning of a simplification opportunity is kept and
-	// now points at the section instead of contradicting it: an unrequired
-	// component is never an auto-fix refactor.
-	for _, want := range []string{
-		"Analyze for bugs, risks, and code simplification opportunities.",
-		"non-functional refactoring (e.g. deduplication, clearer control flow)",
-		"do NOT mean removing features, changing product behavior, or stripping intentional user-facing output",
-		`reported through the dedicated Simplification section below, never as an "auto-fix" refactor`,
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt lost the refactor-only simplification meaning %q:\n%s", want, prompt)
-		}
-	}
-
-	// The section adds no schema field, second reviewer, or general rewrite of
-	// the defect pass. Existing evidence and completeness obligations stay.
-	for _, want := range []string{
-		"Report a finding only when you can construct a concrete sequence that occurs during the change's intended usage",
-		"Do a full review pass before returning",
-		"Classify by the remedy, not only by the topic.",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("review prompt dropped an existing obligation %q:\n%s", want, prompt)
-		}
-	}
-	for _, overreach := range []string{
-		"simplification_findings",
-		"second reviewer",
-		"rewrite the change",
-		"delete the feature",
-	} {
-		if strings.Contains(strings.ToLower(prompt), overreach) {
-			t.Errorf("review prompt broadened past the Simplification section with %q:\n%s", overreach, prompt)
-		}
-	}
-}
-
-// The qualitative corpus is an executable unified-diff contract, so each
-// fixture must remain consumable by the documented git-based evaluation flow.
-func TestReviewStep_SimplificationFixturesApply(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name     string
-		file     string
-		baseline string
-	}{
-		{name: "permissive target resolver", file: "target/resolve.go", baseline: "package target\n"},
-		{name: "exact match resolver", file: "target/resolve.go", baseline: "package target\n"},
-		{name: "second budget semantics", file: "proposal/budget.go", baseline: "package proposal\n"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			path := filepath.Join(dir, tc.file)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(tc.baseline), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			gitCmd(t, dir, "init", "-q")
-			gitCmd(t, dir, "config", "core.autocrlf", "false")
-			fixture, err := os.ReadFile(filepath.Join("testdata", "simplification_review", strings.ReplaceAll(tc.name, " ", "-")+".diff"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			fixturePath := filepath.Join(dir, "fixture.diff")
-			fixture = []byte(strings.ReplaceAll(string(fixture), "\r\n", "\n"))
-			if err := os.WriteFile(fixturePath, fixture, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			gitCmd(t, dir, "apply", "--check", fixturePath)
-		})
-	}
 }
 
 // TestReviewStep_FixPromptPrefersRemovalOfUnrequiredPaths pins the fixer's

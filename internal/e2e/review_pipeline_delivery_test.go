@@ -28,7 +28,7 @@ func writePipelineOwnedPRScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pipeline-owned-pr-scenario.yaml")
 	content := `actions:
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found missing PR"
     structured:
       findings:
@@ -72,7 +72,7 @@ func writeExternalPRScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "external-pr-scenario.yaml")
 	content := `actions:
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review found external PR issue"
     structured:
       findings:
@@ -211,7 +211,7 @@ func TestReviewPipelineOwnedPRCriterionDoesNotPark(t *testing.T) {
 	}
 
 	// Prompt boundary is present on the production review path.
-	reviewPrompt := findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings")
+	reviewPrompt := findInvocationContaining(h.AgentInvocations(), `Invoke the user-installed "code-review" skill`)
 	if reviewPrompt == "" {
 		t.Fatal("no review prompt observed")
 	}

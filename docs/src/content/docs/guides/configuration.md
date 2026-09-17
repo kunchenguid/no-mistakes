@@ -62,7 +62,7 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## House rules for part of the tree
 
-Most review guidance belongs in the repository's own agent instructions, which every gate agent already reads. Use `review.path_instructions` for the rules that apply to only part of the tree: each entry pairs a path glob with guidance, and the review step appends only the entries whose glob matches a file the change actually touched, each labelled with the path and files it was selected for. A branch that matches nothing, or a repo with nothing configured, gets the review prompt it would get without the setting.
+The user-installed `code-review` skill owns general review policy. Repository-specific standards belong in the repository's own agent instructions, which every gate agent already reads. Use `review.path_instructions` for rules that apply to only part of the tree: each entry pairs a path glob with guidance, and the review step appends only entries whose glob matches a file the change touched, each labeled with its path and matching files. A branch that matches nothing, or a repo with nothing configured, gets the review prompt it would get without the setting.
 
 These blocks steer a gate agent, so they are read from your default branch rather than from the branch being reviewed, and `allow_repo_commands` does not change that. Commit them to the default branch before expecting a run to honor them. The [Repo Config Reference](/no-mistakes/reference/repo-config/#reviewpath_instructions) owns the syntax, the glob rules, the size limits, and the exact trust semantics.
 

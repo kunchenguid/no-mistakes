@@ -20,7 +20,7 @@ func writeFinalPRScopeScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "final-pr-scope-scenario.yaml")
 	content := `actions:
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "review clean"
     structured:
       findings: []

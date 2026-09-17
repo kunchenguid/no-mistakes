@@ -17,7 +17,7 @@ import (
 // binary issued (not by inspecting source): the initial review, the fixer's
 // review-fix turn, and the post-fix rereview.
 const (
-	reviewTurnMarker   = "Review the code changes and return structured findings"
+	reviewTurnMarker   = `Invoke the user-installed "code-review" skill`
 	fixTurnMarker      = "Previous review findings to address"
 	rereviewTurnMarker = "Previous rounds for this step"
 )
@@ -48,7 +48,7 @@ func writeReviewAgentsRoutingScenario(t *testing.T) string {
       risk_level: low
       risk_rationale: "issue resolved by the fixer"
       risk_scope: source-or-external
-  - match: "` + reviewTurnMarker + `"
+  - match: '` + reviewTurnMarker + `'
     text: "found one blocking issue"
     structured:
       findings:

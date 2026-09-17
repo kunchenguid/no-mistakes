@@ -50,7 +50,7 @@ func TestValidatePushedHead(t *testing.T) {
 
 func TestValidatePromptsAbsent(t *testing.T) {
 	t.Run("accepts when prompt is absent", func(t *testing.T) {
-		errs := validatePromptsAbsent([]Invocation{{Prompt: "Review the code changes"}}, "Draft a pull request title and summary for the full branch delta.")
+		errs := validatePromptsAbsent([]Invocation{{Prompt: `Invoke the user-installed "code-review" skill`}}, "Draft a pull request title and summary for the full branch delta.")
 		if len(errs) != 0 {
 			t.Fatalf("expected no errors, got %v", errs)
 		}

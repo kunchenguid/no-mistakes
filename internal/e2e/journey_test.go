@@ -362,7 +362,7 @@ func cleanReviewScenario(t *testing.T) string {
     edits:
       - path: "/outside-workdir"
         new: "should fail"
-  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: review-agent-error"
+  - match: "normal skill discovery for branch review-agent-error."
     text: "review agent error"
     edits:
       - path: "/outside-workdir"
@@ -528,7 +528,7 @@ func cleanReviewScenario(t *testing.T) string {
           reason: ""
       verdict: go
       artifacts: []
-  - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: feature/e2e"
+  - match: "normal skill discovery for branch feature/e2e."
     text: "looks good"
     delay_ms: 1500
     structured:
@@ -554,7 +554,7 @@ func cleanReviewScenario(t *testing.T) string {
           evidence: "fakeagent: simulated test run"
           reason: ""
       verdict: go
-  - match: "Review the code changes and return structured findings"
+  - match: 'Invoke the user-installed "code-review" skill'
     text: "looks good"
     structured:
       findings:
@@ -1116,7 +1116,7 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 		}
 	}
 	invs := h.AgentInvocations()
-	if sawPromptContainingAll(invs, "Review the code changes", "branch: empty-after-rebase") {
+	if sawPromptContainingAll(invs, `Invoke the user-installed "code-review" skill`, "branch: empty-after-rebase") {
 		t.Fatal("empty-after-rebase run should skip review without calling the agent")
 	}
 	if sawPromptContainingAll(invs, "You are validating a code change by driving the product itself", "branch: empty-after-rebase") {
@@ -1255,7 +1255,7 @@ func assertNonEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 			t.Fatalf("expected %s to complete for non-empty rebase diff, got %s", stepName, step.Status)
 		}
 	}
-	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: non-empty-after-rebase") {
+	if !sawPromptContainingAll(h.AgentInvocations(), `Invoke the user-installed "code-review" skill`, "branch: non-empty-after-rebase") {
 		t.Fatal("non-empty-after-rebase run should continue to review and call the agent")
 	}
 }
@@ -1365,7 +1365,7 @@ func assertIgnoredOnlyRun(t *testing.T, h *Harness) {
 		t.Fatalf("expected no document findings JSON for ignored-only diff, got %s", *documentStep.FindingsJSON)
 	}
 	invs := h.AgentInvocations()
-	if sawPromptContainingAll(invs, "Review the code changes", "branch: ignored-only") {
+	if sawPromptContainingAll(invs, `Invoke the user-installed "code-review" skill`, "branch: ignored-only") {
 		t.Fatal("ignored-only review should not call the agent")
 	}
 	if sawPromptContainingAll(invs, "Find what this change made stale", "branch: ignored-only") {
@@ -1646,7 +1646,7 @@ func assertReviewExistingBranchUsesMergeBaseScope(t *testing.T, h *Harness) {
 		t.Fatalf("second review merge-base head = %s, want %s", secondRun.HeadSHA, secondHead)
 	}
 
-	prompt, ok := promptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: "+branch, secondHead)
+	prompt, ok := promptContainingAll(h.AgentInvocations(), `Invoke the user-installed "code-review" skill`, "branch: "+branch, secondHead)
 	if !ok {
 		t.Fatalf("expected second review merge-base prompt for branch %s and head %s", branch, secondHead)
 	}
@@ -1927,7 +1927,7 @@ func assertReviewWarningRun(t *testing.T, h *Harness) {
 	if fetchedReviewStep.FindingsJSON == nil || *fetchedReviewStep.FindingsJSON != *reviewStep.FindingsJSON {
 		t.Fatalf("GetRun IPC findings JSON = %v, want %q", fetchedReviewStep.FindingsJSON, *reviewStep.FindingsJSON)
 	}
-	if !sawPromptContainingAll(h.AgentInvocations(), "Review the code changes", "branch: review-warning") {
+	if !sawPromptContainingAll(h.AgentInvocations(), `Invoke the user-installed "code-review" skill`, "branch: review-warning") {
 		t.Fatal("review-warning run should call the agent for review")
 	}
 	wrongStepErr := h.RespondError(run.ID, types.StepTest, types.ActionApprove)
@@ -2748,7 +2748,7 @@ func assertNewBranchRun(t *testing.T, h *Harness, run *ipc.RunInfo) {
 
 func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invocation) {
 	t.Helper()
-	prompt, ok := promptContainingAll(invs, "Review the code changes", "branch: feature/e2e")
+	prompt, ok := promptContainingAll(invs, `Invoke the user-installed "code-review" skill`, "branch: feature/e2e")
 	if !ok {
 		t.Fatalf("expected a feature/e2e review prompt in invocations, got %d:\n%s", len(invs), summarisePrompts(invs))
 	}
@@ -2757,10 +2757,11 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 		"branch: feature/e2e",
 		baseSHA,
 		run.HeadSHA,
-		"ignore patterns: *.generated.go, vendor/**",
-		"Do a full review pass before returning.",
-		"Do not stop after the first valid finding.",
-		"Do NOT run tests during review.",
+		"excluded paths: *.generated.go, vendor/**",
+		`invoked as "/code-review"`,
+		"Use that skill as the canonical contract",
+		"Do not substitute or recreate another review policy",
+		"Apply the skill's inspect-only review workflow",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("expected review prompt to contain %q, got:\n%s", want, prompt)
