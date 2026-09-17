@@ -761,8 +761,7 @@ func TestParseAcpxJSONEvents_ContextCancellation(t *testing.T) {
 // life in reasoning and tool calls that produce no assistant text, so a parser
 // that only counted message chunks would leave the whole turn looking silent.
 func TestParseAcpxJSONEvents_ReportsProgressForNonProseTurnActivity(t *testing.T) {
-	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","text":"weighing options"}}}
-{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"bash"}}}
+	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"bash"}}}
 {"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}}}
 {"method":"session/update","params":{"update":{"sessionUpdate":"agent_plan","entries":[]}}}
 `
@@ -778,8 +777,8 @@ func TestParseAcpxJSONEvents_ReportsProgressForNonProseTurnActivity(t *testing.T
 	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if progress != 4 {
-		t.Fatalf("progress events = %d, want 4 (one per turn-advancing update)", progress)
+	if progress != 3 {
+		t.Fatalf("progress events = %d, want 3 (tool_call, tool_call_update, agent_plan)", progress)
 	}
 }
 
@@ -803,5 +802,54 @@ func TestParseAcpxJSONEvents_ProseIsProgressButUsageIsNot(t *testing.T) {
 	}
 	if progress != 1 {
 		t.Fatalf("progress events = %d, want 1 (the message chunk only)", progress)
+	}
+}
+
+// Reasoning is the one stream a non-converging model emits indefinitely while
+// producing nothing an operator can act on, so it must NOT advance the stall
+// bound: counting it would make the bound unable to fire on exactly the wedge
+// it exists to catch, and would contradict the rule documented in
+// reference/global-config.md. Reasoning still satisfies byte-level liveness.
+func TestParseAcpxJSONEvents_ReasoningIsNotProgress(t *testing.T) {
+	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","text":"considering"}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","text":"still considering"}}}
+`
+	var progress int
+	var usage TokenUsage
+
+	if _, _, err := parseAcpxJSONEvents(
+		context.Background(),
+		strings.NewReader(events),
+		nil,
+		func() { progress++ },
+		&usage,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if progress != 0 {
+		t.Fatalf("progress events = %d, want 0; reasoning alone must not hold the stall bound open", progress)
+	}
+}
+
+// A tool call alongside reasoning still advances the turn: the bound ignores
+// reasoning without going blind to real work.
+func TestParseAcpxJSONEvents_ToolCallAdvancesAlongsideReasoning(t *testing.T) {
+	events := `{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","text":"considering"}}}
+{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call","toolCallId":"c1"}}}
+`
+	var progress int
+	var usage TokenUsage
+
+	if _, _, err := parseAcpxJSONEvents(
+		context.Background(),
+		strings.NewReader(events),
+		nil,
+		func() { progress++ },
+		&usage,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if progress != 1 {
+		t.Fatalf("progress events = %d, want 1 (the tool call only)", progress)
 	}
 }

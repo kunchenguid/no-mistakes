@@ -1066,6 +1066,17 @@ step_quiet_warning: "10m"
 # auto-fix). A stalled agent fails the run instead of leaving it active.
 agent_timeout: "30m"
 
+# Maximum time one pipeline agent invocation may go without advancing its turn
+# while its subprocess stays alive. Byte-level liveness is not progress: the
+# agent CLIs keep streaming reasoning and tool events while the step log - what
+# you actually read - stops growing, so an agent that spins can satisfy every
+# byte-level signal up to its absolute wall-clock limit. When this elapses with
+# no assistant prose, tool call, or tool result observed, the invocation fails
+# naming that measured silence instead of burning the rest of its budget.
+# Set to "0" (or unlimited/none/off/never) to rely on the wall-clock limits
+# alone.
+agent_stall_timeout: "30m"
+
 # Absolute wall-clock limit for one Review agent invocation. Each optional
 # fixer and each fresh independent rereviewer receives a new full limit.
 # Activity is reported at expiry but does not reset this hard safety bound.

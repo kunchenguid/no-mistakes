@@ -711,6 +711,13 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if d != DefaultAgentTimeout {
 		t.Errorf("YAML agent_timeout = %v, Go default = %v", d, DefaultAgentTimeout)
 	}
+	d, err = time.ParseDuration(raw.AgentStallTimeout)
+	if err != nil {
+		t.Fatalf("YAML agent_stall_timeout %q is not a valid duration: %v", raw.AgentStallTimeout, err)
+	}
+	if d != DefaultAgentStallTimeout {
+		t.Errorf("YAML agent_stall_timeout = %v, Go default = %v", d, DefaultAgentStallTimeout)
+	}
 	d, err = time.ParseDuration(raw.TestAgentTimeout)
 	if err != nil {
 		t.Fatalf("YAML test_agent_timeout %q is not a valid duration: %v", raw.TestAgentTimeout, err)

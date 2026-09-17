@@ -260,12 +260,20 @@ func parseAcpxJSONEvents(ctx context.Context, r io.Reader, onChunk func(string),
 				onChunk(text)
 			}
 			reportAcpxProgress(onProgress)
-		case "agent_thought_chunk", "tool_call", "tool_call_update", "agent_plan":
-			// Forward motion that produces no assistant text: reasoning, a tool
-			// invocation, and its result stream. An ACP-driven agent - omp runs
-			// through acpx - spends most of a long turn here, so without these
-			// the parser has no progress signal at all and a healthy turn is
-			// indistinguishable from a wedged one. See LifecyclePhaseProgress.
+		case "tool_call", "tool_call_update", "agent_plan":
+			// Forward motion that produces no assistant text: a tool invocation,
+			// its result stream, and the agent's plan. An ACP-driven agent - omp
+			// runs through acpx - spends most of a long turn here, so without
+			// these the parser has no progress signal at all and a healthy turn
+			// is indistinguishable from a wedged one. See LifecyclePhaseProgress.
+			//
+			// `agent_thought_chunk` is deliberately NOT progress. Reasoning is
+			// the one stream a non-converging model emits indefinitely while
+			// producing nothing an operator can act on, so counting it would
+			// leave the stall bound unable to fire on exactly the failure it
+			// exists to catch - and it would contradict the documented rule in
+			// reference/global-config.md that reasoning-only traffic does not
+			// count. Reasoning still satisfies byte-level liveness.
 			reportAcpxProgress(onProgress)
 		}
 	}

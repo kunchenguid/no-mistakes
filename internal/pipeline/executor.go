@@ -826,6 +826,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 	}
+	// lastAgentActivityAt coalesces lifecycle-driven activity writes the same way
+	// touchLogActivity coalesces log-derived ones. The agent's own activity and
+	// progress events arrive at the agent's streaming rate, so without this the
+	// durable activity column would be rewritten once per streamed token.
+	lastAgentActivityAt := time.Time{}
+	touchStepActivityThrottled := func(text string) {
+		now := time.Now()
+		if !lastAgentActivityAt.IsZero() && now.Sub(lastAgentActivityAt) < stepActivityThrottleInterval {
+			return
+		}
+		lastAgentActivityAt = now
+		if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+			slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+		}
+	}
 	writeLog := func(text string) {
 		if text != "" {
 			prefix := ""
@@ -862,26 +877,27 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, nil); dbErr != nil {
 				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
 			}
-		case agent.LifecyclePhaseActivity:
-			// Subprocess liveness, not narrative: record that the agent is still
-			// producing bytes so `axi status` can distinguish a working fix round
-			// from a wedged one, but never write it to the step log. A long turn
+		case agent.LifecyclePhaseActivity, agent.LifecyclePhaseProgress:
+			// Liveness and forward motion, not narrative: record that the agent is
+			// still working so `axi status` can distinguish a live fix round from a
+			// wedged one, but never write either to the step log. A long turn
 			// emits these every few seconds and the log is what an operator reads.
-			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
-				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
-			}
-			return
-		case agent.LifecyclePhaseProgress:
-			// Forward motion with no narrative of its own - a tool call, a tool
-			// result. It advances the stall bound and refreshes the activity
-			// timestamp, but it must never reach the step log: a review turn
-			// emits these thousands of times and the log is what an operator
-			// reads. This phase is handled explicitly so it cannot fall through
-			// to the default branch below, which writes every unknown phase's
+			//
+			// Both are throttled here rather than only at the source, because the
+			// progress phase is emitted per streamed token and per tool boundary:
+			// a review turn produces thousands of them, and each unthrottled call
+			// would be its own SQLite UPDATE on the daemon's state DB. Activity
+			// stays coalesced at its source to one emit per 5s
+			// (agent.nativeAgentActivityInterval); this throttle is the backstop
+			// that keeps the write volume of both bounded by wall time rather than
+			// by how chatty the agent is. The stall bound reads the in-memory
+			// activity observer, never this column, so throttling the write cannot
+			// delay detection.
+			//
+			// The progress phase is handled explicitly so it cannot fall through to
+			// the default branch below, which writes every unknown phase's
 			// synthesized text into the log.
-			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
-				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
-			}
+			touchStepActivityThrottled(text)
 			return
 		default:
 			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {

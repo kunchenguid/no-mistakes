@@ -215,7 +215,7 @@ func (a *ompAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		stderrBuf, _ = io.ReadAll(started.stderr)
 	}()
 
-	pp := &piParser{onChunk: opts.OnChunk}
+	pp := newPiParser(opts, "omp")
 	if err := pp.parse(ctx, started.stdout); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()

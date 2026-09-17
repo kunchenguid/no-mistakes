@@ -424,10 +424,33 @@ func extractCIFixConclusion(result *agent.Result) (ciFixConclusion, error) {
 }
 
 // ciFixAgentBudgetOutcome converts an auto-fix invocation that exhausted its
-// agent budget into a bounded ask-user gate, and returns nil for every other
-// result so ordinary transient fix failures keep their existing warn-and-retry
-// behaviour. Only a proven full-budget burn parks: it is the one failure that
-// is guaranteed to cost the same again on the next poll.
+// agent budget - either by running out of wall clock (ErrAgentTimeout) or by
+// making no progress (ErrAgentStall) - into a bounded ask-user gate, and
+// returns nil for every other result so ordinary transient fix failures keep
+// their existing warn-and-retry behaviour. Only a proven full-budget burn
+// parks: it is the one failure that is guaranteed to cost the same again on
+// the next poll.
+//
+// The stall case is the same argument, and omitting it would have reopened the
+// invisible spin this function exists to close: a stalled repair returns
+// ErrAgentStall, which the wall-clock check alone does not match, so it would
+// fall through to the generic warn-and-retry branch and spend up to
+// auto_fix.ci further stall windows with nothing but warning lines to show for
+// it.
+func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+	if err == nil || !isAgentBudgetBurned(err) {
+		return nil
+	}
+	sctx.Log(fmt.Sprintf("CI auto-fix agent exhausted its invocation budget: %v", err))
+	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
+}
+
+// isAgentBudgetBurned reports whether an agent failure is a proven
+// full-budget burn rather than a transient error worth retrying.
+func isAgentBudgetBurned(err error) bool {
+	return errors.Is(err, pipeline.ErrAgentTimeout) || errors.Is(err, pipeline.ErrAgentStall)
+}
+
 const maxReviewBotDescriptionsPromptBytes = 32 * 1024
 
 func ciSelectedFindingsPrompt(findings Findings) string {
@@ -486,14 +509,6 @@ func ciSelectedFindingsPrompt(findings Findings) string {
 		return section
 	}
 	return section + prefix + string(raw) + suffix
-}
-
-func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
-	if err == nil || !errors.Is(err, pipeline.ErrAgentTimeout) {
-		return nil
-	}
-	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
-	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
 }
 
 // dirtyRunWorktree reports the run worktree path when the timed-out agent left

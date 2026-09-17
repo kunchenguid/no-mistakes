@@ -551,3 +551,69 @@ func (a *lifecycleEmittingAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 	}
 	return &agent.Result{Text: "done"}, nil
 }
+
+// TestExecutor_ProgressEventsThrottleStepActivityWrites pins that the progress
+// phase cannot drive one SQLite UPDATE per streamed token.
+//
+// Progress is emitted per assistant token and per tool boundary - thousands of
+// times in one review turn - so an unthrottled write would multiply daemon
+// state-DB traffic by the agent's streaming rate. The durable activity column
+// only needs to answer "is this step alive right now", which wall-clock
+// throttling already covers. Detection is unaffected either way: the stall
+// bound reads the in-memory activity observer, never this column.
+func TestExecutor_ProgressEventsThrottleStepActivityWrites(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	counterDB, err := sql.Open("sqlite", p.DB()+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open counter db: %v", err)
+	}
+	defer counterDB.Close()
+	if _, err := counterDB.Exec(`
+		CREATE TABLE progress_update_count (n INTEGER NOT NULL);
+		INSERT INTO progress_update_count (n) VALUES (0);
+		CREATE TRIGGER count_progress_update AFTER UPDATE OF last_activity_at, last_activity ON step_results
+		BEGIN
+			UPDATE progress_update_count SET n = n + 1;
+		END;
+	`); err != nil {
+		t.Fatalf("install activity counter: %v", err)
+	}
+
+	// A burst of progress events, far more than the throttle interval can admit
+	// as individual writes, with no wall-clock delay between them.
+	burstAgent := &lifecycleEmittingAgent{events: func() []agent.LifecycleEvent {
+		events := []agent.LifecycleEvent{{Agent: "pi", Phase: agent.LifecyclePhaseStart, PID: 4242, Message: "pi started pid=4242"}}
+		for i := 0; i < 500; i++ {
+			events = append(events, agent.LifecycleEvent{Agent: "pi", Phase: agent.LifecyclePhaseProgress, Message: "pi progress"})
+		}
+		return events
+	}()}
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if _, err := sctx.RunAgent(agent.RunOpts{Prompt: "review"}); err != nil {
+				t.Fatalf("run agent: %v", err)
+			}
+			return &StepOutcome{ExitCode: 0}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, burstAgent, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var updates int
+	if err := counterDB.QueryRow(`SELECT n FROM progress_update_count`).Scan(&updates); err != nil {
+		t.Fatalf("read activity update count: %v", err)
+	}
+	// 500 events arrive back-to-back, so at most the first one and any later
+	// event landing past a throttle interval can write. Start/finish add a
+	// bounded few. Anything near 500 means the throttle is not applied.
+	if updates > 10 {
+		t.Fatalf("step activity updates = %d for a 500-event progress burst, want a throttled count", updates)
+	}
+}
