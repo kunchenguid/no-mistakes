@@ -29,7 +29,7 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 			t.Errorf("%s must neutralize under the opt-out with its default knob", name)
 		}
 	}
-	unverified := []types.AgentName{types.AgentGrok, types.AgentOpenCode, types.AgentCopilot, types.AgentRovoDev}
+	unverified := []types.AgentName{types.AgentGrok, types.AgentOmp, types.AgentOpenCode, types.AgentCopilot, types.AgentRovoDev}
 	for _, name := range unverified {
 		if NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
 			t.Errorf("%s has no verified knob; must NOT report neutralized", name)
@@ -50,11 +50,11 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 	}
 }
 
-// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex, claude, and pi
-// do NOT claim neutralization when the repo did not opt out - the gate only consults
-// this under the opt-out, but the value must be honest.
+// TestNeutralizesGateInstructions_FalseWithoutOptOut proves no harness claims
+// neutralization when the repo did not opt out - the gate only consults this
+// under the opt-out, but the value must be honest.
 func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentGrok} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentOmp, types.AgentGrok} {
 		a, err := NewWithOptions(name, string(name), nil, Options{}) // no opt-out
 		if err != nil {
 			t.Fatalf("NewWithOptions(%s): %v", name, err)
@@ -79,6 +79,9 @@ func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	}
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentGrok, nil)); err == nil {
 		t.Error("grok must remain refused until project-setting isolation is empirically verified")
+	}
+	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentOmp, nil)); err == nil {
+		t.Error("omp must be refused: its project .omp/config.yml settings surface cannot be closed")
 	}
 	err := EnsureGateNeutralized(optOutAgent(t, types.AgentOpenCode, nil))
 	if err == nil {
@@ -151,5 +154,20 @@ func TestNeutralizesGateInstructions_HonestOnEffectiveOverride(t *testing.T) {
 	}
 	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentPi, []string{"-nc"})) {
 		t.Error("pi with an explicit -nc must stay neutralized")
+	}
+	// omp fails closed for its own reason, not because of an override: its
+	// project .omp/config.yml settings surface has no extension id and no
+	// disabling flag, so no argv closes it. Every omp shape reports false.
+	if NeutralizesGateInstructions(optOutAgent(t, types.AgentOmp, nil)) {
+		t.Error("omp must fail closed: its project settings surface cannot be closed")
+	}
+	if NeutralizesGateInstructions(optOutAgent(t, types.AgentOmp, []string{"--config", "/tmp/operator.yml"})) {
+		t.Error("omp with an operator --config overlay must fail closed")
+	}
+	if NeutralizesGateInstructions(optOutAgent(t, types.AgentOmp, []string{"--config=/tmp/operator.yml"})) {
+		t.Error("omp with an operator --config= overlay must fail closed")
+	}
+	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentOmp, nil)); err == nil {
+		t.Error("omp must be refused by the gate under the opt-out")
 	}
 }

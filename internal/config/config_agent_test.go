@@ -36,6 +36,7 @@ func TestAgentPath_DefaultBinaries(t *testing.T) {
 		{types.AgentRovoDev, "acli"},
 		{types.AgentOpenCode, "opencode"},
 		{types.AgentPi, "pi"},
+		{types.AgentOmp, "omp"},
 		{types.AgentCopilot, "copilot"},
 	}
 	for _, tt := range tests {
@@ -394,7 +395,7 @@ func TestResolveAgent_AutoSkipsRovoDevWithoutSubcommand(t *testing.T) {
 
 	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
 		switch bin {
-		case "claude", "codex", "grok", "opencode", "pi", "copilot", "agy", "cursor-agent", "acpx":
+		case "claude", "codex", "grok", "opencode", "pi", "omp", "copilot", "agy", "cursor-agent", "acpx":
 			return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
 		case "acli":
 			return "/usr/bin/acli", nil

@@ -21,6 +21,7 @@ func TestNativeArgsMapsEachHarnessToItsOwnSpelling(t *testing.T) {
 		{types.AgentGrok, []string{"--model", "some-model", "--reasoning-effort", "low"}},
 		{types.AgentCopilot, []string{"--model", "some-model", "--effort", "low"}},
 		{types.AgentPi, []string{"--model", "some-model", "--thinking", "low"}},
+		{types.AgentOmp, []string{"--model", "some-model", "--thinking", "low"}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.agent), func(t *testing.T) {

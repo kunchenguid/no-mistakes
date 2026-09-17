@@ -155,6 +155,25 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"pi", "--session-id=session-id"},
 		{"pi", "--fork"},
 		{"pi", "--fork=session-id"},
+		{"omp", "--mode"},
+		{"omp", "--mode=json"},
+		{"omp", "--no-session"},
+		{"omp", "-c"},
+		{"omp", "--continue"},
+		{"omp", "--resume"},
+		{"omp", "--resume=session-id"},
+		{"omp", "--session"},
+		{"omp", "--session=session-id"},
+		// omp's --fork re-seats the turn onto another session's history, and
+		// --from-claude/--from-codex import a foreign session's messages.
+		{"omp", "--fork"},
+		{"omp", "--fork=session-id"},
+		{"omp", "--from-claude"},
+		{"omp", "--from-codex"},
+		// omp's --config carries the neutralization overlay, and an operator
+		// overlay would replace it rather than merge.
+		{"omp", "--config"},
+		{"omp", "--config=overlay.yml"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent+"_"+tt.arg, func(t *testing.T) {

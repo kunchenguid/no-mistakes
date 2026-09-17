@@ -126,10 +126,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Values  | `auto`, `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, `antigravity`, then `cursor`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `grok`, `opencode`, `acli` with `rovodev` support, `pi`, `omp`, `copilot`, `antigravity`, then `cursor`.
 `cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
 With default paths, `auto` only selects it when both `cursor-agent` and `acpx` resolve; `acp_registry_overrides.cursor` and `acpx_path` replace those respective defaults during availability checks.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` uses the same default command as `cursor`.
@@ -213,6 +213,7 @@ Default native binary names when no override is set:
 | `rovodev`  | `acli`     |
 | `opencode` | `opencode` |
 | `pi`       | `pi`       |
+| `omp`      | `omp`      |
 | `copilot`  | `copilot`  |
 | `antigravity` | `agy`      |
 
@@ -223,7 +224,7 @@ Model and reasoning effort per agent, in one common spelling. no-mistakes maps e
 |         |                                                                                     |
 | ------- | ----------------------------------------------------------------------------------- |
 | Type    | `map[string]{model, effort}`                                                        |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity`, `cursor`, `acp:<target>` |
 | Default | Empty (every harness keeps its own defaults)                                        |
 
 ```yaml
@@ -251,6 +252,7 @@ How each field maps:
 | `grok`            | `--model`                                     | `--reasoning-effort`              | whatever the selected reasoning model accepts       |
 | `copilot`         | `--model`                                     | `--effort`                        | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `pi`              | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
+| `omp`             | `--model`                                     | `--thinking`                      | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`  |
 | `opencode`        | session-message `model` (needs `provider/model`) | session-message `variant`      | provider-specific                                   |
 | `cursor`, `acp:*` | `acpx --model`                                | not expressible                   | -                                                   |
 | `rovodev`         | not expressible                               | not expressible                   | -                                                   |
@@ -314,7 +316,7 @@ Use this for anything [`agent_config`](#agent_config) does not cover - service t
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `copilot`, `antigravity` |
+| Keys    | `claude`, `codex`, `grok`, `rovodev`, `opencode`, `pi`, `omp`, `copilot`, `antigravity` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
@@ -327,11 +329,14 @@ User-supplied flags are normally inserted ahead of no-mistakes' managed flags, s
 | `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
 | `pi`       | `--mode`, `--no-session`, `-c`, `--continue`, `-r`, `--resume`, `--session`, `--session-id`, `--fork`     |
+| `omp`      | `--mode`, `--no-session`, `-c`, `--continue`, `-r`, `--resume`, `--session`, `--fork`, `--from-claude`, `--from-codex`, `--config` |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
 | `antigravity` | `--dangerously-skip-permissions`, `--print`, `--json-schema`, `--output-format`, `--conversation`, `-c`, `--continue` |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
-The Claude, Codex, Grok, Pi, and Antigravity session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
+The Claude, Codex, Grok, Pi, Omp, and Antigravity session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
+
+For `omp`, `--config` is reserved for a different reason: it carries no-mistakes' own per-run overlay, which closes Omp's persistent memory backend on every invocation and, under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings), suppresses the target repository's project instruction files. An operator-supplied `--config` would *replace* that overlay rather than merge with it, losing both, so it is refused at config load. Omp is not a verified agent for that boundary (its project `.omp/config.yml` settings surface cannot be closed), so the gate itself refuses an Omp gate agent while the option is enabled.
 
 Smart defaults:
 
@@ -570,9 +575,10 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
+When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi or Omp via `--session <UUID>`, Antigravity via `--conversation <id>`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
+These isolation guarantees cover the harness's own context channels: no-mistakes closes Omp's persistent memory for every Omp invocation (see [Omp](/no-mistakes/guides/agents/#omp)), because a recall would otherwise inject earlier prompts into a session-free review turn.
 When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts; Pi's own session directory retains its native transcript. Keep Pi's session directory private, and keep any `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` setting stable while a run is active so a daemon restart can find the fixer session.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.

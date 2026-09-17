@@ -47,6 +47,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| Omp | `omp` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
@@ -202,7 +203,7 @@ Six global config fields tune resolution and invocation, and the [Global Config 
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
+With the default `session_reuse: true`, Claude, Codex, Grok, Pi, Omp, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
 Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
@@ -229,7 +230,7 @@ Each invocation returns:
 
 When structured output comes from final text, no-mistakes validates JSON fences and concluding bare JSON objects extracted from prose against the requested schema. It accepts inline or unclosed JSON fence forms, but rejects multiple valid candidates and fails closed when fenced and bare candidates differ; semantically identical fenced and bare candidates are accepted. A bare object followed by substantive prose is not treated as a verdict, while trailing provider tool-protocol residue after a complete object - markup whose tags wrap no words, or punctuation alone, never prose or markup around real words - is. When a model splits one answer across adjacent bare objects - separated by nothing but whitespace or a single comma - the merged object is accepted only when their keys are disjoint and the union validates, so two competing verdicts are never combined; a concluding split with disjoint keys whose union still does not validate fails with its own dedicated error rather than a generic schema error, while a run that repeats a top-level key is competing values and stays terminal. Two bare objects that each validate on their own remain a terminal ambiguity for the standard adapters; ACP targets are the one exception, keeping the last valid bare object instead of failing (see the ACP aliases below).
 
-One-shot subprocess agents (Claude, Codex, Grok, Pi, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
+One-shot subprocess agents (Claude, Codex, Grok, Pi, Omp, Copilot CLI, Antigravity, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
@@ -296,6 +297,16 @@ Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 
+## Omp
+
+Spawns an `omp` subprocess for each invocation with `--mode json`. Its JSON stream is protocol-identical to Pi's, so it is parsed the same way and streams incremental text deltas to the TUI. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Omp session per run with `--session <UUID>`. Omp rejects Pi's `--session-id`, only a full canonical UUID is accepted as a resume identity, and `--fork`, `--from-claude`, and `--from-codex` are reserved so an override cannot re-seat a turn onto another session's transcript.
+Model and reasoning effort come from [`agent_config.omp`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Omp override precedence; `--config` is reserved because it carries no-mistakes' own per-run overlay (memory isolation, plus project suppression under [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings)).
+When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+
+Omp is not a verified agent for [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings): a project-local `.omp/config.yml` is loaded as settings rather than as an extension, so it has no extension id the suppression overlay could name and no flag skips it. The daemon therefore refuses an Omp gate agent while that option is enabled, the same way it refuses Grok.
+
+Every Omp invocation also runs with `memory: backend: "off"` in no-mistakes' own overlay, so a gate run does not inherit your user-level Omp memory. Omp's mnemopi memory retains a turn's prompt and injects earlier rows into later prompts across steps, rounds, and runs; the pipeline's review contract requires a review turn to receive no prior turn's context except the explicit sanitized round history, which a recall would bypass. Your own settings and memory store are untouched outside gate runs, and the overlay is a per-run temp file. Because an operator-pinned `--config` would replace that overlay wholesale, `--config` is reserved for Omp.
+
 ## Copilot CLI
 
 Spawns a `copilot` subprocess for each invocation with `-p <prompt> --output-format json`.
@@ -342,6 +353,7 @@ $ no-mistakes doctor
   – rovodev (not found)
   – opencode (not found)
   – pi (not found)
+  – omp (not found)
   – copilot (not found)
   – antigravity (not found)
   – acpx (not found)
