@@ -110,7 +110,8 @@ patch-ID or tree-survival proof. This narrow policy exception permits reviewed
 rebases and conflict resolutions to change the submitted patch. Ownership is
 not containment evidence. The exception does not extend to another recorded
 head, an abbreviated SHA, or an external, newer, or divergent private head.
-Fresh AXI submissions do not receive this exception.
+Fresh AXI submissions do not receive this Decision 41-A exception; recorded
+supersession below is the only exception they can receive.
 
 **Recorded supersession:** a fresh submission can also reach a settled state for
 a mirror left stranded by a terminal run. After a rebase, such a run can leave the
@@ -129,7 +130,9 @@ containment check in force: an unproven private head, a still-active run, a
 different submitted head, or an accepted result the live head does not contain
 all still refuse, leave the branch untouched, and name every at-risk commit. The
 refusal is reported as a terminal condition with the operator action attached,
-rather than as a bare Git error.
+rather than as a bare Git error. The guard resolves this evidence on the AXI
+submission paths only, which supply the repository's own run records; publication
+reconciliation supplies none, so Decision 41-A stays its only exception.
 
 The exception deliberately does not extend to a verified final head that carries
 commits made after review (document/lint and CI-repair rounds commit after
@@ -164,9 +167,11 @@ separate ref storage retain their local branch bookkeeping.
 Publication plans reconciliation before pushing and applies it only after
 verifying the upstream head. If mirror settlement then fails or is cancelled,
 it restores the archived branch when no intervening ref has appeared, so a
-retry can still resolve the branch. AXI reconciles before its ordinary submission
-push and restores an archived ref after a failed submission if no intervening
-ref has appeared. Neither path forces the private mirror.
+retry can still resolve the branch. AXI reconciles before every submission
+push - the ordinary one and the one bound to [strict launch
+receipts](/no-mistakes/reference/cli/#strict-launch-receipts) - and each
+restores an archived ref after a failed submission if no intervening ref has
+appeared. Neither path forces the private mirror.
 
 ### Daemon
 
