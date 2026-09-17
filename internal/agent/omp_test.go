@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -43,26 +46,35 @@ func TestOmpAgent_BuildArgs_DurableSession(t *testing.T) {
 
 // TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst pins the positional
 // contract: the overlay leads argv so it cannot be consumed as the value of a
-// preceding user flag, and no --config is emitted when the repo did not opt out.
+// preceding user flag, the two flags covering the rule and skill providers
+// follow it, and nothing is emitted when the repo did not opt out.
 func TestOmpAgent_BuildArgs_NeutralizationOverlayComesFirst(t *testing.T) {
 	oa := &ompAgent{bin: "omp", extraArgs: []string{"--model", "deepseek"}, disableProjectSettings: true}
 	args := oa.buildArgs(nil, "/tmp/overlay.yml")
 
-	expected := "--config /tmp/overlay.yml --model deepseek --mode json --no-session"
+	expected := "--config /tmp/overlay.yml --no-rules --no-skills --model deepseek --mode json --no-session"
 	if got := strings.Join(args, " "); got != expected {
 		t.Fatalf("neutralized args = %q, want %q", got, expected)
 	}
 
 	// An operator-pinned --config replaces ours, so buildArgs adds none: two
 	// would silently re-enable every instruction file (see
-	// ompNeutralizationOverlay).
+	// ompNeutralizationOverlay). The overlay is the suppression carrier, so the
+	// gate refuses this launch rather than advertising a suppression the argv
+	// does not establish - and buildArgs must not emit the kill-switches either,
+	// since without the overlay they would cover rules and skills but leave
+	// AGENTS.md loaded.
 	pinned := &ompAgent{
 		bin:                    "omp",
 		extraArgs:              []string{"--config", "/tmp/operator.yml"},
 		disableProjectSettings: true,
 	}
-	if got := strings.Join(pinned.buildArgs(nil, ""), " "); strings.Contains(got, "overlay") {
-		t.Fatalf("operator-pinned --config must not gain a second overlay: %q", got)
+	pinnedArgs := pinned.buildArgs(nil, "")
+	if got := strings.Join(pinnedArgs, " "); got != "--config /tmp/operator.yml --mode json --no-session" {
+		t.Fatalf("operator-pinned --config must not gain a second overlay or lone suppression flags: %q", got)
+	}
+	if pinned.NeutralizesGateInstructions() {
+		t.Fatal("an operator --config overlay replaces ours; the adapter must fail closed")
 	}
 }
 
@@ -99,9 +111,20 @@ func TestOmpAgent_RejectsInvalidSessionIdentity(t *testing.T) {
 	}
 }
 
+// ompOverlay is the parsed shape of the neutralization overlay's disabled
+// extension ids. omp consumes the overlay through a real YAML parser, so the
+// test asserts the parsed set rather than matching text in the file.
+type ompOverlay struct {
+	DisabledExtensions []string `yaml:"disabledExtensions"`
+}
+
 // TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout proves the overlay
-// is materialized outside the validated worktree (which must stay clean) and
-// names every project instruction file the controlled experiment confirmed.
+// is materialized outside the validated worktree (which must stay clean), that
+// it parses to exactly the disabled-extension set the controlled experiment
+// confirmed, and that the adapter's argv carries the two kill-switches covering
+// the project surfaces the overlay cannot name. Equality, not containment: a
+// dropped or duplicated id is a neutralization bug, and containment is what let
+// the `.github/instructions` gap pass unnoticed.
 func TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout(t *testing.T) {
 	cwd := t.TempDir()
 	oa := &ompAgent{bin: "omp", disableProjectSettings: true}
@@ -119,27 +142,44 @@ func TestOmpAgent_WritesNeutralizationOverlayFromTempNotCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read overlay: %v", err)
 	}
-	for _, want := range []string{
+	var parsed ompOverlay
+	if err := yaml.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("overlay must be valid YAML for omp: %v\n%s", err, body)
+	}
+	want := []string{
 		"context-file:project:AGENTS.md",
 		"context-file:project:CLAUDE.md",
 		"context-file:project:copilot-instructions.md",
-	} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("overlay missing %q: %s", want, body)
-		}
 	}
+	if !reflect.DeepEqual(parsed.DisabledExtensions, want) {
+		t.Fatalf("overlay disabledExtensions = %v, want %v", parsed.DisabledExtensions, want)
+	}
+
+	// The full argv delivered to omp: the overlay leads it so it cannot be
+	// consumed as a preceding user flag's value, and the two flags that cover
+	// the rule and skill providers follow. Dropping either flag would leave a
+	// project-controlled surface live while the adapter still claimed
+	// neutralization.
+	wantArgs := []string{"--config", path, "--no-rules", "--no-skills", "--mode", "json", "--no-session"}
+	if got := oa.buildArgs(nil, path); !reflect.DeepEqual(got, wantArgs) {
+		t.Fatalf("neutralized argv = %q, want %q", got, wantArgs)
+	}
+
 	remove()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("overlay must be removed after the invocation: %v", err)
 	}
 
-	// No opt-out -> no file at all.
+	// No opt-out -> no file and no suppression flags at all.
 	plain := &ompAgent{bin: "omp"}
 	p, rm, err := plain.writeNeutralizationOverlay()
 	if err != nil || p != "" {
 		t.Fatalf("repo without opt-out must not write an overlay: path=%q err=%v", p, err)
 	}
 	rm()
+	if got, want := plain.buildArgs(nil, ""), []string{"--mode", "json", "--no-session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv without the opt-out = %q, want %q", got, want)
+	}
 }
 
 // TestOmpAgent_RegisteredAsNativeHarness proves the factory constructs the omp
@@ -158,18 +198,27 @@ func TestOmpAgent_RegisteredAsNativeHarness(t *testing.T) {
 }
 
 // ompNeutralizationExperiment drives the real omp binary to compare project
-// instruction reachability with and without the neutralization overlay. It is
-// the control-vs-neutralized experiment the adapter's claim rests on, so it
-// skips (rather than passes) when omp is unavailable.
+// instruction reachability with and without the adapter's neutralization argv.
+// It is the control-vs-neutralized experiment the adapter's claim rests on, so
+// it skips (rather than passes) when omp is unavailable.
 //
 // The measurement is prompt token accounting rather than the model's
-// self-report: an AGENTS.md of known size is placed in the working directory,
-// and the assistant message's input+cacheRead tokens are compared across three
-// runs. Without the overlay the file's contents are injected into the system
-// prompt and the count rises by the file's own cost; with the overlay the count
-// must return exactly to the file-free baseline. A self-report can be defeated
-// by an agent that simply reads the file with a tool, which is why the file is
-// never named in the prompt and the delta is what is asserted.
+// self-report: a project file of known size is placed in the working directory,
+// and the assistant message's input+cacheRead tokens are compared across runs.
+// Without neutralization the file's contents are injected into the system
+// prompt and the count rises by the file's own cost; with it the count must
+// return exactly to its file-free baseline. A self-report can be defeated by an
+// agent that simply reads the file with a tool, which is why the file is never
+// named in the prompt and the delta is what is asserted.
+//
+// Three surfaces are covered because they are three different omp providers,
+// and a mechanism that closes one does not close the others: the context files
+// (the overlay's disabledExtensions), `.github/instructions/*.instructions.md`
+// (a rule, which only --no-rules reaches), and a project SKILL.md (listed by
+// description, which only --no-skills reaches). Tools stay ENABLED: a project
+// skill reaches the prompt only through the skill provider, which omp gates on
+// tools being available, so a --no-tools run would make that surface untestable
+// rather than inert.
 func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 	if os.Getenv("NM_TEST_REAL_OMP") != "1" {
 		t.Skip("set NM_TEST_REAL_OMP=1 to run the live omp neutralization experiment")
@@ -181,48 +230,97 @@ func TestOmpAgent_NeutralizationExperiment(t *testing.T) {
 
 	cwd := t.TempDir()
 	base := filepath.Join(cwd, "base.yml")
-	neutral := filepath.Join(cwd, "neutral.yml")
 	if err := os.WriteFile(base, []byte("memory:\n  backend: none\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(neutral, []byte("memory:\n  backend: none\n"+ompNeutralizationOverlay), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
-	measure := func(overlay string) int {
+	// The control argv carries no neutralization; the neutralized argv is the
+	// adapter's own for a repo that opted out, so the experiment measures what
+	// the gate actually launches rather than a hand-rolled approximation. Each
+	// arm is asserted against its OWN file-free baseline, so the constant offset
+	// between the two arms (the adapter overlay adds no memory setting) cancels
+	// out and only a surface's injected cost is ever compared.
+	control := []string{"--mode", "json", "--no-session", "--config", base}
+	agent := &ompAgent{bin: bin, disableProjectSettings: true}
+	overlayPath, removeOverlay, err := agent.writeNeutralizationOverlay()
+	if err != nil {
+		t.Fatalf("writeNeutralizationOverlay: %v", err)
+	}
+	defer removeOverlay()
+	neutral := agent.buildArgs(nil, overlayPath)
+
+	measure := func(args []string) int {
 		t.Helper()
-		cmd := exec.Command(bin, "--mode", "json", "--no-session", "--no-tools", "--config", overlay)
-		cmd.Dir = cwd
-		cmd.Stdin = strings.NewReader("Reply with the single word: ok\n")
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("omp run failed: %v", err)
+		// A live model can end an invocation without any assistant usage - a
+		// provider-side rate limit or an internal retry that produced no
+		// message - which reads as a zero-token prompt rather than as a fact
+		// about injection. Retry a degenerate run instead of asserting on it.
+		var tokens int
+		for range 4 {
+			cmd := exec.Command(bin, args...)
+			cmd.Dir = cwd
+			cmd.Stdin = strings.NewReader("Reply with the single word: ok\n")
+			out, err := cmd.Output()
+			if err != nil {
+				continue
+			}
+			pp := &piParser{}
+			if err := pp.parse(context.Background(), strings.NewReader(string(out))); err != nil {
+				continue
+			}
+			tokens = pp.usage.InputTokens + pp.usage.CacheReadTokens
+			if tokens > 0 && pp.finalText() != "" {
+				return tokens
+			}
 		}
-		pp := &piParser{}
-		if err := pp.parse(context.Background(), strings.NewReader(string(out))); err != nil {
-			t.Fatalf("parse omp stream: %v", err)
-		}
-		return pp.usage.InputTokens + pp.usage.CacheReadTokens
+		t.Fatalf("omp returned no usable usage after 4 attempts for %v (provider unavailable?); tokens=%d", args, tokens)
+		return 0
 	}
 
-	baseline := measure(base)
+	// Warm up before baseline accounting: the first invocation in a fresh
+	// directory pays a cold-start cost that later runs do not, so the baselines
+	// must be taken from a settled state.
+	measure(control)
+	measure(neutral)
+	baselineControl := measure(control)
+	baselineNeutral := measure(neutral)
 
-	// A project instruction file large enough that its injection is
-	// unmistakable in the token counts.
+	// Each file is large enough that its injection is unmistakable in the token
+	// counts, and each is written and removed in turn so one surface's token
+	// cost cannot be mistaken for another's.
 	filler := strings.Repeat("Repository convention line describing tooling and layout.\n", 400)
-	agentsPath := filepath.Join(cwd, "AGENTS.md")
-	if err := os.WriteFile(agentsPath, []byte(filler), 0o600); err != nil {
-		t.Fatal(err)
+	surfaces := []struct {
+		name    string
+		path    string
+		content string
+	}{
+		{"AGENTS.md", "AGENTS.md", filler},
+		{"CLAUDE.md", "CLAUDE.md", filler},
+		{"copilot-instructions.md", ".github/copilot-instructions.md", filler},
+		{".github/instructions", ".github/instructions/x.instructions.md", "---\napplyTo: \"**\"\n---\n" + filler},
+		{"nested .github/instructions", ".github/instructions/sub/y.instructions.md", "---\napplyTo: \"**\"\n---\n" + filler},
+		{"project skill", ".agents/skills/probe/SKILL.md", "---\nname: probe\ndescription: \"" + strings.ReplaceAll(filler, "\n", " ") + "\"\n---\nBody.\n"},
 	}
+	for _, surface := range surfaces {
+		path := filepath.Join(cwd, surface.path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(surface.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		controlTokens := measure(control)
+		neutralTokens := measure(neutral)
+		_ = os.Remove(path)
 
-	withControl := measure(base)
-	if withControl <= baseline {
-		t.Fatalf("control run must load AGENTS.md into context: baseline=%d control=%d", baseline, withControl)
-	}
-
-	withNeutral := measure(neutral)
-	if withNeutral != baseline {
-		t.Fatalf("neutralized run must not load AGENTS.md: baseline=%d neutralized=%d", baseline, withNeutral)
+		if controlTokens <= baselineControl {
+			t.Fatalf("control run must load %s into context: baseline=%d control=%d",
+				surface.name, baselineControl, controlTokens)
+		}
+		if neutralTokens != baselineNeutral {
+			t.Fatalf("neutralized run must not load %s: baseline=%d neutralized=%d",
+				surface.name, baselineNeutral, neutralTokens)
+		}
 	}
 }
 

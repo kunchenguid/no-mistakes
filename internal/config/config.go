@@ -1066,7 +1066,7 @@ gate_reconcile_timeout: "30s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude, codex, grok, and pi; other agents run cold.
+# its fixes. Supported for claude, codex, grok, pi, and omp; other agents run cold.
 # Set false to force every agent invocation cold.
 session_reuse: true
 
@@ -1773,6 +1773,15 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"-r":           true,
 		"--resume":     true,
 		"--session":    true,
+		// --fork re-seats the turn onto another session's history (measured
+		// against omp 18.2.0: `--session B --fork A` answered from A's
+		// transcript and minted a new id), and --from-claude/--from-codex
+		// import a foreign session's messages. All three defeat the session
+		// isolation the reserved set exists to keep, exactly as pi's --fork
+		// does.
+		"--fork":        true,
+		"--from-claude": true,
+		"--from-codex":  true,
 		// --config carries the project-settings neutralization overlay (see
 		// ompAgent.buildArgs). It is reserved because an operator-pinned
 		// --config overlay REPLACES ours (a later overlay wins for

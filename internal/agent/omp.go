@@ -15,8 +15,9 @@ import (
 
 // ompNeutralizationOverlay is the `--config` overlay that suppresses the target
 // repository's project agent-instruction files. omp has no flag equivalent of
-// pi's --no-context-files; its documented kill-switch is a config overlay whose
-// disabledExtensions list names each context file by extension id.
+// pi's --no-context-files for those files; its documented kill-switch is a
+// config overlay whose disabledExtensions list names each context file by
+// extension id.
 //
 // The id form is `context-file:<user|project>:<basename>` and is keyed on the
 // basename alone, so one `AGENTS.md` entry covers every AGENTS.md in the
@@ -25,6 +26,23 @@ import (
 // (internal/agent/omp_test.go reproduces it): with the file present and no
 // overlay omp receives its contents in the system prompt, and with the overlay
 // the same prompt's token count returns exactly to its file-free baseline.
+//
+// This overlay is NOT sufficient on its own. omp injects two further
+// project-controlled surfaces through separate capability providers whose
+// extension ids are not `context-file:*`, so the overlay cannot name them:
+//
+//   - `.github/instructions/*.instructions.md` is loaded as a rule
+//     (`rule:<basename>`), and its body reaches the model. Measured: with only
+//     this overlay a planted `.instructions.md` still governed the turn.
+//   - Project skill descriptions (`.github/skills`, `.agents/skills`,
+//     `.omp/skills`, `.claude/skills` SKILL.md frontmatter) are listed in the
+//     system prompt.
+//
+// buildArgs therefore also passes omp's own `--no-rules` and `--no-skills`
+// kill-switches under the same opt-out, which is what makes those two surfaces
+// inert (verified with the same token-accounting experiment). The overlay is
+// still required: `--no-rules` does not suppress AGENTS.md/CLAUDE.md/
+// copilot-instructions.md.
 //
 // Ordering matters and is why this must be the operator's only --config
 // overlay: `disabledExtensions` REPLACES rather than merges when several
@@ -45,15 +63,18 @@ const ompNeutralizationOverlay = `disabledExtensions:
 // project-settings neutralization, and the session header's identity form.
 //
 // omp differs from pi in three ways that matter here: it rejects pi's
-// --no-context-files and --session-id flags outright, it takes a --config
-// overlay instead of a flag for instruction suppression, and its durable-start
-// shape is the absence of a session flag rather than an explicit one.
+// --no-context-files and --session-id flags outright, it suppresses project
+// agent-instruction files through a --config overlay plus its own --no-rules and
+// --no-skills kill-switches rather than one context-file flag, and its
+// durable-start shape is the absence of a session flag rather than an explicit
+// one.
 type ompAgent struct {
 	bin       string
 	extraArgs []string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs launches omp with an overlay that disables the target repo's
-	// project agent-instruction files.
+	// project agent-instruction files plus the two flags covering the surfaces
+	// the overlay cannot name (see ompNeutralizationOverlay).
 	disableProjectSettings bool
 	subprocessContext
 }
@@ -75,15 +96,25 @@ func (a *ompAgent) ReportsAgentAttempts() bool { return true }
 // meaningful only under the opt-out (disableProjectSettings): the gate only
 // consults it when the repo opted out.
 //
-// buildArgs writes and passes the ompNeutralizationOverlay whenever the opt-out
-// is on, so neutralization holds unless the operator pinned their own --config.
-// An operator overlay's contents are unknowable here and would REPLACE ours, so
-// a pinned --config returns false and the gate fails closed rather than claiming
-// a suppression it cannot demonstrate. config.reservedAgentArgs already refuses
-// an operator --config for omp at config-load time; this is the same check at
-// the adapter boundary, which is what protects programmatic callers that build
-// the agent directly.
+// buildArgs writes and passes the ompNeutralizationOverlay plus `--no-rules`
+// and `--no-skills` whenever the opt-out is on, so neutralization holds unless
+// the operator pinned their own --config. An operator overlay's contents are
+// unknowable here and would REPLACE ours, so a pinned --config returns false and
+// the gate fails closed rather than claiming a suppression it cannot
+// demonstrate; the two kill-switches are monotonic, so they need no such check.
+// config.reservedAgentArgs already refuses an operator --config for omp at
+// config-load time; this is the same check at the adapter boundary, which is
+// what protects programmatic callers that build the agent directly.
 func (a *ompAgent) NeutralizesGateInstructions() bool {
+	return a.canNeutralize()
+}
+
+// canNeutralize is the single owner of "this invocation really is neutralized":
+// the opt-out is on, the overlay will be passed, AND every other project-
+// controlled surface is covered by a flag omp cannot be talked out of.
+// NeutralizesGateInstructions and buildArgs must not disagree about it, or the
+// adapter would claim a suppression its argv does not carry.
+func (a *ompAgent) canNeutralize() bool {
 	return a.disableProjectSettings && !ompUserSetConfigOverlay(a.extraArgs)
 }
 
@@ -259,7 +290,7 @@ func (a *ompAgent) writeNeutralizationOverlay() (string, func(), error) {
 // a session flag: unlike pi, it has no "start a new named session" flag, and
 // --no-session is reserved for the intentional cold step.
 func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
-	args := make([]string, 0, len(a.extraArgs)+5)
+	args := make([]string, 0, len(a.extraArgs)+7)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable the target repo's AGENTS.md/CLAUDE.md/copilot-instructions.md so an
 	// agent-orchestration target (firstmate) cannot install a fleet-captain
@@ -268,6 +299,15 @@ func (a *ompAgent) buildArgs(session *SessionRef, overlayPath string) []string {
 	// then fails closed.
 	if overlayPath != "" && !ompUserSetConfigOverlay(a.extraArgs) {
 		args = append(args, "--config", overlayPath)
+	}
+	// The overlay cannot name omp's other two project-controlled surfaces: a
+	// `.github/instructions/*.instructions.md` file is a rule (`rule:<basename>`)
+	// and a project SKILL.md is listed as a skill. omp's own kill-switches cover
+	// them, and both are monotonic - omp has no flag that re-enables rules or
+	// skills, so an operator cannot defeat them by pinning one. Neither flag
+	// suppresses the context files, which is why the overlay stays required.
+	if a.canNeutralize() {
+		args = append(args, "--no-rules", "--no-skills")
 	}
 	args = append(args, a.extraArgs...)
 	args = append(args, "--mode", "json")

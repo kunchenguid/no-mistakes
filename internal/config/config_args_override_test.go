@@ -164,6 +164,12 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"omp", "--resume=session-id"},
 		{"omp", "--session"},
 		{"omp", "--session=session-id"},
+		// omp's --fork re-seats the turn onto another session's history, and
+		// --from-claude/--from-codex import a foreign session's messages.
+		{"omp", "--fork"},
+		{"omp", "--fork=session-id"},
+		{"omp", "--from-claude"},
+		{"omp", "--from-codex"},
 		// omp's --config carries the neutralization overlay, and an operator
 		// overlay would replace it rather than merge.
 		{"omp", "--config"},

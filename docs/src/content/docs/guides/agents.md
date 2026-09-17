@@ -46,6 +46,7 @@ That directory is always outside the worktree and is reaped by no-mistakes on a 
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| Omp | `omp` | Subprocess per invocation, JSONL events |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
@@ -201,7 +202,7 @@ Six global config fields tune resolution and invocation, and the [Global Config 
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude, Codex, Grok, Pi, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
+With the default `session_reuse: true`, Claude, Codex, Grok, Pi, Omp, and Antigravity keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn. Pi stores its native fixer transcript in Pi's session directory; no-mistakes persists only the minimum session identity needed to resume it.
 Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
@@ -293,6 +294,12 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 Spawns a `pi` subprocess for each invocation with `--mode json`. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns instead create and resume one Pi session per run via `--session <UUID>`.
 Model and reasoning effort come from [`agent_config.pi`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
+When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
+
+## Omp
+
+Spawns an `omp` subprocess for each invocation with `--mode json`. Its JSON stream is protocol-identical to Pi's, so it is parsed the same way and streams incremental text deltas to the TUI. Cold invocations add `--no-session`; with `session_reuse: true`, review-fixer turns create and resume one Omp session per run with `--session <UUID>`. Omp rejects Pi's `--session-id`, only a full canonical UUID is accepted as a resume identity, and `--fork`, `--from-claude`, and `--from-codex` are reserved so an override cannot re-seat a turn onto another session's transcript.
+Model and reasoning effort come from [`agent_config.omp`](/no-mistakes/reference/global-config/#agent_config), rendered as `--model` and `--thinking`. See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Omp override precedence; `--config` is reserved because it carries the [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) neutralization overlay.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response with the common text fallback described above.
 
 ## Copilot CLI
