@@ -38,11 +38,11 @@ func TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound(t *t
 		if calls == 1 {
 			return &StepOutcome{
 				NeedsApproval:         true,
-				Findings:              `{"findings":[{"id":"r1","severity":"error","description":"fix me","action":"auto-fix"}]}`,
+				Findings:              `{"findings":[{"id":"r1","severity":"error","file":"main.go","description":"fix me","action":"auto-fix"}]}`,
 				ReviewApprovedHeadSHA: firstReviewedHead,
 			}, nil
 		}
-		return &StepOutcome{ReviewApprovedHeadSHA: rereviewedHead}, nil
+		return &StepOutcome{ReviewedPaths: []string{"main.go"}, ReviewablePaths: []string{"main.go"}, ReviewApprovedHeadSHA: rereviewedHead}, nil
 	}}
 	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
 	workDir := t.TempDir()
@@ -58,7 +58,7 @@ func TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound(t *t
 	if parked.ReviewApprovedHeadSHA != nil {
 		t.Fatalf("parked review gained approval authority: %#v", parked.ReviewApprovedHeadSHA)
 	}
-	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"r1"}); err != nil {
 		t.Fatal(err)
 	}
 	select {

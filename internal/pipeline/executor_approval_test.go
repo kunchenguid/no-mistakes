@@ -252,6 +252,15 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	close(releaseFix)
 	released = true
+	// The resumed rereview reports no new findings, and because the pending
+	// verification set is not recoverable across a restart it cannot positively
+	// clear the selected finding either. The append-only carry keeps it
+	// outstanding, so the gate parks again for the operator rather than the run
+	// completing on a fix that nothing verified.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("respond to re-parked gate: %v", err)
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -438,10 +447,10 @@ func TestExecutor_TracksAutoFixTelemetry(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{
 					AutoFixable: true,
-					Findings:    `{"findings":[{"severity":"error","description":"fix me","action":"auto-fix"}],"summary":"1 issue"}`,
+					Findings:    `{"findings":[{"severity":"error","file":"main.go","description":"fix me","action":"auto-fix"}],"summary":"1 issue"}`,
 				}, nil
 			}
-			return &StepOutcome{ExitCode: 0}, nil
+			return &StepOutcome{ExitCode: 0, ReviewedPaths: []string{"main.go"}, ReviewablePaths: []string{"main.go"}}, nil
 		},
 	}
 

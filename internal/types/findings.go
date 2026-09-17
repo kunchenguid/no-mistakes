@@ -267,8 +267,15 @@ type findingWire struct {
 // written before the contract existed, so an older recorded run still parses
 // and simply renders no scenario table.
 type Findings struct {
-	Items          []Finding      `json:"findings"`
-	Summary        string         `json:"summary"`
+	Items   []Finding `json:"findings"`
+	Summary string    `json:"summary"`
+	// ReviewedPaths is the review step's coverage record: the changed files the
+	// review turn actually examined and judged. It is the positive-verification
+	// signal that lets a finding the operator selected for a fix leave the
+	// outstanding set (see pipeline.resolveVerifiedFindingsJSON). A review turn
+	// that does not list a path has not proven anything about it, so silence is
+	// never read as resolution. Empty on every non-review payload.
+	ReviewedPaths  []string       `json:"reviewed_paths,omitempty"`
 	Tested         []string       `json:"tested,omitempty"`
 	TestingSummary string         `json:"testing_summary,omitempty"`
 	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
@@ -284,6 +291,7 @@ type findingsWire struct {
 	Items          []Finding      `json:"findings"`
 	Legacy         []Finding      `json:"items"`
 	Summary        string         `json:"summary"`
+	ReviewedPaths  []string       `json:"reviewed_paths"`
 	Tested         []string       `json:"tested"`
 	TestingSummary string         `json:"testing_summary"`
 	Artifacts      []TestArtifact `json:"artifacts"`
@@ -309,6 +317,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	return Findings{
 		Items:          items,
 		Summary:        wire.Summary,
+		ReviewedPaths:  wire.ReviewedPaths,
 		Tested:         wire.Tested,
 		TestingSummary: wire.TestingSummary,
 		Artifacts:      wire.Artifacts,

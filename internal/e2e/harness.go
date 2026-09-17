@@ -128,7 +128,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// system CLI. antigravity gets a second link under its probed binary
 	// name "agy" (internal/cli/doctor.go searches that name, not the agent
 	// name).
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh", "tea"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)
@@ -531,7 +531,22 @@ func (h *Harness) Respond(runID string, step types.StepName, action types.Approv
 	}
 }
 
+// RespondWithFindings answers an approval gate while explicitly selecting the
+// findings that the fix round must carry forward. An empty selection means no
+// findings, not all findings, so tests exercising review fixes should name the
+// finding IDs they intend to repair.
+func (h *Harness) RespondWithFindings(runID string, step types.StepName, action types.ApprovalAction, findingIDs []string) {
+	h.t.Helper()
+	if err := h.respondError(runID, step, action, findingIDs); err != nil {
+		h.t.Fatalf("respond to run %s step %s with %s and findings %v: %v", runID, step, action, findingIDs, err)
+	}
+}
+
 func (h *Harness) RespondError(runID string, step types.StepName, action types.ApprovalAction) error {
+	return h.respondError(runID, step, action, nil)
+}
+
+func (h *Harness) respondError(runID string, step types.StepName, action types.ApprovalAction, findingIDs []string) error {
 	h.t.Helper()
 	p := paths.WithRoot(h.NMHome)
 	client, err := ipc.Dial(p.Socket())
@@ -540,7 +555,7 @@ func (h *Harness) RespondError(runID string, step types.StepName, action types.A
 	}
 	defer client.Close()
 	var result ipc.RespondResult
-	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action}, &result); err != nil {
+	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: step, Action: action, FindingIDs: findingIDs}, &result); err != nil {
 		return err
 	}
 	if !result.OK {

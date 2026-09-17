@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,6 +43,28 @@ func cleanReviewFindings() Findings {
 		RiskRationale: "clean",
 		RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 	}
+}
+
+// fullReviewCoverage is the coverage record a mock reviewer that "read
+// everything" reports: every file changed between baseSHA and dir's working
+// tree, which is the same set ReviewStep computes as reviewable when no
+// ignore_patterns apply. Tests that exercise partial or fabricated coverage
+// spell reviewed_paths out instead.
+func fullReviewCoverage(t *testing.T, dir, baseSHA string) []string {
+	t.Helper()
+	cmd := exec.Command("git", "diff", "--name-only", "--no-renames", baseSHA)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff --name-only %s: %v", baseSHA, err)
+	}
+	paths := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
 }
 
 // TestReviewStep_UnrunAnalyzerDoesNotApprove pins issue #703's review half: a
@@ -138,6 +161,7 @@ func TestReviewStep_InvokesCodeReviewSkillAsCanonicalContract(t *testing.T) {
 		"scope mode: exact refs",
 		"Compare the named base and target endpoints without replacing them with a merge-base",
 		"Return the completed skill result through the provided JSON schema",
+		"Return reviewed_paths as the exact set of changed files the skill actually read and judged",
 		`Convert each material unresolved risk and every active lane the skill reports as partial or blocked into a "warning" / "ask-user" finding`,
 		`Map Critical and High verified findings to "error", Medium and Low verified findings to "warning", and verified nits to "info"`,
 		`Use "ask-user" when the remedy needs a product or scope decision`,
@@ -196,6 +220,79 @@ func TestReviewStep_UnavailableCodeReviewSkillFindingParksForUser(t *testing.T) 
 	}
 	if !outcome.NeedsApproval || len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
 		t.Fatalf("outcome = %+v, findings = %+v; want unavailable skill parked for user review", outcome, findings.Items)
+	}
+}
+
+func TestReviewStep_PartialReviewedPathsDoesNotGrantApproval(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name              string
+		output            json.RawMessage
+		wantNeedsApproval bool
+		wantLog           string
+	}{
+		{
+			name:              "reviewed_paths absent fails closed: clean findings park for approval",
+			output:            json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review reported no reviewed_paths; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths explicitly null fails closed like an omitted field",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":null,"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review reported no reviewed_paths; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths present but empty does not grant approval",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review coverage is incomplete; parking for approval with 1 reviewable file(s) unverified: feature.txt",
+		},
+		{
+			name:              "reviewed_paths present and covering the reviewable set approves",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: false,
+		},
+		{
+			name:              "reviewed_paths with an out-of-scope path does not approve",
+			output:            json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt","fabricated.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`),
+			wantNeedsApproval: true,
+			wantLog:           "review coverage is incomplete; parking for approval; 1 reviewed_paths entry(ies) outside the reviewable set: fabricated.txt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: tc.output}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			var logs []string
+			sctx.Log = func(msg string) { logs = append(logs, msg) }
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if outcome.NeedsApproval != tc.wantNeedsApproval {
+				t.Fatalf("NeedsApproval = %v, want %v", outcome.NeedsApproval, tc.wantNeedsApproval)
+			}
+			joined := strings.Join(logs, "\n")
+			if tc.wantLog == "" {
+				if strings.Contains(joined, "parking for approval") {
+					t.Fatalf("full coverage must not log a coverage park; logs:\n%s", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, tc.wantLog) {
+				t.Fatalf("log missing %q; logs:\n%s", tc.wantLog, joined)
+			}
+		})
 	}
 }
 
@@ -302,7 +399,7 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 	}
 	var calls []call
 
-	findings := `{"findings":[{"file":"a.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}],"risk_level":"low","risk_rationale":"tidy finding","risk_scope":"source-or-external"}`
+	findings := `{"findings":[{"file":"feature.txt","line":1,"severity":"warning","action":"auto-fix","description":"tidy"}],"risk_level":"low","risk_rationale":"tidy finding","risk_scope":"source-or-external"}`
 	ag := &mockAgent{
 		name: "budget-probe",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
@@ -322,7 +419,12 @@ func TestReviewStep_EachAgentInvocationGetsItsOwnBudget(t *testing.T) {
 			if len(calls) == 1 || len(calls) == 3 {
 				return &agent.Result{Output: json.RawMessage(findings)}, nil
 			}
-			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
+			// The final rereview must report reviewed_paths covering the
+			// finding's file to positively clear it under the append-only
+			// carry-forward contract (see resolveVerifiedFindingsJSON):
+			// without a coverage record, a clean round leaves a selected
+			// finding outstanding and the step never completes.
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"reviewed_paths":["feature.txt"],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`)}, nil
 		},
 	}
 
@@ -528,7 +630,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(`{"summary":"  'address review findings.'  "}`)}, nil
 			}
 			// Review call — return clean findings
-			findings := Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal}
+			findings := Findings{Items: []Finding{}, Summary: "all clear", RiskLevel: "low", RiskRationale: "all clear", RiskScope: types.FindingsRiskScopeSourceOrExternal, ReviewedPaths: fullReviewCoverage(t, dir, baseSHA)}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
 		},
@@ -644,7 +746,9 @@ func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
 				}
 				return &agent.Result{Output: json.RawMessage(`{"summary":"replace source test"}`)}, nil
 			case 3:
-				output, _ := json.Marshal(cleanReviewFindings())
+				rereview := cleanReviewFindings()
+				rereview.ReviewedPaths = fullReviewCoverage(t, dir, baseSHA)
+				output, _ := json.Marshal(rereview)
 				return &agent.Result{Output: output}, nil
 			default:
 				return nil, fmt.Errorf("unexpected agent call %d", calls)

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +12,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // Positive regression for the reported bug: authoritative intent requires a
 // pipeline-owned PR outcome ("Open PR A unmerged"). Review runs before push/PR,
@@ -33,11 +46,30 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "risk_scope") {
 				t.Errorf("review prompt missing risk scope instructions:\n%s", opts.Prompt)
 			}
-			if !strings.Contains(string(opts.JSONSchema), `"review_scope"`) {
-				t.Errorf("review schema missing review_scope: %s", opts.JSONSchema)
+			var schema struct {
+				Properties struct {
+					Findings struct {
+						Items struct {
+							Properties struct {
+								ReviewScope struct {
+									Enum []string `json:"enum"`
+								} `json:"review_scope"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"findings"`
+					RiskScope struct {
+						Enum []string `json:"enum"`
+					} `json:"risk_scope"`
+				} `json:"properties"`
 			}
-			if !strings.Contains(string(opts.JSONSchema), `"risk_scope"`) {
-				t.Errorf("review schema missing risk_scope: %s", opts.JSONSchema)
+			if err := json.Unmarshal(opts.JSONSchema, &schema); err != nil {
+				return nil, fmt.Errorf("decode review schema: %w", err)
+			}
+			if !sameStrings(schema.Properties.Findings.Items.Properties.ReviewScope.Enum, []string{"source", "pipeline-owned-delivery", "external-delivery"}) {
+				t.Errorf("review_scope enum = %v", schema.Properties.Findings.Items.Properties.ReviewScope.Enum)
+			}
+			if !sameStrings(schema.Properties.RiskScope.Enum, []string{"source-or-external", "pipeline-owned-delivery"}) {
+				t.Errorf("risk_scope enum = %v", schema.Properties.RiskScope.Enum)
 			}
 			if !strings.Contains(opts.Prompt, "Do not treat deferred pipeline-owned delivery outcomes") {
 				t.Errorf("conformance clause missing deferred-delivery exclusion:\n%s", opts.Prompt)
@@ -57,6 +89,7 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 				RiskLevel:     "high",
 				RiskRationale: "required PR criterion not satisfied",
 				RiskScope:     types.FindingsRiskScopePipelineOwnedDelivery,
+				ReviewedPaths: []string{"feature.txt"},
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil

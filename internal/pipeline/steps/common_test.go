@@ -1564,6 +1564,22 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 			t.Errorf("missing required field %q in schema", field)
 		}
 	}
+	// reviewed_paths is a recognized property but is deliberately NOT
+	// required: a caller that omits it keeps the pre-carry-forward behavior
+	// instead of failing schema validation, so recorded eval/replay
+	// fixtures that predate the field are not broken by its addition.
+	props, ok := parsed["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected 'properties' object in schema")
+	}
+	if _, ok := props["reviewed_paths"]; !ok {
+		t.Error("reviewFindingsSchema missing reviewed_paths property")
+	}
+	for _, r := range required {
+		if r == "reviewed_paths" {
+			t.Error("reviewed_paths must not be required, to preserve backward compatibility with callers that omit it")
+		}
+	}
 }
 
 func TestFindingsSchema_Action(t *testing.T) {

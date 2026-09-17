@@ -1,5 +1,5 @@
 // fakeagent is a deterministic stand-in for the real Claude, Codex, Grok,
-// OpenCode, and Antigravity CLIs used by no-mistakes' e2e tests. One binary is
+// OpenCode, Pi, and Antigravity CLIs used by no-mistakes' e2e tests. One binary is
 // compiled and then symlinked under each agent's dispatch name; Antigravity
 // is linked as both `antigravity` and its probed binary name `agy`.
 // argv[0]'s basename selects which wire protocol to speak.
@@ -44,6 +44,8 @@ func run(argv []string) int {
 		return runCodex(args, os.Stdin, scenario)
 	case "grok":
 		return runGrok(args, scenario)
+	case "pi":
+		return runPi(args, os.Stdin, scenario)
 	case "antigravity", "agy":
 		return runAgy(args, scenario)
 	case "opencode":

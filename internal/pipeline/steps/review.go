@@ -163,16 +163,21 @@ Previous review findings to address:
 	}
 	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
+	reviewable := reviewablePaths(changed, sctx.Config.IgnorePatterns)
+	if len(reviewable) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
 			RiskRationale: "no reviewable changes",
 		}
+		// Nothing changed, so nothing needed covering; an empty coverage record
+		// is honest here and cannot clear any outstanding finding.
+		noChangeFindings.ReviewedPaths = nil
 		findingsJSON, _ := json.Marshal(noChangeFindings)
 		return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
-			Findings:   string(findingsJSON),
-			FixSummary: fixSummary,
+			Findings:        string(findingsJSON),
+			ReviewablePaths: reviewable,
+			FixSummary:      fixSummary,
 		})
 	}
 
@@ -269,13 +274,26 @@ Previous review findings to address:
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
+	if !needsApproval && !reviewedPathsCoverReviewable(findings.ReviewedPaths, reviewable) {
+		// A clean round certifies the whole head, so it is held to a positive
+		// coverage record over every trusted reviewable path. An omitted
+		// reviewed_paths is not a legacy pass: the field is optional in the
+		// schema only so an older payload still parses, and an absent list is
+		// the same missing evidence as an empty or partial one (VISION.md R4:
+		// every review pass covers the complete change). The head parks for
+		// approval instead, and the log names what was left unverified.
+		sctx.Log(uncoveredReviewMessage(findings.ReviewedPaths, reviewable))
+		needsApproval = true
+	}
 	findingsJSON, _ := json.Marshal(findings)
 
 	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
-		NeedsApproval: needsApproval,
-		AutoFixable:   len(findings.Items) > 0,
-		Findings:      string(findingsJSON),
-		FixSummary:    fixSummary,
+		NeedsApproval:   needsApproval,
+		AutoFixable:     len(findings.Items) > 0,
+		Findings:        string(findingsJSON),
+		ReviewedPaths:   findings.ReviewedPaths,
+		ReviewablePaths: reviewable,
+		FixSummary:      fixSummary,
 	})
 }
 
@@ -303,6 +321,7 @@ The scope above is authoritative and unambiguous. Compare the named base and tar
 No-mistakes compatibility:
 - Return the completed skill result through the provided JSON schema instead of the skill's prose report format.
 - Include only verified findings and material unresolved risks. Do not include dismissed candidates.
+- Return reviewed_paths as the exact set of changed files the skill actually read and judged. Never list a file it did not examine; omitted files remain unverified.
 - Convert each material unresolved risk and every active lane the skill reports as partial or blocked into a "warning" / "ask-user" finding that names the missing coverage, so an incomplete review cannot pass.
 - Map Critical and High verified findings to "error", Medium and Low verified findings to "warning", and verified nits to "info".
 - Use "ask-user" when the remedy needs a product or scope decision, "auto-fix" for a safe correction within the accepted intent, and "no-op" for a nit that needs no action.

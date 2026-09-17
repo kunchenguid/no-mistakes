@@ -16,7 +16,7 @@ import (
 
 const (
 	blockingReviewJSON = `{"findings":[{"severity":"error","action":"auto-fix","description":"nil dereference when the config file is empty","file":"a.txt","line":1,"review_scope":"source"}],"risk_level":"high","risk_rationale":"one defect","risk_scope":"source-or-external"}`
-	cleanReviewJSON    = `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	cleanReviewJSON    = `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external","reviewed_paths":["feature.txt"]}`
 )
 
 // TestReviewStep_SchemaRejectionRerunsAFreshReview is issue #1045's Pi case:

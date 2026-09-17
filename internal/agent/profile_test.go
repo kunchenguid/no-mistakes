@@ -90,6 +90,26 @@ func TestNewWithOptions_RawOverrideKeepsWinning(t *testing.T) {
 	}
 }
 
+func TestPiProfileParametersSurviveColdStartAndSessionResume(t *testing.T) {
+	profile := agentcfg.Profile{Model: "openai-codex/gpt-5.4", Effort: agentcfg.EffortHigh}
+	created, err := NewWithOptions(types.AgentPi, "pi", []string{"--provider", "openai-codex"}, Options{Profile: profile, DisableProjectSettings: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer created.Close()
+	pa := created.(*piAgent)
+	for _, session := range []*SessionRef{nil, {}, {ID: "00000000-0000-4000-8000-000000000001"}} {
+		for range 2 { // a retry builds the same arguments again
+			args := strings.Join(pa.buildArgs(session), " ")
+			for _, want := range []string{"--no-context-files", "--provider openai-codex", "--model openai-codex/gpt-5.4", "--thinking high"} {
+				if !strings.Contains(args, want) {
+					t.Errorf("missing %s in %s", want, args)
+				}
+			}
+		}
+	}
+}
+
 // TestNewWithOptions_ZeroProfileLeavesArgvUntouched is the no-op guarantee for
 // every configuration written before the common layer existed.
 func TestNewWithOptions_ZeroProfileLeavesArgvUntouched(t *testing.T) {

@@ -262,7 +262,7 @@ How each field maps:
 
 `agent_config` is global-only. Like `agent_args_override`, it decides which model runs with your credentials, so an `agent_config` block in a repository's `.no-mistakes.yaml` is ignored.
 
-**Precedence.** `agent_args_override` always wins. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
+**Precedence for unpinned runs.** `agent_args_override` wins. Opt-in [per-run Pi profiles](#per-run-pi-profiles) have a separate, immutable selection contract. If a raw flag already pins a knob natively - for example, `-m`, `--model`, or a `-c`/`--config` assignment whose exact key is `model` or `model_reasoning_effort` for Codex, plus the other harnesses' `--effort`, `--reasoning-effort`, or `--thinking` forms - then `agent_config` does not emit its value for that knob. Text such as `model=` nested inside an unrelated option's value is not a pin. Any knob the raw flags leave alone still comes from `agent_config`, so adding `agent_config` to an existing configuration never changes the arguments that configuration already supplied:
 
 ```yaml
 agent_config:
@@ -274,6 +274,57 @@ agent_args_override:
     - -m
     - o3
 ```
+
+### Per-run Pi profiles
+
+Select a profile when creating a validation run, without editing global config:
+
+```sh
+no-mistakes axi run --intent "the user's goal" \
+  --model openai-codex/gpt-5.4 --effort high
+```
+
+`--model` and/or `--effort` opt in. Each explicit field overrides
+`agent_config.pi`; an omitted field inherits that global default. Both must
+resolve to nonempty values before a run starts. Use a provider-qualified model
+ID from Pi's catalog, not a bare name, URL, glob, or `:thinking` suffix.
+Supported effort spellings are `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Availability, authentication, and model-specific reasoning support remain Pi's
+responsibility; no-mistakes does not inspect subscriptions or query quotas.
+
+A pin applies to **every pipeline duty**, including reviewer and fixer roles.
+The effective trusted agent selection must be Pi-only (no `auto`, non-Pi
+fallbacks, or non-Pi `review_agents`), including `agent` / fallbacks from the
+trusted default-branch `.no-mistakes.yaml`. That check runs before any active
+validation is cancelled. Pi role-specific model/effort values are
+superseded by the run pin. Native `--model`, `--provider`, `--models`,
+`--thinking` (including `--flag=value`), or `--` in
+`agent_args_override.pi` conflict at launch: move defaults to `agent_config.pi`
+rather than combining two selection mechanisms.
+
+The daemon resolves the values once and stores `runs.pi_profile` atomically
+with run creation. That field cannot be changed or cleared. Each invocation,
+retry, fresh review, resumed fixer, and daemon recovery uses that pin; later
+global model, effort, agent-chain, role, or raw selection-flag changes cannot
+replace it. Recovery still enforces trusted repository policies and refuses
+unusable configuration or a missing Pi binary rather than switching harnesses.
+The pin fixes selection parameters, not provider credentials, model-catalog
+contents, or other agent settings; credentials are never stored in it.
+
+Reattaching with omitted flags preserves the existing pin. Explicit fields must
+match it; a different profile requires a new run. The same rule binds nonce
+replays and receipt claims. `rerun --model ... --effort ...` selects a profile
+for a **new** run; without those flags a rerun uses current global configuration,
+not its predecessor's pin. Existing runs and all callers omitting both flags
+remain unpinned and keep the previous global-config behavior. Concurrent runs
+hold independent pins without modifying shared configuration.
+
+Structured AXI status and daemon run/receipt responses expose `pi_profile:
+{model, effort}` only for pinned runs. `no-mistakes stats --run <id>` shows that
+requested profile alongside per-invocation served-model and usage evidence;
+a pin is not a claim that a provider reported usage. These values stay local,
+not in remote analytics. The CLI checks daemon support before a fresh pinned
+submission, so an older daemon cannot silently launch it without a pin.
 
 ### review_agents
 
@@ -303,8 +354,10 @@ supported effort levels remain the harness/provider's responsibility.
 Both roles can use the same harness with different models. Reviews and rereviews
 always run fresh; only review fixes reuse the fixer's session when
 `session_reuse` is enabled and the fixer supports it. These settings do not
-select the agents repairing tests, documentation, or CI. Eval capture strips
-these profiles so replay candidates remain authoritative.
+select the agents repairing tests, documentation, or CI. An opt-in
+[per-run Pi profile](#per-run-pi-profiles) supersedes these role values for
+that run. Eval capture strips these profiles so replay candidates remain
+authoritative.
 
 ### agent_args_override
 
@@ -372,7 +425,7 @@ agent_args_override:
 
 Do not put a model flag under `opencode` here: these flags go to `opencode serve`, which exits with usage on an unknown option. Use `agent_config.opencode.model` instead.
 
-For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+For Codex, `service_tier` and reasoning effort tune different things: `service_tier` selects the speed or priority lane, while reasoning depth is what [`agent_config`](#agent_config)'s `effort` sets (as `-c model_reasoning_effort`). no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. An opt-in [per-run Pi profile](#per-run-pi-profiles) still keeps its pinned model and effort for that run's lifetime. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
 
 ### forge_profiles
 

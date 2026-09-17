@@ -111,10 +111,12 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, reconcileEnvStep{step: &PushStep{}, env: green}, reconcileEnvStep{step: ci, env: green}}
 			reviews := 0
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				findings := cleanReviewFindings()
 				if strings.HasPrefix(opts.Purpose, "review") {
 					reviews++
+					findings.ReviewedPaths = fullReviewCoverage(t, f.dir, f.sctx.Run.BaseSHA)
 				}
-				output, err := json.Marshal(cleanReviewFindings())
+				output, err := json.Marshal(findings)
 				return &agent.Result{Output: output}, err
 			}}
 			parked := make(chan struct{}, 1)

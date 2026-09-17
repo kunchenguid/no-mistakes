@@ -207,7 +207,10 @@ func TestExecutor_FixResolutionStillRecordsAUserSelection(t *testing.T) {
 			if calls == 1 {
 				return &StepOutcome{NeedsApproval: true, Findings: declinedTestFindings}, nil
 			}
-			return &StepOutcome{NeedsApproval: false, ExitCode: 0}, nil
+			// The rereview positively covers the selected finding's file and no
+			// longer reports the defect. That coverage record, not the silence of
+			// an empty round, is what clears it from the carry set.
+			return &StepOutcome{ReviewedPaths: []string{"x.js"}, ReviewablePaths: []string{"x.js"}}, nil
 		},
 	}
 	exec := NewExecutor(database, p, nil, nil, []Step{step, newPassStep(types.StepTest)}, nil)
