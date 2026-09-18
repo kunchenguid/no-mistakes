@@ -591,6 +591,52 @@ func TestTestStep_RepeatedCutKeepsRefusingBeforeAnyEvidenceCompletes(t *testing.
 	}
 }
 
+func TestTestStep_RepeatedCutReMeasuresLeftoversInsteadOfRepeatingThem(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "foo_test.go"), []byte("package foo"), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+	cutAgain := func(answered string) string {
+		t.Helper()
+		sctx.Fixing = true
+		sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, answered, types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork)
+		outcome, err := (&TestStep{}).Execute(sctx)
+		if err != nil {
+			t.Fatalf("validation-only round error = %v", err)
+		}
+		return outcome.Findings
+	}
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("first round error = %v", err)
+	}
+	second := cutAgain(first.Findings)
+	work := testFindingByID(t, second, types.FindingIDTestAgentUnvalidatedWork).Description
+	if strings.Count(work, "uncommitted changes to foo_test.go") != 1 || strings.Contains(work, "Since then") {
+		t.Fatalf("finding = %q, want the same leftover named once, not repeated as new work", work)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "foo_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	third := cutAgain(second)
+	if pipeline.HasUnvalidatedWorkRefusal(third) {
+		t.Fatalf("findings = %s, a worktree with the leftover gone and HEAD unmoved must be approvable again", third)
+	}
+}
+
 func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -659,7 +705,7 @@ func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
-		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"test-agent-unvalidated-work","severity":"warning","action":"ask-user","description":"leftover build output"},{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"slow suite"}],"summary":"ok","tested":["go test ./x"],"testing_summary":"drove it","artifacts":[],"scenarios":[{"name":"user runs it","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"test-agent-unvalidated-work","severity":"warning","action":"ask-user","description":"leftover build output"},{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"slow suite"}],"summary":"ok","tested":["go test ./x"],"testing_summary":"drove it","artifacts":[],"scenarios":[{"name":"user runs it","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go","unvalidated_since_sha":"deadbeef"}`)}, nil
 	}}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
@@ -670,6 +716,9 @@ func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
 	findings, err := types.ParseFindingsJSON(outcome.Findings)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if findings.UnvalidatedSinceSHA != "" {
+		t.Fatalf("findings = %s, an agent payload must not set the park's measured head", outcome.Findings)
 	}
 	for _, item := range findings.Items {
 		if item.ID == types.FindingIDTestAgentUnvalidatedWork || item.ID == types.FindingIDTestAgentTimeout {

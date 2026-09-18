@@ -294,25 +294,30 @@ type Findings struct {
 	Scenarios      []TestScenario `json:"scenarios,omitempty"`
 	Verdict        string         `json:"verdict,omitempty"`
 	TestedHeadSHA  string         `json:"tested_head_sha,omitempty"`
-	RiskLevel      string         `json:"risk_level"`
-	RiskRationale  string         `json:"risk_rationale"`
-	RiskScope      string         `json:"risk_scope,omitempty"`
+	// UnvalidatedSinceSHA is set only on a Test budget-cut park: the head its
+	// unvalidated-work check measured from, carried so a repeated cut before any
+	// evidence turn completes re-measures from that same head.
+	UnvalidatedSinceSHA string `json:"unvalidated_since_sha,omitempty"`
+	RiskLevel           string `json:"risk_level"`
+	RiskRationale       string `json:"risk_rationale"`
+	RiskScope           string `json:"risk_scope,omitempty"`
 }
 
 type findingsWire struct {
-	Items          []Finding      `json:"findings"`
-	Legacy         []Finding      `json:"items"`
-	Summary        string         `json:"summary"`
-	ReviewedPaths  []string       `json:"reviewed_paths"`
-	Tested         []string       `json:"tested"`
-	TestingSummary string         `json:"testing_summary"`
-	Artifacts      []TestArtifact `json:"artifacts"`
-	Scenarios      []TestScenario `json:"scenarios"`
-	Verdict        string         `json:"verdict"`
-	TestedHeadSHA  string         `json:"tested_head_sha"`
-	RiskLevel      string         `json:"risk_level"`
-	RiskRationale  string         `json:"risk_rationale"`
-	RiskScope      string         `json:"risk_scope"`
+	Items               []Finding      `json:"findings"`
+	Legacy              []Finding      `json:"items"`
+	Summary             string         `json:"summary"`
+	ReviewedPaths       []string       `json:"reviewed_paths"`
+	Tested              []string       `json:"tested"`
+	TestingSummary      string         `json:"testing_summary"`
+	Artifacts           []TestArtifact `json:"artifacts"`
+	Scenarios           []TestScenario `json:"scenarios"`
+	Verdict             string         `json:"verdict"`
+	TestedHeadSHA       string         `json:"tested_head_sha"`
+	UnvalidatedSinceSHA string         `json:"unvalidated_since_sha"`
+	RiskLevel           string         `json:"risk_level"`
+	RiskRationale       string         `json:"risk_rationale"`
+	RiskScope           string         `json:"risk_scope"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -327,18 +332,19 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 		items = wire.Legacy
 	}
 	return Findings{
-		Items:          items,
-		Summary:        wire.Summary,
-		ReviewedPaths:  wire.ReviewedPaths,
-		Tested:         wire.Tested,
-		TestingSummary: wire.TestingSummary,
-		Artifacts:      wire.Artifacts,
-		Scenarios:      wire.Scenarios,
-		Verdict:        wire.Verdict,
-		TestedHeadSHA:  wire.TestedHeadSHA,
-		RiskLevel:      wire.RiskLevel,
-		RiskRationale:  wire.RiskRationale,
-		RiskScope:      wire.RiskScope,
+		Items:               items,
+		Summary:             wire.Summary,
+		ReviewedPaths:       wire.ReviewedPaths,
+		Tested:              wire.Tested,
+		TestingSummary:      wire.TestingSummary,
+		Artifacts:           wire.Artifacts,
+		Scenarios:           wire.Scenarios,
+		Verdict:             wire.Verdict,
+		TestedHeadSHA:       wire.TestedHeadSHA,
+		UnvalidatedSinceSHA: wire.UnvalidatedSinceSHA,
+		RiskLevel:           wire.RiskLevel,
+		RiskRationale:       wire.RiskRationale,
+		RiskScope:           wire.RiskScope,
 	}, nil
 }
 
