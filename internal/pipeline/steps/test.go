@@ -137,7 +137,7 @@ Previous test findings to address:
 		}
 	}
 	if repairCut != nil {
-		return testAgentTimeoutOutcome(sctx, repairCut, startHead, baselineFindings, baselineExitCode), nil
+		return testAgentTimeoutOutcome(sctx, repairCut, startHead, baselineFindings, baselineSummary, baselineExitCode), nil
 	}
 
 	evidenceDir := testEvidenceDir(sctx)
@@ -236,7 +236,7 @@ Rules:
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {
-			return testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineExitCode), nil
+			return testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode), nil
 		}
 		return nil, err
 	}
@@ -526,7 +526,7 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 // result from this execution rides along with its exit code, so approving over
 // a failing command still needs the same waiver as any other Test gate, and a
 // fix round keeps the gate it was answering.
-func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, exitCode int) *pipeline.StepOutcome {
+func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, baselineSummary string, exitCode int) *pipeline.StepOutcome {
 	park, priorRefusal := answeredTestGate(sctx)
 	cause := "This is a budget or provider-slowness cut, not a code failure."
 	if exitCode != 0 || hasBlockingFindings(park.Items) || park.Verdict == types.TestVerdictNoGo || park.Verdict == types.TestVerdictInconclusive {
@@ -564,7 +564,7 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 			Description: refusal,
 		})
 	}
-	park.Summary = "Test agent exceeded its invocation budget"
+	park.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, "Test agent exceeded its invocation budget"}, "\n"))
 	park.Items = append(append(items, baseline...), park.Items...)
 	findingsJSON, _ := json.Marshal(park)
 	return &pipeline.StepOutcome{

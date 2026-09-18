@@ -293,7 +293,11 @@ func TestTestStep_EvidenceCutKeepsTheFailingConfiguredCommand(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 3"})
+	testCmd := "printf 'TestCheckout failed'; exit 3"
+	if runtime.GOOS == "windows" {
+		testCmd = "echo TestCheckout failed && exit /b 3"
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: testCmd})
 	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 
 	outcome, err := (&TestStep{}).Execute(sctx)
@@ -302,6 +306,9 @@ func TestTestStep_EvidenceCutKeepsTheFailingConfiguredCommand(t *testing.T) {
 	}
 	if outcome.ExitCode != 3 {
 		t.Fatalf("ExitCode = %d, want the configured command's 3", outcome.ExitCode)
+	}
+	if parked, parseErr := types.ParseFindingsJSON(outcome.Findings); parseErr != nil || !strings.Contains(parked.Summary, "TestCheckout failed") {
+		t.Fatalf("park summary = %q (%v), want the failing command's output kept for the next repair", parked.Summary, parseErr)
 	}
 	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
 		t.Fatalf("finding = %q, must not call the cut harmless while the configured command failed", got)
