@@ -16,30 +16,44 @@ import (
 	"github.com/muesli/termenv"
 )
 
-func TestModel_Yolo_ProtectedPathRefusalSendsNoAutomaticResponse(t *testing.T) {
-	for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
-		t.Run(string(status), func(t *testing.T) {
-			sock, client, snapshot := captureRespond(t)
-			run := testRun()
-			outcome := pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"})
-			run.Steps = []ipc.StepResultInfo{{StepName: types.StepDocument, Status: status, FindingsJSON: &outcome.Findings}}
-			m := NewModel(sock, client, run)
-			m.yoloMode = true
-			m.stepDiffLoaded[types.StepDocument] = true
-			for range 2 {
-				if cmd := m.maybeAutoApproveCmd(); cmd != nil {
-					if msg := cmd(); msg != nil {
-						t.Fatalf("automatic response failed: %v", msg)
+func TestModel_Yolo_RefusalGatesSendNoAutomaticResponse(t *testing.T) {
+	unvalidatedWork, err := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{
+		{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut"},
+		{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "error", Action: types.ActionAskUser, Description: "uncommitted changes to fix_test.go"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, refusal := range []struct {
+		step     types.StepName
+		findings string
+	}{
+		{types.StepDocument, pipeline.ProtectedPathOutcome(&pipeline.ProtectedPathError{Path: "ledger.json", Rule: "ledger.json"}).Findings},
+		{types.StepTest, unvalidatedWork},
+	} {
+		for _, status := range []types.StepStatus{types.StepStatusAwaitingApproval, types.StepStatusFixReview} {
+			t.Run(string(refusal.step)+"/"+string(status), func(t *testing.T) {
+				sock, client, snapshot := captureRespond(t)
+				run := testRun()
+				run.Steps = []ipc.StepResultInfo{{StepName: refusal.step, Status: status, FindingsJSON: &refusal.findings}}
+				m := NewModel(sock, client, run)
+				m.yoloMode = true
+				m.stepDiffLoaded[refusal.step] = true
+				for range 2 {
+					if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+						if msg := cmd(); msg != nil {
+							t.Fatalf("automatic response failed: %v", msg)
+						}
 					}
 				}
-			}
-			if calls := snapshot(); len(calls) != 0 {
-				t.Fatalf("protected-path refusal sent automatic responses: %+v", calls)
-			}
-			if m.yoloFixed[types.StepDocument] || m.yoloApproved[types.StepDocument] {
-				t.Fatal("refusal consumed yolo bookkeeping without an operator decision")
-			}
-		})
+				if calls := snapshot(); len(calls) != 0 {
+					t.Fatalf("refusal gate sent automatic responses: %+v", calls)
+				}
+				if m.yoloFixed[refusal.step] || m.yoloApproved[refusal.step] {
+					t.Fatal("refusal consumed yolo bookkeeping without an operator decision")
+				}
+			})
+		}
 	}
 }
 

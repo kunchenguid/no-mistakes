@@ -555,6 +555,7 @@ A commit the timed-out agent already made is recorded locally for custody and is
 While the run worktree holds uncommitted changes or commits past the head the last completed evidence turn saw (before one completes, past the head the first cut measured from, which each later park carries forward and measures again), the park names them with the commands to inspect them and approval is refused, because the steps after Test would commit and publish them.
 Otherwise approving the park is a Test exception (`passed-with-override`), not a silent green pass.
 A fix response spends another budget: a repair turn runs only for selected findings other than the budget cut itself, then validation re-runs over whatever the cut left.
+Guidance you attach to the budget-cut finding itself (`axi respond --instructions`, or `e` in the TUI) is given to that re-run validation.
 You can also abort, raise this value, and retry.
 
 |         |                        |

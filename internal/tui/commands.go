@@ -104,7 +104,7 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step == nil || m.yoloApproved[step.StepName] {
 		return nil
 	}
-	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) {
+	if pipeline.HasProtectedPathRefusal(m.stepFindings[step.StepName]) || pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
 		return nil
 	}
 	if !m.approvalReady(step) {
@@ -114,9 +114,6 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)
 		return m.respondCmd(types.ActionFix)
-	}
-	if pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
-		return nil
 	}
 	m.yoloApproved[step.StepName] = true
 	return m.respondCmd(types.ActionApprove)

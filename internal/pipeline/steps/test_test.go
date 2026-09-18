@@ -673,6 +673,62 @@ func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
 	}
 }
 
+func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
+	t.Parallel()
+	const guidance = "drive only the checkout scenario; do not run the full suite"
+	for _, tt := range []struct {
+		name      string
+		selection []string
+	}{
+		{"validation only", []string{types.FindingIDTestAgentTimeout}},
+		{"with a repair finding", []string{types.FindingIDTestAgentTimeout, "test-2"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			var prompts []string
+			ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				prompts = append(prompts, opts.Prompt)
+				if len(prompts) == 1 && len(tt.selection) > 1 {
+					return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+			sctx.Fixing = true
+			parked := `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","action":"ask-user","description":"budget cut"},` +
+				strings.TrimPrefix(noGoTestGateJSON(headSHA), `{"findings":[`)
+			selected, deferred := answerTestPark(t, parked, tt.selection...)
+			answered, err := types.ParseFindingsJSON(selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range answered.Items {
+				if answered.Items[i].ID == types.FindingIDTestAgentTimeout {
+					answered.Items[i].UserInstructions = guidance
+				}
+			}
+			if sctx.PreviousFindings, err = types.MarshalFindingsJSON(answered); err != nil {
+				t.Fatal(err)
+			}
+			sctx.DeferredFindings = deferred
+
+			if _, err := (&TestStep{}).Execute(sctx); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if len(prompts) != len(tt.selection) {
+				t.Fatalf("agent calls = %d, want %d", len(prompts), len(tt.selection))
+			}
+			evidence := prompts[len(prompts)-1]
+			if !strings.Contains(evidence, "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"+guidance+"\n") {
+				t.Fatalf("evidence prompt lacks the operator's budget-cut guidance:\n%s", evidence)
+			}
+		})
+	}
+}
+
 func TestTestStep_CutParkDoesNotRenderAnEarlierCyclesEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

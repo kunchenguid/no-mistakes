@@ -338,7 +338,7 @@ owns the staging guard's scope and limitations.
 
 A ` + "`test-agent-unvalidated-work`" + ` finding means a timed-out Test agent left
 commits or changes no Test turn validated. Approval is rejected, so ` + "`--yes`" + `
-stops at that gate instead of approving it. Relay what the finding names and do
+stops at that gate without responding. Relay what the finding names and do
 not skip Test, which would publish that work. Ask the operator to choose:
 ` + "`--action fix`" + ` spends another agent budget to validate the work, and
 ` + "`no-mistakes axi abort`" + ` stops the run.

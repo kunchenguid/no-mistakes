@@ -168,7 +168,7 @@ Previous test findings to address:
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command failed with exit code %d: `%s`\n", baselineExitCode, testCmd)
 		}
 	}
-	trustedRunbook := trustedTestInstructionsSection(sctx)
+	trustedRunbook := trustedTestInstructionsSection(sctx) + budgetCutGuidanceSection(sctx)
 	evidencePrompt := fmt.Sprintf(
 		`You are validating a code change by driving the product itself. Derive the scenarios this change must satisfy, then run each one against the real running product.
 
@@ -625,6 +625,30 @@ var testBudgetCutIDs = []string{types.FindingIDTestAgentTimeout, types.FindingID
 func onlyTestBudgetCutFindings(raw string) bool {
 	findings, err := types.ParseFindingsJSON(raw)
 	return err == nil && len(findings.Items) > 0 && len(types.ExcludeFindings(findings, testBudgetCutIDs).Items) == 0
+}
+
+// budgetCutGuidanceSection renders the operator's instructions attached to
+// selected budget-cut findings. The repair turn never sees those findings, so
+// the evidence turn is the one that must follow them.
+func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
+	if !sctx.Fixing {
+		return ""
+	}
+	findings, err := types.ParseFindingsJSON(sctx.PreviousFindings)
+	if err != nil {
+		return ""
+	}
+	var guidance []string
+	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
+		if text := strings.TrimSpace(item.UserInstructions); text != "" {
+			guidance = append(guidance, sanitizePromptMultilineText(text))
+		}
+	}
+	if len(guidance) == 0 {
+		return ""
+	}
+	return "\nOperator guidance for this validation (from the decision on the Test agent budget cut):\n" +
+		strings.Join(guidance, "\n") + "\n"
 }
 
 // testRepairFindings is the fix selection the repair agent is asked to
