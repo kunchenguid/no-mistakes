@@ -1384,6 +1384,9 @@ func TestCIStep_FixAgentTimeoutRecordsCommittedRepair(t *testing.T) {
 	if strings.Contains(timeout.Description, "uncommitted changes") {
 		t.Fatalf("finding %q, committed repair should not be described as dirty worktree leftovers", timeout.Description)
 	}
+	if strings.Contains(timeout.Description, "not a code failure") {
+		t.Fatalf("finding %q, must not call the cut harmless next to the failing checks it carries", timeout.Description)
+	}
 }
 
 func TestCIStep_FixAfterATimedOutRepairRevalidatesTheRecordedCommit(t *testing.T) {

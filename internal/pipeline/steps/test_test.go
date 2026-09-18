@@ -401,6 +401,109 @@ func TestTestStep_CutMidRebaseRecordsNoPartialHead(t *testing.T) {
 	}
 }
 
+func noGoTestGateJSON(testedHead string) string {
+	return `{"findings":[{"id":"test-2","severity":"error","action":"auto-fix","description":"live validation verdict: no-go (1 of 1 scenarios were driven live against the product); failed: checkout"}],"summary":"checkout failed","verdict":"no-go","scenarios":[{"name":"checkout","result":"fail","live":true,"evidence":"checkout.png","reason":""}],"tested_head_sha":"` + testedHead + `"}`
+}
+
+func TestTestStep_RepeatedCutKeepsRefusingUnvalidatedWork(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("repair round error = %v", err)
+	}
+	repaired := sctx.Run.HeadSHA
+	if repaired == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
+		t.Fatalf("repair round findings = %s, want the unvalidated repair commit refused", first.Findings)
+	}
+
+	parked, err := types.ParseFindingsJSON(first.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budgetCut, err := types.MarshalFindingsJSON(types.FilterFindings(parked, []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.PreviousFindings = budgetCut
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("agent calls = %d, want the second round to run only the evidence turn", calls)
+	}
+	if !pipeline.HasUnvalidatedWorkRefusal(second.Findings) {
+		t.Fatalf("findings = %s, want the repeated cut to keep refusing the repair no evidence turn validated", second.Findings)
+	}
+	if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+repaired) {
+		t.Fatalf("finding = %q, want the range since the last validated head", work)
+	}
+}
+
+func TestTestStep_RepairCutKeepsTheFindingsItWasFixing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findings.Verdict != types.TestVerdictNoGo || len(findings.Scenarios) != 1 || !strings.Contains(outcome.Findings, "failed: checkout") {
+		t.Fatalf("findings = %s, want the no-go the repair was fixing kept on the park", outcome.Findings)
+	}
+	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
+		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) {
+		t.Fatalf("findings = %s, a cut that changed nothing must stay approvable", outcome.Findings)
+	}
+
+	persistTestStepFindings(t, sctx, outcome.ExitCode, outcome.Findings)
+	if err := sctx.DB.SetTestApprovalReason(sctx.StepResultID, "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteStep(sctx.StepResultID, 0, 1, "test.log"); err != nil {
+		t.Fatal(err)
+	}
+	sr, err := sctx.DB.GetStepResult(sctx.StepResultID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sr.TestOverrideReason(); !strings.Contains(got, "live validation verdict: no-go") {
+		t.Fatalf("TestOverrideReason = %q, want approval recorded against the no-go", got)
+	}
+}
+
 // leaveConflictedRebase stops a rebase on a conflict, leaving HEAD detached at
 // a partial result the way an agent cut mid-rebase does.
 func leaveConflictedRebase(t *testing.T, dir string) {

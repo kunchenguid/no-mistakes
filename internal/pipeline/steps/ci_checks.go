@@ -366,7 +366,7 @@ func ciCheckReadFailureOutcome(err error) *pipeline.StepOutcome {
 func ciFixAgentTimeoutOutcome(issueDesc string, leftover string, err error) *pipeline.StepOutcome {
 	description := fmt.Sprintf(
 		"The CI auto-fix agent did not finish within its invocation budget while repairing: %s. "+
-			"Reported: %v. This is a budget or provider-slowness cut, not a code failure. "+
+			"Reported: %v. The cut itself reflects budget or provider slowness; it does not clear the findings listed with it. "+
 			"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
 			"Check that the configured agent CLI is authenticated and responsive, then respond with a fix selection to spend another budget, or resolve the CI failure outside the pipeline.",
 		issueDesc, err)

@@ -524,11 +524,13 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 // rather than a silent green pass. Late structured output from the expired
 // turn is still not used as a successful result. The configured command's
 // result from this execution rides along with its exit code, so approving over
-// a failing command still needs the same waiver as any other Test gate.
+// a failing command still needs the same waiver as any other Test gate, and a
+// fix round keeps the gate it was answering.
 func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, exitCode int) *pipeline.StepOutcome {
+	park := answeredTestGate(sctx)
 	cause := "This is a budget or provider-slowness cut, not a code failure."
-	if exitCode != 0 {
-		cause = "The cut does not clear the configured test command failure reported alongside it."
+	if exitCode != 0 || len(park.Items) > 0 {
+		cause = "The cut does not clear the failures reported alongside it."
 	}
 	items := []Finding{{
 		ID:       types.FindingIDTestAgentTimeout,
@@ -542,7 +544,14 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 				"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
 			err, cause, config.DefaultTestAgentTimeout),
 	}}
-	if work := unvalidatedTestWork(sctx, startHead); work != "" {
+	validatedHead := park.TestedHeadSHA
+	if validatedHead == "" && sctx.Run.ReviewApprovedHeadSHA != nil {
+		validatedHead = strings.TrimSpace(*sctx.Run.ReviewApprovedHeadSHA)
+	}
+	if validatedHead == "" {
+		validatedHead = startHead
+	}
+	if work := unvalidatedTestWork(sctx, validatedHead); work != "" {
 		items = append(items, Finding{
 			ID:          types.FindingIDTestAgentUnvalidatedWork,
 			Severity:    types.FindingSeverityError,
@@ -550,15 +559,39 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 			Description: "Approval is refused: the run worktree at " + sctx.WorkDir + " holds work no Test turn validated, and the steps after Test would commit and publish it. It holds " + work + ". Respond with fix to validate it, or abort.",
 		})
 	}
-	findingsJSON, _ := json.Marshal(Findings{
-		Summary: "Test agent exceeded its invocation budget",
-		Items:   append(items, baseline...),
-	})
+	park.Summary = "Test agent exceeded its invocation budget"
+	park.Items = append(append(items, baseline...), park.Items...)
+	findingsJSON, _ := json.Marshal(park)
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
 		ExitCode:      exitCode,
 	}
+}
+
+// answeredTestGate is what a fix round carries onto a budget-cut park from the
+// gate it answers: the selected findings and the last completed evidence
+// turn's verdict, scenarios, and tested head. The budget-cut findings and the
+// configured-command result are left out because this execution derives them
+// again, and IDs are cleared so the executor numbers the park without
+// colliding with them.
+func answeredTestGate(sctx *pipeline.StepContext) Findings {
+	if !sctx.Fixing {
+		return Findings{}
+	}
+	selected, err := types.ParseFindingsJSON(sctx.PreviousFindings)
+	if err != nil {
+		return Findings{}
+	}
+	carried := types.FindingsMetadata(selected)
+	for _, item := range selected.Items {
+		if item.ID == types.FindingIDTestAgentTimeout || item.ID == types.FindingIDTestAgentUnvalidatedWork || item.Category == types.FindingCategoryTestCommand {
+			continue
+		}
+		item.ID = ""
+		carried.Items = append(carried.Items, item)
+	}
+	return carried
 }
 
 // onlyTestBudgetCutFindings reports whether a fix selection holds nothing but
@@ -576,12 +609,15 @@ func onlyTestBudgetCutFindings(raw string) bool {
 	return true
 }
 
-// unvalidatedTestWork names what a cut Test execution leaves that no Test turn
-// validated, with how to inspect it, or returns "" when there is nothing. A
+// unvalidatedTestWork names what the worktree holds beyond validatedHead - the
+// head the last completed evidence turn saw, or else the head Review approved -
+// with how to inspect it, or returns "" when there is nothing. Measuring from
+// that head rather than this execution's start keeps a repeated cut refusing
+// the same work. A
 // commit the timed-out agent made is recorded as the run head so custody sees
 // it, unless an unfinished rebase or merge makes HEAD a partial result. An
 // unreadable HEAD or status fails closed.
-func unvalidatedTestWork(sctx *pipeline.StepContext, startHead string) string {
+func unvalidatedTestWork(sctx *pipeline.StepContext, validatedHead string) string {
 	dir := sctx.WorkDir
 	var parts []string
 	head, err := stepGitHeadSHA(sctx)
@@ -590,7 +626,7 @@ func unvalidatedTestWork(sctx *pipeline.StepContext, startHead string) string {
 		parts = append(parts, fmt.Sprintf("a HEAD that could not be read (%v)", err))
 	case rebaseInProgress(sctx.Ctx, dir) || mergeInProgress(sctx.Ctx, dir):
 		parts = append(parts, fmt.Sprintf("an unfinished rebase or merge at %s, not recorded as the run head (inspect with `git -C %s status`)", shortObjectID(head), dir))
-	case head != startHead:
+	case head != validatedHead:
 		where := "recorded locally as the run head and not pushed"
 		if head != sctx.Run.HeadSHA {
 			if recErr := recordAgentFixHead(sctx, types.StepTest, head); recErr != nil {
@@ -598,7 +634,7 @@ func unvalidatedTestWork(sctx *pipeline.StepContext, startHead string) string {
 				where = "left in the run worktree"
 			}
 		}
-		parts = append(parts, fmt.Sprintf("commits %s..%s, %s (inspect with `git -C %s log -p %s..%s`)", shortObjectID(startHead), shortObjectID(head), where, dir, startHead, head))
+		parts = append(parts, fmt.Sprintf("commits %s..%s, %s (inspect with `git -C %s log -p %s..%s`)", shortObjectID(validatedHead), shortObjectID(head), where, dir, validatedHead, head))
 	}
 	status, err := stepGitRunRaw(sctx, "status", "--porcelain")
 	if err != nil {
