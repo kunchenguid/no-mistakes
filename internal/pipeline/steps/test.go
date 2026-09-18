@@ -96,7 +96,11 @@ Previous test findings to address:
 		})
 		cancelFix()
 		if err != nil {
-			return nil, testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
+			runErr := testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
+			if outcome := testAgentTimeoutOutcome(sctx, runErr); outcome != nil {
+				return outcome, nil
+			}
+			return nil, runErr
 		}
 		fixSummary = summary
 	}
@@ -224,6 +228,9 @@ Rules:
 	)
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
+		if outcome := testAgentTimeoutOutcome(sctx, err); outcome != nil {
+			return outcome, nil
+		}
 		return nil, err
 	}
 	if len(tested) > 0 {
@@ -502,6 +509,67 @@ func testAgentContext(sctx *pipeline.StepContext) (context.Context, context.Canc
 }
 
 var errTestAgentTimeout = errors.New("test agent timeout")
+
+// testAgentTimeoutOutcome parks the Test step when an evidence or repair
+// invocation burned its wall-clock budget. A budget cut is not a code
+// failure: the run stays alive with the worktree so leftover commits and
+// uncommitted files are not discarded, and an approval is a Test exception
+// rather than a silent green pass. Late structured output from the expired
+// turn is still not used as a successful result.
+func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error) *pipeline.StepOutcome {
+	if err == nil || !errors.Is(err, errTestAgentTimeout) {
+		return nil
+	}
+	description := fmt.Sprintf(
+		"The Test agent did not finish within its invocation budget. "+
+			"Reported: %v. This is a budget or provider-slowness cut, not a code failure. "+
+			"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
+			"If this repository's targeted tests or evidence gathering routinely approach the default %s, raise test_agent_timeout in global config. "+
+			"Respond with a fix selection to spend another budget, or abort and retry after raising the budget.",
+		err, config.DefaultTestAgentTimeout)
+	if sha, recorded := retainTimedOutTestHead(sctx); sha != "" {
+		if recorded {
+			description += fmt.Sprintf(" The timed-out agent committed %s; it is recorded locally and is not pushed.", shortObjectID(sha))
+		} else {
+			description += fmt.Sprintf(" The timed-out agent left a committed head at %s in the run worktree.", shortObjectID(sha))
+		}
+	}
+	if dirty := dirtyRunWorktree(sctx); dirty != "" {
+		description += fmt.Sprintf(" The timed-out agent left uncommitted changes in the run worktree at %s; they are not committed or pushed.", dirty)
+	}
+	findings := Findings{
+		Summary: "Test agent exceeded its invocation budget",
+		Items: []Finding{{
+			ID:          types.FindingIDTestAgentTimeout,
+			Severity:    types.FindingSeverityWarning,
+			Action:      types.ActionAskUser,
+			Description: description,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
+
+// retainTimedOutTestHead records a head the timed-out agent committed itself
+// so custody and later rounds see it. Uncommitted leftover files stay dirty:
+// a late return after the deadline is not committed as a successful fix.
+func retainTimedOutTestHead(sctx *pipeline.StepContext) (string, bool) {
+	if sctx == nil || sctx.Run == nil {
+		return "", false
+	}
+	head, err := stepGitHeadSHA(sctx)
+	if err != nil || head == "" || head == sctx.Run.HeadSHA {
+		return "", false
+	}
+	if recErr := recordAgentFixHead(sctx, types.StepTest, head); recErr != nil {
+		sctx.Log(fmt.Sprintf("warning: could not record timed-out test agent head %s: %v", head, recErr))
+		return head, false
+	}
+	return head, true
+}
 
 // testAgentError renders a Test-invocation budget expiry. It keeps the agent's
 // own error rather than replacing it with the bare context cause: for a native

@@ -1311,6 +1311,80 @@ func TestCIStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testin
 	}
 }
 
+func TestCIStep_FixAgentTimeoutRecordsCommittedRepair(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksJSON := `[{"name":"test","state":"FAILURE","bucket":"fail","app":"github-actions"}]`
+	env := fakeCIGH(t, "OPEN", checksJSON)
+
+	ag := &mockAgent{
+		name: "slow-repair",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "repair.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "repair.txt")
+			gitCmd(t, dir, "commit", "-m", "timed-out CI repair")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/1109"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 30 * time.Second
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+	sctx.Config.AgentTimeout = 50 * time.Millisecond
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 3 {
+				t.Fatal("CI monitor kept polling after the fix agent exhausted its budget")
+			}
+			return nil
+		},
+	}
+
+	outcome, err := driveCI(t, step, sctx)
+	if err != nil {
+		t.Fatalf("CI step returned error %v, want a parked decision that keeps the run alive", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the step parked for a decision", outcome)
+	}
+	committed := gitCmd(t, dir, "rev-parse", "HEAD")
+	if committed == headSHA {
+		t.Fatal("timed-out agent commit was lost")
+	}
+	if sctx.Run.HeadSHA != committed {
+		t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
+	}
+	var findings Findings
+	if jsonErr := json.Unmarshal([]byte(outcome.Findings), &findings); jsonErr != nil {
+		t.Fatalf("parse findings %q: %v", outcome.Findings, jsonErr)
+	}
+	var timeout Finding
+	for _, item := range findings.Items {
+		if item.ID == "ci-fix-agent-timeout" {
+			timeout = item
+		}
+	}
+	if timeout.ID == "" {
+		t.Fatalf("findings = %#v, want a timeout diagnostic", findings.Items)
+	}
+	if !strings.Contains(timeout.Description, "recorded locally") {
+		t.Fatalf("finding %q, want the committed repair retained", timeout.Description)
+	}
+	if strings.Contains(timeout.Description, "uncommitted changes") {
+		t.Fatalf("finding %q, committed repair should not be described as dirty worktree leftovers", timeout.Description)
+	}
+}
+
 type mockReviewHost struct {
 	scm.Host
 	calls    int

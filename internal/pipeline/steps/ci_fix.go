@@ -91,7 +91,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
-	if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
@@ -488,12 +488,23 @@ func ciSelectedFindingsPrompt(findings Findings) string {
 	return section + prefix + string(raw) + suffix
 }
 
-func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+func (s *CIStep) ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
 	if err == nil || !errors.Is(err, pipeline.ErrAgentTimeout) {
 		return nil
 	}
 	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
-	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
+	committedHead := ""
+	recorded := false
+	if head, headErr := stepGitHeadSHA(sctx); headErr == nil && sctx.Run != nil && head != "" && head != sctx.Run.HeadSHA {
+		if _, recErr := s.recordLocalRepair(sctx, head); recErr != nil {
+			sctx.Log(fmt.Sprintf("warning: could not record timed-out CI repair head %s: %v", head, recErr))
+		} else {
+			sctx.Log("timed-out CI repair head recorded locally; waiting for a decision instead of auto-revalidating")
+			recorded = true
+		}
+		committedHead = head
+	}
+	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), committedHead, recorded, err)
 }
 
 // dirtyRunWorktree reports the run worktree path when the timed-out agent left

@@ -1045,8 +1045,10 @@ agent_timeout: "30m"
 review_agent_timeout: "30m"
 
 # Maximum wall-clock time for one Test-step agent invocation, including the
-# post-test evidence-gathering turn. A stalled test agent fails the run instead
-# of leaving it active.
+# post-test evidence-gathering turn. A stalled test agent parks for a decision
+# instead of leaving the run active. Raise this when targeted tests or evidence
+# gathering routinely approach 30m; the default is a stall bound, not slack
+# for a long suite.
 test_agent_timeout: "30m"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a

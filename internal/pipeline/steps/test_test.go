@@ -12,12 +12,10 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
-	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
+func TestTestStep_HangingEvidenceAgentParksForADecision(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{
 		name: "hanging-evidence-agent",
@@ -29,30 +27,35 @@ func TestTestStep_HangingEvidenceAgentFailsRunAfterTimeout(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 
-	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&TestStep{}}, nil)
-	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
-		t.Fatal("expected hanging evidence agent to fail the run")
-	}
-
-	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	outcome, err := (&TestStep{}).Execute(sctx)
 	if err != nil {
-		t.Fatalf("get run: %v", err)
+		t.Fatalf("Execute() error = %v, want a parked budget cut rather than a failed run", err)
 	}
-	if run.Status != types.RunFailed {
-		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
 	}
-	var got string
-	if run.Error != nil {
-		got = *run.Error
+	findings, parseErr := types.ParseFindingsJSON(outcome.Findings)
+	if parseErr != nil {
+		t.Fatalf("parse findings: %v", parseErr)
 	}
+	if len(findings.Items) != 1 || findings.Items[0].ID != types.FindingIDTestAgentTimeout {
+		t.Fatalf("findings = %#v, want the test-agent-timeout park", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
+	}
+	got := findings.Items[0].Description
 	if !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("run error = %q, want the expired test budget named", got)
+		t.Fatalf("finding = %q, want the expired test budget named", got)
 	}
 	if !strings.Contains(got, "produced no output at all") {
-		t.Fatalf("run error = %q, want the measured silence of a never-emitting agent", got)
+		t.Fatalf("finding = %q, want the measured silence of a never-emitting agent", got)
 	}
 	if strings.Contains(got, "silent for 20ms") {
-		t.Fatalf("run error = %q, must not restate the budget as if it were a measurement", got)
+		t.Fatalf("finding = %q, must not restate the budget as if it were a measurement", got)
+	}
+	if findings.Verdict == types.TestVerdictGo {
+		t.Fatal("late structured output after the deadline must not complete Test as a pass")
 	}
 }
 
@@ -202,7 +205,7 @@ func TestTestStep_FixAgentTimeoutDoesNotCancelPostProcessing(t *testing.T) {
 	}
 }
 
-func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *testing.T) {
+func TestTestStep_FixAgentTimeoutParksWithoutCommit(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	gitCmd(t, dir, "checkout", "--detach", headSHA)
@@ -220,14 +223,76 @@ func TestTestStep_FixAgentSuccessfulReturnAfterTimeoutFailsWithoutCommit(t *test
 	sctx.Fixing = true
 	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 
-	if _, err := (&TestStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "timed out after 20ms") {
-		t.Fatalf("late successful return error = %v, want timeout", err)
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
+	}
+	findings, parseErr := types.ParseFindingsJSON(outcome.Findings)
+	if parseErr != nil {
+		t.Fatalf("parse findings: %v", parseErr)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].ID != types.FindingIDTestAgentTimeout {
+		t.Fatalf("findings = %#v, want the test-agent-timeout park", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "timed out after 20ms") {
+		t.Fatalf("finding = %q, want timeout", findings.Items[0].Description)
+	}
+	if !strings.Contains(findings.Items[0].Description, "uncommitted changes") {
+		t.Fatalf("finding = %q, want leftover worktree files named", findings.Items[0].Description)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD = %s, want unchanged %s", got, headSHA)
 	}
 	if got := gitCmd(t, dir, "status", "--porcelain", "--", "fix.txt"); got != "?? fix.txt" {
 		t.Fatalf("fix.txt status = %q, want uncommitted", got)
+	}
+}
+
+func TestTestStep_FixAgentTimeoutRecordsCommittedHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "fix.txt")
+			gitCmd(t, dir, "commit", "-m", "timed-out repair")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
+	}
+	committed := gitCmd(t, dir, "rev-parse", "HEAD")
+	if committed == headSHA {
+		t.Fatal("timed-out agent commit was lost")
+	}
+	if sctx.Run.HeadSHA != committed {
+		t.Fatalf("run head = %s, want recorded committed head %s", sctx.Run.HeadSHA, committed)
+	}
+	findings, parseErr := types.ParseFindingsJSON(outcome.Findings)
+	if parseErr != nil {
+		t.Fatalf("parse findings: %v", parseErr)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].ID != types.FindingIDTestAgentTimeout {
+		t.Fatalf("findings = %#v, want the test-agent-timeout park", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "recorded locally") {
+		t.Fatalf("finding = %q, want the committed head retained", findings.Items[0].Description)
 	}
 }
 

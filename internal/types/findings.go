@@ -109,6 +109,12 @@ const (
 // recorded as an override rather than a silent green completion.
 const FindingCategoryTestCommand = "test-command"
 
+// FindingIDTestAgentTimeout is the Test-step park when an evidence or repair
+// invocation burned its wall-clock budget. It is a budget/provider-slowness
+// cut, not a product defect; TestOverrideReason treats an approval of this
+// finding as a Test exception rather than a silent green pass.
+const FindingIDTestAgentTimeout = "test-agent-timeout"
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //
