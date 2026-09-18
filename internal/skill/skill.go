@@ -336,6 +336,13 @@ reported edit, then send ` + "`--action fix`" + ` to retry the unfinished step.
 The [protected-path reference](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#protected_paths)
 owns the staging guard's scope and limitations.
 
+A ` + "`test-agent-unvalidated-work`" + ` finding means a timed-out Test agent left
+commits or changes no Test turn validated. Approval is rejected, so ` + "`--yes`" + `
+stops at that gate instead of approving it. Relay what the finding names and do
+not skip Test, which would publish that work. Ask the operator to choose:
+` + "`--action fix`" + ` spends another agent budget to validate the work, and
+` + "`--action abort`" + ` stops the run.
+
 ## Inspecting state
 
 ` + "```sh" + `
