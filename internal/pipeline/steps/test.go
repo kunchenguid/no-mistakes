@@ -568,6 +568,9 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 		})
 	}
 	park.Summary = strings.TrimSpace(strings.Join([]string{baselineSummary, "Test agent exceeded its invocation budget"}, "\n"))
+	if park.TestingSummary == "" {
+		park.TestingSummary = "The Test agent exceeded its invocation budget before live validation completed; no evidence was gathered for this head."
+	}
 	park.Items = append(append(items, baseline...), park.Items...)
 	findingsJSON, _ := json.Marshal(park)
 	return &pipeline.StepOutcome{

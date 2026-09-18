@@ -13,6 +13,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -663,6 +664,41 @@ func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
 	}
 	if got := testFindingByID(t, second.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
 		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)
+	}
+}
+
+func TestTestStep_CutParkDoesNotRenderAnEarlierCyclesEvidence(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	park := outcome.Findings
+	earlierCycle := liveValidatedFindingsJSON(t, []types.TestScenario{
+		{Name: "user reaches the success screen", Result: types.ScenarioResultPass, Live: true, Evidence: "checkout.png"},
+	}, types.TestVerdictGo, baseSHA)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &park}}
+	rounds := map[string][]*db.StepRound{"s1": {
+		{Round: 1, Trigger: "initial", FindingsJSON: &earlierCycle},
+		{Round: 2, Trigger: "initial", FindingsJSON: &park},
+	}}
+
+	md := BuildTestingSummary(steps, rounds)
+	for _, stale := range []string{"drove the checkout scenarios", "Live validation", "user reaches the success screen"} {
+		if strings.Contains(md, stale) {
+			t.Fatalf("Testing section renders an earlier cycle's evidence %q for a head it never validated:\n%s", stale, md)
+		}
+	}
+	if !strings.Contains(md, "before live validation completed") {
+		t.Fatalf("Testing section = %q, want it to say the cut left no evidence for this head", md)
 	}
 }
 
