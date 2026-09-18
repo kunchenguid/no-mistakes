@@ -642,6 +642,36 @@ Session identities are persisted only as minimum local resume metadata, never as
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
 
+### jev
+
+Opt-in TypeSafe Jev pre-brief for review turns (issue #1055).
+
+|         |          |
+| ------- | -------- |
+| Type    | `object` |
+| Default | disabled |
+
+```yaml
+jev:
+  review_assist: false
+```
+
+| Field               | Type   | Default | Description                                       |
+| ------------------- | ------ | ------- | ------------------------------------------------- |
+| `jev.review_assist` | `bool` | `false` | Consult TypeSafe Jev before each review turn      |
+
+When enabled and [`TYPESAFE_API_KEY`](/no-mistakes/reference/environment/#typesafe_api_key) is set in the daemon's environment, each review turn - the initial review and every rereview - runs one batched Jev evaluation over a code-filtered digest of the change before the reviewer launches.
+Its typed answers feed the review prompt two kinds of advisory input: a ranked list of surrounding-context files worth reading first (the candidates are enumerated in code from the change's identifiers, same-directory siblings, and test counterparts), and domain emphasis flags (authorization/privacy, concurrency, cross-component contracts, error handling) that strengthen the matching review obligations.
+
+The assist can only add to a review, never subtract.
+Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.
+Every failure mode - unset key, network or API error, undecodable answer - falls back to the same cold review with one log line.
+Jev answers are typed numbers, not generated text, so the service cannot inject prose into the review prompt.
+
+This setting is global-only: it does not exist in `.no-mistakes.yaml`, so a pushed branch cannot enable or steer the pre-screen that feeds the reviewer gating it.
+The digest sent to TypeSafe is a code-filtered subset of the change content the review agent itself sends to its model provider, and it leaves the machine only when you set both this flag and the key.
+The model is pinned (`jev-1.13.0`, billed per input token at TypeSafe's published price, which is cents per thousand reviews), and the answering model ID, answers, and token usage are recorded in the local step log; none of it goes to telemetry.
+
 ### worktree_roots
 
 Where a repository's pipeline run worktrees are created.
