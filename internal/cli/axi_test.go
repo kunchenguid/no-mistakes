@@ -346,6 +346,24 @@ func TestFormatParkedFor(t *testing.T) {
 	}
 }
 
+func TestGateHelpForUnvalidatedTestWorkDoesNotOfferSkip(t *testing.T) {
+	gate := stepView{
+		Name:   "test",
+		Status: "awaiting_approval",
+		FindingsJSON: findingsJSON(t, []types.Finding{
+			{ID: types.FindingIDTestAgentTimeout, Severity: "warning", Action: types.ActionAskUser, Description: "budget cut"},
+			{ID: types.FindingIDTestAgentUnvalidatedWork, Severity: "error", Action: types.ActionAskUser, Description: "uncommitted changes to fix.txt"},
+		}, "Test agent exceeded its invocation budget"),
+	}
+	out := axiDoc(gateFields(gate)...)
+	if strings.Contains(out, "--action skip") || strings.Contains(out, "--action approve") {
+		t.Fatalf("gate help offers a response that would publish unvalidated work:\n%s", out)
+	}
+	if !strings.Contains(out, "Do not skip this step") || !strings.Contains(out, "--action fix") {
+		t.Fatalf("gate help missing the skip warning or the fix path:\n%s", out)
+	}
+}
+
 func TestWriteGateShape(t *testing.T) {
 	gate := stepView{
 		Name:   "review",

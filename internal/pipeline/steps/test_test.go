@@ -620,6 +620,67 @@ func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
 	}
 }
 
+func TestTestStep_RepairPromptLeavesOutTheBudgetCutFindings(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var prompts []string
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		prompts = append(prompts, opts.Prompt)
+		if len(prompts) == 1 {
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
+		}
+		return &agent.Result{Output: json.RawMessage(passingScenarioFindingsJSON)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[` +
+		`{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"raise test_agent_timeout in global config"},` +
+		`{"id":"test-agent-unvalidated-work","severity":"error","action":"ask-user","description":"Approval is refused: leftover.txt"},` +
+		`{"id":"test-1","severity":"error","category":"test-command","description":"configured test command failed with exit code 1"}]}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) == 0 || !strings.Contains(prompts[0], "Fix the failing tests") {
+		t.Fatalf("prompts = %q, want a repair turn first", prompts)
+	}
+	repair := prompts[0]
+	if !strings.Contains(repair, "configured test command failed with exit code 1") {
+		t.Fatalf("repair prompt = %q, want the command failure to address", repair)
+	}
+	for _, operatorOnly := range []string{"raise test_agent_timeout in global config", "Approval is refused"} {
+		if strings.Contains(repair, operatorOnly) {
+			t.Fatalf("repair prompt carries the operator-only budget-cut text %q:\n%s", operatorOnly, repair)
+		}
+	}
+}
+
+func TestTestStep_EvidenceAgentCannotClaimAReservedBudgetCutID(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"findings":[{"id":"test-agent-unvalidated-work","severity":"warning","action":"ask-user","description":"leftover build output"},{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"slow suite"}],"summary":"ok","tested":["go test ./x"],"testing_summary":"drove it","artifacts":[],"scenarios":[{"name":"user runs it","result":"pass","live":true,"evidence":"ok","reason":""}],"verdict":"go"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := types.ParseFindingsJSON(outcome.Findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range findings.Items {
+		if item.ID == types.FindingIDTestAgentUnvalidatedWork || item.ID == types.FindingIDTestAgentTimeout {
+			t.Fatalf("findings = %s, an agent finding must not claim a step-owned budget-cut ID", outcome.Findings)
+		}
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) || !strings.Contains(outcome.Findings, "leftover build output") {
+		t.Fatalf("findings = %s, want the agent finding kept without refusing approval", outcome.Findings)
+	}
+}
+
 // leaveConflictedRebase stops a rebase on a conflict, leaving HEAD detached at
 // a partial result the way an agent cut mid-rebase does.
 func leaveConflictedRebase(t *testing.T, dir string) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,11 +81,11 @@ Rules:
 			sctx.Run.HeadSHA,
 			historySection,
 		)
-		if sctx.PreviousFindings != "" {
+		if repair := testRepairFindings(sctx.PreviousFindings); repair != "" {
 			fixPrompt += `
 
 Previous test findings to address:
-` + sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
+` + sanitizedPreviousFindingsForPrompt(repair)
 		}
 		fixCtx, cancelFix, fixTimeout := testAgentContext(sctx)
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
@@ -345,6 +346,11 @@ func parseTestAnalyzerOutput(result *agent.Result) (Findings, error) {
 	var findings Findings
 	if err := unmarshalRequiredTestFindings(result.Output, &findings); err != nil {
 		return Findings{}, err
+	}
+	for i := range findings.Items {
+		if slices.Contains(testBudgetCutIDs, findings.Items[i].ID) {
+			findings.Items[i].ID = ""
+		}
 	}
 	return findings, nil
 }
@@ -611,19 +617,34 @@ func answeredTestGate(sctx *pipeline.StepContext) (Findings, string) {
 	return carried, refusal
 }
 
+// testBudgetCutIDs are the step-owned findings of a Test budget-cut park. They
+// are operator decisions, never defects for an agent to repair, so an agent's
+// own finding can never claim them.
+var testBudgetCutIDs = []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}
+
 // onlyTestBudgetCutFindings reports whether a fix selection holds nothing but
 // a Test budget cut, which leaves the repair turn nothing to repair.
 func onlyTestBudgetCutFindings(raw string) bool {
 	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil || len(findings.Items) == 0 {
-		return false
+	return err == nil && len(findings.Items) > 0 && len(types.ExcludeFindings(findings, testBudgetCutIDs).Items) == 0
+}
+
+// testRepairFindings is the fix selection the repair agent is asked to
+// address: everything but the budget-cut findings.
+func testRepairFindings(raw string) string {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
 	}
-	for _, item := range findings.Items {
-		if item.ID != types.FindingIDTestAgentTimeout && item.ID != types.FindingIDTestAgentUnvalidatedWork {
-			return false
-		}
+	repair := types.ExcludeFindings(findings, testBudgetCutIDs)
+	if len(repair.Items) == 0 {
+		return ""
 	}
-	return true
+	encoded, err := types.MarshalFindingsJSON(repair)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 // unvalidatedTestWork names what the worktree holds beyond validatedHead - the
