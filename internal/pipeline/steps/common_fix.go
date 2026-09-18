@@ -49,7 +49,9 @@ type commitSummary struct {
 var errRejectedCommitSummary = errors.New("rejected commit summary")
 
 const (
-	noChangesAppliedSummary = "no changes applied"
+	// NoChangesAppliedSummary is the fix result of a round that changed
+	// nothing; it is not a fix the pipeline applied.
+	NoChangesAppliedSummary = "no changes applied"
 	changesAppliedSummary   = "changes applied"
 )
 
@@ -382,7 +384,7 @@ func fixResultSummary(committed bool) string {
 	if committed {
 		return changesAppliedSummary
 	}
-	return noChangesAppliedSummary
+	return NoChangesAppliedSummary
 }
 
 func extractCommitSummary(result *agent.Result) (string, error) {

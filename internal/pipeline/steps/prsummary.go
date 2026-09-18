@@ -1516,7 +1516,7 @@ func fixRoundOutcome(r *db.StepRound) fixOutcome {
 		return fixOutcomeUnreported
 	}
 	switch strings.TrimSpace(*r.FixSummary) {
-	case noChangesAppliedSummary:
+	case NoChangesAppliedSummary:
 		return fixOutcomeNoChange
 	case changesAppliedSummary:
 		return fixOutcomeApplied

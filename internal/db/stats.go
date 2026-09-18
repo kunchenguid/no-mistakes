@@ -137,8 +137,7 @@ func stepFindingCounts(step *StepResult, rounds []*StepRound) (reported int, fin
 func stepFindingStats(step *StepResult, rounds []*StepRound) StepStats {
 	stats := StepStats{StepName: step.StepName}
 	if len(rounds) == 0 {
-		count := findingsCount(step.FindingsJSON)
-		stats.ReportedFindings = count
+		stats.ReportedFindings = len(findingItems(step.FindingsJSON))
 		return stats
 	}
 
@@ -182,17 +181,9 @@ func (d *DB) StepFindingStats(step *StepResult) (StepStats, error) {
 	return stepFindingStats(step, rounds), nil
 }
 
-func findingsCount(raw *string) int {
-	if raw == nil || *raw == "" {
-		return 0
-	}
-	findings, err := types.ParseFindingsJSON(*raw)
-	if err != nil {
-		return 0
-	}
-	return len(findings.Items)
-}
-
+// findingItems returns the findings that count as mistakes. A Test budget cut
+// is an operator decision about the invocation budget, not a code mistake, so
+// it is neither reported nor, when a later round no longer carries it, fixed.
 func findingItems(raw *string) []types.Finding {
 	if raw == nil || *raw == "" {
 		return nil
@@ -201,7 +192,9 @@ func findingItems(raw *string) []types.Finding {
 	if err != nil {
 		return nil
 	}
-	return findings.Items
+	return slices.DeleteFunc(findings.Items, func(item types.Finding) bool {
+		return item.ID == types.FindingIDTestAgentTimeout || item.ID == types.FindingIDTestAgentUnvalidatedWork
+	})
 }
 
 func findingStatsKey(item types.Finding) types.Finding {

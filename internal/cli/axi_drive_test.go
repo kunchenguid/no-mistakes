@@ -712,6 +712,31 @@ func TestRenderDriveResult_TerminalPassedWithFixes(t *testing.T) {
 	}
 }
 
+func TestRenderDriveResult_NoChangeFixRoundIsNotReportedAsAFix(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:     "run-1",
+		Branch: "feature/x",
+		Status: types.RunCompleted,
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepTest, Status: types.StepStatusCompleted, FixSummaries: []string{"no changes applied"}},
+			{StepName: types.StepCI, Status: types.StepStatusCompleted},
+		},
+	}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	if err := renderDriveResult(cmd, run, false); err != nil {
+		t.Fatalf("terminal passed must exit 0, got error: %v", err)
+	}
+	got := out.String()
+	for _, unwanted := range []string{"fixes[", "acknowledge the misses"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a round that changed nothing must not be reported as a fix, found %q in:\n%s", unwanted, got)
+		}
+	}
+}
+
 func TestRenderDriveResult_FailedHasNoSummarizeInstruction(t *testing.T) {
 	run := &ipc.RunInfo{
 		ID:     "run-1",

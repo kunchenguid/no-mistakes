@@ -1122,8 +1122,8 @@ func TestExecuteFixMode_NoWorktreeChangesCanonicalizesAgentSummary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary != noChangesAppliedSummary {
-		t.Fatalf("fix summary = %q, want %q", summary, noChangesAppliedSummary)
+	if summary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", summary, NoChangesAppliedSummary)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
 		t.Fatalf("HEAD after no-op fix = %q, want %q", got, headSHA)

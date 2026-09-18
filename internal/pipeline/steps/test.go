@@ -53,6 +53,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	var repairCut error
 	if sctx.Fixing && onlyTestBudgetCutFindings(sctx.PreviousFindings) {
 		sctx.Log("fix selection holds only the Test agent budget cut; re-running validation without a repair turn...")
+		fixSummary = NoChangesAppliedSummary
 	} else if sctx.Fixing {
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
@@ -91,7 +92,6 @@ Previous test findings to address:
 		summary, err := executeFixMode(sctx, s.Name(), fixExecutionOptions{
 			LogMessage:      "asking agent to fix test failures...",
 			Prompt:          fixPrompt,
-			ErrorPrefix:     "agent fix tests",
 			FallbackSummary: "fix test failures",
 			AgentContext:    fixCtx,
 			AfterAgentRun: func(*agent.Result) error {
@@ -237,7 +237,9 @@ Rules:
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
 		if errors.Is(err, errTestAgentTimeout) {
-			return testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode), nil
+			outcome := testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineSummary, baselineExitCode)
+			outcome.FixSummary = fixSummary
+			return outcome, nil
 		}
 		return nil, err
 	}

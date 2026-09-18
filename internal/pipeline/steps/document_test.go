@@ -137,8 +137,8 @@ func TestDocumentStep_AgentManaged_UnresolvedFindingsNeedApprovalWithoutAutoFixL
 	if outcome.AutoFixable {
 		t.Error("expected unresolved documentation findings not to trigger an auto-fix round")
 	}
-	if outcome.FixSummary != noChangesAppliedSummary {
-		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, noChangesAppliedSummary)
+	if outcome.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q", outcome.FixSummary, NoChangesAppliedSummary)
 	}
 	var findings Findings
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {

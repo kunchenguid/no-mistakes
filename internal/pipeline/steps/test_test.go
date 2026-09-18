@@ -233,8 +233,8 @@ func TestTestStep_FixAgentTimeoutParksWithoutCommit(t *testing.T) {
 	if outcome == nil || !outcome.NeedsApproval {
 		t.Fatalf("outcome = %#v, want the Test step parked for a decision", outcome)
 	}
-	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; !strings.Contains(got, "timed out after 20ms") {
-		t.Fatalf("finding = %q, want timeout", got)
+	if got := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentTimeout).Description; !strings.Contains(got, "agent fix tests timed out after 20ms") || strings.Count(got, "agent fix tests") != 1 {
+		t.Fatalf("finding = %q, want the timeout named once", got)
 	}
 	work := testFindingByID(t, outcome.Findings, types.FindingIDTestAgentUnvalidatedWork).Description
 	if !strings.Contains(work, "uncommitted changes to fix.txt") || !strings.Contains(work, "git -C "+dir+" diff") {
@@ -382,6 +382,9 @@ func TestTestStep_FixOfABudgetCutAloneRerunsOnlyValidation(t *testing.T) {
 	}
 	if len(prompts) != 1 || strings.Contains(prompts[0], "Fix the failing tests") || !strings.Contains(prompts[0], "Derive the scenarios") {
 		t.Fatalf("prompts = %q, want exactly one evidence turn and no repair turn", prompts)
+	}
+	if outcome.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q: a validation-only round fixes nothing", outcome.FixSummary, NoChangesAppliedSummary)
 	}
 }
 
@@ -661,6 +664,9 @@ func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
 	}
 	if !strings.Contains(second.Findings, "failed: checkout") {
 		t.Fatalf("findings = %s, want the deferred no-go kept on the park", second.Findings)
+	}
+	if second.FixSummary != NoChangesAppliedSummary {
+		t.Fatalf("fix summary = %q, want %q: a cut validation-only round fixes nothing", second.FixSummary, NoChangesAppliedSummary)
 	}
 	if got := testFindingByID(t, second.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
 		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)

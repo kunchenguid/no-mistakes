@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -330,11 +331,15 @@ func (rv runView) findingsTally() string {
 
 // fixRows flattens fix-attempt summaries in step then round order. Dispatching
 // a fix round does not prove a change was applied; legacy empty summaries
-// must not manufacture that claim.
+// must not manufacture that claim, and a round that changed nothing is not a
+// fix at all.
 func (rv runView) fixRows() []fixRow {
 	var rows []fixRow
 	for _, s := range rv.Steps {
 		for _, summary := range s.FixSummaries {
+			if summary == steps.NoChangesAppliedSummary {
+				continue
+			}
 			if summary == "" {
 				summary = "fix attempted (no result recorded)"
 			}
