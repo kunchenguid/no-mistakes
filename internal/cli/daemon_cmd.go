@@ -121,6 +121,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			piProfile, err := parsePiProfilePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			reconciledPreviousHead, err := parseReconciledPreviousHeadPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -152,6 +156,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				LaunchNonce:            launchNonce,
 				ValidationGeneration:   validationGeneration,
 				PRBaseBranch:           prBaseBranch,
+				PiProfile:              piProfile,
 				ReconciledPreviousHead: reconciledPreviousHead,
 			}, &result)
 		},

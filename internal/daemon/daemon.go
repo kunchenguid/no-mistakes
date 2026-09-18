@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/custody"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -1246,12 +1247,15 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch)
+		run, claimed, err := d.ClaimLaunchReceipt(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.PiProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
 		if run == nil {
 			return &ipc.ClaimLaunchReceiptResult{}, nil
+		}
+		if !run.PiProfile.Matches(p.PiProfile) {
+			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
 		}
 		if !launchPRBaseBranchMatches(run, prBaseBranch) {
 			return nil, conflictingLaunchPRBaseBranch(p.LaunchNonce)
@@ -1265,6 +1269,18 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, fmt.Errorf("conflicting launch_nonce is already bound to a different validation generation, submitted head, or intent")
 		}
 		return &ipc.ClaimLaunchReceiptResult{Receipt: &receipt}, nil
+	})
+
+	srv.Handle(ipc.MethodResolvePiProfile, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var request agentcfg.PiProfile
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, fmt.Errorf("invalid Pi profile request")
+		}
+		cfg, err := config.LoadGlobal(mgr.paths.ConfigFile())
+		if err != nil {
+			return nil, fmt.Errorf("load global config: %w", err)
+		}
+		return cfg.ResolvePiProfile(&request)
 	})
 
 	srv.Handle(ipc.MethodStartFreshRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1290,7 +1306,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.CallerHeadSHA)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.CallerHeadSHA, p.PiProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1427,6 +1443,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReady:            r.CIReadyAt != nil,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
+		PiProfile:          r.PiProfile,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

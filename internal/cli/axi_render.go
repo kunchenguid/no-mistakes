@@ -8,6 +8,7 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -111,6 +112,7 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	PiProfile   *agentcfg.PiProfile
 	ID          string
 	Branch      string
 	Status      string
@@ -142,6 +144,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
+		PiProfile:          r.PiProfile,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
@@ -179,6 +182,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
+		PiProfile:          r.PiProfile,
 		ID:                 r.ID,
 		Branch:             r.Branch,
 		Status:             string(r.Status),
@@ -476,6 +480,12 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	fields = append(fields, toon.Field{Key: "head_sha", Value: rv.HeadSHA})
 	if rv.TestOverrideReason != "" {
 		fields = append(fields, toon.Field{Key: "test_override_reason", Value: rv.TestOverrideReason})
+	}
+	if rv.PiProfile != nil {
+		fields = append(fields, toon.Field{Key: "pi_profile", Value: toon.NewObject(
+			toon.Field{Key: "model", Value: rv.PiProfile.Model},
+			toon.Field{Key: "effort", Value: string(rv.PiProfile.Effort)},
+		)})
 	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})

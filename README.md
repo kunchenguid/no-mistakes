@@ -148,3 +148,4 @@ See `Makefile` for the full target list.
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=kunchenguid/no-mistakes&type=date&legend=top-left" />
  </picture>
 </a>
+

@@ -128,7 +128,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// system CLI. antigravity gets a second link under its probed binary
 	// name "agy" (internal/cli/doctor.go searches that name, not the agent
 	// name).
-	for _, name := range []string{"claude", "codex", "grok", "opencode", "antigravity", "agy", "gh", "tea"} {
+	for _, name := range []string{"claude", "codex", "grok", "opencode", "pi", "antigravity", "agy", "gh", "tea"} {
 		linkPath := filepath.Join(h.BinDir, executableName(name))
 		if err := os.Symlink(fakeBin, linkPath); err != nil {
 			t.Fatalf("symlink %s: %v", linkPath, err)

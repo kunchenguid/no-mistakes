@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
+	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // JSON-RPC 2.0 method names.
 const (
 	MethodPushReceived       = "push_received"
+	MethodResolvePiProfile   = "resolve_pi_profile"
 	MethodStartFreshRun      = "start_fresh_run"
 	MethodClaimLaunchReceipt = "claim_launch_receipt"
 	MethodGetRun             = "get_run"
@@ -69,6 +71,7 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts. LaunchNonce and ValidationGeneration together
 // opt into a nonce-bound launch proof.
 type PushReceivedParams struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
 	// Gate is the absolute path to the gate bare repo.
 	Gate                 string           `json:"gate"`
 	Ref                  string           `json:"ref"`
@@ -90,6 +93,8 @@ type PushReceivedParams struct {
 // branch head. The daemon checks the gate while holding the branch lock, so a
 // caller never receives a proof for a drifting creation context.
 type StartFreshRunParams struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+
 	RepoID               string           `json:"repo_id"`
 	Branch               string           `json:"branch"`
 	HeadSHA              string           `json:"head_sha"`
@@ -103,6 +108,8 @@ type StartFreshRunParams struct {
 // ClaimLaunchReceiptParams identifies one exact opaque receipt binding.
 // Generic run/status surfaces never expose launch bindings or intent digests.
 type ClaimLaunchReceiptParams struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+
 	RepoID               string `json:"repo_id"`
 	Branch               string `json:"branch"`
 	LaunchNonce          string `json:"launch_nonce"`
@@ -162,6 +169,8 @@ type GetActiveRunParams struct {
 // the daemon inherits authoritative intent from the selected prior run or
 // leaves the new run to perform fresh inference.
 type RerunParams struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
@@ -232,6 +241,8 @@ type PushReceivedResult struct {
 // selected one durable run before the caller drives it. The validation
 // generation and intent digest are persisted; raw intent is never included.
 type LaunchReceipt struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+
 	RunID                string `json:"run_id"`
 	Disposition          string `json:"disposition"`
 	LaunchNonce          string `json:"launch_nonce"`
@@ -310,6 +321,8 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
+	PiProfile *agentcfg.PiProfile `json:"pi_profile,omitempty"`
+
 	ID               string          `json:"id"`
 	RepoID           string          `json:"repo_id"`
 	Branch           string          `json:"branch"`
