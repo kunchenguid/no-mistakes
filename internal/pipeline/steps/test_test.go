@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -679,9 +680,11 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		selection []string
+		repair    bool
 	}{
-		{"validation only", []string{types.FindingIDTestAgentTimeout}},
-		{"with a repair finding", []string{types.FindingIDTestAgentTimeout, "test-2"}},
+		{"validation only", []string{types.FindingIDTestAgentTimeout}, false},
+		{"both budget-cut findings carry one note", []string{types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork}, false},
+		{"with a repair finding", []string{types.FindingIDTestAgentTimeout, "test-2"}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -689,7 +692,7 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 			var prompts []string
 			ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 				prompts = append(prompts, opts.Prompt)
-				if len(prompts) == 1 && len(tt.selection) > 1 {
+				if len(prompts) == 1 && tt.repair {
 					return &agent.Result{Output: json.RawMessage(`{"summary":"fix checkout"}`)}, nil
 				}
 				<-ctx.Done()
@@ -699,6 +702,7 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 			sctx.Config.TestAgentTimeout = 20 * time.Millisecond
 			sctx.Fixing = true
 			parked := `{"findings":[{"id":"` + types.FindingIDTestAgentTimeout + `","severity":"warning","action":"ask-user","description":"budget cut"},` +
+				`{"id":"` + types.FindingIDTestAgentUnvalidatedWork + `","severity":"warning","action":"ask-user","description":"approval is refused"},` +
 				strings.TrimPrefix(noGoTestGateJSON(headSHA), `{"findings":[`)
 			selected, deferred := answerTestPark(t, parked, tt.selection...)
 			answered, err := types.ParseFindingsJSON(selected)
@@ -706,7 +710,7 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := range answered.Items {
-				if answered.Items[i].ID == types.FindingIDTestAgentTimeout {
+				if slices.Contains(testBudgetCutIDs, answered.Items[i].ID) {
 					answered.Items[i].UserInstructions = guidance
 				}
 			}
@@ -718,12 +722,19 @@ func TestTestStep_BudgetCutInstructionsReachTheEvidenceTurn(t *testing.T) {
 			if _, err := (&TestStep{}).Execute(sctx); err != nil {
 				t.Fatalf("Execute() error = %v", err)
 			}
-			if len(prompts) != len(tt.selection) {
-				t.Fatalf("agent calls = %d, want %d", len(prompts), len(tt.selection))
+			wantCalls := 1
+			if tt.repair {
+				wantCalls = 2
+			}
+			if len(prompts) != wantCalls {
+				t.Fatalf("agent calls = %d, want %d", len(prompts), wantCalls)
 			}
 			evidence := prompts[len(prompts)-1]
 			if !strings.Contains(evidence, "Operator guidance for this validation (from the decision on the Test agent budget cut):\n"+guidance+"\n") {
 				t.Fatalf("evidence prompt lacks the operator's budget-cut guidance:\n%s", evidence)
+			}
+			if n := strings.Count(evidence, guidance); n != 1 {
+				t.Fatalf("evidence prompt carries the operator's guidance %d times, want once:\n%s", n, evidence)
 			}
 		})
 	}

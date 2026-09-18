@@ -629,7 +629,9 @@ func onlyTestBudgetCutFindings(raw string) bool {
 
 // budgetCutGuidanceSection renders the operator's instructions attached to
 // selected budget-cut findings. The repair turn never sees those findings, so
-// the evidence turn is the one that must follow them.
+// the evidence turn is the one that must follow them. One note given to both
+// budget-cut findings (axi respond --instructions copies it onto each) is
+// rendered once.
 func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
 	if !sctx.Fixing {
 		return ""
@@ -640,8 +642,9 @@ func budgetCutGuidanceSection(sctx *pipeline.StepContext) string {
 	}
 	var guidance []string
 	for _, item := range types.FilterFindings(findings, testBudgetCutIDs).Items {
-		if text := strings.TrimSpace(item.UserInstructions); text != "" {
-			guidance = append(guidance, sanitizePromptMultilineText(text))
+		text := sanitizePromptMultilineText(item.UserInstructions)
+		if text != "" && !slices.Contains(guidance, text) {
+			guidance = append(guidance, text)
 		}
 	}
 	if len(guidance) == 0 {
