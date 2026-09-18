@@ -215,6 +215,17 @@ When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts a
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 tea has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 
+## `COMPACT_ADVISER_DISABLE`
+
+Kill-switch injected into every pipeline agent subprocess so compact-adviser stays inert during unattended work.
+
+|         |                                      |
+| ------- | ------------------------------------ |
+| Type    | always `1` for agent subprocesses    |
+| Default | injected; not a daemon-wide setting  |
+
+no-mistakes stamps `COMPACT_ADVISER_DISABLE=1` onto every spawned gate agent (Claude, Codex, Grok, Pi, OpenCode, Copilot, Antigravity, Rovo Dev, acpx/Cursor, and managed agent servers that can load host plugins). Forge and profile overlays cannot drop the flag. The daemon process itself is unchanged; this is agent-child policy only, not a user-facing knob for the service environment.
+
 ## `NO_MISTAKES_UMAMI_HOST`
 
 Override the telemetry collection host.

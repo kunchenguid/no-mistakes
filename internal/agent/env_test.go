@@ -30,6 +30,9 @@ func TestGitSafeEnvAppliesRunOverlayBeforeGateEnvironment(t *testing.T) {
 	if got := resolved[GateRoleEnvVar]; got != "1" {
 		t.Fatalf("%s = %q, want 1", GateRoleEnvVar, got)
 	}
+	if got := resolved[CompactAdviserDisableEnvVar]; got != "1" {
+		t.Fatalf("%s = %q, want 1", CompactAdviserDisableEnvVar, got)
+	}
 }
 
 func resolveAgentEnv(env []string) map[string]string {
@@ -91,17 +94,25 @@ func TestGitSafeEnv_StampsGateRoleMarker(t *testing.T) {
 	if resolved[GateRoleEnvVar] != "1" {
 		t.Errorf("%s = %q, want \"1\"", GateRoleEnvVar, resolved[GateRoleEnvVar])
 	}
+	if resolved[CompactAdviserDisableEnvVar] != "1" {
+		t.Errorf("%s = %q, want \"1\"", CompactAdviserDisableEnvVar, resolved[CompactAdviserDisableEnvVar])
+	}
 }
 
 func TestGitSafeEnvIsObservedBySpawnedProcess(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestAgentEnvProbe$")
-	cmd.Env = gitSafeEnv(t.TempDir(), []string{"NM_HOME=/isolated/eval", GateRoleEnvVar + "=0", "NM_TEST_ENV_PROBE=1"})
+	cmd.Env = gitSafeEnv(t.TempDir(), []string{
+		"NM_HOME=/isolated/eval",
+		GateRoleEnvVar + "=0",
+		CompactAdviserDisableEnvVar + "=0",
+		"NM_TEST_ENV_PROBE=1",
+	})
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run environment probe: %v", err)
 	}
-	if got := string(output); !strings.HasPrefix(got, "/isolated/eval|1") {
-		t.Fatalf("spawned environment = %q, want isolated home and gate marker", got)
+	if got := string(output); !strings.HasPrefix(got, "/isolated/eval|1|1") {
+		t.Fatalf("spawned environment = %q, want isolated home, gate marker, and compact-adviser disable", got)
 	}
 }
 
@@ -109,11 +120,13 @@ func TestGitSafeEnvIsObservedBySpawnedProcess(t *testing.T) {
 // environment every adapter NewWithOptions can build. Native one-shot adapters
 // spawn their command directly, OpenCode and Rovo Dev hand the same overlay to
 // the shared managed-server launcher, and Cursor plus arbitrary ACP targets go
-// through acpx - so both the containment marker and the run-scoped forge
-// overlay are asserted per adapter rather than trusted to stay in sync.
+// through acpx - so the containment marker, compact-adviser disable flag, and
+// the run-scoped forge overlay are asserted per adapter rather than trusted
+// to stay in sync.
 func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ambient-must-not-leak")
 	t.Setenv(GateRoleEnvVar, "0")
+	t.Setenv(CompactAdviserDisableEnvVar, "0")
 
 	overlay := runenv.Overlay{
 		Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
@@ -155,6 +168,9 @@ func TestEverySupportedAdapterCarriesTheRunOverlayAndGateMarker(t *testing.T) {
 			if got := resolved[GateRoleEnvVar]; got != "1" {
 				t.Errorf("%s = %q, want \"1\"", GateRoleEnvVar, got)
 			}
+			if got := resolved[CompactAdviserDisableEnvVar]; got != "1" {
+				t.Errorf("%s = %q, want \"1\"", CompactAdviserDisableEnvVar, got)
+			}
 
 			// The managed-server route reaches its child through this overlay;
 			// TestStartServerWithPortAppliesForgeEnvironment spawns the process
@@ -185,6 +201,9 @@ func TestGitSafeEnvIsTheEmptyOverlayCase(t *testing.T) {
 	if resolved[GateRoleEnvVar] != "1" {
 		t.Errorf("%s = %q, want \"1\"", GateRoleEnvVar, resolved[GateRoleEnvVar])
 	}
+	if resolved[CompactAdviserDisableEnvVar] != "1" {
+		t.Errorf("%s = %q, want \"1\"", CompactAdviserDisableEnvVar, resolved[CompactAdviserDisableEnvVar])
+	}
 	if resolved["NM_HOME"] != "/isolated/eval" {
 		t.Errorf("NM_HOME = %q, want /isolated/eval", resolved["NM_HOME"])
 	}
@@ -194,7 +213,7 @@ func TestAgentEnvProbe(t *testing.T) {
 	if os.Getenv("NM_TEST_ENV_PROBE") != "1" {
 		return
 	}
-	fmt.Printf("%s|%s", os.Getenv("NM_HOME"), os.Getenv(GateRoleEnvVar))
+	fmt.Printf("%s|%s|%s", os.Getenv("NM_HOME"), os.Getenv(GateRoleEnvVar), os.Getenv(CompactAdviserDisableEnvVar))
 }
 
 // TestGitSafeEnv_GateMarkerWinsOverAmbient guards that a target repo (or a
@@ -206,5 +225,20 @@ func TestGitSafeEnv_GateMarkerWinsOverAmbient(t *testing.T) {
 	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
 	if resolved[GateRoleEnvVar] != "1" {
 		t.Errorf("%s = %q, want \"1\" (managed stamp must win over ambient)", GateRoleEnvVar, resolved[GateRoleEnvVar])
+	}
+}
+
+// TestGitSafeEnv_CompactAdviserDisableWinsOverOverlay guards that a forge
+// profile overlay cannot unset or weaken the compact-adviser kill switch:
+// the stamp is appended last, and exec resolves duplicate keys to the last
+// occurrence. Default product behavior is always-on disable for agents.
+func TestGitSafeEnv_CompactAdviserDisableWinsOverOverlay(t *testing.T) {
+	t.Setenv(CompactAdviserDisableEnvVar, "0")
+	resolved := resolveAgentEnv(gitSafeEnvWithOverlay("/work/dir", runenv.Overlay{
+		Set:   map[string]string{CompactAdviserDisableEnvVar: "false"},
+		Unset: []string{CompactAdviserDisableEnvVar},
+	}, []string{CompactAdviserDisableEnvVar + "=yes"}))
+	if resolved[CompactAdviserDisableEnvVar] != "1" {
+		t.Errorf("%s = %q, want \"1\" (managed stamp must win over overlay and extra)", CompactAdviserDisableEnvVar, resolved[CompactAdviserDisableEnvVar])
 	}
 }
