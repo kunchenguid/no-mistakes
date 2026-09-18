@@ -348,13 +348,32 @@ func textResult(text string, usage TokenUsage) *Result {
 	}
 }
 
+// errNoTextOutput marks a turn that was asked for a structured answer and
+// completed without producing any assistant text at all. It is a
+// harness/transport outcome, never a malformed answer: omp and pi end a turn
+// on a thinking-only or toolCall-only assistant message regularly (tool-call
+// turns carry no text part), and the CLI can also exit having emitted nothing.
+// Such a turn produced no verdict to reject, so it is deliberately NOT a
+// structured-output rejection the way a schema-invalid answer is - reporting
+// it as one made the review step treat a harness outcome as a reformattable
+// review and spend its whole analyzer-attempt budget re-asking, then fail the
+// run. It is retried instead, at the adapter layer (classifyTransient), so the
+// step's attempts stay reserved for answers that actually need steering back
+// to the schema.
+//
+// Only a structured invocation gets this verdict. A schema-less turn that
+// produced nothing is the plain failure it has always been: no structured
+// answer was requested, nothing in this classification applies to it, and
+// making it retryable would widen fresh-session replay to callers that never
+// had it.
+var errNoTextOutput = errors.New("returned no text output")
+
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
 	if text == "" {
-		err := fmt.Errorf("%s returned no text output", agentName)
 		if len(schema) > 0 {
-			return resultFromUsage(usage), rejectStructuredOutput(err)
+			return resultFromUsage(usage), fmt.Errorf("%s %w", agentName, errNoTextOutput)
 		}
-		return resultFromUsage(usage), err
+		return resultFromUsage(usage), fmt.Errorf("%s returned no text output", agentName)
 	}
 	if len(schema) == 0 {
 		return textResult(text, usage), nil
@@ -1100,7 +1119,13 @@ func validateJSONValue(value, schema any, path string) error {
 	}
 
 	if enum, ok := schemaMap["enum"].([]any); ok && !matchesEnum(value, enum) {
-		return fmt.Errorf("%smust match one of the allowed values", formatJSONPath(path))
+		// Name the allowed values. This error is quoted back to the agent by
+		// the review step's rerun note (reviewRetryNote), so an enum miss the
+		// agent cannot decode from the message - e.g. the review schema's
+		// top-level "source-or-external" versus a finding's "source", which a
+		// real gate turn conflated - turns into an unactionable retry that
+		// repeats the same rejected answer instead of correcting it.
+		return fmt.Errorf("%smust match one of the allowed values %s", formatJSONPath(path), formatEnumValues(enum))
 	}
 
 	if types, ok := schemaTypes(schemaMap); ok && !matchesAnyType(value, types) {
@@ -1249,6 +1274,21 @@ func matchesEnum(value any, allowed []any) bool {
 		}
 	}
 	return false
+}
+
+// formatEnumValues renders a schema enum for a validation error. Values are
+// quoted so an empty string or a number cannot be mistaken for prose, and the
+// list is what the agent needs to correct an enum miss on a retry.
+func formatEnumValues(allowed []any) string {
+	quoted := make([]string, 0, len(allowed))
+	for _, candidate := range allowed {
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			continue
+		}
+		quoted = append(quoted, string(encoded))
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func joinJSONPath(path, key string) string {

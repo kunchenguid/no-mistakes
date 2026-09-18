@@ -194,16 +194,7 @@ func TestClassifyTransient_NilAndContext(t *testing.T) {
 // preserves ctx-cancel semantics. Returns a restore func.
 func withFastBackoff(t *testing.T) func() {
 	t.Helper()
-	prev := transientBackoff
-	transientBackoff = func(ctx context.Context, attempt int) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Millisecond):
-			return nil
-		}
-	}
-	return func() { transientBackoff = prev }
+	return WithFastBackoff()
 }
 
 func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {

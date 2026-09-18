@@ -36,6 +36,21 @@ var transientBackoff = func(ctx context.Context, attempt int) error {
 	}
 }
 
+// WithFastBackoff replaces transientBackoff with a near-instant version that
+// preserves ctx-cancel semantics. Returns a restore func. For tests only.
+func WithFastBackoff() func() {
+	prev := transientBackoff
+	transientBackoff = func(ctx context.Context, attempt int) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+			return nil
+		}
+	}
+	return func() { transientBackoff = prev }
+}
+
 // transientBackoffBaseDuration returns the un-jittered delay for a given
 // 1-indexed retry attempt. Progression: base, 4*base, 16*base, ...
 func transientBackoffBaseDuration(attempt int, base time.Duration) time.Duration {
@@ -192,6 +207,23 @@ func classifyTransient(err error) (string, bool) {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
+	}
+	// An empty turn is matched by sentinel rather than by substring: the same
+	// words can appear in model prose, which the parse errors quote back.
+	//
+	// The empty shape is most often a toolCall-only turn (the model called a
+	// tool and stopped without a summary), which is the shape opencode's
+	// classifier refuses to replay. That gate is opencode's own: it fails
+	// closed because its retry always starts a FRESH session, so it cannot tell
+	// a replayed side effect from a first one. The shared classifier has no
+	// such property to honour - it is reached by every adapter, including ones
+	// whose retry resumes the same session - and this needle adds no new class
+	// of replay anyway: the already-shipped "prose final turn" needle retries
+	// the same kind of incomplete-turn ending. Refusing an empty turn here
+	// would restore the exact failure being fixed, so the gate stays where the
+	// wire protocol makes it meaningful.
+	if errors.Is(err, errNoTextOutput) {
+		return "empty agent turn", true
 	}
 	msg := strings.ToLower(err.Error())
 	if isTerminalRetryError(msg) {

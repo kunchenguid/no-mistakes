@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1095,6 +1096,127 @@ func TestFinalizeTextResult_ProseWithoutJSONReturnsEndedWithProseError(t *testin
 	}
 	if !strings.Contains(err.Error(), "ended its turn with prose instead of the required JSON object") {
 		t.Fatalf("expected ended with prose error, got: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_EmptyTextIsNotASchemaRejection(t *testing.T) {
+	// A structured turn that produced no assistant text at all is a harness
+	// outcome, not a malformed answer. Reporting it as a structured-output
+	// rejection made the review step rerun a fresh session-free review up to
+	// its analyzer bound (3 attempts) and then fail the whole run - measured
+	// live on a branch where omp ended three consecutive rounds with a
+	// toolCall-only assistant message.
+	_, err := finalizeTextResult("omp", "", reviewOutputTestSchema(), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected an error for a turn with no text")
+	}
+	if !strings.Contains(err.Error(), "omp returned no text output") {
+		t.Fatalf("err = %q, want the adapter named in the message", err)
+	}
+	if IsStructuredOutputRejected(err) {
+		t.Fatalf("err = %v, want no structured-output rejection: no answer was produced to reformat", err)
+	}
+}
+
+func TestFinalizeTextResult_SchemalessEmptyTurnStaysNonRetryable(t *testing.T) {
+	// A caller that requested no structured answer never had this retry, and
+	// nothing about an empty turn justifies widening fresh-session replay to
+	// it: the verdict is the plain failure it has always been.
+	_, err := finalizeTextResult("pi", "", nil, TokenUsage{})
+	if err == nil {
+		t.Fatal("expected an error for a turn with no text")
+	}
+	if IsStructuredOutputRejected(err) {
+		t.Fatalf("err = %v, want no structured-output rejection without a schema", err)
+	}
+	if _, retry := classifyTransient(err); retry {
+		t.Fatalf("a schema-less empty turn must not be retried: %v", err)
+	}
+	if !strings.Contains(err.Error(), "pi returned no text output") {
+		t.Fatalf("err = %q, want the unchanged message", err)
+	}
+}
+
+func TestClassifyTransient_EmptyTurnIsRetryable(t *testing.T) {
+	// The review step's analyzer attempts belong to answers that need steering
+	// back to the schema. An empty turn has to be absorbed by the adapter's own
+	// retry instead, so the step never sees it as a rejected review.
+	_, err := finalizeTextResult("omp", "", reviewOutputTestSchema(), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected an error for a turn with no text")
+	}
+	label, retry := classifyTransient(err)
+	if !retry {
+		t.Fatalf("an empty turn must be retried at the adapter layer, got label %q for %v", label, err)
+	}
+	if label != "empty agent turn" {
+		t.Fatalf("label = %q, want %q", label, "empty agent turn")
+	}
+}
+
+func TestClassifyTransient_EmptyTurnSurvivesWrapping(t *testing.T) {
+	// Decorators add context around an adapter error (timeoutAgent, the fixer
+	// prefix, opencode's tool-activity wrapper), so the empty-turn verdict has
+	// to stay discoverable through wrapping or the retry silently disappears.
+	_, emptyTurnErr := finalizeTextResult("omp", "", reviewOutputTestSchema(), TokenUsage{})
+	if emptyTurnErr == nil {
+		t.Fatal("expected an error for a turn with no text")
+	}
+	wrapped := fmt.Errorf("agent review: %w", fmt.Errorf("omp parse events: %w", emptyTurnErr))
+	if _, retry := classifyTransient(wrapped); !retry {
+		t.Fatalf("wrapped empty turn was not classified retryable: %v", wrapped)
+	}
+}
+
+func TestFinalizeTextResult_EmptyTurnKeepsReportedUsage(t *testing.T) {
+	usage := TokenUsage{InputTokens: 17048, OutputTokens: 58, CacheReadTokens: 256, Reported: true}
+	result, err := finalizeTextResult("omp", "", reviewOutputTestSchema(), usage)
+	if err == nil {
+		t.Fatal("expected an error for a turn with no text")
+	}
+	if result == nil {
+		t.Fatal("an empty turn must still return the invocation's reported usage")
+	}
+	if result.Usage != usage || !result.UsageReported {
+		t.Fatalf("usage = %+v, want the reported usage %+v", result.Usage, usage)
+	}
+}
+
+func TestFinalizeTextResult_EnumViolationNamesTheAllowedValues(t *testing.T) {
+	// The review step quotes this error back to the agent on a rerun
+	// (reviewRetryNote), so a bare "must match one of the allowed values"
+	// leaves the agent unable to correct the answer it just gave. Measured
+	// live: a gate review set the top-level risk_scope to "source" (a finding's
+	// enum) and the run repeated the same rejected answer.
+	text := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source"}`
+	_, err := finalizeTextResult("omp", text, reviewOutputTestSchema(), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected an enum violation")
+	}
+	if !strings.Contains(err.Error(), "risk_scope must match one of the allowed values") {
+		t.Fatalf("err = %q, want the violated path named", err)
+	}
+	if !strings.Contains(err.Error(), `"source-or-external"`) {
+		t.Fatalf("err = %q, want the allowed values quoted so the rerun can steer the answer", err)
+	}
+	if !strings.Contains(err.Error(), `"pipeline-owned-delivery"`) {
+		t.Fatalf("err = %q, want every allowed value listed", err)
+	}
+	if !IsStructuredOutputRejected(err) {
+		t.Fatalf("an enum miss is still a structured-output rejection: %v", err)
+	}
+}
+
+func TestFinalizeTextResult_NestedEnumViolationNamesTheAllowedValues(t *testing.T) {
+	// The same applies to a finding-level enum: the message has to carry the
+	// permitted values for the rerun to correct the finding rather than repeat it.
+	text := `{"findings":[{"severity":"warn","description":"d","action":"auto-fix","review_scope":"source"}],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	_, err := finalizeTextResult("omp", text, reviewOutputTestSchema(), TokenUsage{})
+	if err == nil {
+		t.Fatal("expected an enum violation for the finding severity")
+	}
+	if !strings.Contains(err.Error(), `"error", "warning", "info"`) {
+		t.Fatalf("err = %q, want the finding severity's allowed values listed", err)
 	}
 }
 

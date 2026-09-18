@@ -593,6 +593,7 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","stopReason":
 }
 
 func TestPiAgent_RunRejectsEmptyOutput(t *testing.T) {
+	defer withFastBackoff(t)()
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh
 cat > /dev/null
@@ -613,6 +614,45 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"
 	}
 	if !strings.Contains(err.Error(), "no text output") {
 		t.Errorf("expected 'no text output', got: %v", err)
+	}
+}
+
+// TestPiAgent_RetriesEmptyTurnThenSucceeds is the shape-1 regression: a turn
+// that ends with no assistant text is a harness outcome, so the adapter
+// absorbs it with its own retry instead of handing an empty result to the
+// review step, which used to treat it as a rejected review and spend its whole
+// analyzer-attempt budget on it before failing the run.
+func TestPiAgent_RetriesEmptyTurnThenSucceeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	defer withFastBackoff(t)()
+	dir := t.TempDir()
+	attemptFile := filepath.Join(dir, "attempts")
+	bin := writeFakePi(t, dir, `#!/bin/sh
+cat > /dev/null
+n=0
+[ -f "`+attemptFile+`" ] && n=$(cat "`+attemptFile+`")
+n=$((n + 1))
+printf '%s' "$n" > "`+attemptFile+`"
+if [ "$n" -eq 1 ]; then
+  printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash"}]}}'
+  exit 0
+fi
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}'
+`, "@echo off\nexit /b 1\n")
+
+	pa := &piAgent{bin: bin}
+	result, err := pa.Run(context.Background(), RunOpts{
+		Prompt:     "review",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if err != nil {
+		t.Fatalf("an empty turn must be retried by the adapter, not surfaced: %v", err)
+	}
+	if result == nil || string(result.Output) != `{"ok":true}` {
+		t.Fatalf("result = %+v, want the retry's structured output", result)
 	}
 }
 
