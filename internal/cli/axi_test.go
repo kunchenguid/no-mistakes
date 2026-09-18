@@ -359,8 +359,8 @@ func TestGateHelpForUnvalidatedTestWorkDoesNotOfferSkip(t *testing.T) {
 	if strings.Contains(out, "--action skip") || strings.Contains(out, "--action approve") {
 		t.Fatalf("gate help offers a response that would publish unvalidated work:\n%s", out)
 	}
-	if !strings.Contains(out, "Do not skip this step") || !strings.Contains(out, "--action fix") {
-		t.Fatalf("gate help missing the skip warning or the fix path:\n%s", out)
+	if !strings.Contains(out, "Do not skip this step") || !strings.Contains(out, "--action fix") || !strings.Contains(out, "`no-mistakes axi abort`") {
+		t.Fatalf("gate help missing the skip warning, the fix path, or the real abort command:\n%s", out)
 	}
 }
 

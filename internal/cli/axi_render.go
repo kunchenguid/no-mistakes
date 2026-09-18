@@ -541,7 +541,7 @@ func gateFields(gate stepView) []toon.Field {
 	if pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
 		help = []string{
 			"Approve is rejected: the run worktree holds work a timed-out Test agent left that no Test turn validated, and approval would publish it. The findings name that work and how to inspect it.",
-			"Run `no-mistakes axi respond --action fix --findings <ids>` to validate that work (do not edit files yourself), or `no-mistakes axi respond --action abort` to stop the run",
+			"Run `no-mistakes axi respond --action fix --findings <ids>` to validate that work (do not edit files yourself), or `no-mistakes axi abort` to stop the run",
 		}
 		skip = "Do not skip this step: the steps after Test would commit and publish the unvalidated work, so skipping needs the operator's explicit decision"
 	}
