@@ -661,7 +661,9 @@ jev:
 | `jev.review_assist` | `bool` | `false` | Consult TypeSafe Jev before each review turn      |
 
 When enabled and [`TYPESAFE_API_KEY`](/no-mistakes/reference/environment/#typesafe_api_key) is set in the daemon's environment, each review turn - the initial review and every rereview - runs one batched Jev evaluation over a code-filtered digest of the change before the reviewer launches.
-Its typed answers feed the review prompt two kinds of advisory input: a ranked list of surrounding-context files worth reading first (the candidates are enumerated in code from the change's identifiers, same-directory siblings, and test counterparts), and domain emphasis flags (authorization/privacy, concurrency, cross-component contracts, error handling) that strengthen the matching review obligations.
+The digest covers only the files the review covers, so paths matching `ignore_patterns` are left out.
+Its typed answers feed the review prompt one kind of advisory input: a ranked list of surrounding-context files worth reading first.
+The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
 
 The assist can only add to a review, never subtract.
 Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.
@@ -670,7 +672,8 @@ Jev answers are typed numbers, not generated text, so the service cannot inject 
 
 This setting is global-only: it does not exist in `.no-mistakes.yaml`, so a pushed branch cannot enable or steer the pre-screen that feeds the reviewer gating it.
 The digest sent to TypeSafe is a code-filtered subset of the change content the review agent itself sends to its model provider, and it leaves the machine only when you set both this flag and the key.
-The model is pinned (`jev-1.13.0`, billed per input token at TypeSafe's published price, which is cents per thousand reviews), and the answering model ID, answers, and token usage are recorded in the local step log; none of it goes to telemetry.
+The model is pinned (`jev-1.13.0`, billed per input token at TypeSafe's published price, which is cents per thousand reviews).
+The local step log records how many candidates were listed, the answering model ID, and the input-token usage; none of it goes to telemetry.
 
 ### worktree_roots
 

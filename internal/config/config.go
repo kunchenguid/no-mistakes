@@ -925,8 +925,8 @@ type JevRaw struct {
 }
 
 // Jev is the resolved TypeSafe pre-brief config. ReviewAssist opts review
-// turns into one batched Jev evaluation that ranks surrounding context and
-// flags change domains as advisory prompt input (issue #1055). It never
+// turns into one batched Jev evaluation that ranks surrounding context as
+// advisory prompt input (issue #1055). It never
 // changes what a review covers or who validates it, and every failure of the
 // assist falls back to the same cold review that runs with it off. The API
 // key is read from the daemon's TYPESAFE_API_KEY environment variable at turn

@@ -221,11 +221,11 @@ Previous review findings to address:
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
-	// The opt-in Jev pre-brief contributes advisory context ranking and
-	// domain emphasis to the prompt below. It can only add to the prompt -
-	// never remove a file, clause, or obligation - and any failure leaves the
-	// prompt byte-identical to running with the assist off.
-	prebrief := s.reviewPrebriefSection(ctx, sctx, baseSHA, changed)
+	// The opt-in Jev pre-brief contributes advisory context ranking to the
+	// prompt below. It can only add to the prompt - never remove a file,
+	// clause, or obligation - and any failure leaves the prompt byte-identical
+	// to running with the assist off.
+	prebrief := s.reviewPrebriefSection(ctx, sctx, baseSHA, changed, reviewable)
 
 	// The authorization/privacy obligation below specializes the existing
 	// concrete-state trace only when changed behavior crosses a potentially

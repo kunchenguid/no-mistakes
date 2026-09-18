@@ -40,13 +40,9 @@ func (f *fakeJevClient) Evaluate(_ context.Context, state any, questions map[str
 	return &jev.Response{Model: jev.Model, Answers: answers, Usage: jev.Usage{InputTokens: 12000}}, nil
 }
 
-// highScoreEverything answers every relevance score high and every domain
-// noul low.
-func highScoreEverything(id string, q jev.Question) jev.Answer {
-	if strings.HasPrefix(id, "ctx_") {
-		return jev.Answer{Type: "score", Score: 2.6, Confidence: 0.9}
-	}
-	return jev.Answer{Type: "noul", Noul: 0.05}
+// highScoreEverything answers every relevance score high.
+func highScoreEverything(string, jev.Question) jev.Answer {
+	return jev.Answer{Type: "score", Score: 2.6, Confidence: 0.9}
 }
 
 func reviewPromptOf(t *testing.T, ag *mockAgent) string {
@@ -102,20 +98,12 @@ func TestReviewStep_JevPrebriefDisabledByDefault(t *testing.T) {
 }
 
 // TestReviewStep_JevPrebriefAddsAdvisorySection pins the enabled path: the
-// ranked context and domain flags reach the review prompt as an advisory
-// section, and the coverage obligations stay in the prompt alongside it.
+// ranked context reaches the review prompt as an advisory section, and the
+// coverage obligations stay in the prompt alongside it.
 func TestReviewStep_JevPrebriefAddsAdvisorySection(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupJevRepo(t)
-	fake := &fakeJevClient{answer: func(id string, q jev.Question) jev.Answer {
-		if strings.HasPrefix(id, "ctx_") {
-			return jev.Answer{Type: "score", Score: 2.6, Confidence: 0.9}
-		}
-		if id == "domain_concurrency" {
-			return jev.Answer{Type: "noul", Noul: 0.9}
-		}
-		return jev.Answer{Type: "noul", Noul: 0.05}
-	}}
+	fake := &fakeJevClient{answer: highScoreEverything}
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
@@ -132,8 +120,7 @@ func TestReviewStep_JevPrebriefAddsAdvisorySection(t *testing.T) {
 	for _, want := range []string{
 		"Pre-brief (advisory",
 		"claims, not evidence",
-		"widget/user.go", // the use site of the changed definition, ranked
-		"Domain flag: the change appears to involve concurrency",
+		"widget/user.go",        // the use site of the changed definition, ranked
 		"Report reviewed_paths", // the coverage obligation survives
 	} {
 		if !strings.Contains(prompt, want) {
@@ -241,6 +228,7 @@ func setupJevRepo(t *testing.T) (string, string, string) {
 	write("widget/widget.go", "package widget\n\nfunc RenderWidget() string {\n\treturn \"base\"\n}\n")
 	write("widget/user.go", "package widget\n\nfunc Show() string {\n\treturn RenderWidget()\n}\n")
 	write("widget/widget_test.go", "package widget\n\nimport \"testing\"\n\nfunc TestRenderWidget(t *testing.T) {\n\tif RenderWidget() == \"\" {\n\t\tt.Fatal(\"empty\")\n\t}\n}\n")
+	write("widget/style.go", "package widget\n")
 	run("add", "-A")
 	run("commit", "-m", "base commit")
 	baseSHA := run("rev-parse", "HEAD")
@@ -255,16 +243,15 @@ func setupJevRepo(t *testing.T) (string, string, string) {
 
 // TestJevContextCandidates_FindsUseSitesAndSiblings pins the code-built
 // candidate set: use sites of changed definitions carry their matched lines,
-// siblings and test counterparts are included, and the changed file itself is
-// never a candidate.
+// same-directory siblings are included, and the changed file itself is never
+// a candidate.
 func TestJevContextCandidates_FindsUseSitesAndSiblings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupJevRepo(t)
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	diff := gitCmd(t, dir, "diff", "--no-renames", baseSHA+".."+headSHA)
-	candidates := jevContextCandidates(sctx.Ctx, sctx, diff, []string{"widget/widget.go"})
+	changed := []string{"widget/widget.go"}
+	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed)
 
 	byPath := map[string]jevCandidate{}
 	for _, c := range candidates {
@@ -282,32 +269,82 @@ func TestJevContextCandidates_FindsUseSitesAndSiblings(t *testing.T) {
 		t.Fatalf("use-site candidate carries no coupling evidence: %v", user.Matches)
 	}
 	if _, ok := byPath["widget/widget_test.go"]; !ok {
-		t.Fatal("test counterpart not among candidates")
+		t.Fatal("test file referencing the changed definition not among candidates")
+	}
+	if _, ok := byPath["widget/style.go"]; !ok {
+		t.Fatal("same-directory sibling not among candidates")
 	}
 }
 
-func TestJevIdentifiers(t *testing.T) {
+// TestJevContextCandidates_RanksRareNamesAboveUbiquitousOnes reproduces a cap
+// filled in path order: a changed local name that appears in more files than
+// the cap must not crowd out the one file that uses the changed function.
+func TestJevContextCandidates_RanksRareNamesAboveUbiquitousOnes(t *testing.T) {
 	t.Parallel()
-	diff := `+++ b/widget/widget.go
-@@ -1,5 +1,9 @@ func RenderWidget() string {
-+func RenderWidgetV2() string {
-+	return RenderWidget()
-+}
-+type WidgetOption struct{}
-`
-	ids := jevIdentifiers(diff)
-	joined := strings.Join(ids, ",")
-	for _, want := range []string{"RenderWidgetV2", "WidgetOption", "RenderWidget"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("identifiers %v missing %q", ids, want)
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-	for _, unwanted := range []string{"return"} {
-		for _, id := range ids {
-			if id == unwanted {
-				t.Errorf("identifier %q should not be extracted", unwanted)
-			}
-		}
+	gitCmd(t, dir, "init")
+	write("zz/widget.go", "package zz\n\nfunc RenderWidget() string {\n\treturn \"base\"\n}\n")
+	write("zz/user.go", "package zz\n\nfunc Show() string {\n\treturn RenderWidget()\n}\n")
+	for i := 0; i < jevMaxCandidates+5; i++ {
+		write(fmt.Sprintf("aa/f%02d.go", i), fmt.Sprintf("package aa\n\nfunc f%02d() int {\n\tresult := %d\n\treturn result\n}\n", i, i))
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	write("zz/widget.go", "package zz\n\nfunc RenderWidget() string {\n\tvar result = \"changed\"\n\treturn result\n}\n")
+	gitCmd(t, dir, "commit", "-am", "change")
+
+	diff := gitCmd(t, dir, "diff", "--no-renames", baseSHA+"..HEAD")
+	changed := []string{"zz/widget.go"}
+	candidates := jevContextCandidates(context.Background(), dir, diff, changed, changed)
+	if len(candidates) != jevMaxCandidates {
+		t.Fatalf("candidates = %d, want the cap %d", len(candidates), jevMaxCandidates)
+	}
+	if candidates[0].Path != "zz/user.go" {
+		t.Fatalf("first candidate = %s, want zz/user.go (the only use site of RenderWidget)", candidates[0].Path)
+	}
+	if !strings.Contains(strings.Join(candidates[0].Matches, "\n"), "RenderWidget()") {
+		t.Fatalf("use-site candidate carries no coupling evidence: %v", candidates[0].Matches)
+	}
+}
+
+// TestJevIdentifiers pins which names become search terms: definitions in
+// code, never prose (documentation files, comments, a keyword inside a longer
+// word) and never names too short to point at a use site.
+func TestJevIdentifiers(t *testing.T) {
+	t.Parallel()
+	diff := `diff --git a/docs/guide.md b/docs/guide.md
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -1,2 +1,3 @@
++type ProseOnly struct{}
++let the reviewer replay it
+diff --git a/widget/widget.go b/widget/widget.go
+--- a/widget/widget.go
++++ b/widget/widget.go
+@@ -1,5 +1,9 @@ func RenderWidget() string {
++func RenderWidgetV2() string {
++	var b strings.Builder
++	// we let callers choose
++	return RenderWidget()
++}
++export type WidgetOption struct{}
++outlet Plug
+`
+	got := jevIdentifiers(diff)
+	want := []string{"RenderWidget", "RenderWidgetV2", "WidgetOption"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("identifiers = %v, want %v", got, want)
 	}
 }
 
@@ -321,35 +358,24 @@ func TestFormatJevPrebrief_Thresholds(t *testing.T) {
 		"ctx_1": {Type: "score", Score: 2.5, Confidence: 0.1},
 		// Below the relevance bar: not listed.
 		"ctx_2": {Type: "score", Score: 1.4, Confidence: 0.95},
-		// Domain below threshold: no flag.
-		"domain_auth": {Type: "noul", Noul: 0.4},
-		// Domain at threshold: flagged.
-		"domain_errors": {Type: "noul", Noul: 0.65},
 	}}
-	section, listed, flags := formatJevPrebrief(resp, candidates)
-	if listed != 1 || flags != 1 {
-		t.Fatalf("listed=%d flags=%d, want 1 and 1", listed, flags)
+	section, listed := formatJevPrebrief(resp, candidates)
+	if listed != 1 {
+		t.Fatalf("listed=%d, want 1", listed)
 	}
 	if !strings.Contains(section, "a.go") || strings.Contains(section, "b.go") || strings.Contains(section, "c.go") {
 		t.Errorf("section lists the wrong candidates:\n%s", section)
-	}
-	if strings.Contains(section, "protected-resource") {
-		t.Error("auth domain below threshold must not flag")
-	}
-	if !strings.Contains(section, "error handling or rollback") {
-		t.Error("errors domain at threshold must flag")
 	}
 }
 
 func TestFormatJevPrebrief_NothingToSurface(t *testing.T) {
 	t.Parallel()
 	resp := &jev.Response{Answers: map[string]jev.Answer{
-		"ctx_0":       {Type: "score", Score: 0.4, Confidence: 0.99},
-		"domain_auth": {Type: "noul", Noul: 0.1},
+		"ctx_0": {Type: "score", Score: 0.4, Confidence: 0.99},
 	}}
-	section, listed, flags := formatJevPrebrief(resp, []jevCandidate{{Path: "a.go"}})
-	if section != "" || listed != 0 || flags != 0 {
-		t.Fatalf("section=%q listed=%d flags=%d, want empty", section, listed, flags)
+	section, listed := formatJevPrebrief(resp, []jevCandidate{{Path: "a.go"}})
+	if section != "" || listed != 0 {
+		t.Fatalf("section=%q listed=%d, want empty", section, listed)
 	}
 }
 
@@ -372,38 +398,14 @@ func TestClipMiddle(t *testing.T) {
 	}
 }
 
-func TestTestCounterpart(t *testing.T) {
-	t.Parallel()
-	cases := map[string]string{
-		"pkg/foo.go":      "pkg/foo_test.go",
-		"pkg/foo_test.go": "pkg/foo.go",
-		"pkg/mod.py":      "pkg/test_mod.py",
-		"pkg/test_mod.py": "pkg/mod.py",
-		"web/app.ts":      "web/app.test.ts",
-		"web/app.test.ts": "web/app.ts",
-		"README.md":       "",
-	}
-	for in, want := range cases {
-		if got := testCounterpart(in); got != want {
-			t.Errorf("testCounterpart(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// TestBuildJevQuestions pins the question battery shape: one noul per domain
-// plus one score per candidate, keyed stably.
+// TestBuildJevQuestions pins the question battery shape: one score per
+// candidate, keyed stably.
 func TestBuildJevQuestions(t *testing.T) {
 	t.Parallel()
 	candidates := []jevCandidate{{Path: "a.go"}, {Path: "b.go"}}
 	questions := buildJevQuestions(candidates)
-	if len(questions) != len(jevDomains)+2 {
-		t.Fatalf("questions = %d, want %d", len(questions), len(jevDomains)+2)
-	}
-	for _, d := range jevDomains {
-		q, ok := questions[d.id]
-		if !ok || q.Type != "noul" {
-			t.Errorf("domain %s missing or not a noul", d.id)
-		}
+	if len(questions) != 2 {
+		t.Fatalf("questions = %d, want 2", len(questions))
 	}
 	for i := range candidates {
 		q, ok := questions[fmt.Sprintf("ctx_%d", i)]
@@ -413,10 +415,11 @@ func TestBuildJevQuestions(t *testing.T) {
 	}
 }
 
-// TestReviewStep_JevPrebriefStateCarriesRereviewFindings pins that a
-// rereview's Jev state includes the sanitized outstanding findings, so domain
-// triggers and ranking judge the whole round, not the bare diff.
-func TestReviewStep_JevPrebriefStateCarriesRereviewFindings(t *testing.T) {
+// TestReviewStep_JevPrebriefRereviewDigestsFixerWork pins that a rereview's
+// Jev state digests the worktree against the base, so the fixer's changes are
+// part of what the ranking judges, and that it carries no reviewer-written
+// findings text.
+func TestReviewStep_JevPrebriefRereviewDigestsFixerWork(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupJevRepo(t)
 	fake := &fakeJevClient{answer: highScoreEverything}
@@ -424,6 +427,9 @@ func TestReviewStep_JevPrebriefStateCarriesRereviewFindings(t *testing.T) {
 		name: "test",
 		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			if opts.Purpose == "review-fix" {
+				if err := os.WriteFile(filepath.Join(dir, "widget", "widget.go"), []byte("package widget\n\nfunc RenderWidget() string {\n\treturn \"fixed\"\n}\n\nfunc RenderWidgetV2() string {\n\treturn RenderWidget()\n}\n"), 0o644); err != nil {
+					t.Error(err)
+				}
 				return &agent.Result{Text: `{"summary":"fixed it"}`, Output: json.RawMessage(`{"summary":"fixed it"}`)}, nil
 			}
 			return cleanReviewResult(t, dir, baseSHA), nil
@@ -440,13 +446,65 @@ func TestReviewStep_JevPrebriefStateCarriesRereviewFindings(t *testing.T) {
 	if fake.calls != 1 {
 		t.Fatalf("jev calls = %d, want 1", fake.calls)
 	}
-	if fake.state == nil || !strings.Contains(fake.state.Change.OutstandingFindings, "RenderWidget broke its callers") {
-		t.Fatalf("rereview state missing outstanding findings: %+v", fake.state)
+	encoded, err := json.Marshal(fake.state)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The rereview digests the worktree diff (base..worktree), so the fixer's
-	// uncommitted work would be included; with no fixer edits here the diff
-	// still covers the feature change.
-	if !strings.Contains(fake.state.Change.Diff, "RenderWidgetV2") {
-		t.Fatal("rereview diff digest missing the change")
+	if !strings.Contains(fake.state.Change.Diff, `"fixed"`) {
+		t.Fatalf("rereview digest misses the fixer's change:\n%s", fake.state.Change.Diff)
+	}
+	if strings.Contains(string(encoded), "broke its callers") {
+		t.Fatal("rereview state carries the outstanding findings text")
+	}
+}
+
+// TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths reproduces a digest
+// crowded by ignored content: files matching ignore_patterns stay out of the
+// diff and stat sent to Jev, and out of the identifiers used to find
+// candidates.
+func TestReviewStep_JevPrebriefDigestSkipsIgnoredPaths(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupJevRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Show is also defined by the unchanged widget/user.go, so a name taken
+	// from the ignored bundle would surface that line as evidence.
+	if err := os.WriteFile(filepath.Join(dir, "dist", "bundle.js"), []byte("function Show() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add bundle")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	fake := &fakeJevClient{answer: highScoreEverything}
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return cleanReviewResult(t, dir, baseSHA), nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Jev.ReviewAssist = true
+	sctx.Config.IgnorePatterns = []string{"dist/**"}
+
+	if _, err := (&ReviewStep{jev: fake}).Execute(sctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if fake.state == nil {
+		t.Fatal("jev was not consulted")
+	}
+	for name, text := range map[string]string{"diff": fake.state.Change.Diff, "stat": fake.state.Change.DiffStat} {
+		if strings.Contains(text, "dist/bundle.js") {
+			t.Errorf("digest %s carries the ignored file:\n%s", name, text)
+		}
+		if !strings.Contains(text, "widget/widget.go") {
+			t.Errorf("digest %s misses the reviewable file:\n%s", name, text)
+		}
+	}
+	for _, c := range fake.state.Candidates {
+		if strings.Contains(strings.Join(c.Matches, "\n"), "func Show()") {
+			t.Errorf("candidate %s carries evidence for a name defined only in an ignored file: %v", c.Path, c.Matches)
+		}
 	}
 }

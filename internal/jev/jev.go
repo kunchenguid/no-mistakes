@@ -62,12 +62,6 @@ type Question struct {
 	Criteria     any    `json:"criteria,omitempty"`
 }
 
-// NoulCriteria describes what yes and no mean for a noul question.
-type NoulCriteria struct {
-	True  string `json:"true"`
-	False string `json:"false"`
-}
-
 // Answer is the typed answer to one question. Only the fields matching the
 // question's type are meaningful: Noul for noul, Choice for choice, Score for
 // score; Confidence exists on choice and score answers only.
