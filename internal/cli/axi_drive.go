@@ -854,6 +854,10 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 				continue
 			}
 			action, findingIDs := gateResolution(gate, fixedSteps[gate.Name])
+			if action == types.ActionApprove && pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
+				fmt.Fprintf(progress, "%s: unvalidated work in the run worktree blocks approval; --yes leaves this gate awaiting a response\n", gate.Name)
+				return run, false, nil
+			}
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}

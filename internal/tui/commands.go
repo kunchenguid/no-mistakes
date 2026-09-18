@@ -115,6 +115,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 		m.resetFindingSelection(step.StepName)
 		return m.respondCmd(types.ActionFix)
 	}
+	if pipeline.HasUnvalidatedWorkRefusal(m.stepFindings[step.StepName]) {
+		return nil
+	}
 	m.yoloApproved[step.StepName] = true
 	return m.respondCmd(types.ActionApprove)
 }

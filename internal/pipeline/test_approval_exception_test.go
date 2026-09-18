@@ -128,3 +128,49 @@ func TestExecutor_ApprovalReasonCannotChangeOtherActions(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutor_UnvalidatedTestWorkRefusesApprovalUntilFixValidatesIt(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	calls := 0
+	step := &adaptiveCallStep{
+		name: types.StepTest,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			calls++
+			if calls == 1 {
+				return &StepOutcome{
+					NeedsApproval: true,
+					Findings:      `{"findings":[{"id":"test-agent-timeout","severity":"warning","action":"ask-user","description":"budget cut"},{"id":"test-agent-unvalidated-work","severity":"error","action":"ask-user","description":"uncommitted changes to fix.txt"}]}`,
+				}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
+
+	err := exec.RespondWithOverrides(types.StepTest, types.ActionApprove, nil, nil, nil, "ship it anyway")
+	if err == nil || !strings.Contains(err.Error(), "use fix to validate it") {
+		t.Fatalf("approve error = %v, want approval refused while unvalidated work remains", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("executor returned %v after a refused approval, want the gate still parked", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := exec.Respond(types.StepTest, types.ActionFix, nil); err != nil {
+		t.Fatalf("fix after refused approval: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executor error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+	if calls != 2 {
+		t.Fatalf("step executions = %d, want the fix round to re-run the step once", calls)
+	}
+}

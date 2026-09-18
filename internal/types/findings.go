@@ -115,6 +115,12 @@ const FindingCategoryTestCommand = "test-command"
 // finding as a Test exception rather than a silent green pass.
 const FindingIDTestAgentTimeout = "test-agent-timeout"
 
+// FindingIDTestAgentUnvalidatedWork accompanies FindingIDTestAgentTimeout
+// when the run worktree holds commits or changes no Test turn validated. The
+// executor refuses Approve on that gate: the steps after Test would commit and
+// publish the work.
+const FindingIDTestAgentUnvalidatedWork = "test-agent-unvalidated-work"
+
 // Test scenario result constants: the vocabulary the test step's evidence
 // prompt instructs the agent to use for each derived scenario.
 //

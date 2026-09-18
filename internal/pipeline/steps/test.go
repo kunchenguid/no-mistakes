@@ -28,6 +28,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
+	startHead := sctx.Run.HeadSHA
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
 	// In fix mode, ask agent to fix test failures first.
@@ -48,7 +49,10 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// follows can no longer see a test file the fixer already committed.
 	var newTestsFromFix []string
 	var fixSummary string
-	if sctx.Fixing {
+	var repairCut error
+	if sctx.Fixing && onlyTestBudgetCutFindings(sctx.PreviousFindings) {
+		sctx.Log("fix selection holds only the Test agent budget cut; re-running validation without a repair turn...")
+	} else if sctx.Fixing {
 		historySection := executionContextPromptSection(sctx.WorkDir) + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes.
@@ -97,10 +101,10 @@ Previous test findings to address:
 		cancelFix()
 		if err != nil {
 			runErr := testAgentError(fixCtx, fixTimeout, "agent fix tests", err)
-			if outcome := testAgentTimeoutOutcome(sctx, runErr); outcome != nil {
-				return outcome, nil
+			if !errors.Is(runErr, errTestAgentTimeout) {
+				return nil, runErr
 			}
-			return nil, runErr
+			repairCut = runErr
 		}
 		fixSummary = summary
 	}
@@ -131,6 +135,9 @@ Previous test findings to address:
 			baselineSummary = projectedOutput
 			baselineExitCode = exitCode
 		}
+	}
+	if repairCut != nil {
+		return testAgentTimeoutOutcome(sctx, repairCut, startHead, baselineFindings, baselineExitCode), nil
 	}
 
 	evidenceDir := testEvidenceDir(sctx)
@@ -228,8 +235,8 @@ Rules:
 	)
 	findings, err := runTestAnalyzer(sctx, evidencePrompt)
 	if err != nil {
-		if outcome := testAgentTimeoutOutcome(sctx, err); outcome != nil {
-			return outcome, nil
+		if errors.Is(err, errTestAgentTimeout) {
+			return testAgentTimeoutOutcome(sctx, err, startHead, baselineFindings, baselineExitCode), nil
 		}
 		return nil, err
 	}
@@ -515,60 +522,106 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 // failure: the run stays alive with the worktree so leftover commits and
 // uncommitted files are not discarded, and an approval is a Test exception
 // rather than a silent green pass. Late structured output from the expired
-// turn is still not used as a successful result.
-func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error) *pipeline.StepOutcome {
-	if err == nil || !errors.Is(err, errTestAgentTimeout) {
-		return nil
+// turn is still not used as a successful result. The configured command's
+// result from this execution rides along with its exit code, so approving over
+// a failing command still needs the same waiver as any other Test gate.
+func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, exitCode int) *pipeline.StepOutcome {
+	cause := "This is a budget or provider-slowness cut, not a code failure."
+	if exitCode != 0 {
+		cause = "The cut does not clear the configured test command failure reported alongside it."
 	}
-	description := fmt.Sprintf(
-		"The Test agent did not finish within its invocation budget. "+
-			"Reported: %v. This is a budget or provider-slowness cut, not a code failure. "+
-			"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
-			"If this repository's targeted tests or evidence gathering routinely approach the default %s, raise test_agent_timeout in global config. "+
-			"Respond with a fix selection to spend another budget, or abort and retry after raising the budget.",
-		err, config.DefaultTestAgentTimeout)
-	if sha, recorded := retainTimedOutTestHead(sctx); sha != "" {
-		if recorded {
-			description += fmt.Sprintf(" The timed-out agent committed %s; it is recorded locally and is not pushed.", shortObjectID(sha))
-		} else {
-			description += fmt.Sprintf(" The timed-out agent left a committed head at %s in the run worktree.", shortObjectID(sha))
-		}
-	}
-	if dirty := dirtyRunWorktree(sctx); dirty != "" {
-		description += fmt.Sprintf(" The timed-out agent left uncommitted changes in the run worktree at %s; they are not committed or pushed.", dirty)
-	}
-	findings := Findings{
-		Summary: "Test agent exceeded its invocation budget",
-		Items: []Finding{{
-			ID:          types.FindingIDTestAgentTimeout,
-			Severity:    types.FindingSeverityWarning,
+	items := []Finding{{
+		ID:       types.FindingIDTestAgentTimeout,
+		Severity: types.FindingSeverityWarning,
+		Action:   types.ActionAskUser,
+		Description: fmt.Sprintf(
+			"The Test agent did not finish within its invocation budget. "+
+				"Reported: %v. %s "+
+				"Re-running the same request costs another full budget, so no further attempt is made automatically. "+
+				"If this repository's targeted tests or evidence gathering routinely approach the default %s, raise test_agent_timeout in global config. "+
+				"Respond with fix to spend another budget: a repair turn runs only for selected findings other than this budget cut, then validation re-runs. Or abort and retry after raising the budget.",
+			err, cause, config.DefaultTestAgentTimeout),
+	}}
+	if work := unvalidatedTestWork(sctx, startHead); work != "" {
+		items = append(items, Finding{
+			ID:          types.FindingIDTestAgentUnvalidatedWork,
+			Severity:    types.FindingSeverityError,
 			Action:      types.ActionAskUser,
-			Description: description,
-		}},
+			Description: "Approval is refused: the run worktree at " + sctx.WorkDir + " holds work no Test turn validated, and the steps after Test would commit and publish it. It holds " + work + ". Respond with fix to validate it, or abort.",
+		})
 	}
-	findingsJSON, _ := json.Marshal(findings)
+	findingsJSON, _ := json.Marshal(Findings{
+		Summary: "Test agent exceeded its invocation budget",
+		Items:   append(items, baseline...),
+	})
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),
+		ExitCode:      exitCode,
 	}
 }
 
-// retainTimedOutTestHead records a head the timed-out agent committed itself
-// so custody and later rounds see it. Uncommitted leftover files stay dirty:
-// a late return after the deadline is not committed as a successful fix.
-func retainTimedOutTestHead(sctx *pipeline.StepContext) (string, bool) {
-	if sctx == nil || sctx.Run == nil {
-		return "", false
+// onlyTestBudgetCutFindings reports whether a fix selection holds nothing but
+// a Test budget cut, which leaves the repair turn nothing to repair.
+func onlyTestBudgetCutFindings(raw string) bool {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil || len(findings.Items) == 0 {
+		return false
 	}
+	for _, item := range findings.Items {
+		if item.ID != types.FindingIDTestAgentTimeout && item.ID != types.FindingIDTestAgentUnvalidatedWork {
+			return false
+		}
+	}
+	return true
+}
+
+// unvalidatedTestWork names what a cut Test execution leaves that no Test turn
+// validated, with how to inspect it, or returns "" when there is nothing. A
+// commit the timed-out agent made is recorded as the run head so custody sees
+// it, unless an unfinished rebase or merge makes HEAD a partial result. An
+// unreadable HEAD or status fails closed.
+func unvalidatedTestWork(sctx *pipeline.StepContext, startHead string) string {
+	dir := sctx.WorkDir
+	var parts []string
 	head, err := stepGitHeadSHA(sctx)
-	if err != nil || head == "" || head == sctx.Run.HeadSHA {
-		return "", false
+	switch {
+	case err != nil:
+		parts = append(parts, fmt.Sprintf("a HEAD that could not be read (%v)", err))
+	case rebaseInProgress(sctx.Ctx, dir) || mergeInProgress(sctx.Ctx, dir):
+		parts = append(parts, fmt.Sprintf("an unfinished rebase or merge at %s, not recorded as the run head (inspect with `git -C %s status`)", shortObjectID(head), dir))
+	case head != startHead:
+		where := "recorded locally as the run head and not pushed"
+		if head != sctx.Run.HeadSHA {
+			if recErr := recordAgentFixHead(sctx, types.StepTest, head); recErr != nil {
+				sctx.Log(fmt.Sprintf("warning: could not record timed-out test agent head %s: %v", head, recErr))
+				where = "left in the run worktree"
+			}
+		}
+		parts = append(parts, fmt.Sprintf("commits %s..%s, %s (inspect with `git -C %s log -p %s..%s`)", shortObjectID(startHead), shortObjectID(head), where, dir, startHead, head))
 	}
-	if recErr := recordAgentFixHead(sctx, types.StepTest, head); recErr != nil {
-		sctx.Log(fmt.Sprintf("warning: could not record timed-out test agent head %s: %v", head, recErr))
-		return head, false
+	status, err := stepGitRunRaw(sctx, "status", "--porcelain")
+	if err != nil {
+		parts = append(parts, fmt.Sprintf("a worktree status that could not be read (%v)", err))
+	} else if changed := porcelainPaths(status); len(changed) > 0 {
+		const maxNamed = 10
+		named := strings.Join(changed[:min(len(changed), maxNamed)], ", ")
+		if len(changed) > maxNamed {
+			named += fmt.Sprintf(" and %d more", len(changed)-maxNamed)
+		}
+		parts = append(parts, fmt.Sprintf("uncommitted changes to %s (inspect with `git -C %s status` and `git -C %s diff`)", named, dir, dir))
 	}
-	return head, true
+	return strings.Join(parts, "; ")
+}
+
+func porcelainPaths(status string) []string {
+	var paths []string
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) > 3 {
+			paths = append(paths, line[3:])
+		}
+	}
+	return paths
 }
 
 // testAgentError renders a Test-invocation budget expiry. It keeps the agent's

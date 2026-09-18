@@ -549,9 +549,12 @@ The budget covers the post-test evidence-gathering turn, and a Test-repair turn 
 When the deadline expires, the test agent is cancelled and the Test step parks for a decision with an ask-user finding rather than failing the run as a code defect.
 That finding carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 A late structured result from the expired turn is still not used as a successful Test pass.
-Leftover uncommitted files stay in the live run worktree; a commit the timed-out agent already made is recorded locally for custody and is not pushed.
-Approving the park is a Test exception (`passed-with-override`), not a silent green pass.
-Respond with a fix selection to spend another budget, or raise this value and retry.
+The park keeps the configured `commands.test` result from the same execution, so approving over a failing command is still recorded as a configured-command override.
+A commit the timed-out agent already made is recorded locally for custody and is not pushed, unless an unfinished rebase or merge leaves only a partial HEAD.
+While the run worktree holds commits or uncommitted changes no Test turn validated, the park names them with the commands to inspect them and approval is refused, because the steps after Test would commit and publish them.
+Otherwise approving the park is a Test exception (`passed-with-override`), not a silent green pass.
+A fix response spends another budget: a repair turn runs only for selected findings other than the budget cut itself, then validation re-runs over whatever the cut left.
+You can also abort, raise this value, and retry.
 
 |         |                        |
 | ------- | ---------------------- |

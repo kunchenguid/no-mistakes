@@ -537,6 +537,12 @@ func gateFields(gate stepView) []toon.Field {
 			"Have the operator inspect and resolve the reported protected-path edit through the repository's authorized workflow, then run `no-mistakes axi respond --action fix` to retry the refused step, including its commit and publication.",
 		}
 	}
+	if pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
+		help = []string{
+			"Approve is rejected: the run worktree holds work a timed-out Test agent left that no Test turn validated, and approval would publish it. The findings name that work and how to inspect it.",
+			"Run `no-mistakes axi respond --action fix --findings <ids>` to validate that work (do not edit files yourself), or `no-mistakes axi respond --action abort` to stop the run",
+		}
+	}
 	return gateFieldsWithHelp(gate, append(help,
 		"Run `no-mistakes axi respond --action skip` to skip this step",
 		fmt.Sprintf("Run `%s` to read the full step log", axiLogsFullCommand(gate.Name, "")),

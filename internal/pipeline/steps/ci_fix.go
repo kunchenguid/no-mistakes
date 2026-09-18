@@ -493,18 +493,24 @@ func (s *CIStep) ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc s
 		return nil
 	}
 	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
-	committedHead := ""
-	recorded := false
-	if head, headErr := stepGitHeadSHA(sctx); headErr == nil && sctx.Run != nil && head != "" && head != sctx.Run.HeadSHA {
+	var leftover []string
+	head, headErr := stepGitHeadSHA(sctx)
+	switch {
+	case rebaseInProgress(sctx.Ctx, sctx.WorkDir) || mergeInProgress(sctx.Ctx, sctx.WorkDir):
+		leftover = append(leftover, fmt.Sprintf("The timed-out agent left an unfinished rebase or merge in the run worktree at %s; its partial HEAD is not recorded.", sctx.WorkDir))
+	case headErr == nil && head != "" && head != sctx.Run.HeadSHA:
 		if _, recErr := s.recordLocalRepair(sctx, head); recErr != nil {
 			sctx.Log(fmt.Sprintf("warning: could not record timed-out CI repair head %s: %v", head, recErr))
+			leftover = append(leftover, fmt.Sprintf("The timed-out agent left a committed head at %s in the run worktree.", shortObjectID(head)))
 		} else {
 			sctx.Log("timed-out CI repair head recorded locally; waiting for a decision instead of auto-revalidating")
-			recorded = true
+			leftover = append(leftover, fmt.Sprintf("The timed-out agent committed %s; it is recorded locally for custody and is not published.", shortObjectID(head)))
 		}
-		committedHead = head
 	}
-	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), committedHead, recorded, err)
+	if dirty := dirtyRunWorktree(sctx); dirty != "" {
+		leftover = append(leftover, fmt.Sprintf("The timed-out agent left uncommitted changes in the run worktree at %s; they are not committed or pushed.", dirty))
+	}
+	return ciFixAgentTimeoutOutcome(issueDesc, strings.Join(leftover, " "), err)
 }
 
 // dirtyRunWorktree reports the run worktree path when the timed-out agent left
@@ -562,7 +568,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
-		if err == nil && headSHA != sctx.Run.HeadSHA {
+		if err == nil && ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
 		return ciRepairResult{}, nil
@@ -590,7 +596,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 		if err != nil {
 			return ciRepairResult{}, fmt.Errorf("resolve head after empty CI handoff: %w", err)
 		}
-		if headSHA != sctx.Run.HeadSHA {
+		if ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
 		return ciRepairResult{}, nil
@@ -604,6 +610,19 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	}
 
 	return s.recordRepair(sctx, headSHA)
+}
+
+// ciHeadAwaitsRecording reports whether a fix round that committed nothing
+// itself still has a head for recordRepair: one the agent committed, or a
+// repair already recorded locally but never published, such as the commit of a
+// fix agent that ran out of budget. Without the second case a later round that
+// adds nothing would leave that repair stranded behind the old published head.
+func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
+	if headSHA != sctx.Run.HeadSHA {
+		return true
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	return err == nil && run != nil && run.LastPushedSHA != nil && !strings.EqualFold(strings.TrimSpace(*run.LastPushedSHA), headSHA)
 }
 
 // ciRevalidatesRepairs reports whether this run must re-run the whole pipeline
