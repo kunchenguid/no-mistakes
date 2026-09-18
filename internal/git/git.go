@@ -573,6 +573,14 @@ func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, 
 }
 
 func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	// On an up-to-date push, send-pack sends no ref update but still writes the
+	// push options and a closing flush; receive-pack exits on the empty update
+	// list without reading them, so that write can kill git with SIGPIPE. Git
+	// reports up-to-date before any lease check and runs no hook, so skipping
+	// the push gives the same result without the race.
+	if len(pushOptions) > 0 && remoteRefAt(ctx, dir, remote, ref, source) {
+		return nil
+	}
 	args := []string{"push"}
 	for _, option := range pushOptions {
 		args = append(args, "-o", option)
@@ -588,6 +596,25 @@ func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expect
 	args = append(args, source+":"+ref)
 	_, err := Run(ctx, dir, args...)
 	return err
+}
+
+// remoteRefAt reports whether remote's exact ref already points at source's
+// commit. Any lookup failure reports false so the caller pushes as usual.
+func remoteRefAt(ctx context.Context, dir, remote, ref, source string) bool {
+	commit, err := Run(ctx, dir, "rev-parse", "--verify", source+"^{commit}")
+	if err != nil {
+		return false
+	}
+	out, err := Run(ctx, dir, "ls-remote", remote, ref)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if sha, name, ok := strings.Cut(line, "\t"); ok && name == ref {
+			return sha == commit
+		}
+	}
+	return false
 }
 
 // LsRemote returns the SHA of a ref on a remote. Returns empty string if the ref doesn't exist.
