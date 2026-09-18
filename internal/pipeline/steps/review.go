@@ -101,7 +101,7 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- integration branch: %s
 - ignore patterns: %s
 
 Rules:
@@ -187,7 +187,7 @@ Previous review findings to address:
 	// Ask agent to review. This fresh deadline is invocation-owned: a
 	// successful fixer above cannot consume any of this independent,
 	// session-free turn's review_agent_timeout allowance.
-	sctx.Log("reviewing changes...")
+	sctx.Log(fmt.Sprintf("reviewing changes against origin/%s (merge-base %s)...", effectivePRBaseBranch(sctx), baseSHA))
 
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
@@ -265,11 +265,12 @@ Context:
 - base commit: %s
 - target commit: %s
 - review scope: %s
-- default branch: %s
+- integration branch: %s
 - ignore patterns: %s
 
 Task:
-- Read the relevant history and diff yourself.
+- Review ONLY the named review scope. The base commit is already the merge-base with the named integration branch; do not replace it with origin/main, HEAD's merge-base with the forge default, or any other ref.
+- Read the relevant history and diff of that bounded range yourself.
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
 - For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.

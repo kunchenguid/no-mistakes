@@ -411,6 +411,126 @@ func TestReviewStep_ScopesDiffToPRBaseBranchNotDefaultBranch(t *testing.T) {
 	if strings.Contains(prompt, "base commit: "+mainSHA) {
 		t.Fatalf("review prompt still used Repo.DefaultBranch merge-base %s:\n%s", mainSHA, prompt)
 	}
+	if !strings.Contains(prompt, "integration branch: dev") {
+		t.Fatalf("review prompt missing integration branch dev:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "default branch:") {
+		t.Fatalf("review prompt still labelled the integration base as default branch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "do not replace it with origin/main") {
+		t.Fatalf("review prompt did not forbid rediscovering origin/main:\n%s", prompt)
+	}
+}
+
+// TestReviewStep_ScopesDiffToPerRunBaseBranchNotDefaultBranch is the fleet
+// path: axi run --base-branch dev with no repo pr.base_branch. The resolver
+// already honours Config.PR.BaseBranch (see the test above); this run record
+// is how firstmate actually launches controller lanes, and a missing
+// Run.PRBaseBranch still hands merge-base(origin/main, HEAD).
+func TestReviewStep_ScopesDiffToPerRunBaseBranchNotDefaultBranch(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	if err := os.WriteFile(filepath.Join(dir, "main-only.txt"), []byte("only on main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main only")
+	mainSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "dev")
+	if err := os.WriteFile(filepath.Join(dir, "dev.txt"), []byte("dev line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "dev commit")
+	devSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "dev")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature commit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "branch", "-D", "dev")
+	gitCmd(t, dir, "branch", "-D", "main")
+	gitCmd(t, dir, "update-ref", "-d", "refs/remotes/origin/dev")
+	gitCmd(t, dir, "update-ref", "-d", "refs/remotes/origin/main")
+
+	ag := &mockAgent{
+		name: "per-run-base-reviewer",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			findings, err := json.Marshal(Findings{
+				Items:         []Finding{},
+				Summary:       "all clear",
+				RiskLevel:     "low",
+				RiskRationale: "scoped to per-run PR base",
+				RiskScope:     types.FindingsRiskScopeSourceOrExternal,
+				ReviewedPaths: []string{"feature.txt"},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: findings}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, mainSHA, headSHA, config.Commands{})
+	sctx.Repo.DefaultBranch = "main"
+	sctx.Repo.UpstreamURL = upstream
+	runBase := "dev"
+	sctx.Run.PRBaseBranch = &runBase
+	if sctx.Config.PR.BaseBranch != "" {
+		t.Fatalf("fixture leaked repo pr.base_branch %q; this test is the --base-branch-only path", sctx.Config.PR.BaseBranch)
+	}
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected a review outcome")
+	}
+	if len(outcome.ReviewablePaths) != 1 || outcome.ReviewablePaths[0] != "feature.txt" {
+		t.Fatalf("reviewable paths = %v, want [feature.txt] against --base-branch dev (not main's %s..%s range)", outcome.ReviewablePaths, mainSHA, headSHA)
+	}
+	if len(ag.calls) == 0 {
+		t.Fatal("review agent was not invoked")
+	}
+	prompt := ag.calls[0].Prompt
+	if !strings.Contains(prompt, "base commit: "+devSHA) {
+		t.Fatalf("review prompt base is not the per-run merge-base %s:\n%s", devSHA, prompt)
+	}
+	if strings.Contains(prompt, "base commit: "+mainSHA) {
+		t.Fatalf("review prompt still used Repo.DefaultBranch merge-base %s:\n%s", mainSHA, prompt)
+	}
+	if !strings.Contains(prompt, "integration branch: dev") {
+		t.Fatalf("review prompt missing integration branch dev:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "default branch:") {
+		t.Fatalf("review prompt still labelled the integration base as default branch:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "do not replace it with origin/main") {
+		t.Fatalf("review prompt did not forbid rediscovering origin/main:\n%s", prompt)
+	}
+	logged := strings.Join(logs, "\n")
+	if !strings.Contains(logged, "reviewing changes against origin/dev (merge-base "+devSHA+")") {
+		t.Fatalf("review log = %q, want the per-run origin/dev merge-base", logged)
+	}
+	if strings.Contains(logged, "origin/main") {
+		t.Fatalf("review log still named origin/main:\n%s", logged)
+	}
 }
 
 // A missing/unfetchable PR base must fail the review step closed. Falling
