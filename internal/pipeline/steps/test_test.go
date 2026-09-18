@@ -504,6 +504,115 @@ func TestTestStep_RepairCutKeepsTheFindingsItWasFixing(t *testing.T) {
 	}
 }
 
+// answerTestPark splits a parked Test gate the way the executor does for a fix
+// response selecting ids: the selection and the deferred rest.
+func answerTestPark(t *testing.T, raw string, ids ...string) (string, string) {
+	t.Helper()
+	parked, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked = types.NormalizeFindings(parked, string(types.StepTest))
+	selected, err := types.MarshalFindingsJSON(types.FilterFindings(parked, ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := types.MarshalFindingsJSON(types.ExcludeFindings(parked, ids))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return selected, deferred
+}
+
+func TestTestStep_CutAfterAnEarlierStepCommittedStaysApprovable(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	reviewed := baseSHA
+	sctx.Run.ReviewApprovedHeadSHA = &reviewed
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want a parked budget cut", err)
+	}
+	if pipeline.HasUnvalidatedWorkRefusal(outcome.Findings) {
+		t.Fatalf("findings = %s, commits made before Test started are not leftovers of the cut", outcome.Findings)
+	}
+}
+
+func TestTestStep_RepeatedCutKeepsRefusingBeforeAnyEvidenceCompletes(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			if err := os.WriteFile(filepath.Join(dir, "setup.txt"), []byte("setup"), 0o644); err != nil {
+				return nil, err
+			}
+			gitCmd(t, dir, "add", "setup.txt")
+			gitCmd(t, dir, "commit", "-m", "evidence agent setup")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("first round error = %v", err)
+	}
+	committed := sctx.Run.HeadSHA
+	if committed == headSHA || !pipeline.HasUnvalidatedWorkRefusal(first.Findings) {
+		t.Fatalf("first round findings = %s, want the agent's commit refused", first.Findings)
+	}
+
+	sctx.Fixing = true
+	sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, first.Findings, types.FindingIDTestAgentTimeout, types.FindingIDTestAgentUnvalidatedWork)
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if work := testFindingByID(t, second.Findings, types.FindingIDTestAgentUnvalidatedWork).Description; !strings.Contains(work, "log -p "+headSHA+".."+committed) {
+		t.Fatalf("finding = %q, want the earlier cut's unvalidated commit still refused", work)
+	}
+}
+
+func TestTestStep_ValidationOnlyCutKeepsTheDeferredNoGo(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = noGoTestGateJSON(headSHA)
+	sctx.Config.TestAgentTimeout = 20 * time.Millisecond
+
+	first, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("repair round error = %v", err)
+	}
+	sctx.PreviousFindings, sctx.DeferredFindings = answerTestPark(t, first.Findings, types.FindingIDTestAgentTimeout)
+	second, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("validation-only round error = %v", err)
+	}
+	if !strings.Contains(second.Findings, "failed: checkout") {
+		t.Fatalf("findings = %s, want the deferred no-go kept on the park", second.Findings)
+	}
+	if got := testFindingByID(t, second.Findings, types.FindingIDTestAgentTimeout).Description; strings.Contains(got, "not a code failure") {
+		t.Fatalf("finding = %q, must not call the cut harmless next to a no-go", got)
+	}
+}
+
 // leaveConflictedRebase stops a rebase on a conflict, leaving HEAD detached at
 // a partial result the way an agent cut mid-rebase does.
 func leaveConflictedRebase(t *testing.T, dir string) {

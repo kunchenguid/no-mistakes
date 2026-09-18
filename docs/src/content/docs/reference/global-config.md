@@ -550,9 +550,9 @@ When the deadline expires, the test agent is cancelled and the Test step parks f
 That finding carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
 A late structured result from the expired turn is still not used as a successful Test pass.
 The park keeps the configured `commands.test` result from the same execution, so approving over a failing command is still recorded as a configured-command override.
-A cut fix round also keeps the findings it was answering and the last completed evidence turn's verdict, so approving it is recorded against that verdict.
+A cut fix round also keeps the findings of the gate it was answering, selected or not, and the last completed evidence turn's verdict, so approving it is recorded against that verdict.
 A commit the timed-out agent already made is recorded locally for custody and is not pushed, unless an unfinished rebase or merge leaves only a partial HEAD.
-While the run worktree holds uncommitted changes or commits past the head the last completed evidence turn saw (before one completes, the head Review approved), the park names them with the commands to inspect them and approval is refused, because the steps after Test would commit and publish them.
+While the run worktree holds uncommitted changes or commits past the head the last completed evidence turn saw (before one completes, past the head this Test execution started from, and a refusal on the gate being answered carries over), the park names them with the commands to inspect them and approval is refused, because the steps after Test would commit and publish them.
 Otherwise approving the park is a Test exception (`passed-with-override`), not a silent green pass.
 A fix response spends another budget: a repair turn runs only for selected findings other than the budget cut itself, then validation re-runs over whatever the cut left.
 You can also abort, raise this value, and retry.

@@ -527,10 +527,10 @@ var errTestAgentTimeout = errors.New("test agent timeout")
 // a failing command still needs the same waiver as any other Test gate, and a
 // fix round keeps the gate it was answering.
 func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead string, baseline []Finding, exitCode int) *pipeline.StepOutcome {
-	park := answeredTestGate(sctx)
+	park, priorRefusal := answeredTestGate(sctx)
 	cause := "This is a budget or provider-slowness cut, not a code failure."
-	if exitCode != 0 || len(park.Items) > 0 {
-		cause = "The cut does not clear the failures reported alongside it."
+	if exitCode != 0 || hasBlockingFindings(park.Items) || park.Verdict == types.TestVerdictNoGo || park.Verdict == types.TestVerdictInconclusive {
+		cause = "The cut does not clear the findings reported alongside it."
 	}
 	items := []Finding{{
 		ID:       types.FindingIDTestAgentTimeout,
@@ -545,18 +545,23 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 			err, cause, config.DefaultTestAgentTimeout),
 	}}
 	validatedHead := park.TestedHeadSHA
-	if validatedHead == "" && sctx.Run.ReviewApprovedHeadSHA != nil {
-		validatedHead = strings.TrimSpace(*sctx.Run.ReviewApprovedHeadSHA)
-	}
-	if validatedHead == "" {
+	if validatedHead != "" {
+		priorRefusal = ""
+	} else {
 		validatedHead = startHead
 	}
-	if work := unvalidatedTestWork(sctx, validatedHead); work != "" {
+	refusal := priorRefusal
+	if work := unvalidatedTestWork(sctx, validatedHead); work != "" && refusal != "" {
+		refusal += " Since then it also holds " + work + "."
+	} else if work != "" {
+		refusal = "Approval is refused: the run worktree at " + sctx.WorkDir + " holds work no Test turn validated, and the steps after Test would commit and publish it. It holds " + work + ". Respond with fix to validate it, or abort."
+	}
+	if refusal != "" {
 		items = append(items, Finding{
 			ID:          types.FindingIDTestAgentUnvalidatedWork,
 			Severity:    types.FindingSeverityError,
 			Action:      types.ActionAskUser,
-			Description: "Approval is refused: the run worktree at " + sctx.WorkDir + " holds work no Test turn validated, and the steps after Test would commit and publish it. It holds " + work + ". Respond with fix to validate it, or abort.",
+			Description: refusal,
 		})
 	}
 	park.Summary = "Test agent exceeded its invocation budget"
@@ -570,28 +575,40 @@ func testAgentTimeoutOutcome(sctx *pipeline.StepContext, err error, startHead st
 }
 
 // answeredTestGate is what a fix round carries onto a budget-cut park from the
-// gate it answers: the selected findings and the last completed evidence
-// turn's verdict, scenarios, and tested head. The budget-cut findings and the
+// gate it answers: its selected and deferred findings, the last completed
+// evidence turn's verdict, scenarios, and tested head, and the description of
+// any unvalidated-work refusal it carried. The budget-cut findings and the
 // configured-command result are left out because this execution derives them
 // again, and IDs are cleared so the executor numbers the park without
 // colliding with them.
-func answeredTestGate(sctx *pipeline.StepContext) Findings {
+func answeredTestGate(sctx *pipeline.StepContext) (Findings, string) {
+	var carried Findings
+	var refusal string
 	if !sctx.Fixing {
-		return Findings{}
+		return carried, refusal
 	}
-	selected, err := types.ParseFindingsJSON(sctx.PreviousFindings)
-	if err != nil {
-		return Findings{}
-	}
-	carried := types.FindingsMetadata(selected)
-	for _, item := range selected.Items {
-		if item.ID == types.FindingIDTestAgentTimeout || item.ID == types.FindingIDTestAgentUnvalidatedWork || item.Category == types.FindingCategoryTestCommand {
+	metadataSet := false
+	for _, raw := range []string{sctx.PreviousFindings, sctx.DeferredFindings} {
+		answered, err := types.ParseFindingsJSON(raw)
+		if err != nil {
 			continue
 		}
-		item.ID = ""
-		carried.Items = append(carried.Items, item)
+		if !metadataSet {
+			carried = types.FindingsMetadata(answered)
+			metadataSet = true
+		}
+		for _, item := range answered.Items {
+			switch {
+			case item.ID == types.FindingIDTestAgentUnvalidatedWork:
+				refusal = item.Description
+			case item.ID == types.FindingIDTestAgentTimeout || item.Category == types.FindingCategoryTestCommand:
+			default:
+				item.ID = ""
+				carried.Items = append(carried.Items, item)
+			}
+		}
 	}
-	return carried
+	return carried, refusal
 }
 
 // onlyTestBudgetCutFindings reports whether a fix selection holds nothing but
@@ -610,13 +627,11 @@ func onlyTestBudgetCutFindings(raw string) bool {
 }
 
 // unvalidatedTestWork names what the worktree holds beyond validatedHead - the
-// head the last completed evidence turn saw, or else the head Review approved -
-// with how to inspect it, or returns "" when there is nothing. Measuring from
-// that head rather than this execution's start keeps a repeated cut refusing
-// the same work. A
-// commit the timed-out agent made is recorded as the run head so custody sees
-// it, unless an unfinished rebase or merge makes HEAD a partial result. An
-// unreadable HEAD or status fails closed.
+// head the last completed evidence turn saw, or else this execution's start -
+// with how to inspect it, or returns "" when there is nothing. A commit the
+// timed-out agent made is recorded as the run head so custody sees it, unless
+// an unfinished rebase or merge makes HEAD a partial result. An unreadable HEAD
+// or status fails closed.
 func unvalidatedTestWork(sctx *pipeline.StepContext, validatedHead string) string {
 	dir := sctx.WorkDir
 	var parts []string
