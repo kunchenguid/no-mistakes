@@ -143,7 +143,7 @@ func newAxiRunCmd() *cobra.Command {
 			"persisted intent; raw intent is never included.\n\n" +
 			"--base-branch targets an integration branch other than the repository default\n" +
 			"for this run only (for example an epic branch). It overrides pr.base_branch\n" +
-			"in repo config and is persisted on the run for rebase, PR, and CI steps.\n\n" +
+			"in repo config and is persisted on the run for review, rebase, PR, and CI steps.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
 			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +

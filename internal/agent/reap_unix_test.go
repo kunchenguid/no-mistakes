@@ -33,7 +33,7 @@ func TestNativeAgentCommand_WaitDelayClosesEscapedPipeHolder(t *testing.T) {
 	shellenv.ConfigureShellCommand(cmd)
 	cmd.WaitDelay = 100 * time.Millisecond
 
-	started, err := startNativeAgentCommand(cmd, nil)
+	started, err := startNativeAgentCommand(context.Background(), cmd, nil)
 	if err != nil {
 		t.Fatalf("startNativeAgentCommand: %v", err)
 	}

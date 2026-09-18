@@ -261,6 +261,205 @@ func TestReviewStep_HangingAgentFailsRunAfterTimeout(t *testing.T) {
 	}
 }
 
+// The production review path installs review_agent_timeout before calling the
+// agent, so bindAgentDeadline hands back a no-op cancel. A byte-live but
+// progressless first turn must still fail on the stall bound rather than sit
+// until that 3h deadline. This is the live probe that ran 34 minutes with
+// CPU TIME 00:00 and 0 step_rounds after the first stall commit.
+func TestReviewStep_ByteLiveProgresslessTurnFailsOnStallNotWallClock(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "wedged-review-agent",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			for {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+					if opts.OnLifecycle != nil {
+						opts.OnLifecycle(agent.LifecycleEvent{
+							Agent: "wedged-review-agent",
+							Phase: agent.LifecyclePhaseActivity,
+						})
+					}
+				}
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.ReviewAgentTimeout = 30 * time.Second
+	sctx.Config.AgentStallTimeout = 80 * time.Millisecond
+
+	exec := pipeline.NewExecutor(sctx.DB, paths.WithRoot(t.TempDir()), sctx.Config, ag, []pipeline.Step{&ReviewStep{}}, nil)
+	start := time.Now()
+	if err := exec.Execute(context.Background(), sctx.Run, sctx.Repo, dir); err == nil {
+		t.Fatal("expected a progressless review turn to fail the run")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("review stall took %s; the 30s wall-clock budget must not be spent", elapsed)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", run.Status, types.RunFailed)
+	}
+	var got string
+	if run.Error != nil {
+		got = *run.Error
+	}
+	if !strings.Contains(got, "no progress") {
+		t.Fatalf("run error = %q, want the stall diagnostic", got)
+	}
+	if strings.Contains(got, "wall-clock") {
+		t.Fatalf("run error = %q, must not claim the review wall-clock limit fired", got)
+	}
+}
+
+// --base-branch / pr.base_branch is the integration branch. Reviewing against
+// Repo.DefaultBranch (origin/main) when the PR lands on origin/dev hands the
+// agent merge-base(main, HEAD): every commit between main and the feature tip
+// (measured: 1869 commits / 5634 files on controller) for a one-commit change
+// off origin/dev. That unbounded first-turn workload is the wedge.
+//
+// Review must fetch the PR base itself: Rebase's fetch is warning-only and can
+// be skipped, so relying on a prior step leaves origin/<base> missing and
+// falls through to EmptyTreeSHA / the push-delta tip.
+func TestReviewStep_ScopesDiffToPRBaseBranchNotDefaultBranch(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	if err := os.WriteFile(filepath.Join(dir, "main-only.txt"), []byte("only on main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main only")
+	mainSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "dev")
+	if err := os.WriteFile(filepath.Join(dir, "dev.txt"), []byte("dev line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "dev commit")
+	devSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "dev")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature commit")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Drop local and remote-tracking PR-base refs so Review cannot resolve
+	// merge-base without fetching origin/dev itself.
+	gitCmd(t, dir, "branch", "-D", "dev")
+	gitCmd(t, dir, "branch", "-D", "main")
+	gitCmd(t, dir, "update-ref", "-d", "refs/remotes/origin/dev")
+	gitCmd(t, dir, "update-ref", "-d", "refs/remotes/origin/main")
+
+	ag := &mockAgent{
+		name: "scoped-reviewer",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			findings, err := json.Marshal(Findings{
+				Items:         []Finding{},
+				Summary:       "all clear",
+				RiskLevel:     "low",
+				RiskRationale: "scoped to PR base",
+				RiskScope:     types.FindingsRiskScopeSourceOrExternal,
+				ReviewedPaths: []string{"feature.txt"},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: findings}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, mainSHA, headSHA, config.Commands{})
+	sctx.Repo.DefaultBranch = "main"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "dev"
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("expected a review outcome")
+	}
+	if len(outcome.ReviewablePaths) != 1 || outcome.ReviewablePaths[0] != "feature.txt" {
+		t.Fatalf("reviewable paths = %v, want [feature.txt] against PR base dev (not main's %s..%s range)", outcome.ReviewablePaths, mainSHA, headSHA)
+	}
+	if len(ag.calls) == 0 {
+		t.Fatal("review agent was not invoked")
+	}
+	prompt := ag.calls[0].Prompt
+	if !strings.Contains(prompt, "base commit: "+devSHA) {
+		t.Fatalf("review prompt base is not the PR-base merge-base %s:\n%s", devSHA, prompt)
+	}
+	if strings.Contains(prompt, "base commit: "+mainSHA) {
+		t.Fatalf("review prompt still used Repo.DefaultBranch merge-base %s:\n%s", mainSHA, prompt)
+	}
+}
+
+// A missing/unfetchable PR base must fail the review step closed. Falling
+// through to EmptyTreeSHA or the push-delta tip regenerates the unbounded
+// first-turn wedge the PR-base scope exists to remove.
+func TestReviewStep_MissingPRBaseFetchFailsClosed(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	if err := os.WriteFile(filepath.Join(dir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "main")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	ag := &mockAgent{name: "must-not-run"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.DefaultBranch = "main"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "missing-integration"
+
+	_, err := (&ReviewStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected review to fail closed when the PR base cannot be fetched")
+	}
+	if !strings.Contains(err.Error(), "fetch review base origin/missing-integration") {
+		t.Fatalf("error = %q, want a fetch failure for the configured PR base", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("review agent ran %d time(s) despite an unresolved PR base", len(ag.calls))
+	}
+}
+
 // TestReviewStep_WallClockTimeoutPreservesTheAgentReport pins the other half
 // of the diagnostic contract at the review invocation limit: whatever the adapter
 // managed to report reaches the operator. For a native agent that error is the

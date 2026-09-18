@@ -504,6 +504,7 @@ Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Set it to `0`, `unlimited`, `none`, `off`, or `never` to disable the bound and rely on the absolute wall-clock limits alone; that is the documented escape hatch for a turn with one legitimately long silent step.
 A malformed value is rejected when loading the global config rather than silently removing the bound.
 The default matches [`agent_timeout`](#agent_timeout) on purpose: 30m is already treated as a safe ceiling for an entire invocation, so 30m of measured silence is strictly more conservative, and it stays well clear of the longest silent stretch observed in healthy work (a single 21-minute tool call).
+It still fires when Review or Test has already installed [`review_agent_timeout`](#review_agent_timeout) or [`test_agent_timeout`](#test_agent_timeout): those steps own the wall-clock diagnosis, but the progress watcher attaches underneath that deadline so a byte-live, progressless turn cannot burn the remaining budget.
 It is global-only: repository config and environment variables cannot override it.
 
 ### review_agent_timeout

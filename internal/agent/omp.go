@@ -195,7 +195,7 @@ func (a *ompAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 		return nil, fmt.Errorf("omp stdin pipe: %w", err)
 	}
 
-	started, err := startNativeAgentCommand(cmd, nativeAgentActivityObserver(opts, "omp"))
+	started, err := startNativeAgentCommand(ctx, cmd, nativeAgentActivityObserver(opts, "omp"))
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("omp start: %w", err)

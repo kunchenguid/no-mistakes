@@ -25,7 +25,10 @@ func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA, err := resolveReviewBaseSHA(ctx, sctx)
+	if err != nil {
+		return nil, err
+	}
 	branch := sctx.Run.Branch
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -120,7 +123,7 @@ Previous review findings to address:
 			baseSHA,
 			sctx.Run.HeadSHA,
 			reviewScope,
-			sctx.Repo.DefaultBranch,
+			effectivePRBaseBranch(sctx),
 			ignorePatterns,
 			historySection,
 			previousFindings,
@@ -319,7 +322,7 @@ Risk assessment (after listing all findings):
 		baseSHA,
 		sctx.Run.HeadSHA,
 		reviewScope,
-		sctx.Repo.DefaultBranch,
+		effectivePRBaseBranch(sctx),
 		ignorePatterns,
 		historySection,
 		pathInstructions,
@@ -604,4 +607,25 @@ func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string,
 		return fmt.Errorf("%s reached its absolute wall-clock limit after %s: %w", prefix, timeout, err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+// resolveReviewBaseSHA fetches the effective PR/integration base and returns
+// its merge-base with HEAD. Review must not fall back to EmptyTreeSHA or the
+// push-delta tip when origin/<base> is missing: those paths regenerate the
+// unbounded first-turn workload the PR-base scope exists to remove. Rebase
+// may have fetched the ref already, but Review owns this fetch so a skipped
+// or warning-only rebase cannot leave the merge-base unresolved.
+func resolveReviewBaseSHA(ctx context.Context, sctx *pipeline.StepContext) (string, error) {
+	baseBranch := effectivePRBaseBranch(sctx)
+	if strings.TrimSpace(baseBranch) == "" {
+		return "", fmt.Errorf("review base branch is unset")
+	}
+	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+		return "", fmt.Errorf("fetch review base origin/%s: %w", baseBranch, err)
+	}
+	baseSHA := mergeBaseWithDefaultBranch(ctx, sctx.WorkDir, baseBranch)
+	if baseSHA == "" {
+		return "", fmt.Errorf("resolve review merge-base against origin/%s", baseBranch)
+	}
+	return baseSHA, nil
 }

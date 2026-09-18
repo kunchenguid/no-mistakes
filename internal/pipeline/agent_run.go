@@ -166,6 +166,9 @@ func watchAgentStall(ctx context.Context, cancel context.CancelFunc, stall time.
 	if interval < 25*time.Millisecond {
 		interval = 25 * time.Millisecond
 	}
+	if interval > 5*time.Second {
+		interval = 5 * time.Second
+	}
 	var fired atomic.Bool
 	done := make(chan struct{})
 	stopped := make(chan struct{})
@@ -545,22 +548,23 @@ func (a *timeoutAgent) Close() error { return a.inner.Close() }
 
 func (a *timeoutAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	if _, bounded := ctx.Deadline(); bounded {
-		// An outer seam (RunAgent or a Review/Test invocation) already owns the
-		// budget and the diagnosis for this invocation; re-diagnosing here would
-		// nest the same measurement inside itself. The backstop this wrapper
-		// exists for still holds: a result produced after the deadline is
-		// refused, so work from an expired turn can never reach a commit.
-		result, err := a.inner.Run(ctx, opts)
-		cause := context.Cause(ctx)
-		switch {
-		case cause == nil:
-			return result, err
-		case err != nil:
-			// The adapter's own account beats restating the cause.
-			return nil, err
-		default:
-			return nil, cause
-		}
+		// An outer seam already owns the wall-clock diagnosis. The stall bound
+		// still has to run here: Review and Test install a deadline before
+		// calling Agent.Run through this wrapper, and skipping invokeAgent
+		// would leave a progressless turn running until that 3h deadline.
+		activity := observeAgentActivity(&opts)
+		return invokeAgent(ctx, 0, a.stall, activity, func(runCtx context.Context) (*agent.Result, error) {
+			result, err := a.inner.Run(runCtx, opts)
+			cause := context.Cause(ctx)
+			switch {
+			case cause == nil:
+				return result, err
+			case err != nil:
+				return nil, err
+			default:
+				return nil, cause
+			}
+		})
 	}
 	activity := observeAgentActivity(&opts)
 	return invokeAgent(ctx, a.timeout, a.stall, activity, func(runCtx context.Context) (*agent.Result, error) {

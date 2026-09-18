@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ type nativeAgentCommand struct {
 	stdout         *nativeAgentPipe
 	stderr         *nativeAgentPipe
 	waitCh         chan error
+	exited         chan struct{}
 	terminateOnce  sync.Once
 	closePipesOnce sync.Once
 	pipeMu         sync.Mutex
@@ -69,7 +71,13 @@ func (p *nativeAgentPipe) markDone() {
 // activity, when non-nil, is invoked on every non-empty read from either pipe;
 // see LifecyclePhaseActivity for why subprocess byte liveness - not assistant
 // prose - is the signal that distinguishes a working agent from a wedged one.
-func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentCommand, error) {
+//
+// ctx cancellation must unblock a parser sitting in stdout/stderr Read even
+// when the subprocess ignores SIGTERM. CommandContext kills the process group,
+// but a wedged omp that keeps its stdout fd open leaves bufio.Scanner blocked
+// in Read, so the stall watcher that cancelled ctx never returns. Closing the
+// local pipe ends that Read with EOF/error and lets the invocation fail.
+func startNativeAgentCommand(ctx context.Context, cmd *exec.Cmd, activity func()) (*nativeAgentCommand, error) {
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
@@ -96,6 +104,7 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentComman
 	started := &nativeAgentCommand{
 		cmd:            cmd,
 		waitCh:         make(chan error, 1),
+		exited:         make(chan struct{}),
 		remainingPipes: 2,
 		pipesDone:      make(chan struct{}),
 	}
@@ -105,7 +114,18 @@ func startNativeAgentCommand(cmd *exec.Cmd, activity func()) (*nativeAgentComman
 		err := cmd.Wait()
 		started.terminate()
 		started.waitCh <- started.waitForPipes(err)
+		close(started.exited)
 	}()
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				started.terminate()
+				started.closePipes()
+			case <-started.exited:
+			}
+		}()
+	}
 	return started, nil
 }
 
