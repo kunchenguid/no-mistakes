@@ -309,7 +309,7 @@ It does not cancel the step, fail the run, or mean the pipeline is safe to bypas
 A quiet Review step still ends on its own: each fixer or reviewer invocation is independently bounded by [`review_agent_timeout`](/no-mistakes/reference/global-config/#review_agent_timeout).
 A silent invocation is cancelled at that stall budget; a still-working one may continue until it goes idle or hits twice the budget, after which the run fails with a timeout diagnostic in the step log.
 An invocation that emitted output reports measured last-activity evidence, while a no-output invocation reports its measured no-output duration.
-`step_quiet_warning` remains status-only before the stall budget, and is the idle window used after it.
+`step_quiet_warning` remains status-only; the idle window after the stall budget is a fixed 10 minutes (or the budget itself when shorter).
 A quiet Test step is bounded the same way by [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout), covering the post-test evidence-gathering agent and a Test-repair turn.
 An expired Test budget parks for a decision rather than failing the run as a code defect; raise that setting when targeted tests or evidence gathering routinely stay quiet longer than the stall budget.
 A Review cut deliberately still fails the run rather than parking, because an approved Review park would let Push ship a half-finished, unreviewed fix; parking Review cuts as well is left to a separate follow-up.

@@ -504,7 +504,7 @@ Stall budget for one pipeline agent invocation that does not already have a more
 This is the default-by-construction budget: Document, Lint, Rebase conflict repair, PR drafting, CI auto-fix, and any future agent-spawning step are bounded even if they forget to install their own timer.
 Review still uses [`review_agent_timeout`](#review_agent_timeout) for each review or fix invocation, Test still uses [`test_agent_timeout`](#test_agent_timeout) per invocation, and Intent keeps its five-minute extraction cap; any existing deadline is honored rather than capped.
 A silent invocation is cancelled when this budget expires.
-An invocation that is still producing output at expiry, or whose agent subprocess is still running a child process it started after its last output, such as a test suite a tool call launched, continues until it goes quiet with no live child process for [`step_quiet_warning`](#step_quiet_warning) (or for this budget when the budget is shorter) or until twice this budget, whichever comes first.
+An invocation that is still producing output at expiry, or whose agent subprocess is still running a child process it started after its last output, such as a test suite a tool call launched, continues until it goes quiet with no live child process for 10 minutes (the shipped [`step_quiet_warning`](#step_quiet_warning) default, fixed regardless of that setting; this budget itself when it is shorter) or until twice this budget, whichever comes first.
 That hard cap is the fail-closed bound so a chatty or long-waiting turn cannot run forever.
 The shipped default is not raised: widening it for hung agents would add latency on the default path, and a still-working turn already has slack through the extension.
 When the invocation is cancelled, it returns a timeout diagnostic instead of remaining active indefinitely.
@@ -526,7 +526,7 @@ Only a child the agent started after its first output, and that was not already 
 Everything alive by the agent's first output is a permanent helper, because no tool call can have been announced before then, so helpers it keeps alive for the whole turn, such as the ACP agent under `acpx` or stdio MCP servers, cannot keep a hung turn alive past the stall budget however close to that output they started.
 After that, the agent's child processes are sampled periodically and each output freezes a sample taken before it as the baseline, so a tool it launches right after announcing it still extends the budget.
 Agents that report no subprocess, and hosts where the process table cannot be read, get no such extension.
-[`step_quiet_warning`](#step_quiet_warning) remains a separate status-only signal before the stall budget; after the stall budget the same quiet window is the cancel condition for a previously-working turn.
+[`step_quiet_warning`](#step_quiet_warning) remains a separate status-only signal; configuring it does not change the 10-minute quiet window that cancels a previously-working turn after the stall budget.
 Any substantive report from the agent adapter - for a native agent, its exit status and captured stderr - is appended to the diagnostic as `agent reported: ...`; credential-bearing URLs are redacted and the report is length-bounded before it can reach logs or findings.
 A bare context cancellation is omitted because it adds no evidence.
 
