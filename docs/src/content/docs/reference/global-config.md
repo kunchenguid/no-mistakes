@@ -666,7 +666,8 @@ Its typed answers feed the review prompt one kind of advisory input: a ranked li
 The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
 Paths matching `ignore_patterns` are never candidates.
 Jev's answer decides which candidates are listed: a candidate is listed when most of its probability mass sits at "relevant" or "essential" (a probability-weighted score threshold would demand near-certainty and never fires), and the order also weighs the code's evidence, so a file that uses a changed name is listed ahead of a same-directory sibling Jev scored the same.
-A live off/on benchmark of this assist on real cold reviews lives in `benchmarks/issue-1055/` (method, raw data, and conclusion).
+A follow-up operator-credentialed live TypeSafe run and off/on cold-review benchmark lives in `benchmarks/issue-1125/` (method, raw data, and conclusion).
+The original published method is in `benchmarks/issue-1055/`.
 
 The assist can only add to a review, never subtract.
 Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.

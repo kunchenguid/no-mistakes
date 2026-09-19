@@ -1,0 +1,9 @@
+{
+  "candidates": 5,
+  "input_tokens": 1419,
+  "kind": "review-prebrief",
+  "listed": 1,
+  "prompt_has_prebrief": true,
+  "reported_model": "jev-1.13.0",
+  "wall_ms": 476
+}
