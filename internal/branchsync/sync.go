@@ -1370,6 +1370,113 @@ func (s *Service) finishKeepLocalRecover(ctx context.Context, state State, runID
 	return fresh
 }
 
+// AdoptPublished moves one stale custody-returned gate lane to a rewritten
+// branch only after the configured push target proves that the exact local
+// head is already published there. It never pushes to that target or changes
+// the worktree. The gate update is a compare-and-swap, so a concurrent lane
+// update wins rather than being overwritten.
+func (s *Service) AdoptPublished(ctx context.Context) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, run, ok := s.inspect(ctx)
+	if !ok || run == nil || state.State != StateCustodyReturned || run.CustodyReturnedAt == nil || state.Relation != RelationDiverged {
+		return blockedPlan(state, state.State, "blocked_adopt_published_not_applicable", "adopting a published head requires a custody-returned branch whose local and preserved histories have diverged; no files or gate refs were changed")
+	}
+	if !state.Local.Clean {
+		return blockedPlan(state, StateDirty, "blocked_adopt_published_dirty", "the invoking worktree is not completely clean; no files or gate refs were changed")
+	}
+	if strings.TrimSpace(s.GateDir) == "" {
+		return blockedPlan(state, StateAmbiguousContext, "blocked_adopt_published_gate_unavailable", "the local gate is unavailable, so the lane cannot be adopted; no files or gate refs were changed")
+	}
+
+	branchRef := "refs/heads/" + state.Local.Branch
+	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
+	if err != nil || gateHead != state.Pipeline.CurrentHead {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_gate_changed", "the gate lane no longer matches the recovered pipeline head; no files or gate refs were changed")
+	}
+
+	pushURL := s.resolvedPushURL(ctx)
+	if strings.TrimSpace(pushURL) == "" {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_target_unavailable", "the configured push target is unavailable; no files or gate refs were changed")
+	}
+	liveCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
+	live, err := s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_offline", "could not verify the configured push target; no files or gate refs were changed")
+	}
+	if live != state.Local.Head {
+		return blockedPlan(state, StateCustodyReturned, "blocked_published_head_mismatch", "the configured push target does not exactly match the local rebased head; no files or gate refs were changed")
+	}
+
+	// Import the verified remote object through a private temporary ref before
+	// changing the lane. FetchRemoteRef rejects a target race and removes its
+	// temporary ref itself, so it cannot leave a long-lived staging branch.
+	// Like every other network operation here it gets its own fresh budget
+	// rather than the caller's unbounded context: a credential helper or
+	// connection that stalls after the ls-remote answered would otherwise hang
+	// past branch_sync_remote_timeout and never deliver the documented
+	// closed refusal. FetchRemoteRef's own cleanup runs on a WithoutCancel
+	// context, so an expired budget still removes the temporary ref.
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	fetchErr := git.FetchRemoteRef(fetchCtx, s.GateDir, pushURL, branchRef, state.Local.Head)
+	fetchCancel()
+	if fetchErr != nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_fetch_failed", "the published head could not be imported into the local gate; no files or gate refs were changed")
+	}
+	liveCtx, cancel = context.WithTimeout(ctx, s.remoteTimeout())
+	live, err = s.runLsRemote(liveCtx, s.workDir(), pushURL, branchRef)
+	cancel()
+	if err != nil || live != state.Local.Head {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_target_changed", "the configured push target changed while the published head was being verified; no files or gate refs were changed")
+	}
+
+	// Re-read local ownership after the remote operations. The first inspection
+	// is only a snapshot; no gate mutation may follow a branch, HEAD, or custody
+	// change made while the target was checked.
+	recheck, recheckRun, recheckOK := s.inspect(ctx)
+	if !recheckOK || recheckRun == nil || recheckRun.ID != run.ID || recheckRun.CustodyReturnedAt == nil ||
+		recheck.State != StateCustodyReturned || recheck.Relation != RelationDiverged || !recheck.Local.Clean ||
+		recheck.Local.Branch != state.Local.Branch || recheck.Local.Head != state.Local.Head {
+		return blockedPlan(recheck, StateCustodyReturned, "blocked_adopt_published_assumptions_changed", "the branch, HEAD, or custody state changed while the published head was being verified; no files or gate refs were changed")
+	}
+
+	if err := custody.PreserveRecoveryHead(ctx, s.GateDir, run.ID, gateHead); err != nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_preserve_failed", "the recovered gate head could not be preserved before lane adoption; no files or gate refs were changed")
+	}
+	if _, err := git.Run(ctx, s.GateDir, "update-ref", branchRef, state.Local.Head, gateHead); err != nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_gate_race", "the gate lane changed while the published head was being adopted; the lane was not replaced and the recovered head remains preserved")
+	}
+
+	adopted, _, _ := s.inspect(ctx)
+	adopted.Changed = true
+	return adopted
+}
+
+// resolvedPushURL answers with the same authoritative push target the rest of
+// this service verifies against: Repo.PushURL(), the configured fork or the
+// registered upstream. Adoption's whole safety argument is that the head it
+// admits is already published on THAT target, so a worktree remote may stand in
+// for it only to recover a credential the redacted database copy cannot hold,
+// and only when remoteName has proven the remote is the same target by
+// credential-free TargetFingerprint identity. A worktree whose origin points
+// somewhere else therefore never decides the adoption; the registered target
+// does, and an unusable credential fails the live check closed rather than
+// verifying against a remote the pipeline does not publish to.
+func (s *Service) resolvedPushURL(ctx context.Context) string {
+	target := s.Repo.PushURL()
+	if strings.TrimSpace(target) == "" {
+		return ""
+	}
+	name := s.remoteName(ctx)
+	credentialled, err := git.GetConfiguredRemoteURL(ctx, s.workDir(), name)
+	if err != nil || strings.TrimSpace(credentialled) == "" || TargetFingerprint(credentialled) != TargetFingerprint(target) {
+		return target
+	}
+	return credentialled
+}
+
 func recoverAnchorRef(runID string) string {
 	return custody.RecoveryRef(runID)
 }
@@ -2248,15 +2355,29 @@ func RunHeadUnmoved(state State) bool {
 }
 
 // classifyCustodyReturned reports a branch whose stranded terminal run was
-// explicitly recovered and never had a push binding: the operator owns the
-// branch again and the only remaining step is starting a fresh run. The
-// relation against the preserved pipeline head is informative only.
+// explicitly recovered and never had a push binding. A diverged local head is
+// not ready to start a fresh run until the gate lane has safely adopted the
+// already-published rewrite; all other relationships remain informative only.
 func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	state.State = StateCustodyReturned
-	state.Safety = "custody_returned"
 	state.Error = ""
-	state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, state.Pipeline.CurrentHead)
+	if state.Relation == RelationDiverged {
+		branchRef := "refs/heads/" + state.Local.Branch
+		if strings.TrimSpace(s.GateDir) != "" {
+			gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
+			if err == nil && gateHead == state.Local.Head {
+				state.Safety = "gate_ready"
+				state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+				return
+			}
+		}
+		state.Safety = "recovery_required"
+		state.NextAction = &NextAction{Code: "adopt_published", Command: "no-mistakes axi sync --adopt-published"}
+		return
+	}
+	state.Safety = "custody_returned"
+	state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 }
 
 // relationBetween classifies the local head against a target commit using only
