@@ -337,7 +337,7 @@ On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pi
 
 #### Sibling fix commits without a verified final head
 
-A run can end without a verified final head. This occurs when a fix commit lands as a sibling of the recorded head: the two commits have the same parent, and neither is an ancestor of the other. The pipeline stops the run to protect the reviewed change. It cannot verify either sibling as the final head, so it verifies neither. The gate branch stays at the submitted head.
+A run can end without a verified final head. One cause is a fix commit that lands as a sibling of the recorded head: the two commits have the same parent, and neither is an ancestor of the other. The pipeline stops the run to protect the reviewed change. It cannot verify either sibling as the final head, so it verifies neither. The gate branch stays at the submitted head.
 
 Status does not offer `recover_custody` for this state, because `--recover` cannot establish a final head and refuses. With no archive bound, nothing records that a sibling exists, and a run that only lost its worker looks the same. Status reports `safety: blocked_recover_manual_reconciliation`, and `--recover` refuses with `safety: blocked_recover_unverified_head` and describes the sequence below as a condition.
 
