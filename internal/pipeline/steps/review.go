@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,10 +143,9 @@ Previous review findings to address:
 			historySection,
 			previousFindings,
 		)
-		// Every logical agent turn owns a fresh hard wall-clock limit. The
-		// fixer keeps the step parent for synchronous preparation and commit
-		// work, so the independent rereviewer cannot inherit its spent
-		// deadline.
+		// Every logical agent turn owns a fresh stall budget. The fixer keeps
+		// the step parent for synchronous preparation and commit work, so the
+		// independent rereviewer cannot inherit its spent deadline.
 		summary, err := s.executeReviewFixWithTimeout(sctx, s.Name(), fixExecutionOptions{
 			RequirePreviousFindings: true,
 			MissingFindingsError:    "review fix requires previous review findings",
@@ -621,36 +619,29 @@ func (s *ReviewStep) executeReviewFixWithTimeout(sctx *pipeline.StepContext, ste
 }
 
 func (s *ReviewStep) runReviewAgent(sctx *pipeline.StepContext, prefix string, role pipeline.SessionRole, opts agent.RunOpts) (*agent.Result, error) {
-	ctx, cancel, timeout := s.reviewAgentContext(sctx.Ctx, sctx.Config)
-	defer cancel()
-	result, err := sctx.RunAgentSessionContext(ctx, role, opts)
+	timeout := reviewAgentTimeout(sctx.Config)
+	result, err := sctx.RunAgentSessionBudget(sctx.Ctx, timeout, errReviewAgentTimeout, role, opts)
 	if err != nil {
-		err = reviewAgentError(ctx, timeout, prefix, err)
+		err = reviewAgentError(timeout, prefix, err)
 	}
 	return result, err
 }
 
-func (s *ReviewStep) reviewAgentContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc, time.Duration) {
-	timeout := config.DefaultReviewAgentTimeout
+func reviewAgentTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ReviewAgentTimeout > 0 {
-		timeout = cfg.ReviewAgentTimeout
+		return cfg.ReviewAgentTimeout
 	}
-	now := time.Now()
-	if s != nil && s.now != nil {
-		now = s.now()
-	}
-	ctx, cancel := context.WithDeadlineCause(parent, now.Add(timeout), errReviewAgentTimeout)
-	return ctx, cancel, timeout
+	return config.DefaultReviewAgentTimeout
 }
 
 var errReviewAgentTimeout = errors.New("review agent timeout")
 
-// reviewAgentError renders one review invocation's absolute wall-clock expiry.
-// The measured activity evidence comes from the shared agent-run seam; the hard
-// limit is never restated as inactivity because activity does not reset it.
-func reviewAgentError(ctx context.Context, timeout time.Duration, prefix string, err error) error {
-	if timeout > 0 && errors.Is(context.Cause(ctx), errReviewAgentTimeout) {
-		return fmt.Errorf("%s reached its absolute wall-clock limit after %s: %w", prefix, timeout, err)
+// reviewAgentError renders one review invocation's budget expiry. The shared
+// agent-run seam supplies which bound cut the turn (stall budget or hard cap),
+// how long it ran, and the measured activity evidence.
+func reviewAgentError(timeout time.Duration, prefix string, err error) error {
+	if timeout > 0 && errors.Is(err, errReviewAgentTimeout) {
+		return fmt.Errorf("%s reached its invocation budget %s: %w", prefix, pipeline.AgentBudgetBound(err, timeout), err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
 }

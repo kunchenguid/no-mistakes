@@ -24,3 +24,5 @@ func processAlive(pid int) bool { return false }
 func signalProcess(pid int, sig procSignal) error { return nil }
 
 func signalGroup(pgid int, sig procSignal) error { return nil }
+
+func listProcessStates() ([]processState, error) { return nil, nil }
