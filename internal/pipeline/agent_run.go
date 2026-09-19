@@ -147,28 +147,34 @@ type agentActivity struct {
 	// current and previous are the two most recent periodic samples of the
 	// launched subprocess's live descendants.
 	current, previous childSample
+	// firstOutputAt is when the launched subprocess first produced output;
+	// wake asks its sampler to read the process table right then.
+	firstOutputAt time.Time
+	wake          chan struct{}
+	// permanent is the first sample started at or after the first output:
+	// everything alive by then is a helper the agent keeps for its turn (stdio
+	// MCP servers, the ACP agent under acpx), however close to that output it
+	// started, because no tool call can have been announced yet.
+	permanent childSample
 	// helpers is frozen from a sample completed before the most recent
 	// output, and is never refreshed during a quiet stretch, so a tool the
 	// agent launched after speaking cannot age into it. waitingOnChild
-	// counts only descendants missing from it.
+	// counts only descendants missing from both it and permanent.
 	helpers childSample
 }
 
-// childSample is one read of a subprocess's live descendants.
+// childSample is one read of a subprocess's live descendants, started at
+// started and completed at at.
 type childSample struct {
 	children map[int]bool
 	ok       bool
+	started  time.Time
 	at       time.Time
 }
 
 const (
-	// childSampleInterval paces the descendant sampler for the rest of a
-	// turn; childSampleWarmupInterval samples faster right after launch,
-	// when an agent starts the helpers it keeps for the whole turn (stdio
-	// MCP servers, the ACP agent under acpx) just before its first output.
-	childSampleInterval       = time.Second
-	childSampleWarmup         = 5 * time.Second
-	childSampleWarmupInterval = 100 * time.Millisecond
+	// childSampleInterval paces the descendant sampler.
+	childSampleInterval = time.Second
 	// childSampleSettle is how long before an observed output a sample must
 	// have completed to be frozen as helpers. Output is read a moment after
 	// the agent wrote it, and a tool it announced may already be running in
@@ -188,44 +194,59 @@ func (a *agentActivity) observe() {
 	a.mu.Lock()
 	a.observed++
 	a.last = now
+	if a.launched && a.firstOutputAt.IsZero() {
+		a.firstOutputAt = now
+		select {
+		case a.wake <- struct{}{}:
+		default:
+		}
+	}
 	cutoff := now.Add(-childSampleSettle)
 	switch {
 	case !a.current.at.IsZero() && !a.current.at.After(cutoff):
 		a.helpers = a.current
 	case !a.previous.at.IsZero() && !a.previous.at.After(cutoff):
 		a.helpers = a.previous
-	default:
-		a.helpers = childSample{}
 	}
 	a.mu.Unlock()
 }
 
 // sampleChildren reads the launched subprocess's live descendants
 // periodically until the subprocess exits, the invocation returns, or a new
-// attempt or launch supersedes it. Only observe() turns a sample into the
-// helper baseline.
-func (a *agentActivity) sampleChildren(pid, generation int, launchedAt time.Time) {
+// attempt or launch supersedes it. The first output wakes it at once, and
+// the first sample started after that output becomes the permanent helper
+// set. Otherwise only observe() turns a sample into the helper baseline.
+func (a *agentActivity) sampleChildren(pid, generation int, wake <-chan struct{}) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
+		select {
+		case <-timer.C:
+		case <-wake:
+			timer.Stop()
+		}
+		started := time.Now()
 		children, err := procreap.LiveDescendants(pid)
-		sample := childSample{children: children, ok: err == nil, at: time.Now()}
+		sample := childSample{children: children, ok: err == nil, started: started, at: time.Now()}
 		a.mu.Lock()
 		if generation != a.generation || a.exited || a.finished {
 			a.mu.Unlock()
 			return
 		}
 		a.previous, a.current = a.current, sample
-		a.mu.Unlock()
-		interval := childSampleInterval
-		if time.Since(launchedAt) < childSampleWarmup {
-			interval = childSampleWarmupInterval
+		if a.permanent.at.IsZero() && !a.firstOutputAt.IsZero() && !started.Before(a.firstOutputAt) {
+			a.permanent = sample
 		}
-		time.Sleep(interval)
+		a.mu.Unlock()
+		timer.Reset(childSampleInterval)
 	}
 }
 
 func (a *agentActivity) resetChildren() {
 	a.generation++
-	a.current, a.previous, a.helpers = childSample{}, childSample{}, childSample{}
+	a.current, a.previous, a.helpers, a.permanent = childSample{}, childSample{}, childSample{}, childSample{}
+	a.firstOutputAt = time.Time{}
+	a.wake = make(chan struct{}, 1)
 }
 
 func (a *agentActivity) enableChildTracking() {
@@ -273,10 +294,10 @@ func (a *agentActivity) observeLaunch(pid int) {
 	a.exited = false
 	a.resetChildren()
 	sample := a.trackChildren && !a.finished && pid > 1
-	generation, launchedAt := a.generation, a.launchedAt
+	generation, wake := a.generation, a.wake
 	a.mu.Unlock()
 	if sample {
-		go a.sampleChildren(pid, generation, launchedAt)
+		go a.sampleChildren(pid, generation, wake)
 	}
 }
 
@@ -290,23 +311,24 @@ func (a *agentActivity) observeExit() {
 }
 
 // waitingOnChild reports whether the launched agent subprocess is running a
-// child process missing from the helper baseline frozen at its latest
-// output, such as a test suite a tool call announced and then launched. Such
-// a wait emits no output, so it is the only evidence that a quiet agent is
-// working rather than wedged. Children already running before that output
-// (an ACP agent under acpx, stdio MCP servers) live for the whole turn and
-// prove nothing, and an agent that never produced output never announced a
-// tool call. A missing baseline or an unreadable process table reports
-// false, so the budget is never extended on a guess. It is liveness, not output: evidence() never
-// reports it as the agent having produced anything.
+// child process that is neither a permanent helper (alive by its first
+// output) nor in the baseline frozen before its latest output, such as a test
+// suite a tool call announced and then launched. Such a wait emits no output,
+// so it is the only evidence that a quiet agent is working rather than
+// wedged. Helpers (an ACP agent under acpx, stdio MCP servers) live for the
+// whole turn and prove nothing, and an agent that never produced output never
+// announced a tool call. A missing baseline or an unreadable process table
+// reports false, so the budget is never extended on a guess. It is liveness,
+// not output: evidence() never reports it as the agent having produced
+// anything.
 func (a *agentActivity) waitingOnChild() bool {
 	if a == nil {
 		return false
 	}
 	a.mu.Lock()
 	pid := a.launchedPID
-	ready := a.launched && !a.exited && a.observed > 0 && a.helpers.ok
-	helpers := a.helpers.children
+	ready := a.launched && !a.exited && a.observed > 0 && a.helpers.ok && a.permanent.ok
+	helpers, permanent := a.helpers.children, a.permanent.children
 	a.mu.Unlock()
 	if !ready {
 		return false
@@ -316,7 +338,7 @@ func (a *agentActivity) waitingOnChild() bool {
 		return false
 	}
 	for child := range current {
-		if !helpers[child] {
+		if !helpers[child] && !permanent[child] {
 			return true
 		}
 	}

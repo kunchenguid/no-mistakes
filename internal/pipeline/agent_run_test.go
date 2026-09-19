@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -822,7 +823,8 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 			// output it announces the call and spawns the child at once, and
 			// that child runs past the stall budget while the agent itself
 			// writes nothing.
-			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started func()) {
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				opts.OnChunk("init\n")
 				time.Sleep(300 * time.Millisecond)
 				opts.OnChunk("running the suite\n")
 				started()
@@ -854,10 +856,11 @@ func TestRunAgent_HelperStartedJustBeforeTheFirstOutputDoesNotExtendTheBudget(t 
 	ag := &hangingAgent{
 		name: "hung-after-init",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A stdio MCP server or an acpx inner agent starts with the agent,
-			// moments before its first output, then the provider hangs.
-			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(func()) {
-				time.Sleep(300 * time.Millisecond)
+			// A stdio MCP server or an acpx inner agent starts immediately
+			// before the agent's first output, after a quiet startup, and then
+			// the provider hangs.
+			return runLaunchedShell(ctx, opts, "sleep 0.3; sleep 6 & echo ready; read go; wait", func(_, ready func()) {
+				ready()
 				opts.OnChunk("init\n")
 			})
 		},
@@ -890,7 +893,7 @@ func TestRunAgent_HelperStartedBeforeTheLastOutputDoesNotExtendTheBudget(t *test
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 			// A long-lived helper (an ACP agent under acpx, a stdio MCP server)
 			// starts with the agent, which then talks and hangs.
-			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(started func()) {
+			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(_, _ func()) {
 				time.Sleep(1200 * time.Millisecond)
 				opts.OnChunk("thinking\n")
 			})
@@ -950,11 +953,16 @@ func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) 
 
 // runLaunchedShell stands in for a native adapter: it launches script as the
 // agent subprocess, reports its start, runs drive while the script is alive
-// (drive may call started to send the script one line on stdin), and reports
-// the exit when the script ends.
-func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, drive func(started func())) (*agent.Result, error) {
+// (drive may call started to send the script one line on stdin, or ready to
+// wait for one line from its stdout), and reports the exit when the script
+// ends.
+func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, drive func(started, ready func())) (*agent.Result, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
@@ -963,7 +971,8 @@ func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, dr
 	}
 	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseStart, PID: cmd.Process.Pid})
 	if drive != nil {
-		drive(func() { _, _ = io.WriteString(stdin, "go\n") })
+		lines := bufio.NewReader(stdout)
+		drive(func() { _, _ = io.WriteString(stdin, "go\n") }, func() { _, _ = lines.ReadString('\n') })
 	}
 	err = cmd.Wait()
 	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseExit, PID: cmd.Process.Pid})
