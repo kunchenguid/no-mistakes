@@ -17,8 +17,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// ciFailingCheckFixRules is the CI-repair prompt contract for a failing check.
-// The narrow-fix sentence matches the review fixer so both apply one discipline.
 var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
 
 // errAttestationWriteFailed marks a failure specifically inside
@@ -31,6 +29,9 @@ var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
 // propagates whatever publishRunHead returns.
 var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 
+// ciFixerClassRules is shared by every CI-repair prompt path so failing-check,
+// combined, and merge-conflict-only repairs follow the Review fixer's same
+// invariant-complete discipline.
 const ciFixerClassRules = `- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.
 - Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
 - After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.`
