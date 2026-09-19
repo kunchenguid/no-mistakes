@@ -59,6 +59,7 @@ func TestAxiReadSurfacesEmitNoTelemetry(t *testing.T) {
 	}{
 		{"home", []string{"axi"}},
 		{"status", []string{"axi", "status"}},
+		{"fleet", []string{"axi", "fleet"}},
 		{"logs", []string{"axi", "logs", "--step", "review"}},
 	}
 

@@ -275,6 +275,46 @@ Gate summaries and finding descriptions are bounded in this default status view;
 Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
 
+## no-mistakes axi fleet
+
+List every active or parked run on this machine, across every registered repository.
+
+Repository-scoped commands answer only for the current repository, so a local observer cannot otherwise discover pipelines running from other repositories or worktrees without maintaining its own list of project paths.
+`axi fleet` answers that question in one call: it reports every pending, running, or parked run the local daemon knows about, wherever it was launched from.
+
+```sh
+no-mistakes axi fleet
+```
+
+It takes no options beyond `--help` and needs no current repository, so it also answers from a directory that belongs to no registered repository.
+Like the other read-only AXI queries it reads the daemon's persisted state rather than the network, and it never starts the daemon.
+
+The view is strictly read-only: it never starts, answers, aborts, reruns, synchronizes, or otherwise mutates a run.
+Every repository-scoped command keeps its existing behavior; nothing about `axi`, `axi status`, or `axi logs` changes because this view exists.
+
+Output carries `scope: machine`, the `daemon` state, a `count` line, and a `fleet` table with one row per active run:
+
+| Column     | Value                                                                                                                       |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `repo`     | Registered repository root; a run launched from a linked worktree reports that same root                                      |
+| `branch`   | The branch being validated                                                                                                  |
+| `run`      | Run ID, usable as `no-mistakes axi status --run <id>`                                                                        |
+| `status`   | Run status, `pending` or `running`                                                                                          |
+| `stage`    | Current step and its state, such as `review:running` or `review:awaiting_approval`; empty whenever no step is active, including before the first one starts |
+| `activity` | `parked <duration>` while the run waits for its driving agent, otherwise the active step's latest recorded activity          |
+| `pr`       | PR URL once one has been published                                                                                          |
+| `checks`   | `passed`, `no-ci` for a trusted [`no_ci`](/no-mistakes/reference/repo-config/#no_ci) declaration, and empty before CI records readiness; a CI step that is still running is reported by `stage` |
+
+Rows are grouped by repository root, newest-first inside each group.
+Terminal runs are never listed; inspect one with `no-mistakes axi status --run <id>`.
+When nothing is active, `fleet` is the sentence `no active or parked runs on this machine` instead of a table, and the command still exits `0`.
+
+`count` reports how many runs are active, how many of those are parked, and in how many of the registered repositories they sit.
+A parked row is waiting for its own driving agent rather than stalled; answer its gate with `no-mistakes axi respond` from a worktree on that run's branch, since `axi fleet` itself cannot respond.
+`daemon` is `running`, `stopped`, or `unknown`.
+When it is stopped, the rows are the last persisted state and the help says so; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#crash-recovery) owns what the daemon does with those runs when it next starts.
+`unknown` means the health probe timed out rather than concluding - the daemon may be live and still moving these runs - and the help carries the probe error.
+
 ## no-mistakes axi sync
 
 Freshly check or apply the guarded synchronization offered by a `branch_sync.next_action`.
