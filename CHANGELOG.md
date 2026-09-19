@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.79.0](https://github.com/kunchenguid/no-mistakes/compare/v1.78.0...v1.79.0) (2026-09-19)
+
+
+### Features
+
+* **agent:** disable compact-adviser in every pipeline agent subprocess ([#1115](https://github.com/kunchenguid/no-mistakes/issues/1115)) ([4b79b6e](https://github.com/kunchenguid/no-mistakes/commit/4b79b6ef119a8e69d6c46c609dd6959f2efc9c06))
+* **pipeline:** add opt-in TypeSafe Jev context pre-brief to review turns ([#1120](https://github.com/kunchenguid/no-mistakes/issues/1120)) ([9b697a7](https://github.com/kunchenguid/no-mistakes/commit/9b697a7bc9448a3d158eb6e8a65c20628535ce08))
+
+
+### Bug Fixes
+
+* **cli:** bypass pre-push hooks for gate triggers ([#909](https://github.com/kunchenguid/no-mistakes/issues/909)) ([6840d18](https://github.com/kunchenguid/no-mistakes/commit/6840d18689ad84fc570b7603abb80b45a643b06c))
+* **pipeline:** close defect classes in review fix rounds ([#1123](https://github.com/kunchenguid/no-mistakes/issues/1123)) ([bfc098c](https://github.com/kunchenguid/no-mistakes/commit/bfc098c6f1d7e37a9db2332129cbe43e64af3937))
+* **pipeline:** fail closed on PR attestation refresh ([#910](https://github.com/kunchenguid/no-mistakes/issues/910)) ([b48fa6d](https://github.com/kunchenguid/no-mistakes/commit/b48fa6da49baba46a764ea166371ca4818380436))
+* **pipeline:** park Test agent budget cuts for a decision instead of failing the run ([#1114](https://github.com/kunchenguid/no-mistakes/issues/1114)) ([664424f](https://github.com/kunchenguid/no-mistakes/commit/664424f9ee57a1859691f1f9329fd449866c0af2))
+
 ## [1.78.0](https://github.com/kunchenguid/no-mistakes/compare/v1.77.1...v1.78.0) (2026-09-17)
 
 
