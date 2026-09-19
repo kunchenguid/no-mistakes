@@ -1225,34 +1225,47 @@ func TestCIStep_FixPromptPrefersSimplificationOverMachinery(t *testing.T) {
 // invariant, and the repair closes it at every sibling site in the changed
 // area in the same round, never as machinery, then re-traces the failing
 // sequence and the ordinary path through every changed function before
-// verifying. Neither superseded scope rule may return.
+// verifying. Neither superseded scope rule may return. Merge-conflict-only
+// repair is a sibling path of the same CI fixer, so it carries the same three
+// rules rather than the old minimal conflict prompt.
 func TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites(t *testing.T) {
 	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	gitCmd(t, dir, "checkout", "--detach", headSHA)
+	for _, tc := range []struct {
+		name    string
+		targets ciFixTargets
+	}{
+		{name: "failing_check", targets: ciTargetsFor([]string{"test"}, false)},
+		{name: "merge_conflict_only", targets: ciTargetsFor(nil, true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
 
-	var capturedPrompt string
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			capturedPrompt = opts.Prompt
-			return &agent.Result{}, nil
-		},
-	}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
-	if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, ciTargetsFor([]string{"test"}, false)); err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range append(append([]string{}, fixerInvariantContract...), fixerSelfTraceContract...) {
-		if !strings.Contains(capturedPrompt, want) {
-			t.Errorf("CI fix prompt missing invariant-complete contract %q:\n%s", want, capturedPrompt)
-		}
-	}
-	for _, stale := range fixerSupersededScopeRules {
-		if strings.Contains(capturedPrompt, stale) {
-			t.Errorf("CI fix prompt still carries the superseded scope rule %q:\n%s", stale, capturedPrompt)
-		}
+			var capturedPrompt string
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					capturedPrompt = opts.Prompt
+					return &agent.Result{}, nil
+				},
+			}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			pr := &scm.PR{Number: "42", URL: "https://github.com/test/repo/pull/42"}
+			if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range append(append([]string{}, fixerInvariantContract...), fixerSelfTraceContract...) {
+				if !strings.Contains(capturedPrompt, want) {
+					t.Errorf("CI fix prompt missing invariant-complete contract %q:\n%s", want, capturedPrompt)
+				}
+			}
+			for _, stale := range fixerSupersededScopeRules {
+				if strings.Contains(capturedPrompt, stale) {
+					t.Errorf("CI fix prompt still carries the superseded scope rule %q:\n%s", stale, capturedPrompt)
+				}
+			}
+		})
 	}
 }
 
