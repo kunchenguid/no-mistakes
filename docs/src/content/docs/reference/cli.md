@@ -335,6 +335,24 @@ For the alternative validation path and its refusal conditions, see [`no-mistake
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
+#### Sibling fix commits without a verified final head
+
+A run can end without a verified final head. This occurs when a fix commit lands as a sibling of the recorded head: the two commits have the same parent, and neither is an ancestor of the other. The pipeline stops the run to protect the reviewed change. It cannot verify either sibling as the final head, so it verifies neither. The gate branch stays at the submitted head.
+
+Status does not offer `recover_custody` for this state, because `--recover` cannot establish a final head and refuses. With no archive bound, nothing records that a sibling exists, and a run that only lost its worker looks the same. Status reports `safety: blocked_recover_manual_reconciliation`, and `--recover` refuses with `safety: blocked_recover_unverified_head` and describes the sequence below as a condition.
+
+Use this sequence when the run left two such commits. It keeps your current head and selects neither sibling.
+
+1. Keep each sibling at its own `refs/heads/archive/*` ref in the working repository. The recorded head is `pipeline.current_head`.
+2. Run `no-mistakes axi sync --bind-archive-ref <ref>` for the first ref. The command exits `0`, reports `recovery.proof: awaiting_sibling`, and sets `next_action.code: bind_sibling_archive`.
+3. Run `no-mistakes axi sync --bind-archive-ref <ref>` for the second ref. The command reports `recovery.source: bound_sibling_archives`, `recovery.proof: verified`, both heads, and `next_action.code: recover_custody`.
+4. Run `no-mistakes axi sync --recover --keep-local`. Custody returns at `recovery.required_head`. The worktree, the local branch, and both archive refs do not change.
+5. Apply both commits to the branch in one line, for example with `git cherry-pick`. Then start a new run with `no-mistakes axi run`. The new run validates the result.
+
+A bind is recorded only when the evidence that results is valid. The proof needs exactly two records. Both records must name the same exact required head, and the clean branch must be at that head. Each archive ref must be a raw, non-symbolic commit that has not moved. Each preserved head must be a strict descendant of the required head. Exactly one preserved head must be the recorded head, and the other must be its proven sibling. An ancestor or a descendant of the recorded head is one line of history and is refused with `safety: blocked_recover_sibling_archive_not_sibling`. The recorded head must be available in the working repository, or the relation is refused with `safety: blocked_recover_sibling_archive_unproven`. A third record is refused with `safety: blocked_recover_archive_ambiguous`. The gate branch must already be at the required head, so the release moves no ref in any repository. Every refusal changes no file, ref, record, or run.
+
+The release returns custody only. The run keeps its recorded head and stays without a verified final head, because no final head was proven. Plain `--recover` refuses with `safety: blocked_recover_archive_requires_keep_local`, so a sibling is never taken as the working result.
+
 ## no-mistakes axi logs
 
 Show the log output of one pipeline step.

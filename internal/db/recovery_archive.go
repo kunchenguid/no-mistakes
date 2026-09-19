@@ -66,8 +66,9 @@ func (d *DB) RecordRecoveryArchive(record RecoveryArchive) (*RecoveryArchive, er
 }
 
 // GetRecoveryArchivesByRun returns every record associated with a recovery
-// run. Callers require exactly one verified record before it can affect branch
-// custody classification.
+// run. The branch synchronization service decides how many it accepts before
+// records can affect branch custody classification: exactly one for a run with
+// a verified final head, or a proven sibling pair for a run without one.
 func (d *DB) GetRecoveryArchivesByRun(ownerRunID string) ([]*RecoveryArchive, error) {
 	rows, err := d.sql.Query(`
 		SELECT id, owner_run_id, repo_id, run_id, branch, required_head_sha, preserved_head_sha, archive_ref, created_at

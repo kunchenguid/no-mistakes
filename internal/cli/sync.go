@@ -39,7 +39,11 @@ func newSyncCmd() *cobra.Command {
 			"stay anchored, while genuinely missing preserved commits are discarded.\n" +
 			"--bind-archive-ref records one exact existing refs/heads/archive/* commit as\n" +
 			"evidence for the narrow keep-local recovery that stays at a required head while\n" +
-			"a divergent later head remains archived; it never creates or moves a Git ref.",
+			"a divergent later head remains archived; it never creates or moves a Git ref.\n" +
+			"A run that ended without a verified final head because a fix commit landed as\n" +
+			"a sibling of its recorded head takes two binds, one archive ref for each\n" +
+			"sibling. --recover --keep-local then returns custody at the current head and\n" +
+			"selects neither sibling, so both stay archived for you to reapply in one line.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -87,7 +91,11 @@ func newAxiSyncCmd() *cobra.Command {
 			"--recover performs the guarded custody return offered by\n" +
 			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
 			"--bind-archive-ref binds one exact existing refs/heads/archive/* commit to\n" +
-			"the selected terminal run; it never creates or moves a Git ref.",
+			"the selected terminal run; it never creates or moves a Git ref. A run that ended\n" +
+			"without a verified final head because a fix commit landed as a sibling of its\n" +
+			"recorded head takes two binds, one archive ref for each sibling; follow\n" +
+			"next_action.code: bind_sibling_archive, then recover_custody. That recovery\n" +
+			"keeps the current head and selects neither sibling.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -222,6 +230,11 @@ func runHumanBindRecoveryArchive(cmd *cobra.Command, archiveRef string) error {
 		result = "applied"
 		return nil
 	}
+	if awaitingSiblingArchive(state) {
+		fmt.Fprintln(cmd.OutOrStdout(), "  Archive evidence bound; bind the other sibling's archive ref next with `no-mistakes sync --bind-archive-ref <ref>`.")
+		result = "applied"
+		return nil
+	}
 	result = "refused"
 	return &exitError{code: 1}
 }
@@ -320,6 +333,12 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 		fmt.Fprintf(w, "  archive:  %s -> %s (%s)\n", state.Recovery.ArchiveRef, state.Recovery.PreservedHead, state.Recovery.Proof)
 		fmt.Fprintf(w, "  required: %s\n", state.Recovery.RequiredHead)
 	}
+	if state.Recovery != nil && state.Recovery.SiblingArchiveRef != "" {
+		fmt.Fprintf(w, "  sibling:  %s -> %s (%s)\n", state.Recovery.SiblingArchiveRef, state.Recovery.SiblingHead, state.Recovery.Proof)
+		if state.Recovery.ArchiveRef == "" {
+			fmt.Fprintf(w, "  required: %s\n", state.Recovery.RequiredHead)
+		}
+	}
 	if state.Target.Ref != "" {
 		fmt.Fprintf(w, "  target:   %s %s (%s)\n", state.Target.Remote, state.Target.Ref, state.Target.Kind)
 	}
@@ -332,10 +351,16 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
+			if state.Recovery != nil && state.Recovery.KeepLocal && state.Recovery.Source == "bound_sibling_archives" {
+				return "both sibling pipeline heads are preserved by verified archives and neither is selected; recover custody at the exact required head with `no-mistakes sync --recover --keep-local`"
+			}
 			if state.Recovery != nil && state.Recovery.KeepLocal {
 				return "later pipeline work is preserved by a verified archive; recover custody at the exact required head with `no-mistakes sync --recover --keep-local`"
 			}
 			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`. `no-mistakes rerun` resumes validating the selected preserved head, but refuses a known clean caller HEAD mismatch. If heads differ, inspect `no-mistakes axi status` and follow its exact `branch_sync.next_action.command` for custody or synchronization, then submit intended local commits with a fresh `no-mistakes axi run` once custody permits"
+		}
+		if state.Safety == "blocked_recover_sibling_archive_incomplete" {
+			return "one sibling pipeline head is bound; bind the other sibling's archive ref with `no-mistakes sync --bind-archive-ref <ref>`"
 		}
 		if state.Safety == "blocked_recover_preserved_head_missing" {
 			return "run ended without a recoverable preserved head; recover custody with `no-mistakes sync --recover --keep-local` to keep the current local head"
@@ -426,7 +451,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool, bindArchiveR
 		successful = state.Recovered
 	}
 	if bindArchiveRef != "" {
-		successful = verifiedArchiveRecovery(state)
+		successful = verifiedArchiveRecovery(state) || awaitingSiblingArchive(state)
 	}
 	if successful {
 		if state.Changed {
@@ -441,9 +466,18 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool, bindArchiveR
 }
 
 func verifiedArchiveRecovery(state branchsync.State) bool {
-	return state.Recovery != nil && state.Recovery.Source == "bound_archive" && state.Recovery.Proof == "verified" &&
+	return state.Recovery != nil && (state.Recovery.Source == "bound_archive" || state.Recovery.Source == "bound_sibling_archives") &&
+		state.Recovery.Proof == "verified" &&
 		state.Recovery.KeepLocal && state.NextAction != nil && state.NextAction.Code == "recover_custody" &&
 		state.NextAction.Command == "no-mistakes axi sync --recover --keep-local"
+}
+
+// awaitingSiblingArchive reports a sibling pair with one archive recorded. The
+// bind itself succeeded, and the state names the remaining bind as its one next
+// action, so it must not read as a refusal to a caller following the sequence.
+func awaitingSiblingArchive(state branchsync.State) bool {
+	return state.Recovery != nil && state.Recovery.Source == "bound_sibling_archives" && state.Recovery.Proof == "awaiting_sibling" &&
+		state.Recovery.KeepLocal && state.NextAction != nil && state.NextAction.Code == "bind_sibling_archive"
 }
 
 func trackSyncAttempt(command, surface, mode string, state branchsync.State, result string, started time.Time) {
@@ -551,6 +585,8 @@ func branchSyncField(state branchsync.State) toON.Field {
 			toON.Field{Key: "required_head", Value: state.Recovery.RequiredHead},
 			toON.Field{Key: "preserved_head", Value: state.Recovery.PreservedHead},
 			toON.Field{Key: "archive_ref", Value: state.Recovery.ArchiveRef},
+			toON.Field{Key: "sibling_head", Value: state.Recovery.SiblingHead},
+			toON.Field{Key: "sibling_archive_ref", Value: state.Recovery.SiblingArchiveRef},
 			toON.Field{Key: "keep_local", Value: state.Recovery.KeepLocal},
 			toON.Field{Key: "proof", Value: state.Recovery.Proof},
 		)})

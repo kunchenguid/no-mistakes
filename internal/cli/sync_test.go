@@ -1311,6 +1311,163 @@ func TestAxiBindRecoveryArchiveRejectsTagsAndRemoteTrackingRefs(t *testing.T) {
 	}
 }
 
+// newCLISiblingHeadsFixture leaves the state a failed run reaches when a fix
+// commit lands as a sibling of the recorded head: the run has no verified final
+// head, its recorded head and the sibling share the submitted parent, the gate
+// branch never left the submitted head, and the owner has preserved both heads
+// at archive refs. It returns the fixture plus the recorded and sibling refs.
+func newCLISiblingHeadsFixture(t *testing.T) (cliRecoverFixture, string, string, string) {
+	t.Helper()
+	f := newCLIRecoverFixture(t)
+	writer := filepath.Join(t.TempDir(), "sibling-writer")
+	cliGit(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	cliGit(t, writer, "config", "user.name", "Pipeline")
+	cliGit(t, writer, "config", "user.email", "pipeline@example.com")
+	cliGit(t, writer, "checkout", "--detach", f.submitted)
+	if err := os.WriteFile(filepath.Join(writer, "dup.txt"), []byte("duplication fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, writer, "add", "dup.txt")
+	cliGit(t, writer, "commit", "-m", "no-mistakes(review): duplication fix")
+	sibling := cliGit(t, writer, "rev-parse", "HEAD")
+	cliGit(t, writer, "push", "origin", sibling+":refs/no-mistakes/test-sibling")
+
+	recordedRef := "refs/heads/archive/review-" + f.runID
+	siblingRef := "refs/heads/archive/duplication-" + f.runID
+	cliGit(t, f.local, "fetch", "--no-tags", f.gate,
+		"refs/heads/feature/recover:"+recordedRef,
+		"refs/no-mistakes/test-sibling:"+siblingRef,
+	)
+	cliGit(t, f.gate, "update-ref", "-d", "refs/no-mistakes/test-sibling")
+	cliGit(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	return f, recordedRef, siblingRef, sibling
+}
+
+// TestAxiSiblingHeadsRecoveryKeepsBothArchivesAndTheLocalHead walks the
+// documented owner sequence through the command surface. Every step must report
+// its real outcome in the exit code, because an agent follows the sequence by
+// exit code: a bind that succeeded but exited nonzero would stop it at step one.
+func TestAxiSiblingHeadsRecoveryKeepsBothArchivesAndTheLocalHead(t *testing.T) {
+	f, recordedRef, siblingRef, sibling := newCLISiblingHeadsFixture(t)
+
+	// Masking condition: status advertised `sync --recover` for this state and
+	// the command then refused. It must not advertise it.
+	status, err := executeCmd("axi", "status", "--run", f.runID)
+	if err != nil {
+		t.Fatalf("initial status: %v\n%s", err, status)
+	}
+	for _, want := range []string{"safety: blocked_recover_manual_reconciliation", "code: inspect_and_reconcile_manually"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("initial status missing %q:\n%s", want, status)
+		}
+	}
+	if strings.Contains(status, "code: recover_custody") {
+		t.Fatalf("status advertised a recovery that refuses:\n%s", status)
+	}
+	before := cliRecoveryGitSnapshot(t, f)
+	for _, args := range [][]string{{"axi", "sync", "--recover"}, {"axi", "sync", "--recover", "--keep-local"}} {
+		out, err := executeCmd(args...)
+		var ee *exitError
+		if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+			t.Fatalf("%v without evidence should exit 1, got %#v\n%s", args, err, out)
+		}
+		for _, want := range []string{"safety: blocked_recover_unverified_head", "--bind-archive-ref", "no-mistakes axi sync --recover --keep-local"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v refusal missing %q:\n%s", args, want, out)
+			}
+		}
+	}
+
+	first, err := executeCmd("axi", "sync", "--bind-archive-ref", siblingRef)
+	if err != nil {
+		t.Fatalf("first sibling bind must exit 0 once recorded: %v\n%s", err, first)
+	}
+	for _, want := range []string{
+		"safety: blocked_recover_sibling_archive_incomplete", "source: bound_sibling_archives", "proof: awaiting_sibling",
+		"sibling_head: " + sibling, "sibling_archive_ref: " + siblingRef,
+		"code: bind_sibling_archive", "command: no-mistakes axi sync --bind-archive-ref <refs/heads/archive/...>",
+	} {
+		if !strings.Contains(first, want) {
+			t.Errorf("first sibling bind missing %q:\n%s", want, first)
+		}
+	}
+	halfBound, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	var halfExit *exitError
+	if err == nil || !asExitError(err, &halfExit) || halfExit.code != 1 || !strings.Contains(halfBound, "safety: blocked_recover_sibling_archive_incomplete") {
+		t.Fatalf("keep-local with one sibling bound should refuse, got %#v\n%s", err, halfBound)
+	}
+
+	second, err := executeCmd("axi", "sync", "--bind-archive-ref", recordedRef)
+	if err != nil {
+		t.Fatalf("second sibling bind: %v\n%s", err, second)
+	}
+	for _, want := range []string{
+		"safety: blocked_pipeline_owned_recoverable", "source: bound_sibling_archives", "proof: verified", "keep_local: true",
+		"required_head: " + f.submitted, "preserved_head: " + f.preserved, "archive_ref: " + recordedRef,
+		"sibling_head: " + sibling, "sibling_archive_ref: " + siblingRef,
+		"code: recover_custody", "command: no-mistakes axi sync --recover --keep-local",
+	} {
+		if !strings.Contains(second, want) {
+			t.Errorf("verified sibling bind missing %q:\n%s", want, second)
+		}
+	}
+	if strings.Contains(second, "no-mistakes rerun") {
+		t.Fatalf("sibling plan offered taking a preserved head:\n%s", second)
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != before {
+		t.Fatal("refusals or binding changed a branch, ref, or worktree")
+	}
+
+	plain, err := executeCmd("axi", "sync", "--recover")
+	var plainExit *exitError
+	if err == nil || !asExitError(err, &plainExit) || plainExit.code != 1 || !strings.Contains(plain, "safety: blocked_recover_archive_requires_keep_local") {
+		t.Fatalf("plain recovery must never take a sibling, got %#v\n%s", err, plain)
+	}
+
+	recovered, err := executeCmd("axi", "sync", "--recover", "--keep-local")
+	if err != nil {
+		t.Fatalf("sibling keep-local recovery: %v\n%s", err, recovered)
+	}
+	for _, want := range []string{"recovered: true", "changed: false", "state: custody_returned"} {
+		if !strings.Contains(recovered, want) {
+			t.Errorf("recovered state missing %q:\n%s", want, recovered)
+		}
+	}
+	if after := cliRecoveryGitSnapshot(t, f); after != before {
+		t.Fatalf("release changed a branch, ref, or worktree:\n%s\nwant\n%s", after, before)
+	}
+	if got := cliGit(t, f.local, "rev-parse", recordedRef); got != f.preserved {
+		t.Fatalf("recorded archive = %s, want %s", got, f.preserved)
+	}
+	if got := cliGit(t, f.local, "rev-parse", siblingRef); got != sibling {
+		t.Fatalf("sibling archive = %s, want %s", got, sibling)
+	}
+}
+
+// TestSyncBindSiblingArchiveReportsTheNextStep covers the human surface: a half
+// bound pair is a successful bind that names the remaining step.
+func TestSyncBindSiblingArchiveReportsTheNextStep(t *testing.T) {
+	_, recordedRef, siblingRef, _ := newCLISiblingHeadsFixture(t)
+	first, err := executeCmd("sync", "--bind-archive-ref", recordedRef)
+	if err != nil {
+		t.Fatalf("human first bind: %v\n%s", err, first)
+	}
+	for _, want := range []string{"one sibling head is bound", "Archive evidence bound; bind the other sibling's archive ref next"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("human first bind missing %q:\n%s", want, first)
+		}
+	}
+	second, err := executeCmd("sync", "--bind-archive-ref", siblingRef)
+	if err != nil {
+		t.Fatalf("human second bind: %v\n%s", err, second)
+	}
+	for _, want := range []string{"sibling:", siblingRef, "no-mistakes sync --recover --keep-local", "Archive evidence bound; follow the exact guarded recovery action shown above."} {
+		if !strings.Contains(second, want) {
+			t.Errorf("human second bind missing %q:\n%s", want, second)
+		}
+	}
+}
+
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{

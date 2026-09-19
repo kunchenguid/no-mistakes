@@ -122,16 +122,23 @@ type NextAction struct {
 // RecoveryEvidence describes the exact preservation proof behind a recovery
 // action. Bound archive recovery is deliberately keep-local-only: the archive
 // preserves the divergent later head while custody returns at RequiredHead.
+//
+// A sibling pair (Source "bound_sibling_archives") names two preserved heads:
+// PreservedHead is the run's recorded head and SiblingHead is the head that
+// shares its lineage without being its ancestor or descendant. Neither is ever
+// selected; both fields are empty of meaning for a single bound archive.
 type RecoveryEvidence struct {
-	Source        string
-	RepositoryID  string
-	RunID         string
-	Branch        string
-	RequiredHead  string
-	PreservedHead string
-	ArchiveRef    string
-	KeepLocal     bool
-	Proof         string
+	Source            string
+	RepositoryID      string
+	RunID             string
+	Branch            string
+	RequiredHead      string
+	PreservedHead     string
+	ArchiveRef        string
+	SiblingHead       string
+	SiblingArchiveRef string
+	KeepLocal         bool
+	Proof             string
 }
 
 // CanApply reports whether Apply may advance the clean checked-out branch for
@@ -512,9 +519,11 @@ func (s *Service) Apply(ctx context.Context) State {
 
 // BindRecoveryArchive records one exact existing archive ref as recovery
 // evidence for the currently selected terminal run. It never creates, moves,
-// or deletes a Git ref. The record is useful only for the narrow keep-local
-// recovery where the clean worktree remains at an exact submitted, reviewed,
-// or successfully pushed head and the archived later head is divergent.
+// or deletes a Git ref. The record is useful only for a keep-local recovery
+// where the clean worktree remains at an exact submitted, reviewed, or
+// successfully pushed head: one archive of a divergent later head for a run
+// with a verified final head, or one of the two archives of a sibling pair for
+// a run without one (bindSiblingArchive).
 func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -524,7 +533,7 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 		return blockedPlan(state, state.State, "blocked_recover_archive_not_applicable", "an archive can be bound only to the selected terminal run that still owns an unpublished pipeline head; no files or refs were changed")
 	}
 	if run.TerminalHeadVerifiedAt == nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_unverified_head", "the terminal run has no verified final-head evidence, so an archive cannot be bound; no files or refs were changed")
+		return s.bindSiblingArchive(ctx, state, run, archiveRef)
 	}
 	required, ok := archiveRequiredHead(state, run)
 	if !ok {
@@ -561,6 +570,55 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 	}
 	if _, err := s.DB.RecordRecoveryArchive(*record); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_record_failed", fmt.Sprintf("the verified archive ref %s could not be recorded: %v; no files or refs were changed", record.ArchiveRef, err))
+	}
+	verified, _, _ := s.inspect(ctx)
+	return verified
+}
+
+// bindSiblingArchive records one archive of a sibling pair for a terminal run
+// that has no verified final head. A single archive cannot stand for such a run,
+// because no one head is its preserved head; see verifySiblingArchiveRecords.
+//
+// The record names the commit the archive ref points at now, never an assumed
+// head. It is written only when the evidence set that would result already
+// passes the sibling proof, complete or validly half bound. Records are
+// append-only, so admitting a pair that can never verify would strand the run
+// behind evidence nobody can remove.
+func (s *Service) bindSiblingArchive(ctx context.Context, state State, run *db.Run, archiveRef string) State {
+	refuse := func(proof recoverySourceProof) State {
+		if proof.evidence != nil {
+			proof.evidence.Source = "archive_candidate"
+		}
+		return proof.apply(state)
+	}
+	required, ok := archiveRequiredHead(state, run)
+	if !ok {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_required_head_mismatch", "the clean working branch is not at an exact submitted, reviewed, or successfully pushed head for this run; no files or refs were changed")
+	}
+	target, safety, message := s.archiveRefCommit(ctx, archiveRef)
+	if safety != "" {
+		return refuse(recoverySourceProof{safety: safety, err: message + "; no files or refs were changed"})
+	}
+	candidate := &db.RecoveryArchive{
+		OwnerRunID: run.ID, RepoID: s.Repo.ID, RunID: run.ID, Branch: run.Branch,
+		RequiredHeadSHA: required, PreservedHeadSHA: target, ArchiveRef: archiveRef,
+	}
+	records, err := s.DB.GetRecoveryArchivesByRun(run.ID)
+	if err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_record_unreadable", "recovery archive records could not be read; no files or refs were changed")
+	}
+	alreadyBound := false
+	for _, record := range records {
+		alreadyBound = alreadyBound || sameRecoveryArchive(record, candidate)
+	}
+	if !alreadyBound {
+		proof := s.verifySiblingArchiveRecords(ctx, &state, run, append(records, candidate))
+		if !proof.available && proof.safety != "blocked_recover_sibling_archive_incomplete" {
+			return refuse(proof)
+		}
+		if _, err := s.DB.RecordRecoveryArchive(*candidate); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_record_failed", fmt.Sprintf("the verified archive ref %s could not be recorded: %v; no files or refs were changed", candidate.ArchiveRef, err))
+		}
 	}
 	verified, _, _ := s.inspect(ctx)
 	return verified
@@ -638,6 +696,13 @@ func (s *Service) BindRecoveryArchive(ctx context.Context, archiveRef string) St
 //     required and preserved heads, raw non-symbolic archive ref, and the gate's
 //     run-specific recovery ref. Plain --recover refuses this source before any
 //     ref write; only the reported --recover --keep-local action can use it.
+//   - A run whose fix commit landed as a SIBLING of its recorded head ends with
+//     no verified final head, because neither sibling is provably final, and
+//     with a gate branch that never left the submitted head. Nothing in the
+//     matrix above applies: there is no P to take. Its one exit is a bound
+//     sibling pair (verifySiblingArchiveRecords), released keep-local at the
+//     exact required head. That release selects neither sibling, stamps no
+//     verified head, and refuses under plain --recover like any bound archive.
 //   - Anything unverifiable (an unverified recorded head, missing gate where
 //     required, conflicting evidence, failed anchor write or fetch, or changed
 //     assumptions) refuses with a reason. The sole exception is a verified head
@@ -686,6 +751,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 	}
 	if run.TerminalHeadVerifiedAt == nil {
+		// The block below establishes a final head from the live gate and then
+		// continues as an ordinary recovery. When the gate cannot establish one,
+		// the run's only exit is sibling archive evidence, which never stamps a
+		// verified head: it keeps the local head and selects neither sibling.
+		if !s.unverifiedHeadRecoverable(ctx, state, run) {
+			return s.recoverFromClaimedSource(ctx, run, state, s.recoverySourceAvailable(ctx, &state, run), keepLocal)
+		}
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
@@ -697,11 +769,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if gateHead != run.HeadSHA {
 			equalTreeRewrite := false
 			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				recordedTree, recordedTreeErr := git.Run(ctx, s.GateDir, "rev-parse", run.HeadSHA+"^{tree}")
-				gateTree, gateTreeErr := git.Run(ctx, s.GateDir, "rev-parse", gateHead+"^{tree}")
-				recordedPreservesLocal := isAncestor(ctx, s.GateDir, state.Local.Head, run.HeadSHA) || preservedContainsLocalWork(ctx, s.GateDir, state.Local.Head, run.HeadSHA)
-				if recordedTreeErr != nil || gateTreeErr != nil || recordedTree != gateTree || !state.Local.Clean ||
-					run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != run.HeadSHA || !recordedPreservesLocal {
+				if !s.equalTreeRewriteOfReviewedHead(ctx, state, run, gateHead) {
 					return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded reviewed head with identical final content; no files or refs were changed")
 				}
 				if symbolic, err := git.Run(ctx, s.GateDir, "symbolic-ref", "-q", "refs/heads/"+branch); err == nil && symbolic != "" {
@@ -752,7 +820,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 	}
 	wd := s.workDir()
-	branch := state.Local.Branch
 	local := state.Local.Head
 	preserved := run.HeadSHA
 	trustedEqualTreeRewrite := run.TerminalHeadVerifiedAt != nil && run.ReviewApprovedHeadSHA != nil && *run.ReviewApprovedHeadSHA != preserved &&
@@ -781,27 +848,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// keep-local path at the exact required head recorded in the proof.
 	source := s.recoverySourceAvailable(ctx, &state, run)
 	if source.archiveClaimed {
-		if !source.available {
-			return source.apply(state)
-		}
-		if !keepLocal {
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_requires_keep_local", fmt.Sprintf("the later pipeline head %s is preserved at %s, but it diverges from required head %s; run only the offered keep-local custody recovery; no files or refs were changed", preserved, source.archive.ArchiveRef, source.archive.RequiredHeadSHA))
-			blocked.Recovery = source.evidence
-			blocked.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
-			return blocked
-		}
-		if !gateAvailable {
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so custody cannot be returned at the required archived-recovery head; no files or refs were changed")
-			blocked.Recovery = source.evidence
-			return blocked
-		}
-		gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-		if err != nil {
-			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so custody cannot be returned at required head %s; no files or refs were changed", branch, source.archive.RequiredHeadSHA))
-			blocked.Recovery = source.evidence
-			return blocked
-		}
-		return s.recoverKeepLocalFromArchive(ctx, run, state, gateHead, source.archive)
+		return s.recoverFromClaimedSource(ctx, run, state, source, keepLocal)
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
@@ -898,6 +945,48 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
+}
+
+// recoverFromClaimedSource finishes a recovery that the ordinary relation matrix
+// must not decide: bound archive evidence, or a run with no established final
+// head. An unavailable proof is applied exactly. An available one preserves work that
+// must never be taken as the working result - a divergent later head, or a pair
+// of sibling heads - so plain recovery refuses and only the keep-local release
+// at the exact required head proceeds.
+func (s *Service) recoverFromClaimedSource(ctx context.Context, run *db.Run, state State, source recoverySourceProof, keepLocal bool) State {
+	if !source.available || source.archive == nil {
+		source.available = false
+		return source.apply(state)
+	}
+	required := source.archive.RequiredHeadSHA
+	if !keepLocal {
+		message := fmt.Sprintf("the later pipeline head %s is preserved at %s, but it diverges from required head %s; run only the offered keep-local custody recovery; no files or refs were changed", source.archive.PreservedHeadSHA, source.archive.ArchiveRef, required)
+		if source.sibling != nil {
+			message = fmt.Sprintf("sibling heads %s and %s are preserved at %s and %s, and neither is proven to be the run's final head, so neither is taken; run only the offered keep-local custody recovery, which returns custody at required head %s; no files or refs were changed", source.archive.PreservedHeadSHA, source.sibling.PreservedHeadSHA, source.archive.ArchiveRef, source.sibling.ArchiveRef, required)
+		}
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_archive_requires_keep_local", message)
+		blocked.Recovery = source.evidence
+		blocked.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
+		return blocked
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir != "" {
+		if _, err := os.Stat(gateDir); err != nil {
+			gateDir = ""
+		}
+	}
+	if gateDir == "" {
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so custody cannot be returned at the required archived-recovery head; no files or refs were changed")
+		blocked.Recovery = source.evidence
+		return blocked
+	}
+	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	if err != nil {
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so custody cannot be returned at required head %s; no files or refs were changed", state.Local.Branch, required))
+		blocked.Recovery = source.evidence
+		return blocked
+	}
+	return s.recoverKeepLocalFromArchive(ctx, run, state, gateHead, source)
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the
@@ -1016,10 +1105,12 @@ func (s *Service) recoverKeepLocalAtCurrentHead(ctx context.Context, run *db.Run
 }
 
 // recoverKeepLocalFromArchive is the keep-local-only archive path: it
-// revalidates the bound archive at the recovery boundary, never selects or
-// replays the archived head, and rolls the gate branch back if custody
-// stamping fails after the gate already moved.
-func (s *Service) recoverKeepLocalFromArchive(ctx context.Context, run *db.Run, state State, gateHead string, archive *db.RecoveryArchive) State {
+// revalidates the bound evidence at the recovery boundary - one archive, or a
+// sibling pair - never selects or replays an archived head, and rolls the gate
+// branch back if custody stamping fails after the gate already moved. For a
+// sibling pair it returns custody only: the run keeps its recorded head and
+// stays without a verified final head, because none was ever proven.
+func (s *Service) recoverKeepLocalFromArchive(ctx context.Context, run *db.Run, state State, gateHead string, source recoverySourceProof) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
@@ -1030,9 +1121,11 @@ func (s *Service) recoverKeepLocalFromArchive(ctx context.Context, run *db.Run, 
 		return blocked
 	}
 	proof := s.verifyBoundRecoveryArchive(ctx, &state, freshRun)
-	if !proof.available || proof.archive == nil || archive == nil || proof.archive.ID != archive.ID {
+	if !proof.available || !sameProofRecords(source, proof) {
+		proof.available = false
 		return proof.apply(state)
 	}
+	archive := proof.archive
 	run = freshRun
 	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
 	head, headErr := git.HeadSHA(ctx, s.workDir())
@@ -1170,6 +1263,54 @@ func reviewedHeadProvesEquivalentTarget(ctx context.Context, dir, local, reviewe
 	targetTree, targetErr := git.Run(ctx, dir, "rev-parse", target+"^{tree}")
 	return reviewedErr == nil && targetErr == nil && reviewedTree == targetTree &&
 		(isAncestor(ctx, dir, local, reviewed) || preservedContainsLocalWork(ctx, dir, local, reviewed))
+}
+
+// equalTreeRewriteOfReviewedHead is the content proof that lets an unverified
+// terminal run accept a live gate head that does not descend from its recorded
+// head: the recorded head is the exact reviewed result, it preserves the clean
+// local work, and the live gate head has the identical final tree.
+func (s *Service) equalTreeRewriteOfReviewedHead(ctx context.Context, state State, run *db.Run, gateHead string) bool {
+	if !state.Local.Clean || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != run.HeadSHA {
+		return false
+	}
+	recordedTree, recordedTreeErr := git.Run(ctx, s.GateDir, "rev-parse", run.HeadSHA+"^{tree}")
+	gateTree, gateTreeErr := git.Run(ctx, s.GateDir, "rev-parse", gateHead+"^{tree}")
+	if recordedTreeErr != nil || gateTreeErr != nil || recordedTree != gateTree {
+		return false
+	}
+	// The containment proof is an executable merge, so it runs last: inspection
+	// reaches this on every status read of such a run.
+	return isAncestor(ctx, s.GateDir, state.Local.Head, run.HeadSHA) || preservedContainsLocalWork(ctx, s.GateDir, state.Local.Head, run.HeadSHA)
+}
+
+// unverifiedHeadRecoverable answers, without mutating anything, whether Recover
+// can establish a terminal head for a run that terminalized without one. It is
+// the read-only half of Recover's unverified-head block and exists so that
+// inspection never advertises a recovery that block is certain to refuse: the
+// live gate head must equal the recorded head, descend from it, or be an
+// equal-tree rewrite of the reviewed head on a non-symbolic branch.
+//
+// A gate branch that still sits BEHIND the recorded head proves nothing about
+// where the run ended, so it is not recoverable here. That is the state a fix
+// commit leaves when it lands as a sibling of the recorded head instead of on
+// top of it: terminalization correctly refuses to verify either sibling as the
+// final head, and the gate branch never moved off the submitted head.
+func (s *Service) unverifiedHeadRecoverable(ctx context.Context, state State, run *db.Run) bool {
+	if strings.TrimSpace(s.GateDir) == "" {
+		return false
+	}
+	branchRef := "refs/heads/" + state.Local.Branch
+	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", branchRef+"^{commit}")
+	if err != nil {
+		return false
+	}
+	if gateHead == run.HeadSHA || isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
+		return true
+	}
+	if symbolic, err := git.Run(ctx, s.GateDir, "symbolic-ref", "-q", branchRef); err == nil && symbolic != "" {
+		return false
+	}
+	return s.equalTreeRewriteOfReviewedHead(ctx, state, run, gateHead)
 }
 
 // recoverAdoptPreserved returns custody for a preserved pipeline head that
@@ -1848,13 +1989,23 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 }
 
 type recoverySourceProof struct {
-	available      bool
+	available bool
+	// archiveClaimed marks a proof built on bound archive records. It owns its
+	// own answer: inspection applies its exact refusal instead of the generic
+	// manual-reconciliation offer, and an available one is reachable only
+	// through the keep-local release.
 	archiveClaimed bool
 	action         NextAction
 	evidence       *RecoveryEvidence
 	archive        *db.RecoveryArchive
-	safety         string
-	err            string
+	// sibling is the second record of a verified sibling pair; archive is then
+	// the record for the run's recorded head.
+	sibling *db.RecoveryArchive
+	safety  string
+	err     string
+	// refusalAction replaces the manual-reconciliation offer when the refusal
+	// has one exact supported next step.
+	refusalAction *NextAction
 }
 
 func (proof recoverySourceProof) apply(state State) State {
@@ -1869,7 +2020,21 @@ func (proof recoverySourceProof) apply(state State) State {
 	}
 	state.Recovery = proof.evidence
 	state.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "no-mistakes axi status"}
+	if proof.refusalAction != nil {
+		action := *proof.refusalAction
+		state.NextAction = &action
+	}
 	return state
+}
+
+// sameProofRecords reports whether two proofs rest on the identical archive
+// records, so a proof re-verified at the recovery boundary cannot silently swap
+// the evidence that was shown to the owner.
+func sameProofRecords(a, b recoverySourceProof) bool {
+	same := func(x, y *db.RecoveryArchive) bool {
+		return (x == nil && y == nil) || (x != nil && y != nil && x.ID == y.ID)
+	}
+	return a.archive != nil && same(a.archive, b.archive) && same(a.sibling, b.sibling)
 }
 
 func (s *Service) missingHeadKeepLocalRuns(ctx context.Context, state *State, run *db.Run) ([]string, []string, bool, bool) {
@@ -1962,12 +2127,31 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 		proof.archiveClaimed = true
 		return proof
 	}
+	// A run without a verified final head is recoverable the ordinary way only
+	// when Recover can establish that head from the live gate. Otherwise the
+	// ordinary offer below would be advertised and then certainly refused. Its
+	// one supported exit is a verified sibling pair. With no archive bound the
+	// tool cannot know whether a sibling exists - nothing records one, and a
+	// run that merely lost its worker looks identical - so this reports the
+	// plain manual-reconciliation state and names the sibling sequence only as
+	// a condition. Sibling-specific next actions begin with the first record.
+	unestablishedHead := run.TerminalHeadVerifiedAt == nil && !s.unverifiedHeadRecoverable(ctx, *state, run)
 	var archiveProof recoverySourceProof
-	if len(archiveRecords) > 0 {
+	if len(archiveRecords) > 0 && (run.TerminalHeadVerifiedAt != nil || unestablishedHead) {
 		archiveProof = s.verifyBoundRecoveryArchiveRecords(ctx, state, run, archiveRecords)
 		if !archiveProof.available {
 			return archiveProof
 		}
+	}
+	if unestablishedHead {
+		if archiveProof.available {
+			return archiveProof
+		}
+		return unavailableRecoverySource("blocked_recover_unverified_head", fmt.Sprintf(
+			"the run finished %s without a verified final head, and the local gate branch does not show where it ended, so neither taking nor discarding recorded head %s is proven safe. "+
+				"If the run left two fix commits that share a parent, preserve each at its own refs/heads/archive/* ref, bind each ref with `no-mistakes axi sync --bind-archive-ref <ref>`, "+
+				"then run `no-mistakes axi sync --recover --keep-local`: custody returns at the current head and neither commit is selected. Otherwise inspect and reconcile the recorded and live heads manually; no files or refs were changed",
+			run.Status, run.HeadSHA))
 	}
 
 	localAnchor := custody.RecoveryRef(run.ID)
@@ -2048,6 +2232,11 @@ func (s *Service) verifyBoundRecoveryArchiveRecords(ctx context.Context, state *
 		proof.archiveClaimed = true
 		return proof
 	}
+	// A run with no verified final head has no single preserved head for one
+	// archive to prove. Its only archive evidence is a sibling pair.
+	if run.TerminalHeadVerifiedAt == nil {
+		return s.verifySiblingArchiveRecords(ctx, state, run, records)
+	}
 	if len(records) != 1 {
 		proof := unavailableRecoverySource("blocked_recover_archive_ambiguous", fmt.Sprintf("run %s has %d recovery archive records; exactly one is required; no files or refs were changed", run.ID, len(records)))
 		proof.archiveClaimed = true
@@ -2101,26 +2290,10 @@ func (s *Service) verifyRecoveryArchiveRecord(ctx context.Context, state *State,
 	if !state.Local.Clean {
 		return fail("blocked_recover_archive_dirty", "the working tree is not clean")
 	}
-	archiveRef := strings.TrimSpace(record.ArchiveRef)
-	if archiveRef != record.ArchiveRef || !strings.HasPrefix(archiveRef, "refs/heads/archive/") {
-		return fail("blocked_recover_archive_malformed", fmt.Sprintf("archive ref %q is outside refs/heads/archive", record.ArchiveRef))
-	}
-	if _, err := git.Run(ctx, s.workDir(), "check-ref-format", archiveRef); err != nil {
-		return fail("blocked_recover_archive_malformed", fmt.Sprintf("archive ref %q is malformed", archiveRef))
-	}
-	if symbolic, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", archiveRef); err == nil && symbolic != "" {
-		return fail("blocked_recover_archive_symbolic", fmt.Sprintf("archive ref %s is symbolic to %s", archiveRef, symbolic))
-	}
-	target, exists, err := git.ExactRefTarget(ctx, s.workDir(), archiveRef)
-	if err != nil {
-		return fail("blocked_recover_archive_unreadable", fmt.Sprintf("archive ref %s could not be inspected", archiveRef))
-	}
-	if !exists {
-		return fail("blocked_recover_archive_missing", fmt.Sprintf("archive ref %s is missing", archiveRef))
-	}
-	objectType, err := git.Run(ctx, s.workDir(), "cat-file", "-t", target)
-	if err != nil || objectType != "commit" {
-		return fail("blocked_recover_archive_replaced", fmt.Sprintf("archive ref %s points at non-commit object %s", archiveRef, target))
+	archiveRef := record.ArchiveRef
+	target, safety, message := s.archiveRefCommit(ctx, archiveRef)
+	if safety != "" {
+		return fail(safety, message)
 	}
 	if target != record.PreservedHeadSHA {
 		return fail("blocked_recover_archive_moved", fmt.Sprintf("archive ref %s moved to %s, expected %s", archiveRef, target, record.PreservedHeadSHA))
@@ -2169,6 +2342,223 @@ func (s *Service) verifyRecoveryArchiveRecord(ctx context.Context, state *State,
 	proof.action = NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
 	proof.evidence.Proof = "verified"
 	return proof
+}
+
+// bindSiblingArchiveAction is the one supported next step while a sibling pair
+// is unbound or half bound. The placeholder is deliberate: only the owner knows
+// which archive ref preserves each head.
+var bindSiblingArchiveAction = NextAction{Code: "bind_sibling_archive", Command: "no-mistakes axi sync --bind-archive-ref <refs/heads/archive/...>"}
+
+// verifySiblingArchiveRecords proves the one recovery a run without a verified
+// final head can have from archives: its recorded head and one sibling head are
+// both durably preserved, so custody can return at the exact required head while
+// neither is selected.
+//
+// The state arises when a fix commit lands as a sibling of the recorded head
+// instead of on top of it. Terminalization correctly verifies neither as the
+// final head, and this proof does not revisit that decision: it never stamps a
+// verified head, never picks a sibling, and is reachable only through the
+// keep-local release. One record alone is a valid but incomplete proof; a
+// complete proof requires exactly two records where
+//
+//   - both name the same exact required head, which the clean worktree is at;
+//   - each archive ref is raw, non-symbolic, and still at its recorded commit;
+//   - each preserved head strictly descends from the required head;
+//   - exactly one preserved head is the run's recorded head; and
+//   - the other is its proven sibling: neither is an ancestor of the other.
+//
+// The last rule keeps a linear history out of this path. Every ancestry claim
+// is a positive computation over objects that exist, never the absence of an
+// ancestor answer: against a missing object Git reports "not an ancestor" in
+// both directions, which reads exactly like a sibling pair and proves nothing.
+func (s *Service) verifySiblingArchiveRecords(ctx context.Context, state *State, run *db.Run, records []*db.RecoveryArchive) recoverySourceProof {
+	proof := recoverySourceProof{archiveClaimed: true}
+	fail := func(safety, message string) recoverySourceProof {
+		proof.safety = safety
+		proof.err = message + "; no files or refs were changed"
+		if proof.evidence != nil {
+			proof.evidence.Proof = safety
+		}
+		return proof
+	}
+	if state == nil || run == nil || s.Repo == nil {
+		return fail("blocked_recover_archive_malformed", "the recovery archive evidence is incomplete")
+	}
+	recorded := run.HeadSHA
+	proof.evidence = &RecoveryEvidence{
+		Source: "bound_sibling_archives", RepositoryID: s.Repo.ID, RunID: run.ID,
+		Branch: run.Branch, RequiredHead: state.Local.Head, KeepLocal: true,
+	}
+	for _, record := range records {
+		if record == nil {
+			return fail("blocked_recover_archive_malformed", "a recovery archive record is incomplete")
+		}
+		if record.PreservedHeadSHA == recorded {
+			proof.evidence.PreservedHead, proof.evidence.ArchiveRef = record.PreservedHeadSHA, record.ArchiveRef
+		} else {
+			proof.evidence.SiblingHead, proof.evidence.SiblingArchiveRef = record.PreservedHeadSHA, record.ArchiveRef
+		}
+	}
+	if len(records) > 2 {
+		return fail("blocked_recover_archive_ambiguous", fmt.Sprintf("run %s has %d recovery archive records; a sibling pair is exactly two", run.ID, len(records)))
+	}
+	if !terminalRunStatus(run.Status) || run.TerminalHeadVerifiedAt != nil || run.CustodyReturnedAt != nil {
+		return fail("blocked_recover_archive_stale", fmt.Sprintf("sibling archive provenance no longer describes an unrecovered terminal run %s without a verified final head", run.ID))
+	}
+	required, requiredOK := archiveRequiredHead(*state, run)
+	for _, record := range records {
+		if record.OwnerRunID != run.ID || record.RunID != run.ID {
+			return fail("blocked_recover_archive_run_mismatch", fmt.Sprintf("archive record run %s does not match selected run %s", record.RunID, run.ID))
+		}
+		if record.RepoID != s.Repo.ID || run.RepoID != s.Repo.ID {
+			return fail("blocked_recover_archive_repository_mismatch", fmt.Sprintf("archive record repository %s does not match selected repository %s", record.RepoID, run.RepoID))
+		}
+		if record.Branch != run.Branch || record.Branch != state.Local.Branch {
+			return fail("blocked_recover_archive_branch_mismatch", fmt.Sprintf("archive evidence branch %s does not match selected branch %s", record.Branch, state.Local.Branch))
+		}
+		if !requiredOK || record.RequiredHeadSHA != required {
+			return fail("blocked_recover_archive_required_head_mismatch", fmt.Sprintf("archive required head %s does not match the selected exact working head %s", record.RequiredHeadSHA, state.Local.Head))
+		}
+	}
+	if !state.Local.Clean {
+		return fail("blocked_recover_archive_dirty", "the working tree is not clean")
+	}
+
+	var recordedRecord, siblingRecord *db.RecoveryArchive
+	for _, record := range records {
+		target, safety, message := s.archiveRefCommit(ctx, record.ArchiveRef)
+		if safety != "" {
+			return fail(safety, message)
+		}
+		if target != record.PreservedHeadSHA {
+			return fail("blocked_recover_archive_moved", fmt.Sprintf("archive ref %s moved to %s, expected %s", record.ArchiveRef, target, record.PreservedHeadSHA))
+		}
+		if !strictDescendant(ctx, s.workDir(), required, target) {
+			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive head %s is not a strict descendant of required head %s, so it is not work this run added", target, required))
+		}
+		if target == recorded {
+			if recordedRecord != nil {
+				return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive refs %s and %s both name recorded head %s; the second archive must preserve its sibling", recordedRecord.ArchiveRef, record.ArchiveRef, recorded))
+			}
+			recordedRecord = record
+			continue
+		}
+		if !objectExists(ctx, s.workDir(), recorded) {
+			return fail("blocked_recover_sibling_archive_unproven", fmt.Sprintf("recorded pipeline head %s is not available in the invoking worktree, so %s cannot be proven to be its sibling; preserve and bind the recorded head first", recorded, target))
+		}
+		if !provenSiblings(ctx, s.workDir(), recorded, target) {
+			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive head %s is an ancestor or descendant of recorded head %s; that is one line of history, not a sibling pair", target, recorded))
+		}
+		if siblingRecord != nil {
+			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive refs %s and %s both name siblings and neither preserves recorded head %s", siblingRecord.ArchiveRef, record.ArchiveRef, recorded))
+		}
+		siblingRecord = record
+	}
+
+	if compatible, err := recoveryAnchorCompatible(ctx, s.workDir(), run.ID, recorded); err != nil || !compatible {
+		return fail("blocked_recover_anchor_mismatch", fmt.Sprintf("the invoking worktree recovery ref %s conflicts with recorded pipeline head %s", custody.RecoveryRef(run.ID), recorded))
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" {
+		return fail("blocked_recover_gate_unavailable", "no local gate is configured for this repository")
+	}
+	if _, err := os.Stat(gateDir); err != nil {
+		return fail("blocked_recover_gate_unavailable", fmt.Sprintf("local gate %s is unavailable", gateDir))
+	}
+	if compatible, err := recoveryAnchorCompatible(ctx, gateDir, run.ID, recorded); err != nil || !compatible {
+		return fail("blocked_recover_anchor_mismatch", fmt.Sprintf("the local gate recovery ref %s conflicts with recorded pipeline head %s", custody.RecoveryRef(run.ID), recorded))
+	}
+
+	if recordedRecord == nil || siblingRecord == nil {
+		missing := fmt.Sprintf("the sibling of recorded head %s", recorded)
+		if recordedRecord == nil {
+			missing = fmt.Sprintf("recorded head %s", recorded)
+		}
+		proof.safety = "blocked_recover_sibling_archive_incomplete"
+		proof.err = fmt.Sprintf("one sibling head is bound, but %s is not; preserve it at its own refs/heads/archive/* ref and bind that ref, then recover custody with --recover --keep-local; no files or refs were changed", missing)
+		proof.evidence.Proof = "awaiting_sibling"
+		action := bindSiblingArchiveAction
+		proof.refusalAction = &action
+		return proof
+	}
+
+	// Only a complete pair constrains the gate branch, and it must already be at
+	// the required head. The pipeline writes a branch ref only after head
+	// continuity passes, which a sibling never does, so the gate branch of this
+	// state never left the submitted head. Requiring that keeps the release free
+	// of every Git mutation: it stamps custody and moves no ref anywhere.
+	gateBranchRef := "refs/heads/" + run.Branch
+	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", gateBranchRef); err == nil && symbolic != "" {
+		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s is symbolic to %s", gateBranchRef, symbolic))
+	}
+	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
+	if err != nil || !exists {
+		return fail("blocked_recover_gate_unavailable", fmt.Sprintf("local gate branch %s is missing or unreadable", gateBranchRef))
+	}
+	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
+		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s does not point at a commit", gateBranchRef))
+	}
+	if gateHead != required {
+		return fail("blocked_recover_archive_gate_head_mismatch", fmt.Sprintf("local gate branch %s is at %s, not required head %s", gateBranchRef, gateHead, required))
+	}
+
+	proof.available = true
+	proof.archive = recordedRecord
+	proof.sibling = siblingRecord
+	proof.action = NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover --keep-local"}
+	proof.evidence.Proof = "verified"
+	return proof
+}
+
+// strictDescendant reports whether descendant is a commit strictly after
+// ancestor. Both objects must exist and merge-base must succeed and name the
+// ancestor, so a missing object or a failed Git call is never a proof.
+func strictDescendant(ctx context.Context, dir, ancestor, descendant string) bool {
+	if ancestor == "" || descendant == "" || ancestor == descendant || !objectExists(ctx, dir, ancestor) || !objectExists(ctx, dir, descendant) {
+		return false
+	}
+	base, err := git.Run(ctx, dir, "merge-base", ancestor, descendant)
+	return err == nil && base == ancestor
+}
+
+// provenSiblings reports whether two existing commits share history while
+// neither is an ancestor of the other. The merge base must be computed and be a
+// third commit; an error is not divergence.
+func provenSiblings(ctx context.Context, dir, a, b string) bool {
+	if a == "" || b == "" || a == b || !objectExists(ctx, dir, a) || !objectExists(ctx, dir, b) {
+		return false
+	}
+	base, err := git.Run(ctx, dir, "merge-base", a, b)
+	return err == nil && base != "" && base != a && base != b
+}
+
+// archiveRefCommit resolves one raw archive ref to the exact commit it names.
+// It accepts only a well-formed, non-symbolic refs/heads/archive/* ref in the
+// invoking worktree whose target is a commit. Every other shape returns its
+// fail-closed safety code and message, and an empty safety means success. It
+// reads only: no ref is created, moved, or deleted.
+func (s *Service) archiveRefCommit(ctx context.Context, rawRef string) (target, safety, message string) {
+	archiveRef := strings.TrimSpace(rawRef)
+	if archiveRef != rawRef || !strings.HasPrefix(archiveRef, "refs/heads/archive/") {
+		return "", "blocked_recover_archive_malformed", fmt.Sprintf("archive ref %q is outside refs/heads/archive", rawRef)
+	}
+	if _, err := git.Run(ctx, s.workDir(), "check-ref-format", archiveRef); err != nil {
+		return "", "blocked_recover_archive_malformed", fmt.Sprintf("archive ref %q is malformed", archiveRef)
+	}
+	if symbolic, err := git.Run(ctx, s.workDir(), "symbolic-ref", "-q", archiveRef); err == nil && symbolic != "" {
+		return "", "blocked_recover_archive_symbolic", fmt.Sprintf("archive ref %s is symbolic to %s", archiveRef, symbolic)
+	}
+	target, exists, err := git.ExactRefTarget(ctx, s.workDir(), archiveRef)
+	if err != nil {
+		return "", "blocked_recover_archive_unreadable", fmt.Sprintf("archive ref %s could not be inspected", archiveRef)
+	}
+	if !exists {
+		return "", "blocked_recover_archive_missing", fmt.Sprintf("archive ref %s is missing", archiveRef)
+	}
+	if objectType, err := git.Run(ctx, s.workDir(), "cat-file", "-t", target); err != nil || objectType != "commit" {
+		return "", "blocked_recover_archive_replaced", fmt.Sprintf("archive ref %s points at non-commit object %s", archiveRef, target)
+	}
+	return target, "", ""
 }
 
 func archiveRequiredHead(state State, run *db.Run) (string, bool) {
