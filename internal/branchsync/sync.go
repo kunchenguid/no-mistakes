@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -2447,7 +2448,7 @@ func (s *Service) verifySiblingArchiveRecords(ctx context.Context, state *State,
 			return fail("blocked_recover_sibling_archive_unproven", fmt.Sprintf("recorded pipeline head %s is not available in the invoking worktree, so %s cannot be proven to be its sibling; preserve and bind the recorded head first", recorded, target))
 		}
 		if !provenSiblings(ctx, s.workDir(), recorded, target) {
-			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive head %s is an ancestor or descendant of recorded head %s; that is one line of history, not a sibling pair", target, recorded))
+			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive head %s does not record the same parents as recorded head %s, so the two are not a sibling pair", target, recorded))
 		}
 		if siblingRecord != nil {
 			return fail("blocked_recover_sibling_archive_not_sibling", fmt.Sprintf("archive refs %s and %s both name siblings and neither preserves recorded head %s", siblingRecord.ArchiveRef, record.ArchiveRef, recorded))
@@ -2521,15 +2522,29 @@ func strictDescendant(ctx context.Context, dir, ancestor, descendant string) boo
 	return err == nil && base == ancestor
 }
 
-// provenSiblings reports whether two existing commits share history while
-// neither is an ancestor of the other. The merge base must be computed and be a
-// third commit; an error is not divergence.
+// provenSiblings reports whether two existing commits are siblings: distinct
+// commits that record exactly the same parents. Equal parents make each one a
+// single step off the shared commit, so neither can be an ancestor of the
+// other and a cousin reached through a longer line is not accepted. Parents
+// are read from both commit objects; a read failure is never a proof.
 func provenSiblings(ctx context.Context, dir, a, b string) bool {
 	if a == "" || b == "" || a == b || !objectExists(ctx, dir, a) || !objectExists(ctx, dir, b) {
 		return false
 	}
-	base, err := git.Run(ctx, dir, "merge-base", a, b)
-	return err == nil && base != "" && base != a && base != b
+	parentsA, okA := commitParents(ctx, dir, a)
+	parentsB, okB := commitParents(ctx, dir, b)
+	return okA && okB && len(parentsA) > 0 && slices.Equal(parentsA, parentsB)
+}
+
+// commitParents lists the parents recorded in one existing commit object,
+// reading the object itself rather than traversing history.
+func commitParents(ctx context.Context, dir, sha string) ([]string, bool) {
+	line, err := git.Run(ctx, dir, "rev-list", "--parents", "-n", "1", sha)
+	fields := strings.Fields(line)
+	if err != nil || len(fields) == 0 {
+		return nil, false
+	}
+	return fields[1:], true
 }
 
 // archiveRefCommit resolves one raw archive ref to the exact commit it names.

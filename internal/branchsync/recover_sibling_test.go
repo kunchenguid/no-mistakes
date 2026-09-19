@@ -370,6 +370,16 @@ func TestSiblingHeadsIncompleteEvidenceFailsClosedWithoutMutation(t *testing.T) 
 		linear := withParent(f, f.reviewed, func() string { return commitOn(f, f.reviewed, "linear.txt") })
 		refusesBind(t, f, f.archive("linear", linear), "blocked_recover_sibling_archive_not_sibling")
 	})
+	t.Run("candidate is a cousin of the recorded head", func(t *testing.T) {
+		t.Parallel()
+		// A commit on top of the unrecorded sibling also diverges from the
+		// recorded head and also descends from the required head, but it is one
+		// step further out. Siblings record the same parents.
+		f := newTwoFixFixture(t, true)
+		f.archive("review", f.reviewed)
+		cousin := withParent(f, f.final, func() string { return commitOn(f, f.final, "cousin.txt") })
+		refusesBind(t, f, f.archive("cousin", cousin), "blocked_recover_sibling_archive_not_sibling")
+	})
 	t.Run("candidate is the submitted head", func(t *testing.T) {
 		t.Parallel()
 		f := newTwoFixFixture(t, true)
