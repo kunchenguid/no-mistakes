@@ -2323,7 +2323,7 @@ func (s *Service) verifyRecoveryArchiveRecord(ctx context.Context, state *State,
 	if err != nil || !exists {
 		return fail("blocked_recover_anchor_mismatch", fmt.Sprintf("the local gate recovery ref %s is missing or unreadable", gateRecoveryRef))
 	}
-	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateRecoveryHead); err != nil || objectType != "commit" || gateRecoveryHead != run.HeadSHA {
+	if objectType, err := rawGit(ctx, gateDir, "cat-file", "-t", gateRecoveryHead); err != nil || objectType != "commit" || gateRecoveryHead != run.HeadSHA {
 		return fail("blocked_recover_anchor_mismatch", fmt.Sprintf("the local gate recovery ref %s does not point at recorded pipeline head %s", gateRecoveryRef, run.HeadSHA))
 	}
 	gateBranchRef := "refs/heads/" + run.Branch
@@ -2472,6 +2472,29 @@ func (s *Service) verifySiblingArchiveRecords(ctx context.Context, state *State,
 		return fail("blocked_recover_anchor_mismatch", fmt.Sprintf("the local gate recovery ref %s conflicts with recorded pipeline head %s", custody.RecoveryRef(run.ID), recorded))
 	}
 
+	// Every record of the pair constrains the gate branch, which must already
+	// be at the required head. The pipeline writes a branch ref only after head
+	// continuity passes, which a sibling never does, so the gate branch of this
+	// state never left the submitted head. Requiring that keeps the release free
+	// of every Git mutation - it stamps custody and moves no ref anywhere - and
+	// it is required before the FIRST record too: a record is append-only and
+	// owns the run from the moment it exists, so one accepted over a gate that
+	// can still recover the run the ordinary way would strand it.
+	gateBranchRef := "refs/heads/" + run.Branch
+	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", gateBranchRef); err == nil && symbolic != "" {
+		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s is symbolic to %s", gateBranchRef, symbolic))
+	}
+	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
+	if err != nil || !exists {
+		return fail("blocked_recover_gate_unavailable", fmt.Sprintf("local gate branch %s is missing or unreadable", gateBranchRef))
+	}
+	if objectType, err := rawGit(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
+		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s does not point at a commit", gateBranchRef))
+	}
+	if gateHead != required {
+		return fail("blocked_recover_archive_gate_head_mismatch", fmt.Sprintf("local gate branch %s is at %s, not required head %s", gateBranchRef, gateHead, required))
+	}
+
 	if recordedRecord == nil || siblingRecord == nil {
 		missing := fmt.Sprintf("the sibling of recorded head %s", recorded)
 		if recordedRecord == nil {
@@ -2483,26 +2506,6 @@ func (s *Service) verifySiblingArchiveRecords(ctx context.Context, state *State,
 		action := bindSiblingArchiveAction
 		proof.refusalAction = &action
 		return proof
-	}
-
-	// Only a complete pair constrains the gate branch, and it must already be at
-	// the required head. The pipeline writes a branch ref only after head
-	// continuity passes, which a sibling never does, so the gate branch of this
-	// state never left the submitted head. Requiring that keeps the release free
-	// of every Git mutation: it stamps custody and moves no ref anywhere.
-	gateBranchRef := "refs/heads/" + run.Branch
-	if symbolic, err := git.Run(ctx, gateDir, "symbolic-ref", "-q", gateBranchRef); err == nil && symbolic != "" {
-		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s is symbolic to %s", gateBranchRef, symbolic))
-	}
-	gateHead, exists, err := git.ExactRefTarget(ctx, gateDir, gateBranchRef)
-	if err != nil || !exists {
-		return fail("blocked_recover_gate_unavailable", fmt.Sprintf("local gate branch %s is missing or unreadable", gateBranchRef))
-	}
-	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
-		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s does not point at a commit", gateBranchRef))
-	}
-	if gateHead != required {
-		return fail("blocked_recover_archive_gate_head_mismatch", fmt.Sprintf("local gate branch %s is at %s, not required head %s", gateBranchRef, gateHead, required))
 	}
 
 	proof.available = true

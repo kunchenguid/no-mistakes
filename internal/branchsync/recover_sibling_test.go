@@ -463,6 +463,19 @@ func TestSiblingHeadsIncompleteEvidenceFailsClosedWithoutMutation(t *testing.T) 
 			t.Fatalf("boundary move = %s (%s)", state.Safety, state.Error)
 		}
 	})
+	t.Run("first bind while the gate can still recover the ordinary way", func(t *testing.T) {
+		t.Parallel()
+		// A record is append-only and owns the run from the moment it exists, so
+		// accepting the first one here would replace a working ordinary recovery
+		// with a pair that can never complete.
+		f := newTwoFixFixture(t, true)
+		mustRun(t, f.gate, "update-ref", "refs/heads/"+f.run.Branch, f.reviewed)
+		refusesBind(t, f, f.archive("review", f.reviewed), "blocked_recover_archive_gate_head_mismatch")
+		inspected := f.service.InspectCached(f.ctx)
+		if inspected.Safety != "blocked_pipeline_owned_recoverable" || inspected.NextAction == nil || inspected.NextAction.Command != "no-mistakes axi sync --recover" {
+			t.Fatalf("refused bind stranded the ordinary recovery: %s %#v", inspected.Safety, inspected.NextAction)
+		}
+	})
 	t.Run("gate branch left the required head", func(t *testing.T) {
 		t.Parallel()
 		// The release moves no ref anywhere, so a gate branch that is not already
