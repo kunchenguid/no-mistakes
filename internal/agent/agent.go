@@ -455,11 +455,17 @@ func parseStructuredTextOutput(text string, schema json.RawMessage, preferTermin
 		candidateErr = bareErr
 	}
 
-	if candidateErr != nil {
-		return nil, candidateErr
-	}
+	// A whole-output JSON document is authoritative: when the entire text
+	// decodes as one JSON value, its own schema error is the real diagnosis.
+	// A candidate scraped out of the middle of it - for example each element
+	// object inside a top-level array - must not mask that with a narrower
+	// error such as "missing required field findings".
 	if _, err := decodeJSONValue([]byte(text)); err == nil {
 		return nil, rawErr
+	}
+
+	if candidateErr != nil {
+		return nil, candidateErr
 	}
 
 	trimmedText := strings.TrimSpace(text)
@@ -1093,6 +1099,26 @@ func decodeJSONValue(raw []byte) (any, error) {
 	return value, nil
 }
 
+// jsonTypeName names the decoded JSON type a schema type check rejected, so a
+// shape mismatch reads as "must be object (received array)" rather than only
+// stating the expectation.
+func jsonTypeName(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	default:
+		return "number"
+	}
+}
+
 func validateJSONValue(value, schema any, path string) error {
 	schemaMap, ok := schema.(map[string]any)
 	if !ok {
@@ -1104,7 +1130,7 @@ func validateJSONValue(value, schema any, path string) error {
 	}
 
 	if types, ok := schemaTypes(schemaMap); ok && !matchesAnyType(value, types) {
-		return fmt.Errorf("%smust be %s", formatJSONPath(path), strings.Join(types, " or "))
+		return fmt.Errorf("%smust be %s (received %s)", formatJSONPath(path), strings.Join(types, " or "), jsonTypeName(value))
 	}
 
 	if object, ok := value.(map[string]any); ok {

@@ -72,6 +72,12 @@ func init() {
 	os.Exit(0)
 }
 
+// hostHome is the host's HOME before TestMain repoints HOME at a temp dir for
+// isolation. Helpers that shell out to the go command must build with it: the
+// go tool derives its module and build caches from HOME, so building under the
+// temp HOME makes them re-download every dependency over the network.
+var hostHome string
+
 func TestMain(m *testing.M) {
 	base := os.TempDir()
 	if runtime.GOOS != "windows" {
@@ -88,6 +94,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
 		os.Exit(1)
 	}
+	hostHome = os.Getenv("HOME")
 	_ = os.Setenv("NM_HOME", root)
 	_ = os.Setenv("HOME", home)
 	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
