@@ -665,6 +665,7 @@ The digest covers only the files the review covers, so paths matching `ignore_pa
 Its typed answers feed the review prompt one kind of advisory input: a ranked list of surrounding-context files worth reading first.
 The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
 Paths matching `ignore_patterns` are never candidates.
+Jev's score decides which candidates are listed; the order also weighs the code's evidence, so a file that uses a changed name is listed ahead of a same-directory sibling Jev scored the same.
 
 The assist can only add to a review, never subtract.
 Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.

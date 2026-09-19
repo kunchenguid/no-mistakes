@@ -100,9 +100,12 @@ type jevClient interface {
 }
 
 // jevCandidate is one surrounding-context file offered for ranking. It is a
-// path only: no content of an unchanged file leaves the machine.
+// path only: no content of an unchanged file leaves the machine. coupling is
+// the code's use-site score (0 for a sibling); it is unexported, so it never
+// reaches the Jev state, and only orders the listing.
 type jevCandidate struct {
-	Path string `json:"path"`
+	Path     string `json:"path"`
+	coupling float64
 }
 
 // jevChangeState is the state one pre-brief evaluation runs over.
@@ -133,7 +136,9 @@ func (s *ReviewStep) reviewPrebriefSection(ctx context.Context, sctx *pipeline.S
 	}
 	client := s.jev
 	if client == nil {
-		client = jev.NewClientFromEnv()
+		if c := jev.NewClientFromEnv(); c != nil {
+			client = c
+		}
 	}
 	if client == nil {
 		logf("jev review assist is enabled but %s is not set; reviewing without a pre-brief", jev.EnvKey)
@@ -219,10 +224,20 @@ func buildJevQuestions(candidates []jevCandidate) map[string]jev.Question {
 // formatJevPrebrief renders the advisory prompt section from typed answers.
 // "" when nothing clears the thresholds, so an uneventful pre-screen adds no
 // prompt noise. Also returns the listed-candidate count for the log line.
+//
+// Jev's score alone decides which candidates are listed. The order blends in
+// the code's use-site evidence, which Jev never sees: each candidate's
+// coupling, scaled to the strongest one, adds up to one rubric level. A file
+// that uses a changed name therefore precedes a sibling Jev scored the same,
+// but never one Jev scored a full level higher.
 func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, int) {
 	type ranked struct {
 		path  string
 		score float64
+	}
+	strongest := 0.0
+	for _, c := range candidates {
+		strongest = max(strongest, c.coupling)
 	}
 	var listing []ranked
 	for i, c := range candidates {
@@ -230,9 +245,14 @@ func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, i
 		if !ok || answer.Type != "score" {
 			continue
 		}
-		if answer.Score >= jevRelevanceThreshold && answer.Confidence >= jevConfidenceThreshold {
-			listing = append(listing, ranked{path: c.Path, score: answer.Score})
+		if answer.Score < jevRelevanceThreshold || answer.Confidence < jevConfidenceThreshold {
+			continue
 		}
+		score := answer.Score
+		if strongest > 0 {
+			score += c.coupling / strongest
+		}
+		listing = append(listing, ranked{path: c.Path, score: score})
 	}
 	if len(listing) == 0 {
 		return "", 0
@@ -395,7 +415,7 @@ func jevContextCandidates(ctx context.Context, workDir, diff string, changed, re
 	candidates := make([]jevCandidate, len(order))
 	index := make(map[string]int, len(order))
 	for i, f := range order {
-		candidates[i] = jevCandidate{Path: f}
+		candidates[i] = jevCandidate{Path: f, coupling: score[f]}
 		index[f] = i
 	}
 

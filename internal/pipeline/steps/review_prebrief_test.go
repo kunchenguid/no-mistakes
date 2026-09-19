@@ -121,11 +121,15 @@ func TestReviewStep_JevPrebriefAddsAdvisorySection(t *testing.T) {
 		"Pre-brief (advisory",
 		"claims, not evidence",
 		"widget/user.go",        // the use site of the changed definition, ranked
+		"widget/style.go",       // a same-directory sibling
 		"Report reviewed_paths", // the coverage obligation survives
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+	if strings.Index(prompt, "widget/user.go") > strings.Index(prompt, "widget/style.go") {
+		t.Error("a sibling Jev scored the same is listed ahead of the use site")
 	}
 	if fake.calls != 1 {
 		t.Fatalf("jev calls = %d, want 1 batched evaluation", fake.calls)
@@ -192,14 +196,14 @@ func TestReviewStep_JevPrebriefMissingKeyFallsBack(t *testing.T) {
 	if strings.Contains(reviewPromptOf(t, ag), "Pre-brief") {
 		t.Fatal("pre-brief present without an API key")
 	}
-	found := false
-	for _, line := range logs {
-		if strings.Contains(line, jev.EnvKey) {
-			found = true
-		}
+	want := "jev review assist is enabled but " + jev.EnvKey + " is not set"
+	if !strings.Contains(strings.Join(logs, "\n"), want) {
+		t.Fatalf("logs do not report the missing key as %q:\n%s", want, strings.Join(logs, "\n"))
 	}
-	if !found {
-		t.Fatal("no log line names the missing key")
+	for _, line := range logs {
+		if strings.Contains(line, "jev pre-brief") {
+			t.Fatalf("pre-brief work ran without an API key: %q", line)
+		}
 	}
 }
 
@@ -311,11 +315,6 @@ func TestJevContextCandidates_RanksRareNamesAboveUbiquitousOnes(t *testing.T) {
 	}
 }
 
-// TestJevIdentifiers pins which names become search terms and in what order:
-// definitions in code, never prose (documentation files, comments, a keyword
-// inside a longer word), never names too short to point at a use site, never
-// an unchanged neighbour after a hunk's first change, and taken in turn from
-// each changed file.
 // TestJevContextCandidates_LaterFileNamesAreSearched reproduces a search
 // budget spent on the first file in path order: names the first file
 // introduces have no use site yet, so they must not keep a later file's
@@ -360,6 +359,11 @@ func TestJevContextCandidates_LaterFileNamesAreSearched(t *testing.T) {
 	t.Fatalf("app/user.go (the only use site of the changed RenderWidget) not among candidates: %v", candidates)
 }
 
+// TestJevIdentifiers pins which names become search terms and in what order:
+// definitions in code, never prose (documentation files, comments, a keyword
+// inside a longer word), never names too short to point at a use site, never
+// an unchanged neighbour after a hunk's first change, and taken in turn from
+// each changed file.
 func TestJevIdentifiers(t *testing.T) {
 	t.Parallel()
 	diff := `diff --git a/docs/guide.md b/docs/guide.md
@@ -412,6 +416,33 @@ func TestFormatJevPrebrief_Thresholds(t *testing.T) {
 	}
 	if !strings.Contains(section, "a.go") || strings.Contains(section, "b.go") || strings.Contains(section, "c.go") {
 		t.Errorf("section lists the wrong candidates:\n%s", section)
+	}
+}
+
+// TestFormatJevPrebrief_BlendsUseSiteEvidenceIntoOrder pins the ordering
+// contract: Jev's score decides what is listed, and the code's use-site
+// evidence lifts a candidate by up to one rubric level in the order.
+func TestFormatJevPrebrief_BlendsUseSiteEvidenceIntoOrder(t *testing.T) {
+	t.Parallel()
+	candidates := []jevCandidate{
+		{Path: "sibling.go"},
+		{Path: "strong_use.go", coupling: 0.5},
+		{Path: "weak_use.go", coupling: 0.25},
+		{Path: "unlisted_use.go", coupling: 0.5},
+	}
+	resp := &jev.Response{Answers: map[string]jev.Answer{
+		"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9},
+		"ctx_1": {Type: "score", Score: 2.2, Confidence: 0.9},
+		"ctx_2": {Type: "score", Score: 2.0, Confidence: 0.9},
+		"ctx_3": {Type: "score", Score: 1.5, Confidence: 0.9},
+	}}
+	section, listed := formatJevPrebrief(resp, candidates)
+	if listed != 3 || strings.Contains(section, "unlisted_use.go") {
+		t.Fatalf("listed=%d, want 3 without the below-threshold use site:\n%s", listed, section)
+	}
+	strong, sibling, weak := strings.Index(section, "strong_use.go"), strings.Index(section, "sibling.go"), strings.Index(section, "weak_use.go")
+	if !(strong < sibling && sibling < weak) {
+		t.Fatalf("order is not strong_use, sibling, weak_use:\n%s", section)
 	}
 }
 
