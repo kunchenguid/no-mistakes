@@ -380,6 +380,21 @@ func TestSiblingHeadsIncompleteEvidenceFailsClosedWithoutMutation(t *testing.T) 
 		cousin := withParent(f, f.final, func() string { return commitOn(f, f.final, "cousin.txt") })
 		refusesBind(t, f, f.archive("cousin", cousin), "blocked_recover_sibling_archive_not_sibling")
 	})
+	t.Run("a replacement object disguises a cousin as a sibling", func(t *testing.T) {
+		t.Parallel()
+		// refs/replace/* rewrites what ordinary Git reads report, so the proof
+		// must read the stored objects: the archived commit still records the
+		// sibling as its parent.
+		f := newTwoFixFixture(t, true)
+		f.archive("review", f.reviewed)
+		cousin := withParent(f, f.final, func() string { return commitOn(f, f.final, "cousin.txt") })
+		cousinRef := f.archive("cousin", cousin)
+		mustRun(f.t, f.local, "replace", "-f", cousin, f.final)
+		if disguised := mustRun(f.t, f.local, "rev-list", "--parents", "-n", "1", cousin); disguised != cousin+" "+f.submitted {
+			t.Fatalf("replacement did not disguise the cousin's parent: %s", disguised)
+		}
+		refusesBind(t, f, cousinRef, "blocked_recover_sibling_archive_not_sibling")
+	})
 	t.Run("candidate is the submitted head", func(t *testing.T) {
 		t.Parallel()
 		f := newTwoFixFixture(t, true)

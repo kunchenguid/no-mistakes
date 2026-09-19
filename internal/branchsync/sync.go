@@ -2332,7 +2332,7 @@ func (s *Service) verifyRecoveryArchiveRecord(ctx context.Context, state *State,
 	if err != nil || !exists {
 		return fail("blocked_recover_gate_unavailable", fmt.Sprintf("local gate branch %s is missing or unreadable", gateBranchRef))
 	}
-	if objectType, err := git.Run(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
+	if objectType, err := rawGit(ctx, gateDir, "cat-file", "-t", gateHead); err != nil || objectType != "commit" {
 		return fail("blocked_recover_archive_gate_branch_invalid", fmt.Sprintf("local gate branch %s does not point at a commit", gateBranchRef))
 	}
 	if gateHead != record.RequiredHeadSHA && gateHead != record.PreservedHeadSHA {
@@ -2512,13 +2512,14 @@ func (s *Service) verifySiblingArchiveRecords(ctx context.Context, state *State,
 }
 
 // strictDescendant reports whether descendant is a commit strictly after
-// ancestor. Both objects must exist and merge-base must succeed and name the
-// ancestor, so a missing object or a failed Git call is never a proof.
+// ancestor. Both stored objects must exist and merge-base must succeed and
+// name the ancestor, so a missing object or a failed Git call is never a
+// proof.
 func strictDescendant(ctx context.Context, dir, ancestor, descendant string) bool {
 	if ancestor == "" || descendant == "" || ancestor == descendant || !objectExists(ctx, dir, ancestor) || !objectExists(ctx, dir, descendant) {
 		return false
 	}
-	base, err := git.Run(ctx, dir, "merge-base", ancestor, descendant)
+	base, err := rawGit(ctx, dir, "merge-base", ancestor, descendant)
 	return err == nil && base == ancestor
 }
 
@@ -2537,9 +2538,9 @@ func provenSiblings(ctx context.Context, dir, a, b string) bool {
 }
 
 // commitParents lists the parents recorded in one existing commit object,
-// reading the object itself rather than traversing history.
+// reading the stored object itself rather than traversing history.
 func commitParents(ctx context.Context, dir, sha string) ([]string, bool) {
-	line, err := git.Run(ctx, dir, "rev-list", "--parents", "-n", "1", sha)
+	line, err := rawGit(ctx, dir, "rev-list", "--parents", "-n", "1", sha)
 	fields := strings.Fields(line)
 	if err != nil || len(fields) == 0 {
 		return nil, false
@@ -2570,7 +2571,7 @@ func (s *Service) archiveRefCommit(ctx context.Context, rawRef string) (target, 
 	if !exists {
 		return "", "blocked_recover_archive_missing", fmt.Sprintf("archive ref %s is missing", archiveRef)
 	}
-	if objectType, err := git.Run(ctx, s.workDir(), "cat-file", "-t", target); err != nil || objectType != "commit" {
+	if objectType, err := rawGit(ctx, s.workDir(), "cat-file", "-t", target); err != nil || objectType != "commit" {
 		return "", "blocked_recover_archive_replaced", fmt.Sprintf("archive ref %s points at non-commit object %s", archiveRef, target)
 	}
 	return target, "", ""
@@ -2613,7 +2614,7 @@ func exactCommitRefCompatible(ctx context.Context, repoDir, ref, expected string
 	if !exists {
 		return true, nil
 	}
-	anchored, err := git.Run(ctx, repoDir, "rev-parse", ref+"^{commit}")
+	anchored, err := rawGit(ctx, repoDir, "rev-parse", ref+"^{commit}")
 	return err == nil && anchored == expected, nil
 }
 
@@ -2696,8 +2697,15 @@ func pushStepRunning(database *db.DB, runID string) bool {
 }
 
 func objectExists(ctx context.Context, dir, sha string) bool {
-	_, err := git.Run(ctx, dir, "cat-file", "-e", sha+"^{commit}")
+	_, err := rawGit(ctx, dir, "cat-file", "-e", sha+"^{commit}")
 	return err == nil
+}
+
+// rawGit runs a read with object replacement disabled, so a proof describes
+// the objects the repository actually stores rather than a local
+// refs/replace/* view of them.
+func rawGit(ctx context.Context, dir string, args ...string) (string, error) {
+	return git.Run(ctx, dir, append([]string{"--no-replace-objects"}, args...)...)
 }
 
 func isAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
