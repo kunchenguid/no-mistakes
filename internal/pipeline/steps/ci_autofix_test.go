@@ -1255,9 +1255,9 @@ func TestCIStep_FixPromptClosesTheInvariantAcrossSiblingSites(t *testing.T) {
 			if _, err := (&CIStep{}).autoFixCI(sctx, &forgejoLogTestHost{}, pr, tc.targets); err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range append(append([]string{}, fixerInvariantContract...), fixerSelfTraceContract...) {
-				if !strings.Contains(capturedPrompt, want) {
-					t.Errorf("CI fix prompt missing invariant-complete contract %q:\n%s", want, capturedPrompt)
+			for _, want := range fixerClassRuleLines {
+				if !promptHasExactLine(capturedPrompt, want) {
+					t.Errorf("CI fix prompt missing exact invariant-complete line %q:\n%s", want, capturedPrompt)
 				}
 			}
 			for _, stale := range fixerSupersededScopeRules {

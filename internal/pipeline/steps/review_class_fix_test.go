@@ -23,6 +23,11 @@ import (
 // reviewer-side class-once rule and the rereview's follow-on labelling are
 // pinned by their own tests in this file.
 var (
+	fixerClassRuleLines = []string{
+		"- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.",
+		"- Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.",
+		"- After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.",
+	}
 	fixerInvariantContract = []string{
 		"Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold",
 		"every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record",
@@ -54,6 +59,15 @@ var (
 		"List every remaining sibling site so one fix round can close the class",
 	}
 )
+
+func promptHasExactLine(prompt, want string) bool {
+	for _, line := range strings.Split(prompt, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
 
 // TestReviewStep_FixPromptClosesTheInvariantAcrossSiblingSites pins the
 // fixer's invariant-complete rule as rendered: state the invariant, enumerate
