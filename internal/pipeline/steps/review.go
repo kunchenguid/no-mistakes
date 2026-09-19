@@ -64,15 +64,28 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// not an enforced sandbox - the agent has free shell access - so the pinned
 	// regression tests guard the wording, not the runtime.
 	//
-	// The narrow-instance rule is the same audit's second finding: fix rounds
-	// that were told to reach "the deepest practical cause" answered symptoms
-	// with new machinery, which the next rereview then found defects in, which
-	// bred more machinery. Depth is still wanted - the preceding rule keeps the
-	// local-defect-vs-deeper-flaw diagnosis - but the sanctioned way to reach it
-	// is simplifying an architectural reason, never bolting on handling for the
-	// symptoms. Remedies that must EXTEND the change instead of correcting it
-	// belong to the human at the review gate, which is what the reviewer's
-	// remedy-scope classification rule below routes them to.
+	// The invariant-complete rule replaces the earlier "fix the reported
+	// instance narrowly" wording. That wording was the same audit's second
+	// finding: fix rounds told to reach "the deepest practical cause" answered
+	// symptoms with new machinery, which the next rereview then found defects
+	// in, which bred more machinery. Narrowing the fix to the instance stopped
+	// the machinery but produced the opposite thrash: a measured SSHHIP run
+	// (PR #462) and seven local runs had 58-65% of rereviews reporting a sibling
+	// site the previous fix left behind (the other clamp axis, the Skip path
+	// beside the Fix path, the same __proto__ map in a second file, the next
+	// unvalidated field of one response) or a regression the fix itself made.
+	// The unit of a fix is therefore the invariant, at every site in the
+	// changed area where it must hold, closed with the same small correction or
+	// at one shared boundary. Depth is still wanted - the preceding rule keeps
+	// the local-defect-vs-deeper-flaw diagnosis - and machinery is still
+	// forbidden: closing sibling sites is the fix, adding handling for symptoms
+	// is not. The "deepest practical cause" wording does not return. Remedies
+	// that must EXTEND the change instead of correcting it belong to the human
+	// at the review gate, which is what the reviewer's remedy-scope
+	// classification rule below routes them to. The self-trace rule after the
+	// edits covers the other half of the measured thrash: a fix that makes the
+	// reported sequence pass while breaking the ordinary path or a caller, and
+	// residue (an alias or branch the fix made dead) the next review reports.
 	//
 	// The removal rule is the complement the anti-revert guard was missing.
 	// That guard told the fixer to fix intentional code forward, and "the
@@ -104,10 +117,12 @@ Context:
 Rules:
 - Always start with double checking whether the findings are legitimate.
 - Before changing code, identify whether each finding is a local defect or a symptom of a deeper design, abstraction, validation, ownership, or test-coverage flaw. Prefer the smallest correct root-cause fix within the changed area over patching only the reported line.
-- Fix the reported instance narrowly. Prefer doing so by addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
+- Before changing code, state for each finding the invariant it violates (what must always hold, in one sentence) and enumerate every place in the changed area where that same invariant must hold: every axis, direction, and representation; every sibling call path, command, action, and state transition; every consumer of the same input, field, or record. Fix the invariant at all of those places in this round, with the same small correction, or at the one shared boundary that makes all of them hold. A fix that closes only the reported site and leaves a sibling site reachable is incomplete; the next review will report the sibling.
+- Do not grow the fix into machinery: closing sibling sites with the same small edit, or moving a check to one shared boundary, is the fix; adding handling, state, fallbacks, retries, or a subsystem to manage symptoms is not. Prefer addressing a deeper architectural reason and simplifying it, than introducing machinery to handle the symptoms.
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit when the intent requires that code. If the original change introduced something the intent requires, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether the intent requires the code, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
 - Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
+- After applying the fixes and before verification, re-trace for each finding the concrete failing sequence it describes through the code as it now is, and trace the ordinary successful path through every function you changed, including each of its callers. Remove any alias, branch, parameter, or helper your fix made unreachable. A fix that makes the reported sequence pass while breaking the ordinary path, a caller's assumption, or a sibling site is a regression the next review will report.
 - After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
 - Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.
 - Return JSON with a single "summary" field when you are done.
@@ -235,6 +250,16 @@ Previous review findings to address:
 	// runs with the grain of ActionOrDefault, which already fails an
 	// unclassified finding closed to ask-user.
 	//
+	// A finding names its class, not one site: the rule after the anchor rule
+	// asks the reviewer to list, in the same finding, every other place in the
+	// changed code where the same invariant is violated or must hold, and for
+	// incomplete validation every consumed field still unvalidated. One finding
+	// per site let a class be rediscovered one site per round (the other clamp
+	// axis, the sibling command, the same map in a second file, the next
+	// unvalidated field) while the fixer, told the instance, fixed the instance.
+	// The list is prose in the description; the anchor stays one file and line
+	// so the carry-forward set and finding identity are unchanged.
+	//
 	// Findings also require an intended-usage sequence. A rare but real path
 	// those callers actually take still qualifies; a hypothetical unused
 	// execution does not. This is an evidence threshold for what counts as a
@@ -287,6 +312,7 @@ Task:
 
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
+- When you report a defect, enumerate in that same finding every other place in the changed code where the same invariant is violated or must hold (another axis, direction, or representation; a sibling call path, command, action, or state transition; another consumer of the same input, field, or record), each as file:line with a few words. Report the class once, anchored at the primary site, instead of one site now and its siblings after the next fix. When the defect is incomplete validation of an input, response, or record, list every consumed field that is still unvalidated in that one finding.
 - Use severity "error" for problems that should absolutely not get merged, "warning" for things that are worth addressing but can be done in a follow up, and "info" for things that are nice to have.
 - Be concise and actionable. No generic advice like "add more tests".
 - Only comment on things that genuinely matter.
@@ -482,6 +508,16 @@ func reviewRetryNote(err error) string {
 // decide. It is conditioned on defects located in prior-round code that
 // exceeds what the original finding required, so an ordinary multi-round fix
 // sequence never triggers it.
+//
+// Both framings also ask the rereview to name a follow-on as a follow-on: a
+// defect in code a prior round changed, or a sibling site of an invariant a
+// prior round addressed, is labelled with the round and with whether the fix
+// introduced it, left it behind, or moved it, and every remaining sibling site
+// is listed in that one finding. Without the label the driver selects the one
+// new finding, the fixer closes that one site, and the class is rediscovered
+// one site per round (58-65% of rereviews in the audited runs). The label is
+// prose in the description, not a schema field: the carry-forward set and the
+// finding identity are unchanged.
 func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
 	if sctx != nil && sctx.Fixing {
 		return `
@@ -491,6 +527,7 @@ Fix-round provenance:
 - Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+- When a defect you report is in code a prior fix round changed, or is a sibling site of an invariant a prior fix round addressed, say so in the description: name the round, and whether that fix introduced the defect, left this sibling behind, or moved the defect. List every remaining sibling site so one fix round can close the class.
 - When the defects you are reporting are located in code a prior fix round introduced, and that code exceeds what the original finding required, report a single "ask-user" finding recommending that the prior round be reverted to the minimal fix, instead of filing further repairs on that machinery.
 `
 	}
@@ -506,6 +543,7 @@ Fix-round provenance:
 - Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+- When a defect you report is in code a prior fix round changed, or is a sibling site of an invariant a prior fix round addressed, say so in the description: name the round, and whether that fix introduced the defect, left this sibling behind, or moved the defect. List every remaining sibling site so one fix round can close the class.
 - When the defects you are reporting are located in code a prior fix round introduced, and that code exceeds what the original finding required, report a single "ask-user" finding recommending that the prior round be reverted to the minimal fix, instead of filing further repairs on that machinery.
 `, fromSHA, toSHA)
 }
