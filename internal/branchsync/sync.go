@@ -753,11 +753,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if run.TerminalHeadVerifiedAt == nil {
 		// The block below establishes a final head from the live gate and then
-		// continues as an ordinary recovery. When the gate cannot establish one,
-		// the run's only exit is sibling archive evidence, which never stamps a
-		// verified head: it keeps the local head and selects neither sibling.
-		if !s.unverifiedHeadRecoverable(ctx, state, run) {
-			return s.recoverFromClaimedSource(ctx, run, state, s.recoverySourceAvailable(ctx, &state, run), keepLocal)
+		// continues as an ordinary recovery. Bound archive records own the run
+		// before it runs, and so does a gate that cannot establish a head at
+		// all: the run's exit is then its archive evidence, which never stamps
+		// a verified head and selects neither sibling.
+		source := s.recoverySourceAvailable(ctx, &state, run)
+		if source.archiveClaimed || !s.unverifiedHeadRecoverable(ctx, state, run) {
+			return s.recoverFromClaimedSource(ctx, run, state, source, keepLocal)
 		}
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
@@ -2138,7 +2140,7 @@ func (s *Service) recoverySourceAvailable(ctx context.Context, state *State, run
 	// a condition. Sibling-specific next actions begin with the first record.
 	unestablishedHead := run.TerminalHeadVerifiedAt == nil && !s.unverifiedHeadRecoverable(ctx, *state, run)
 	var archiveProof recoverySourceProof
-	if len(archiveRecords) > 0 && (run.TerminalHeadVerifiedAt != nil || unestablishedHead) {
+	if len(archiveRecords) > 0 {
 		archiveProof = s.verifyBoundRecoveryArchiveRecords(ctx, state, run, archiveRecords)
 		if !archiveProof.available {
 			return archiveProof

@@ -506,6 +506,41 @@ func TestSiblingHeadsIncompleteEvidenceFailsClosedWithoutMutation(t *testing.T) 
 	})
 }
 
+// TestSiblingHeadsBoundArchivesOwnRecoveryAfterTheGateBranchMoves pins the
+// ownership rule: once a record is bound, the pair owns the run. A gate branch
+// that later moves onto one sibling can otherwise establish it as the run's
+// final head, which would stamp a verification the run never proved and select
+// a sibling the release exists to avoid.
+func TestSiblingHeadsBoundArchivesOwnRecoveryAfterTheGateBranchMoves(t *testing.T) {
+	t.Parallel()
+
+	f := newTwoFixFixture(t, true)
+	f.service.BindRecoveryArchive(f.ctx, f.archive("review", f.reviewed))
+	if bound := f.service.BindRecoveryArchive(f.ctx, f.archive("duplication", f.final)); bound.Recovery == nil || bound.Recovery.Proof != "verified" {
+		t.Fatalf("sibling pair did not verify: %#v", bound)
+	}
+	mustRun(t, f.gate, "update-ref", "refs/heads/"+f.run.Branch, f.reviewed)
+	before := f.snapshot()
+
+	inspected := f.service.InspectCached(f.ctx)
+	if inspected.Safety != "blocked_recover_archive_gate_head_mismatch" || inspected.NextAction == nil || inspected.NextAction.Code != "inspect_and_reconcile_manually" {
+		t.Fatalf("moved-gate inspection = %#v action %#v", inspected, inspected.NextAction)
+	}
+	for _, keepLocal := range []bool{false, true} {
+		refused := f.service.Recover(f.ctx, keepLocal)
+		f.assertStillHeld(refused)
+		if refused.Safety != "blocked_recover_archive_gate_head_mismatch" {
+			t.Fatalf("recover keepLocal=%v after the gate moved = %s (%s)", keepLocal, refused.Safety, refused.Error)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("refused recovery moved HEAD to %s, want %s", got, f.submitted)
+		}
+	}
+	if after := f.snapshot(); after != before {
+		t.Fatalf("refused recovery changed state:\n%s\nwant\n%s", after, before)
+	}
+}
+
 // TestLinearFixCommitsStillRecoverWithoutArchives is the control: the same two
 // fixes appended in one line terminalize verified and recover by the ordinary
 // fast-forward, and the sibling evidence path does not reach this topology.
