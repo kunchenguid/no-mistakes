@@ -847,6 +847,41 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	}
 }
 
+func TestRunAgent_ToolAfterAnOnlyOutputBeforeAnySampleStillExtends(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "early-talker",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The agent's only observed output lands right at launch, before
+			// any child sample settles; its later bytes are throttled away, and
+			// the long tool it starts afterwards is the only sign of work.
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				opts.OnChunk("init\n")
+				time.Sleep(200 * time.Millisecond)
+				started()
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("agent waiting on a live child cut after %s: %v", time.Since(start), err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
 func TestRunAgent_HelperStartedJustBeforeTheFirstOutputDoesNotExtendTheBudget(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

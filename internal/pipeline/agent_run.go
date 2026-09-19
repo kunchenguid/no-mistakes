@@ -151,7 +151,8 @@ type agentActivity struct {
 	// wake asks its sampler to read the process table right then.
 	firstOutputAt time.Time
 	wake          chan struct{}
-	// permanent is the first sample started at or after the first output:
+	// permanent is the first successful sample started at or after the
+	// first output:
 	// everything alive by then is a helper the agent keeps for its turn (stdio
 	// MCP servers, the ACP agent under acpx), however close to that output it
 	// started, because no tool call can have been announced yet.
@@ -159,7 +160,9 @@ type agentActivity struct {
 	// helpers is frozen from a sample completed before the most recent
 	// output, and is never refreshed during a quiet stretch, so a tool the
 	// agent launched after speaking cannot age into it. waitingOnChild
-	// counts only descendants missing from both it and permanent.
+	// counts only descendants missing from both it and permanent. It stays
+	// zero when every output so far came before any sample settled, and then
+	// permanent alone is the baseline.
 	helpers childSample
 }
 
@@ -234,7 +237,7 @@ func (a *agentActivity) sampleChildren(pid, generation int, wake <-chan struct{}
 			return
 		}
 		a.previous, a.current = a.current, sample
-		if a.permanent.at.IsZero() && !a.firstOutputAt.IsZero() && !started.Before(a.firstOutputAt) {
+		if !a.permanent.ok && !a.firstOutputAt.IsZero() && !started.Before(a.firstOutputAt) {
 			a.permanent = sample
 		}
 		a.mu.Unlock()
@@ -317,8 +320,8 @@ func (a *agentActivity) observeExit() {
 // so it is the only evidence that a quiet agent is working rather than
 // wedged. Helpers (an ACP agent under acpx, stdio MCP servers) live for the
 // whole turn and prove nothing, and an agent that never produced output never
-// announced a tool call. A missing baseline or an unreadable process table
-// reports false, so the budget is never extended on a guess. It is liveness,
+// announced a tool call. A missing permanent set, a baseline frozen from a
+// failed sample, or an unreadable process table reports false, so the budget is never extended on a guess. It is liveness,
 // not output: evidence() never reports it as the agent having produced
 // anything.
 func (a *agentActivity) waitingOnChild() bool {
@@ -327,7 +330,8 @@ func (a *agentActivity) waitingOnChild() bool {
 	}
 	a.mu.Lock()
 	pid := a.launchedPID
-	ready := a.launched && !a.exited && a.observed > 0 && a.helpers.ok && a.permanent.ok
+	frozen := a.helpers.ok || a.helpers.at.IsZero()
+	ready := a.launched && !a.exited && a.observed > 0 && frozen && a.permanent.ok
 	helpers, permanent := a.helpers.children, a.permanent.children
 	a.mu.Unlock()
 	if !ready {
