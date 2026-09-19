@@ -25,6 +25,9 @@ func TestWithRoot(t *testing.T) {
 	if got := p.ConfigFile(); got != filepath.Join(root, "config.yaml") {
 		t.Errorf("ConfigFile() = %q, want %q", got, filepath.Join(root, "config.yaml"))
 	}
+	if got := p.FirewallDB(); got != filepath.Join(root, "firewall.sqlite") {
+		t.Errorf("FirewallDB() = %q, want %q", got, filepath.Join(root, "firewall.sqlite"))
+	}
 }
 
 func TestRepoPaths(t *testing.T) {

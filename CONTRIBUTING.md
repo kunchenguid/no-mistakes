@@ -18,7 +18,7 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 
 ## Workflow
 
-1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent repo (`git@github.com:kunchenguid/no-mistakes.git`).
+1. Fork the repo, then clone this repository or set your local `origin` back to it (`git@github.com:mfreeman451/no-mistakes.git`). This is a detached fork: pull requests are never opened against `kunchenguid/no-mistakes`. See the [detached fork guide](docs/src/content/docs/guides/detached-fork.md) for the remotes and upstream sync.
 2. Create a branch and make your changes.
 3. Initialize or refresh the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/no-mistakes.git`.
 4. Commit your changes.
@@ -29,7 +29,7 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
    ```
 
 6. Run `no-mistakes` to attach to the pipeline, watch findings, and auto-fix or review as needed.
-7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
+7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against this repository for you.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

@@ -35,8 +35,14 @@ func WithRoot(root string) *Paths {
 	return &Paths{root: root}
 }
 
-func (p *Paths) Root() string       { return p.root }
-func (p *Paths) DB() string         { return filepath.Join(p.root, "state.sqlite") }
+func (p *Paths) Root() string { return p.root }
+func (p *Paths) DB() string   { return filepath.Join(p.root, "state.sqlite") }
+
+// FirewallDB is the publish-firewall portal store. It is a separate file
+// from DB so a cluster NM_HOME can serve verdicts without opening the
+// pipeline daemon's state, and so `firewall serve` never touches the Mac
+// daemon's sqlite.
+func (p *Paths) FirewallDB() string { return filepath.Join(p.root, "firewall.sqlite") }
 func (p *Paths) Socket() string     { return filepath.Join(p.root, "socket") }
 func (p *Paths) PIDFile() string    { return filepath.Join(p.root, "daemon.pid") }
 func (p *Paths) ConfigFile() string { return filepath.Join(p.root, "config.yaml") }

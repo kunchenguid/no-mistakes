@@ -1,0 +1,40 @@
+# The publish-policy check runs on Actions Runner Controller, the same runner
+# mechanism this cluster already uses. A plain Deployment of
+# ghcr.io/actions/actions-runner never registers and carries no `no-mistakes`
+# binary, so check.sh would fail closed on every pull request.
+#
+# The runner image is operator-owned and MUST contain the `no-mistakes` binary
+# on PATH; build it from a pinned commit of this fork. The ingest token is
+# deliberately NOT in this pod's environment: a `pull_request` workflow runs
+# YAML from the PR head, so a pod-wide secret would be readable by any
+# contributor whose run is approved. The action receives it as the
+# `portal-token` input from a repository secret, which GitHub withholds from
+# fork pull requests entirely.
+apiVersion: actions.github.com/v1alpha1
+kind: AutoscalingRunnerSet
+metadata:
+  name: no-mistakes
+  namespace: no-mistakes
+spec:
+  githubConfigUrl: https://github.com/carverauto/serviceradar
+  githubConfigSecret: github-runner
+  runnerGroup: default
+  runnerScaleSetName: no-mistakes
+  minRunners: 0
+  maxRunners: 4
+  template:
+    spec:
+      containers:
+        - name: runner
+          # Operator-owned image: actions-runner plus the no-mistakes binary.
+          image: registry.carverauto.dev/no-mistakes/actions-runner:firewall
+          command: ["/home/runner/run.sh"]
+          env:
+            - name: NM_HOME
+              value: /home/runner/.no-mistakes
+            - name: NO_MISTAKES_FIREWALL_PORTAL_URL
+              value: http://no-mistakes-portal.no-mistakes.svc.cluster.local:8787
+---
+# ARC reads a GitHub App or PAT from this secret. Create it out of band:
+#   kubectl -n no-mistakes create secret generic github-runner \
+#     --from-literal=github_token=<pat>

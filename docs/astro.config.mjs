@@ -42,12 +42,15 @@ export default defineConfig({
             { label: "Setup Wizard", slug: "guides/setup-wizard" },
             { label: "Using the TUI", slug: "guides/tui" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
+            { label: "Detached fork", slug: "guides/detached-fork" },
+            { label: "Publish firewall", slug: "guides/publish-firewall" },
           ],
         },
         {
           label: "Reference",
           items: [
             { label: "CLI Commands", slug: "reference/cli" },
+            { label: "Portal API", slug: "reference/portal-api" },
             { label: "Evaluation toolkit", slug: "reference/eval" },
             { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
             { label: "Global Config", slug: "reference/global-config" },
