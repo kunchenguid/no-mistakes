@@ -232,8 +232,9 @@ func buildJevQuestions(candidates []jevCandidate) map[string]jev.Question {
 // but never one Jev scored a full level higher.
 func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, int) {
 	type ranked struct {
-		path  string
-		score float64
+		path    string
+		jev     float64
+		blended float64
 	}
 	strongest := 0.0
 	for _, c := range candidates {
@@ -248,19 +249,20 @@ func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, i
 		if answer.Score < jevRelevanceThreshold || answer.Confidence < jevConfidenceThreshold {
 			continue
 		}
-		score := answer.Score
+		blended := answer.Score
 		if strongest > 0 {
-			score += c.coupling / strongest
+			blended += c.coupling / strongest
 		}
-		listing = append(listing, ranked{path: c.Path, score: score})
+		listing = append(listing, ranked{path: c.Path, jev: answer.Score, blended: blended})
 	}
 	if len(listing) == 0 {
 		return "", 0
 	}
-	sort.SliceStable(listing, func(i, j int) bool { return listing[i].score > listing[j].score })
+	sort.SliceStable(listing, func(i, j int) bool { return listing[i].jev > listing[j].jev })
 	if len(listing) > jevMaxListed {
 		listing = listing[:jevMaxListed]
 	}
+	sort.SliceStable(listing, func(i, j int) bool { return listing[i].blended > listing[j].blended })
 	var b strings.Builder
 	b.WriteString("\n\nPre-brief (advisory output of a fast pre-screen model; claims, not evidence):\n")
 	b.WriteString("Every obligation above is unchanged: read and judge every changed file yourself, and treat each statement below as a hint to verify, never as a finding.\n")

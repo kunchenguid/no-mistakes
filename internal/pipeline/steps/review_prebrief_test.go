@@ -446,6 +446,30 @@ func TestFormatJevPrebrief_BlendsUseSiteEvidenceIntoOrder(t *testing.T) {
 	}
 }
 
+// TestFormatJevPrebrief_CapKeepsJevsTopRatedFiles reproduces the use-site
+// blend deciding which files survive the listing cap: with more qualifying
+// candidates than jevMaxListed, the cap must keep the files Jev scored
+// highest, and the blend may only reorder them.
+func TestFormatJevPrebrief_CapKeepsJevsTopRatedFiles(t *testing.T) {
+	t.Parallel()
+	candidates := []jevCandidate{{Path: "sibling.go"}}
+	answers := map[string]jev.Answer{"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9}}
+	for i := 1; i <= jevMaxListed+1; i++ {
+		candidates = append(candidates, jevCandidate{Path: fmt.Sprintf("use%02d.go", i), coupling: 0.1})
+		answers[fmt.Sprintf("ctx_%d", i)] = jev.Answer{Type: "score", Score: 2.1, Confidence: 0.9}
+	}
+	section, listed := formatJevPrebrief(&jev.Response{Answers: answers}, candidates)
+	if listed != jevMaxListed {
+		t.Fatalf("listed=%d, want the cap %d", listed, jevMaxListed)
+	}
+	if !strings.Contains(section, "sibling.go") {
+		t.Fatalf("the cap dropped the file Jev scored highest:\n%s", section)
+	}
+	if strings.Index(section, "use01.go") > strings.Index(section, "sibling.go") {
+		t.Fatalf("the use-site blend did not reorder the kept files:\n%s", section)
+	}
+}
+
 func TestFormatJevPrebrief_NothingToSurface(t *testing.T) {
 	t.Parallel()
 	resp := &jev.Response{Answers: map[string]jev.Answer{
