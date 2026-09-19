@@ -417,6 +417,21 @@ func TestSiblingHeadsIncompleteEvidenceFailsClosedWithoutMutation(t *testing.T) 
 		}
 		refusesBind(t, f, finalRef, "blocked_recover_sibling_archive_unproven")
 	})
+	t.Run("a graft overlay disguises an unrelated commit as a sibling", func(t *testing.T) {
+		t.Parallel()
+		// info/grafts rewrites parents for every history walk, so the proof must
+		// read the stored commits: this archived commit is not in the submitted
+		// lineage at all.
+		f := newTwoFixFixture(t, true)
+		f.archive("review", f.reviewed)
+		unrelated := withParent(f, f.base, func() string { return commitOn(f, f.base, "grafted.txt") })
+		unrelatedRef := f.archive("grafted", unrelated)
+		mustWrite(t, filepath.Join(f.local, mustRun(t, f.local, "rev-parse", "--git-path", "info/grafts")), unrelated+" "+f.submitted+"\n")
+		if disguised := mustRun(t, f.local, "merge-base", f.submitted, unrelated); disguised != f.submitted {
+			t.Fatalf("graft did not disguise the unrelated commit as a descendant: %s", disguised)
+		}
+		refusesBind(t, f, unrelatedRef, "blocked_recover_sibling_archive_not_sibling")
+	})
 	t.Run("third candidate", func(t *testing.T) {
 		t.Parallel()
 		f := newTwoFixFixture(t, true)

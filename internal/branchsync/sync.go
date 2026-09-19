@@ -2706,11 +2706,12 @@ func objectExists(ctx context.Context, dir, sha string) bool {
 	return err == nil
 }
 
-// rawGit runs a read with object replacement disabled, so a proof describes
-// the objects the repository actually stores rather than a local
-// refs/replace/* view of them.
+// rawGit runs a read with both of Git's local history overlays disabled -
+// refs/replace/* objects and the legacy info/grafts parent table - so a proof
+// describes the objects the repository actually stores rather than a rewritten
+// view of them. --no-replace-objects governs only the first.
 func rawGit(ctx context.Context, dir string, args ...string) (string, error) {
-	return git.Run(ctx, dir, append([]string{"--no-replace-objects"}, args...)...)
+	return git.RunWithEnv(ctx, dir, []string{"GIT_GRAFT_FILE=" + os.DevNull}, append([]string{"--no-replace-objects"}, args...)...)
 }
 
 func isAncestor(ctx context.Context, dir, ancestor, descendant string) bool {
