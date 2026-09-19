@@ -75,9 +75,14 @@ const jevMaxCandidates = 40
 // jevMaxListed caps how many ranked files the pre-brief lists.
 const jevMaxListed = 10
 
-// jevRelevanceThreshold is the minimum probability-weighted relevance score
-// (on the 0-3 rubric in jevRelevanceLevels) for a candidate to be listed.
-const jevRelevanceThreshold = 2.0
+// jevRelevanceThreshold is the probability mass a candidate must carry at
+// "relevant" or "essential" (levels 2 and 3 of jevRelevanceLevels) combined
+// to be listed. The score Jev returns is probability-weighted across all four
+// levels, so a threshold on the score itself demands near-certainty at level
+// 2: a file Jev is quite sure is relevant (60-70% of mass at level 2, the
+// rest at level 1) scores 1.6-1.8 and would never list. Mass at or above
+// level 2 is the rubric's actual meaning of "worth reading".
+const jevRelevanceThreshold = 0.5
 
 // jevConfidenceThreshold drops a ranked candidate whose score confidence is
 // too low to act on; failing toward not listing is the pre-assist behavior.
@@ -246,7 +251,7 @@ func formatJevPrebrief(resp *jev.Response, candidates []jevCandidate) (string, i
 		if !ok || answer.Type != "score" {
 			continue
 		}
-		if answer.Score < jevRelevanceThreshold || answer.Confidence < jevConfidenceThreshold {
+		if answer.Probabilities["2"]+answer.Probabilities["3"] < jevRelevanceThreshold || answer.Confidence < jevConfidenceThreshold {
 			continue
 		}
 		blended := answer.Score

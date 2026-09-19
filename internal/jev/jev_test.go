@@ -109,6 +109,45 @@ func TestEvaluate_Unauthorized(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("err = %v, want 401 surfaced", err)
 	}
+	if strings.Contains(err.Error(), "bad key") {
+		t.Fatalf("err embeds the remote response body, which reaches operator logs: %v", err)
+	}
+}
+
+// TestEvaluate_RetryWaitIsContextAware pins that a cancellation during the
+// rate-limit wait returns immediately instead of sleeping through it, so the
+// caller's ordinary cold-review fallback starts at once.
+func TestEvaluate_RetryWaitIsContextAware(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{Endpoint: server.URL, Key: "k", Sleep: func(time.Duration) { cancel() }}
+	start := time.Now()
+	_, err := client.Evaluate(ctx, "s", map[string]Question{"q": {Type: "noul", Instructions: "i"}})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("cancellation during the retry wait took %v", time.Since(start))
+	}
+}
+
+// TestEvaluate_OversizedSuccessBodyRejected pins the bound on success bodies:
+// answers are small typed maps, so an oversized body is rejected rather than
+// materialized.
+func TestEvaluate_OversizedSuccessBodyRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.5}},"usage":{"input_tokens":1},"padding":"` + strings.Repeat("x", maxResponseBodyBytes) + `"}`))
+	}))
+	defer server.Close()
+	client := &Client{Endpoint: server.URL, Key: "k"}
+	_, err := client.Evaluate(context.Background(), "s", map[string]Question{"q": {Type: "noul", Instructions: "i"}})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want oversized body rejected", err)
+	}
 }
 
 func TestEvaluate_RateLimitedThenRetriedOnce(t *testing.T) {

@@ -42,7 +42,7 @@ func (f *fakeJevClient) Evaluate(_ context.Context, state any, questions map[str
 
 // highScoreEverything answers every relevance score high.
 func highScoreEverything(string, jev.Question) jev.Answer {
-	return jev.Answer{Type: "score", Score: 2.6, Confidence: 0.9}
+	return jev.Answer{Type: "score", Score: 2.6, Confidence: 0.9, Probabilities: map[string]float64{"2": 0.8, "3": 0.1}}
 }
 
 func reviewPromptOf(t *testing.T, ag *mockAgent) string {
@@ -405,12 +405,12 @@ func TestFormatJevPrebrief_Thresholds(t *testing.T) {
 	t.Parallel()
 	candidates := []jevCandidate{{Path: "a.go"}, {Path: "b.go"}, {Path: "c.go"}}
 	resp := &jev.Response{Answers: map[string]jev.Answer{
-		// High score, confident: listed.
-		"ctx_0": {Type: "score", Score: 2.5, Confidence: 0.9},
-		// High score but unconfident: not listed.
-		"ctx_1": {Type: "score", Score: 2.5, Confidence: 0.1},
-		// Below the relevance bar: not listed.
-		"ctx_2": {Type: "score", Score: 1.4, Confidence: 0.95},
+		// Most mass at relevant or better, confident: listed.
+		"ctx_0": {Type: "score", Score: 2.0, Confidence: 0.9, Probabilities: map[string]float64{"1": 0.2, "2": 0.7, "3": 0.1}},
+		// Same mass but unconfident: not listed.
+		"ctx_1": {Type: "score", Score: 2.0, Confidence: 0.1, Probabilities: map[string]float64{"1": 0.2, "2": 0.7, "3": 0.1}},
+		// Most mass below relevant: not listed, however confident.
+		"ctx_2": {Type: "score", Score: 1.4, Confidence: 0.95, Probabilities: map[string]float64{"1": 0.6, "2": 0.4}},
 	}}
 	section, listed := formatJevPrebrief(resp, candidates)
 	if listed != 1 {
@@ -433,10 +433,10 @@ func TestFormatJevPrebrief_BlendsUseSiteEvidenceIntoOrder(t *testing.T) {
 		{Path: "unlisted_use.go", coupling: 0.5},
 	}
 	resp := &jev.Response{Answers: map[string]jev.Answer{
-		"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9},
-		"ctx_1": {Type: "score", Score: 2.2, Confidence: 0.9},
-		"ctx_2": {Type: "score", Score: 2.0, Confidence: 0.9},
-		"ctx_3": {Type: "score", Score: 1.5, Confidence: 0.9},
+		"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9, Probabilities: map[string]float64{"2": 0.1, "3": 0.9}},
+		"ctx_1": {Type: "score", Score: 2.2, Confidence: 0.9, Probabilities: map[string]float64{"2": 0.6, "3": 0.2}},
+		"ctx_2": {Type: "score", Score: 2.0, Confidence: 0.9, Probabilities: map[string]float64{"1": 0.35, "2": 0.6, "3": 0.05}},
+		"ctx_3": {Type: "score", Score: 1.5, Confidence: 0.9, Probabilities: map[string]float64{"1": 0.6, "2": 0.4}},
 	}}
 	section, listed := formatJevPrebrief(resp, candidates)
 	if listed != 3 || strings.Contains(section, "unlisted_use.go") {
@@ -455,10 +455,10 @@ func TestFormatJevPrebrief_BlendsUseSiteEvidenceIntoOrder(t *testing.T) {
 func TestFormatJevPrebrief_CapKeepsJevsTopRatedFiles(t *testing.T) {
 	t.Parallel()
 	candidates := []jevCandidate{{Path: "sibling.go"}}
-	answers := map[string]jev.Answer{"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9}}
+	answers := map[string]jev.Answer{"ctx_0": {Type: "score", Score: 2.9, Confidence: 0.9, Probabilities: map[string]float64{"2": 0.1, "3": 0.9}}}
 	for i := 1; i <= jevMaxListed+1; i++ {
 		candidates = append(candidates, jevCandidate{Path: fmt.Sprintf("use%02d.go", i), coupling: 0.1})
-		answers[fmt.Sprintf("ctx_%d", i)] = jev.Answer{Type: "score", Score: 2.1, Confidence: 0.9}
+		answers[fmt.Sprintf("ctx_%d", i)] = jev.Answer{Type: "score", Score: 2.1, Confidence: 0.9, Probabilities: map[string]float64{"2": 0.7, "3": 0.05}}
 	}
 	section, listed := formatJevPrebrief(&jev.Response{Answers: answers}, candidates)
 	if listed != jevMaxListed {
@@ -475,7 +475,7 @@ func TestFormatJevPrebrief_CapKeepsJevsTopRatedFiles(t *testing.T) {
 func TestFormatJevPrebrief_NothingToSurface(t *testing.T) {
 	t.Parallel()
 	resp := &jev.Response{Answers: map[string]jev.Answer{
-		"ctx_0": {Type: "score", Score: 0.4, Confidence: 0.99},
+		"ctx_0": {Type: "score", Score: 0.4, Confidence: 0.99, Probabilities: map[string]float64{"1": 0.8, "2": 0.15, "3": 0.05}},
 	}}
 	section, listed := formatJevPrebrief(resp, []jevCandidate{{Path: "a.go"}})
 	if section != "" || listed != 0 {

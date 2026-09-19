@@ -46,8 +46,14 @@ const (
 	// which is cheap to fall back to.
 	maxRetryWait = 5 * time.Second
 	// maxErrorBodyBytes bounds how much of an error response body is read
-	// into an error message.
+	// before it is discarded. Remote body text is never embedded in the
+	// returned error: an error message reaches operator logs, and a remote
+	// service's prose has no place there - the status code is the evidence.
 	maxErrorBodyBytes = 4096
+	// maxResponseBodyBytes bounds a success body. Answers are small typed
+	// maps, so anything larger is not a valid response for this client and
+	// is rejected rather than materialized.
+	maxResponseBodyBytes = 1 << 20
 )
 
 // Question is one typed question in an evaluation request. Type is one of
@@ -153,9 +159,8 @@ func (c *Client) Evaluate(ctx context.Context, state any, questions map[string]Q
 	if retryAfter <= 0 {
 		return nil, err
 	}
-	c.sleep(retryAfter)
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("jev: %w (after rate-limit wait)", err)
+	if waitErr := c.wait(ctx, retryAfter); waitErr != nil {
+		return nil, fmt.Errorf("jev: retry wait interrupted: %w", waitErr)
 	}
 	resp, _, err = c.do(ctx, body)
 	return resp, err
@@ -190,11 +195,19 @@ func (c *Client) do(ctx context.Context, body []byte) (*Response, time.Duration,
 		return nil, parseRetryAfter(httpResp.Header.Get("Retry-After")), fmt.Errorf("jev: %s", httpResp.Status)
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(httpResp.Body, maxErrorBodyBytes))
-		return nil, 0, fmt.Errorf("jev: %s: %s", httpResp.Status, bytes.TrimSpace(snippet))
+		_, _ = io.Copy(io.Discard, io.LimitReader(httpResp.Body, maxErrorBodyBytes))
+		return nil, 0, fmt.Errorf("jev: %s", httpResp.Status)
 	}
 	var decoded responseBody
-	if err := json.NewDecoder(httpResp.Body).Decode(&decoded); err != nil {
+	limited := io.LimitReader(httpResp.Body, maxResponseBodyBytes+1)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, 0, fmt.Errorf("jev: read response: %w", err)
+	}
+	if len(raw) > maxResponseBodyBytes {
+		return nil, 0, fmt.Errorf("jev: response exceeds %d bytes", maxResponseBodyBytes)
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return nil, 0, fmt.Errorf("jev: decode response: %w", err)
 	}
 	if decoded.Answers == nil {
@@ -203,12 +216,23 @@ func (c *Client) do(ctx context.Context, body []byte) (*Response, time.Duration,
 	return &Response{Model: decoded.Model, Answers: decoded.Answers, Usage: decoded.Usage}, 0, nil
 }
 
-func (c *Client) sleep(d time.Duration) {
+// wait is the rate-limit retry wait. It is context-aware so a cancellation
+// during the wait takes the caller's ordinary fallback path immediately
+// instead of sleeping through it. The Sleep hook substitutes the timer in
+// tests.
+func (c *Client) wait(ctx context.Context, d time.Duration) error {
 	if c.Sleep != nil {
 		c.Sleep(d)
-		return
+		return ctx.Err()
 	}
-	time.Sleep(d)
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // parseRetryAfter reads a Retry-After header in its seconds form, bounded by
