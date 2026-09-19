@@ -882,20 +882,54 @@ func TestRunAgent_ToolAfterAnOnlyOutputBeforeAnySampleStillExtends(t *testing.T)
 	}
 }
 
-func TestRunAgent_HelperStartedJustBeforeTheFirstOutputDoesNotExtendTheBudget(t *testing.T) {
+func TestRunAgent_ToolAnnouncedByTheFirstOutputOutlastsTheStallBudget(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("the live-child probe reads the POSIX process table")
 	}
-	const stall = time.Second
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "first-word-is-a-tool",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// The agent's very first output only announces a tool call, and
+			// the tool starts at once and runs quietly past the stall budget.
+			return runLaunchedShell(ctx, opts, "read go; sleep 2.5", func(started, _ func()) {
+				time.Sleep(1200 * time.Millisecond)
+				opts.OnChunk("running the suite\n")
+				started()
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	result, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	if err != nil {
+		t.Fatalf("agent whose first output announced a live tool cut after %s: %v", time.Since(start), err)
+	}
+	if result == nil || result.Text != "done" {
+		t.Fatalf("result = %+v, want the finished turn", result)
+	}
+}
+
+func TestRunAgent_HelperStartedBeforeTheFirstOutputDoesNotExtendTheBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
 	ag := &hangingAgent{
 		name: "hung-after-init",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A stdio MCP server or an acpx inner agent starts immediately
-			// before the agent's first output, after a quiet startup, and then
-			// the provider hangs.
+			// A stdio MCP server or an acpx inner agent starts after launch,
+			// the agent's first output follows, and then the provider hangs.
 			return runLaunchedShell(ctx, opts, "sleep 0.3; sleep 6 & echo ready; read go; wait", func(_, ready func()) {
 				ready()
+				time.Sleep(1200 * time.Millisecond)
 				opts.OnChunk("init\n")
 			})
 		},
