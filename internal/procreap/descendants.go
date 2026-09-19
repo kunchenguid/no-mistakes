@@ -1,27 +1,36 @@
 package procreap
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // processState is one process-table entry as the descendant probe needs it.
 type processState struct {
-	PID  int
-	PPID int
-	PGID int
-	Stat string
+	PID     int
+	PPID    int
+	PGID    int
+	Stat    string
+	Elapsed time.Duration
 }
 
-// HasLiveDescendant reports whether pid currently has a running descendant:
-// a process whose parent chain reaches pid, or a member of the process group
-// pid leads. Zombies do not count because they are finished work nobody has
-// reaped yet.
+// HasLiveDescendantSince reports whether pid currently has a running
+// descendant that started at or after since: a process whose parent chain
+// reaches pid, or a member of the process group pid leads. Zombies do not
+// count because they are finished work nobody has reaped yet.
 //
 // It answers "is this agent still waiting on something it launched" for the
 // invocation stall budget. A long tool call (a test suite, a build) produces
 // no bytes on the agent's own stdout or stderr until it returns, so output
-// alone cannot tell that wait from a wedged agent; a live child can.
+// alone cannot tell that wait from a wedged agent; a live child can. The
+// start bound is what separates that tool work from helpers an agent keeps
+// alive for its whole turn (an ACP agent under acpx, stdio MCP servers):
+// those start before the agent's output they would otherwise outlive.
+// Process ages have whole-second resolution, so a process started within
+// the second before since still counts.
 // A failure to read the process table reports false, so an unreadable host
 // never extends a budget.
-func HasLiveDescendant(pid int) bool {
+func HasLiveDescendantSince(pid int, since time.Time) bool {
 	if pid <= 1 {
 		return false
 	}
@@ -29,16 +38,16 @@ func HasLiveDescendant(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return hasLiveDescendant(pid, procs)
+	return hasLiveDescendant(pid, procs, time.Since(since))
 }
 
-func hasLiveDescendant(root int, procs []processState) bool {
+func hasLiveDescendant(root int, procs []processState, maxAge time.Duration) bool {
 	byPID := make(map[int]processState, len(procs))
 	for _, p := range procs {
 		byPID[p.PID] = p
 	}
 	for _, p := range procs {
-		if p.PID == root || p.PID <= 1 || strings.HasPrefix(p.Stat, "Z") {
+		if p.PID == root || p.PID <= 1 || strings.HasPrefix(p.Stat, "Z") || p.Elapsed > maxAge {
 			continue
 		}
 		if p.PGID == root {

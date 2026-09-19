@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -817,9 +818,13 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	ag := &hangingAgent{
 		name: "suite-runner",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			// A quiet agent blocked on a long tool call: its child runs past the
-			// stall budget and the agent itself writes nothing meanwhile.
-			return runLaunchedShell(ctx, opts, "sleep 1.5 & wait")
+			// A quiet agent blocked on a long tool call: it announces the call,
+			// then its child runs past the stall budget while the agent itself
+			// writes nothing.
+			return runLaunchedShell(ctx, opts, "read go; sleep 1.5", func(started func()) {
+				opts.OnChunk("running the suite\n")
+				started()
+			})
 		},
 	}
 	sctx := &StepContext{
@@ -838,6 +843,43 @@ func TestRunAgent_AgentWaitingOnALiveChildOutlastsTheStallBudget(t *testing.T) {
 	}
 }
 
+func TestRunAgent_HelperStartedBeforeTheLastOutputDoesNotExtendTheBudget(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the live-child probe reads the POSIX process table")
+	}
+	const stall = 2 * time.Second
+	ag := &hangingAgent{
+		name: "wedged-with-helper",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			// A long-lived helper (an ACP agent under acpx, a stdio MCP server)
+			// starts with the agent, which then talks and hangs.
+			return runLaunchedShell(ctx, opts, "sleep 6 & read go; wait", func(started func()) {
+				time.Sleep(1200 * time.Millisecond)
+				opts.OnChunk("thinking\n")
+			})
+		},
+	}
+	sctx := &StepContext{
+		Ctx:    context.Background(),
+		Agent:  ag,
+		Config: &config.Config{AgentTimeout: stall},
+	}
+
+	start := time.Now()
+	_, err := sctx.RunAgent(agent.RunOpts{Prompt: "work"})
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	if elapsed >= AgentTimeoutHardCap(stall) {
+		t.Fatalf("hung agent with a pre-output helper ran %s, want a cut before the %s hard cap", elapsed, AgentTimeoutHardCap(stall))
+	}
+	if !strings.Contains(err.Error(), "stall budget") {
+		t.Fatalf("error = %q, want the stall budget named as the bound", err)
+	}
+}
+
 func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -847,7 +889,7 @@ func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) 
 	ag := &hangingAgent{
 		name: "wedged",
 		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return runLaunchedShell(ctx, opts, "exec sleep 10")
+			return runLaunchedShell(ctx, opts, "exec sleep 10", nil)
 		},
 	}
 	sctx := &StepContext{
@@ -871,14 +913,23 @@ func TestRunAgent_LaunchedAgentWithoutAChildIsCutAtTheStallBudget(t *testing.T) 
 }
 
 // runLaunchedShell stands in for a native adapter: it launches script as the
-// agent subprocess, reports its start and exit, and returns when it exits.
-func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string) (*agent.Result, error) {
+// agent subprocess, reports its start, runs drive while the script is alive
+// (drive may call started to send the script one line on stdin), and reports
+// the exit when the script ends.
+func runLaunchedShell(ctx context.Context, opts agent.RunOpts, script string, drive func(started func())) (*agent.Result, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseStart, PID: cmd.Process.Pid})
-	err := cmd.Wait()
+	if drive != nil {
+		drive(func() { _, _ = io.WriteString(stdin, "go\n") })
+	}
+	err = cmd.Wait()
 	opts.OnLifecycle(agent.LifecycleEvent{Phase: agent.LifecyclePhaseExit, PID: cmd.Process.Pid})
 	if err != nil {
 		return nil, err

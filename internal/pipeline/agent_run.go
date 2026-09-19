@@ -189,18 +189,23 @@ func (a *agentActivity) observeExit() {
 }
 
 // waitingOnChild reports whether the launched agent subprocess is still
-// running a child process, such as a test suite a tool call started. Such a
-// wait emits no output, so it is the only evidence that a quiet agent is
-// working rather than wedged. It is liveness, not output: evidence() never
-// reports it as the agent having produced anything.
+// running a child process it started after its last observed output, such as
+// a test suite a tool call announced and then launched. Such a wait emits no
+// output, so it is the only evidence that a quiet agent is working rather
+// than wedged. Children already running before that output (an ACP agent
+// under acpx, stdio MCP servers) live for the whole turn and prove nothing,
+// and an agent that never produced output never announced a tool call. It is
+// liveness, not output: evidence() never reports it as the agent having
+// produced anything.
 func (a *agentActivity) waitingOnChild() bool {
 	if a == nil {
 		return false
 	}
 	a.mu.Lock()
-	pid, live := a.launchedPID, a.launched && !a.exited
+	pid, live := a.launchedPID, a.launched && !a.exited && a.observed > 0
+	last := a.last
 	a.mu.Unlock()
-	return live && procreap.HasLiveDescendant(pid)
+	return live && procreap.HasLiveDescendantSince(pid, last)
 }
 
 // evidence renders what was actually observed, for the timeout message.

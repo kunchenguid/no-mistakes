@@ -39,9 +39,9 @@ func listProcesses() ([]Process, error) {
 	return parseProcessTable(string(out)), nil
 }
 
-// listProcessStates reads pid, parent, group, and state for every process.
+// listProcessStates reads pid, parent, group, state, and age for every process.
 func listProcessStates() ([]processState, error) {
-	cmd := exec.Command(psExecutable(), "-eo", "pid=,ppid=,pgid=,stat=")
+	cmd := exec.Command(psExecutable(), "-eo", "pid=,ppid=,pgid=,stat=,etime=")
 	cmd.Env = cEnv()
 	out, err := cmd.Output()
 	if err != nil {
@@ -50,16 +50,17 @@ func listProcessStates() ([]processState, error) {
 	var procs []processState
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) < 5 {
 			continue
 		}
 		pid, pidErr := strconv.Atoi(fields[0])
 		ppid, ppidErr := strconv.Atoi(fields[1])
 		pgid, pgidErr := strconv.Atoi(fields[2])
-		if pidErr != nil || ppidErr != nil || pgidErr != nil || pid <= 0 {
+		elapsed, etimeErr := parseETime(fields[4])
+		if pidErr != nil || ppidErr != nil || pgidErr != nil || etimeErr != nil || pid <= 0 {
 			continue
 		}
-		procs = append(procs, processState{PID: pid, PPID: ppid, PGID: pgid, Stat: fields[3]})
+		procs = append(procs, processState{PID: pid, PPID: ppid, PGID: pgid, Stat: fields[3], Elapsed: elapsed})
 	}
 	return procs, nil
 }
